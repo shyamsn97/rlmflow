@@ -8,11 +8,11 @@ named folders. Generated runs go under [`_runs/`](_runs/).
 | Script | What it shows |
 |---|---|
 | [`showcase.py`](showcase.py) | End-to-end `Flow` run + live terminal viz |
-| [`drop_in_llm.py`](drop_in_llm.py) | `Flow` as a drop-in `LLMClient` |
+| [`drop_in_llm.py`](drop_in_llm.py) | Minimal `FlowLLM` as a drop-in LLM |
 | [`llm_query_batched.py`](llm_query_batched.py) | `llm_query_batched` in the REPL |
 | [`skills.py`](skills.py) | On-disk skills + dynamic prompt section |
 | [`structured_output.py`](structured_output.py) | Root + child `output_schema` validation |
-| [`view_demo.py`](view_demo.py) | Gradio viewer on synthetic graphs |
+| [`view_demo.py`](view_demo.py) | Lightweight viewer on synthetic minimal graphs |
 | [`summarizer.py`](summarizer.py) | Recursive map-reduce summarization |
 
 ```bash
@@ -35,9 +35,8 @@ python examples/summarizer.py --sections 10 --no-viz
 |---|---|
 | [`graph/`](graph/) | Offline Graph API (query, edit, save, fork, render) |
 | [`control/`](control/) | Delegation, branching, injection |
-| [`sandboxes/`](sandboxes/) | Modal, E2B, Daytona remote execution |
+| [`sandboxes/`](sandboxes/) | Docker and Modal remote execution |
 | [`providers/`](providers/) | DSPy, MCP, Tinker adapters |
-| [`notebooks/`](notebooks/) | Jupyter walkthroughs |
 
 ---
 
@@ -93,25 +92,22 @@ rlmflow render examples/_runs/summarizer -f html -o viewer.html
 The saved directory holds `graph.json` (and optionally `trace.json` when you
 capture a step sequence with `save_trace`).
 
-## Modal, E2B, and Daytona
+## Docker And Modal
 
 Remote sandbox examples live under [`sandboxes/`](sandboxes/). They run a small
-platformer-building task, so set `OPENAI_API_KEY` plus the provider's sandbox
-credentials:
+platformer-building task, so set `OPENAI_API_KEY` plus any provider credentials:
 
 ```bash
+python examples/sandboxes/docker_agent.py --docker-image rlmflow:local --no-live
 python examples/sandboxes/modal_agent.py --model gpt-5 --no-live
-python examples/sandboxes/e2b_agent.py --model gpt-5
-python examples/sandboxes/daytona_agent.py --model gpt-5
 ```
 
-Install the matching extra first: `rlmflow[modal]`, `rlmflow[e2b]`,
-`rlmflow[daytona]`, or `rlmflow[sandbox]` for all three.
+Install the matching extra first: `rlmflow[modal]` or `rlmflow[sandbox]`.
 
 For fully locked-down local runs, pass a `DockerRuntime`:
 
 ```python
-from rflow import Flow, DockerRuntime
+from rflow.minimal import DockerRuntime, Flow
 from rflow.clients import OpenAIClient
 
 runtime = DockerRuntime("rlmflow:local", working_directory="./proj")

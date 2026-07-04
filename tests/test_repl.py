@@ -1,11 +1,4 @@
-"""Phase 0 — the in-process REPL (``rflow.runtime.repl``).
-
-Ported from the legacy REPL-yield coverage to the new ``rflow.runtime.repl.REPL``
-(no namespace ctor arg; ``repl.namespace`` is public). Covers top-level-await
-detection, suspend/resume on ``WaitRequest``, the unsupported-await guard in the
-driver, and BaseException capture (errors and ``SystemExit`` become recorded
-output rather than crashing the host).
-"""
+"""In-process REPL coverage for normal asyncio plus graph waits."""
 
 from __future__ import annotations
 
@@ -67,13 +60,78 @@ def test_namespace_persists_across_blocks():
     assert suspended is False and out == "[1, 2]"
 
 
+def test_top_level_asyncio_sleep_runs_to_completion():
+    r = REPL()
+    suspended, out = r.start(
+        "import asyncio\n"
+        "await asyncio.sleep(0)\n"
+        "print('done')"
+    )
+    assert suspended is False
+    assert out == "done"
+    assert r.errored is False
+
+
+def test_async_helper_with_non_graph_await_runs_to_completion():
+    r = REPL()
+    suspended, out = r.start(
+        "import asyncio\n"
+        "async def helper():\n"
+        "    await asyncio.sleep(0)\n"
+        "    return 'ok'\n"
+        "print(await helper())"
+    )
+    assert suspended is False
+    assert out == "ok"
+    assert r.errored is False
+
+
+def test_asyncio_gather_for_regular_async_work():
+    r = REPL()
+    suspended, out = r.start(
+        "import asyncio\n"
+        "async def item(i):\n"
+        "    await asyncio.sleep(0)\n"
+        "    return i * 2\n"
+        "print(await asyncio.gather(item(1), item(2), item(3)))"
+    )
+    assert suspended is False
+    assert out == "[2, 4, 6]"
+    assert r.errored is False
+
+
+def test_detached_asyncio_tasks_are_cancelled_between_blocks():
+    r = REPL()
+    suspended, out = r.start(
+        "import asyncio\n"
+        "flag = []\n"
+        "async def background():\n"
+        "    await asyncio.sleep(0)\n"
+        "    flag.append('leaked')\n"
+        "if False:\n"
+        "    await asyncio.sleep(0)\n"
+        "asyncio.create_task(background())\n"
+        "print('done')"
+    )
+    assert suspended is False
+    assert out == "done"
+    suspended, out = r.start(
+        "import asyncio\n"
+        "await asyncio.sleep(0)\n"
+        "print(flag)"
+    )
+    assert suspended is False
+    assert out == "[]"
+
+
 # ── suspend / resume on WaitRequest ───────────────────────────────────
 
 
 def _wait_repl() -> REPL:
     r = REPL()
+
     async def wait_agents(*agent_ids):
-        return await WaitRequest(list(agent_ids))
+        return await r.graph_wait(WaitRequest(list(agent_ids)))
 
     r.namespace["wait_agents"] = wait_agents
     return r
@@ -155,6 +213,27 @@ def test_pre_output_captured_before_suspension():
     assert pre == "before wait"
 
 
+def test_regular_async_work_before_and_after_graph_wait():
+    r = _wait_repl()
+    code = (
+        "import asyncio\n"
+        "await asyncio.sleep(0)\n"
+        "print('before')\n"
+        "res = await wait_agents('root.a')\n"
+        "await asyncio.sleep(0)\n"
+        "print(res)\n"
+    )
+    suspended, payload = r.start(code)
+    assert suspended is True
+    request, pre = payload
+    assert request.agent_ids == ["root.a"]
+    assert pre == "before"
+    suspended, out = r.resume(["A"])
+    assert suspended is False
+    assert out == "['A']"
+    assert r.errored is False
+
+
 # ── error / control-flow capture ──────────────────────────────────────
 
 
@@ -186,7 +265,7 @@ def test_sys_exit_call_in_block_is_captured():
     assert r.errored is True
 
 
-def test_unsupported_await_in_driver_is_rejected():
+def test_non_asyncio_custom_awaitable_is_captured_as_error():
     r = REPL()
 
     class _Boom:
@@ -197,16 +276,17 @@ def test_unsupported_await_in_driver_is_rejected():
     suspended, out = r.start("await Boom()")
     assert suspended is False
     assert r.errored is True
-    assert "only graph-aware awaits" in out
+    assert "Task got bad yield" in out
 
 
 def test_resume_without_suspension_errors():
     r = REPL()
     suspended, out = r.resume(None)
     assert suspended is False
-    assert r.errored is True and "no suspended coroutine" in out
+    assert r.errored is True and "no pending graph wait" in out
 
 
-def test_close_is_noop():
+def test_close_is_idempotent():
     r = REPL()
+    assert r.close() is None
     assert r.close() is None

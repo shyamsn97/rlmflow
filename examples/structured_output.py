@@ -12,12 +12,14 @@ Run:
 from __future__ import annotations
 
 import argparse
+import asyncio
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel
 
-import rflow
+from rflow.clients import OpenAIClient
+from rflow.minimal import Flow, Graph, LiveTreeRenderer, render_tree
 
 
 class CityForecast(BaseModel):
@@ -70,8 +72,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    flow = rflow.Flow(
-        rflow.OpenAIClient(args.model),
+    flow = Flow(
+        OpenAIClient(args.model),
         max_depth=args.max_depth,
         max_iters=args.max_iters,
     )
@@ -83,18 +85,17 @@ def main() -> None:
     )
 
     graph = flow.start(
-        query,
+        Graph(query=query),
         {"trip_brief": TRIP_BRIEF},
         output_schema=PackingPlan,
     )
 
-    from rflow.utils.viz import live_view
+    async def drive() -> None:
+        renderer = LiveTreeRenderer()
+        async for event in flow.run_streaming(graph):
+            renderer.handle(event, graph)
 
-    with live_view() as view:
-        view(graph)
-        while not graph.finished:
-            graph = flow.step(graph)
-            view(graph)
+    asyncio.run(drive())
 
     plan = PackingPlan.model_validate_json(graph.result())
 
@@ -106,11 +107,13 @@ def main() -> None:
     print(graph.result())
 
     print("\nTree:")
-    print(graph.tree())
+    print(render_tree(graph))
 
     if args.out_dir:
         path = graph.save(Path(args.out_dir))
         print(f"\nGraph saved to {path}")
+
+    flow.close_repls(graph.graph_id)
 
 
 if __name__ == "__main__":

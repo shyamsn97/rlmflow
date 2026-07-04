@@ -1,4 +1,4 @@
-"""Inject alternate prompts into a real word-search supervisor trace.
+"""Inject alternate prompts into a minimal word-search supervisor trace.
 
 Prerequisite:
     python examples/control/injection/word_search.py
@@ -13,8 +13,8 @@ loads that run and creates two edited copies, replacing real supervising nodes:
    all-direction scanner instead of reconciling direction children.
 
 The replacements are operator prompts, not pre-written solution code or mocked
-results. Each edited graph is a pure value (``graph.replace_node`` returns a
-copy) continued by its own :class:`rflow.Flow` via ``graph = flow.step(graph)``.
+results. Each edited graph is an isolated fork continued by its own minimal
+:class:`Flow`.
 
 Both finished variants are saved as run directories beside the baseline, at
 ``examples/_runs/word-search/variant-cols/`` and ``.../variant-root/``.
@@ -23,12 +23,14 @@ Both finished variants are saved as run directories beside the baseline, at
 from __future__ import annotations
 
 import argparse
+import asyncio
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel
 
-import rflow
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal import ExecOutput, Flow, Graph, SupervisingOutput
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:
@@ -96,11 +98,11 @@ Instead of delegating to sub-agents, write a backtracking algorithm to find the 
 """
 
 
-def client_for_model(model: str) -> rflow.LLMClient:
+def client_for_model(model: str):
     return (
-        rflow.AnthropicClient(model)
+        AnthropicClient(model)
         if model.startswith("claude")
-        else rflow.OpenAIClient(model)
+        else OpenAIClient(model)
     )
 
 
@@ -112,12 +114,12 @@ def default_source() -> Path:
     return word_search_runs_dir() / "baseline"
 
 
-def summarize(label: str, graph: rflow.Graph) -> None:
+def summarize(label: str, graph: Graph) -> None:
     current = graph.current()
     print(f"\n{label}")
     print("-" * len(label))
     print(f"root current: {current.type if current else '<empty>'}")
-    if isinstance(current, rflow.SupervisingOutput):
+    if isinstance(current, SupervisingOutput):
         print(f"waiting_on: {', '.join(current.waiting_on)}")
     print(f"children: {', '.join(graph.children) or '<none>'}")
     if graph.finished:
@@ -136,7 +138,7 @@ def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
     )
 
 
-def validate_result(label: str, graph: rflow.Graph) -> None:
+def validate_result(label: str, graph: Graph) -> None:
     if not graph.finished:
         print(f"\n{label} validation: skipped (graph is not finished)")
         return
@@ -161,11 +163,34 @@ def validate_result(label: str, graph: rflow.Graph) -> None:
     assert ok
 
 
-def supervising_node(graph: rflow.Graph, agent_id: str) -> rflow.Node:
-    matches = graph.all_nodes.where(
-        lambda n: n.agent_id == agent_id and n.type == "supervising_output"
-    )
+def supervising_node(graph: Graph, agent_id: str) -> SupervisingOutput:
+    matches = [
+        node
+        for node in graph[agent_id].nodes
+        if isinstance(node, SupervisingOutput)
+    ]
     return matches[-1]
+
+
+def replace_supervisor_with_prompt(
+    graph: Graph,
+    agent_id: str,
+    prompt: str,
+) -> Graph:
+    variant = graph.fork(session="isolated")
+    old = supervising_node(variant, agent_id)
+    target = variant[agent_id]
+    target.nodes = target.nodes[: old.seq]
+    target.commit(
+        ExecOutput(
+            output=prompt,
+            content=f"REPL output for previous block:\n{prompt}",
+        )
+    )
+    for child_id in old.waiting_on:
+        if child_id in target.children:
+            variant.remove_child(child_id, parent_agent_id=agent_id)
+    return variant
 
 
 def main() -> None:
@@ -180,59 +205,57 @@ def main() -> None:
     parser.add_argument("--model", default="gpt-5-mini")
     args = parser.parse_args()
 
-    graph = rflow.Graph.load(args.source.resolve())
+    graph = Graph.load(args.source.resolve())
     summarize("Loaded real word-search run", graph)
 
-    # Each edit returns a fresh, independent graph value.
-    cols_graph = graph.replace_node(
-        supervising_node(graph, "root.cols"),
-        rflow.ExecOutput(
-            output=COLS_FUNCTION_PROMPT,
-            content=f"REPL output for previous block:\n{COLS_FUNCTION_PROMPT}",
-        ),
-        truncate="descendants",
+    # Each edit starts from a fresh, independent graph value.
+    cols_graph = replace_supervisor_with_prompt(
+        graph,
+        "root.cols",
+        COLS_FUNCTION_PROMPT,
     )
-    root_graph = graph.replace_node(
-        supervising_node(graph, "root"),
-        rflow.ExecOutput(
-            output=ROOT_DIRECT_SCAN_PROMPT,
-            content=f"REPL output for previous block:\n{ROOT_DIRECT_SCAN_PROMPT}",
-        ),
-        truncate="descendants",
+    root_graph = replace_supervisor_with_prompt(
+        graph,
+        "root",
+        ROOT_DIRECT_SCAN_PROMPT,
     )
 
-    def new_flow() -> rflow.Flow:
-        return rflow.Flow(
+    def new_flow() -> Flow:
+        return Flow(
             client_for_model(args.model),
             max_depth=2,
-            max_iters=None,
-            child_max_iters=None,
+            max_iters=30,
         )
 
     # One Flow per variant; step active variants through one shared parallel batch.
     cols_flow = new_flow()
     root_flow = new_flow()
 
-    while not (cols_graph.finished and root_graph.finished):
-        active: list[tuple[rflow.Flow, rflow.Graph]] = []
-        if not cols_graph.finished:
-            active.append((cols_flow, cols_graph))
-        if not root_graph.finished:
-            active.append((root_flow, root_graph))
+    async def step_variants() -> None:
+        async def step(flow: Flow, graph: Graph) -> None:
+            try:
+                await flow.step(graph, until="node")
+            except RuntimeError as exc:
+                if "run is already active" not in str(exc):
+                    raise
+                await flow.step(until="node")
 
-        next_graphs = rflow.parallel_step(active)
-        i = 0
-        if not cols_graph.finished:
-            cols_graph = next_graphs[i]
-            i += 1
-        if not root_graph.finished:
-            root_graph = next_graphs[i]
-        cols_state = cols_graph.current().type if cols_graph.current() else "<empty>"
-        root_state = root_graph.current().type if root_graph.current() else "<empty>"
-        print(f"step: Variation A={cols_state}, Variation B={root_state}")
+        while not (cols_graph.finished and root_graph.finished):
+            active: list[tuple[Flow, Graph]] = []
+            if not cols_graph.finished:
+                active.append((cols_flow, cols_graph))
+            if not root_graph.finished:
+                active.append((root_flow, root_graph))
 
-    cols_flow.close()
-    root_flow.close()
+            await asyncio.gather(*(step(flow, graph) for flow, graph in active))
+            cols_state = cols_graph.current().type if cols_graph.current() else "<empty>"
+            root_state = root_graph.current().type if root_graph.current() else "<empty>"
+            print(f"step: Variation A={cols_state}, Variation B={root_state}")
+
+    asyncio.run(step_variants())
+
+    cols_flow.close_repls(cols_graph.graph_id)
+    root_flow.close_repls(root_graph.graph_id)
 
     out = args.out.resolve()
     cols_dir = cols_graph.save(out / "variant-cols")

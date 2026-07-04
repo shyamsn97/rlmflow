@@ -11,7 +11,7 @@ That route is intentionally plausible but more complicated than necessary. It
 creates a real root ``SupervisingOutput`` that ``inject_variants.py`` can later
 replace with a direct scanner route. The finished run is saved as a run
 directory (``graph.json`` manifest plus per-agent logs nested under
-``agents/``) that ``inject_variants.py`` loads with ``rflow.Graph.load``.
+``agents/``) that ``inject_variants.py`` loads with minimal ``Graph.load``.
 
 Run:
     export OPENAI_API_KEY=...
@@ -21,13 +21,14 @@ Run:
 from __future__ import annotations
 
 import argparse
+import asyncio
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel
 
-import rflow
-from rflow.utils.viz import live_view
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal import Flow, render_tree
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:
@@ -113,9 +114,9 @@ You can aproach this problem with the following strategy:
 
 def client_for_model(model: str):
     return (
-        rflow.AnthropicClient(model)
+        AnthropicClient(model)
         if model.startswith("claude")
-        else rflow.OpenAIClient(model)
+        else OpenAIClient(model)
     )
 
 
@@ -131,19 +132,20 @@ def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
 
 
 def run(model: str, out_dir: Path) -> None:
-    flow = rflow.Flow(
+    flow = Flow(
         client_for_model(model),
         max_depth=2,
-        child_max_iters=10,
     )
 
     graph = flow.start(QUERY, {"grid": GRID}, output_schema=WordSearchResult)
-    with live_view() as view:
-        view(graph)
-        while not graph.finished:
-            graph = flow.step(graph)
-            view(graph)
-    flow.close()
+    print(render_tree(graph))
+
+    async def run_to_done() -> None:
+        async for _event in flow.run_streaming(graph):
+            print(render_tree(graph))
+
+    asyncio.run(run_to_done())
+    flow.close_repls(graph.graph_id)
 
     result = WordSearchResult.model_validate_json(graph.result())
     actual = {_hit_key(hit) for hit in result.found}

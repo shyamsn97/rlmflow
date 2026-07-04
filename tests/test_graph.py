@@ -184,6 +184,18 @@ def test_copy_is_deep_and_independent():
     assert g["root.child"].nodes  # original child untouched
 
 
+def test_snapshot_is_deep_and_independent():
+    g = _delegated_graph()
+    snapshot = g.snapshot()
+    assert snapshot is not g
+    assert snapshot.to_dict() == g.to_dict()
+
+    snapshot.nodes.append(UserQuery(content="mutated"))
+    snapshot.children["root.child"].nodes.clear()
+    assert len(g.nodes) != len(snapshot.nodes)
+    assert g["root.child"].nodes
+
+
 def test_shallow_copy_shares_node_list():
     g = _delegated_graph()
     shallow = g.copy(deep=False)

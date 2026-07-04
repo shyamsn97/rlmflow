@@ -13,7 +13,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from rflow.clients.llm import LLMClient, LLMUsage
-from rflow.graph import ChildHandle, Graph, LLMOutput, SupervisingOutput
+from rflow.graph import ChildHandle, Graph, LLMOutput
 from rflow.graph.actions import Action
 from rflow.runtime.context import EngineContext
 from rflow.runtime.runtime import ReplBackend
@@ -195,10 +195,7 @@ class BaseFlow(ABC):
         self,
         agent: Graph,
         repl: ReplBackend,
-        suspended: bool,
         payload: object,
-        *,
-        resumed_from: list[str] | None = None,
     ) -> None:
         """Record a code observation or error on an agent."""
 
@@ -223,10 +220,6 @@ class BaseFlow(ABC):
     @abstractmethod
     def step_exec(self, agent: Graph, llm_output: LLMOutput) -> None:
         """Execute an Exec action."""
-
-    @abstractmethod
-    def step_after_supervising(self, agent: Graph, sup: SupervisingOutput) -> None:
-        """Resume an agent after children finish."""
 
 
 __all__ = ["BaseFlow", "BaseOutputParser"]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from rflow import (
@@ -134,26 +136,26 @@ def test_partition_skips_private_and_noncallable():
 # ── builtins factories ──────────────────────────────────────────────────
 
 
-def _run_launch(coro, child_results: list | None = None):
-    try:
-        request = coro.send(None)
-    except StopIteration as done:
-        return done.value
-    assert isinstance(request, WaitRequest)
-    try:
-        coro.send(child_results or [])
-    except StopIteration as done:
-        return done.value
-    raise AssertionError("launch_subagents coroutine did not finish after results")
+def _graph_wait(child_results: list | None = None, requests: list | None = None):
+    async def wait(request: WaitRequest):
+        if requests is not None:
+            requests.append(request)
+        return child_results or []
+
+    return wait
+
+
+def _run_launch(coro):
+    return asyncio.run(coro)
 
 
 def test_make_launch_subagents_spec_validation():
-    import asyncio
-
     def fake_spawn(**spec):
         return ChildHandle(spec["name"])
 
-    launch = make_launch_subagents(fake_spawn, max_query_chars=2_000)
+    launch = make_launch_subagents(
+        fake_spawn, graph_wait=_graph_wait(["a", "b"]), max_query_chars=2_000
+    )
     with pytest.raises(TypeError, match="list of dict"):
         asyncio.run(launch("notalist"))
     with pytest.raises(TypeError, match="every spec to be a dict"):
@@ -168,10 +170,7 @@ def test_make_launch_subagents_spec_validation():
         asyncio.run(launch([{"name": "x", "query": "q", "inputs": {"query": "bad"}}]))
     with pytest.raises(ValueError, match="duplicate child name"):
         asyncio.run(launch([{"name": "x", "query": "q"}, {"name": "x", "query": "q"}]))
-    out = _run_launch(
-        launch([{"name": "a", "query": "q"}, {"name": "b", "query": "q"}]),
-        ["a", "b"],
-    )
+    out = _run_launch(launch([{"name": "a", "query": "q"}, {"name": "b", "query": "q"}]))
     assert out == ["a", "b"]
 
 
@@ -233,8 +232,7 @@ def test_history_reflects_live_trajectory():
 
 
 def test_make_history_tracks_live_graph_across_set_graph():
-    # make_history resolves the agent by id, so the functional step API
-    # (graph = flow.step(graph), which deep-copies through set_graph) is
+    # make_history resolves the agent by id, so adopting an override graph is
     # reflected with no rebinding of the REPL's HISTORY.
     flow = make_flow(DONE_OK)
     graph = flow.start("q")
@@ -252,7 +250,7 @@ def test_static_system_prompt_content():
     assert "llm_query_batched" not in SYSTEM_PROMPT
     assert "HISTORY" not in SYSTEM_PROMPT
     assert "launch_subagents" in SYSTEM_PROMPT
-    assert "inside an `async def` helper" in SYSTEM_PROMPT
+    assert "async clients and helpers can be used directly" in SYSTEM_PROMPT
     assert "not inside a function" not in SYSTEM_PROMPT
     assert "an over-long `query` is rejected" in SYSTEM_PROMPT
     assert "Never dump large `INPUTS` values" in SYSTEM_PROMPT
@@ -697,11 +695,12 @@ def test_launch_subagents_mixes_refusal_strings_and_handles():
     def fake_spawn(**spec):
         return next(calls)
 
-    launch = make_launch_subagents(fake_spawn, max_query_chars=2_000)
-    out = _run_launch(
-        launch([{"name": "ok", "query": "a"}, {"name": "refused", "query": "b"}]),
-        ["result:root.ok"],
+    launch = make_launch_subagents(
+        fake_spawn,
+        graph_wait=_graph_wait(["result:root.ok"]),
+        max_query_chars=2_000,
     )
+    out = _run_launch(launch([{"name": "ok", "query": "a"}, {"name": "refused", "query": "b"}]))
     # handle slot gets the awaited result; refusal slot keeps the string.
     assert out == ["result:root.ok", "refused: max depth"]
 

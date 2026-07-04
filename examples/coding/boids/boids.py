@@ -13,6 +13,7 @@ artifacts and trajectories can be compared directly:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import inspect
 import os
 import shutil
@@ -47,12 +48,12 @@ def pushd(path: Path) -> Iterator[None]:
 
 
 def build_rflow_llm(model: str):
-    import rflow
+    from rflow.clients import AnthropicClient, OpenAIClient
 
     return (
-        rflow.AnthropicClient(model)
+        AnthropicClient(model)
         if model.startswith("claude")
-        else rflow.OpenAIClient(model)
+        else OpenAIClient(model)
     )
 
 
@@ -103,15 +104,14 @@ def run_rflow(
     max_concurrency: int,
     no_viz: bool,
 ) -> None:
-    import rflow
-    # from rflow.tools import FILE_TOOLS
+    from rflow.minimal import FILE_TOOLS, Flow, Graph, LiveTreeRenderer, LocalRuntime
 
     reset_run_dir(run_dir, force=True)
     (run_dir / "task.txt").write_text(TASK)
 
-    runtime = rflow.LocalRuntime(working_directory=run_dir)
-    # runtime.register_tools(FILE_TOOLS)
-    flow = rflow.Flow(
+    runtime = LocalRuntime(working_directory=run_dir)
+    runtime.register_tools(FILE_TOOLS)
+    flow = Flow(
         build_rflow_llm(model),
         llm_clients={"fast": build_rflow_llm(fast_model)},
         runtime=runtime,
@@ -122,19 +122,15 @@ def run_rflow(
 
     print(f"\n=== rflow run ===\nworkdir: {run_dir}\nmodel: {model}\n")
     try:
-        graph = flow.start(TASK, output_schema=BoidsSimulation)
-        if no_viz:
-            while not graph.finished:
-                graph = flow.step(graph)
-        else:
-            from rflow.utils.viz import live_view
+        graph = flow.start(Graph(query=TASK, output_schema=BoidsSimulation))
 
-            with live_view() as view:
-                view(graph)
-                while not graph.finished:
-                    graph = flow.step(graph)
-                    graph.save(run_dir / "graph")
-                    view(graph)
+        async def drive() -> None:
+            renderer = LiveTreeRenderer(clear=not no_viz)
+            async for event in flow.run_streaming(graph):
+                graph.save(run_dir / "graph")
+                renderer.handle(event, graph)
+
+        asyncio.run(drive())
 
         result = graph.result() or ""
         (run_dir / "response.txt").write_text(str(result))
@@ -143,7 +139,7 @@ def run_rflow(
         print(result or "(no result)")
         print(f"\nrflow graph: {graph_dir}")
     finally:
-        flow.close()
+        flow.close_repls()
 
     print("\nrflow files:")
     for item in summarize_files(run_dir):

@@ -134,77 +134,48 @@ including `ruff check .`, then installs the package.
 ## Quick start
 
 This example builds a simple coding agent with file tools in a local working
-directory. See [`examples/notebooks/coding_agent.ipynb`](./examples/notebooks/coding_agent.ipynb)
-for the notebook version.
+directory. See [`examples/coding/agent.py`](./examples/coding/agent.py) for the
+full interactive version.
 
 ```python
 from pathlib import Path
 
-import rflow
-from rflow.tools import FILE_TOOLS
-from rflow.utils.viewer import open_viewer
+import asyncio
+
+from rflow.clients import OpenAIClient
+from rflow.minimal import FILE_TOOLS, Flow, Graph, LocalRuntime, open_viewer, render_tree
 
 workdir = Path("examples/_runs/quickstart")
-runtime = rflow.LocalRuntime(working_directory=workdir)
+runtime = LocalRuntime(working_directory=workdir)
 runtime.register_tools(FILE_TOOLS)
 
-# Sandbox agent code inside Docker instead: drop-in replacement, same interface.
-# Build the image once with `docker build -t rlmflow:local .`.
-# runtime = rflow.DockerRuntime(
-#     "rlmflow:local",
-#     working_directory=workdir,
-#     mounts={workdir: "/workspace"},
-#     workdir="/workspace",
-# )
-# runtime.register_tools(FILE_TOOLS)
-
-agent = rflow.Flow(
-    rflow.OpenAIClient(model="gpt-5"),
+flow = Flow(
+    OpenAIClient(model="gpt-5"),
     runtime=runtime,
     max_depth=2,
     max_iters=20,
-    child_max_iters=20,
-    llm_clients={"fast": rflow.OpenAIClient(model="gpt-5-mini")},
+    llm_clients={"fast": OpenAIClient(model="gpt-5-mini")},
 )
 
 query = "Build a Python text-based adventure game with combat and inventory."
-graph = agent.start(query)
-while not graph.finished:
-    graph = agent.step(graph)
-    print(graph.tree())
+graph = flow.start(Graph(query=query))
+
+async def drive() -> None:
+    async for _event in flow.run_streaming(graph):
+        print(render_tree(graph))
+
+asyncio.run(drive())
 
 print(graph.result())
 graph.save(workdir / "graph")
-open_viewer(workdir / "graph")
+open_viewer(workdir / "graph", launch=False)
 ```
 
-`Flow` is configured directly: `max_depth`, `max_iters`, `child_max_iters`,
-`max_concurrency`, `llm_max_concurrency`, `max_budget`, `max_messages`, and
-`eager_children` are constructor kwargs. Normal agent LLM turns and
-`llm_query_batched(...)` share the same `LLMChannel`, so concurrency and token
-usage accounting are centralized.
-
-To let child agents drain work-conservingly after a parent reaches its
-delegation wait (`await launch_subagents([...])`), enable `eager_children`:
-
-```python
-agent = rflow.Flow(
-    rflow.OpenAIClient(model="gpt-5"),
-    runtime=runtime,
-    max_depth=2,
-    child_max_iters=20,
-    max_concurrency=8,
-    llm_max_concurrency=4,
-    eager_children=True,
-)
-```
-
-With `eager_children=False`, a fast child that finishes `task_1` waits for the
-rest of that parallel step before it can start `task_2`. With
-`eager_children=True`, the fast child's `task_2` can start while a slow sibling
-is still running `task_1`. See
-[`examples/control/delegation/eager_children.py`](./examples/control/delegation/eager_children.py)
-for a deterministic timestamped demo.
+With the minimal event loop, delegated children fan out through the shared async
+pool by default. See
+[`examples/control/delegation/step_until.py`](./examples/control/delegation/step_until.py)
+for a deterministic demo of `Flow.step(..., until=...)` boundaries while child
+work runs concurrently.
 
 A saved run is a directory rooted at `graph.json` plus `agents/` logs. Reopen it
 later with `Graph.load(path)` or `open_viewer(path)`.
@@ -337,7 +308,8 @@ example in [`examples/control/graph_controller_agent.py`](examples/control/graph
 
 ## Rich visualization
 
-See [notebook](./examples/notebooks/viz_walkthrough.ipynb) for a full showcase of visualization utilities.
+See [`examples/view_demo.py`](./examples/view_demo.py) for a minimal graph
+viewer demo.
 
 Because the run is a typed graph, every visualization is just a render of
 that graph. View either a saved run directory, a single `Graph`, or a list of
@@ -649,19 +621,19 @@ Add `--include-optional`, `--include-live`, `--include-sandbox`, or
 | Example | What it shows |
 |---|---|
 | [`showcase.py`](examples/showcase.py) | Functional stepping, snapshots, save/load, and live terminal visualization. |
-| [`tui_chat.py`](examples/tui_chat.py) | Full-screen Textual chat UI with query/context inputs and live graph tabs. |
+| [`tui_chat.py`](examples/tui_chat.py) | Minimal Textual chat UI with live `render_tree` updates. |
 | [`structured_output.py`](examples/structured_output.py) | Root and child results validated with JSON Schema / Pydantic. |
-| [`drop_in_llm.py`](examples/drop_in_llm.py) | `Flow` as an `LLMClient`, including nested flows. |
+| [`drop_in_llm.py`](examples/drop_in_llm.py) | Minimal `FlowLLM` adapter, including nested flows. |
 | [`skills.py`](examples/skills.py) | On-disk skill files loaded through a dynamic prompt section. |
-| [`dspy_drop_in.py`](examples/providers/dspy_drop_in.py) | Use a `Flow` agent as the LM behind a DSPy program. |
+| [`dspy_drop_in.py`](examples/providers/dspy_drop_in.py) | Use a minimal `Flow` agent as the LM behind a DSPy program. |
 | [`mcp_weather.py`](examples/providers/mcp_weather.py) | Start a local MCP weather server, delegate city forecasts, and combine advice. |
 | [`tinker_agent.py`](examples/providers/tinker_agent.py) | Run the live terminal graph view with `TinkerClient` inference. |
-| [`sandboxes/`](examples/sandboxes/) | Build a small web app while Python code runs inside Modal, E2B, or Daytona. |
+| [`sandboxes/`](examples/sandboxes/) | Build a small web app while Python code runs inside Docker or Modal. |
 | [`coding/agent.py`](examples/coding/agent.py) | Interactive coding agent that writes and edits files in a working directory. |
 | [`needle/haystack.py`](examples/needle/haystack.py) | Needle-in-a-haystack over a massive in-memory `INPUTS["haystack"]`. |
 | [`needle/filesystem.py`](examples/needle/filesystem.py) | Needle-in-a-haystack across many files with `FILE_TOOLS` and runtime working directories. |
 | [`summarizer.py`](examples/summarizer.py) | Recursive map-reduce summarization over a long document. |
-| [`eager_children.py`](examples/control/delegation/eager_children.py) | `eager_children=True` vs `False` — how child scheduling overlaps. |
+| [`step_until.py`](examples/control/delegation/step_until.py) | Minimal `Flow.step(..., until=...)` boundaries while delegated child work fans out. |
 | [`graph_controller_agent.py`](examples/control/graph_controller_agent.py) | Live controller agent creates a diversified worker pool with `create_worker(...)`, inspects query/graph diversity, advances named worker graphs, and saves all runs under `examples/_runs/graph_controller_runs/`. |
 | [`control/injection/`](examples/control/injection/) | Generate a baseline run, edit copies with graph injection/replacement, and continue variants. |
 | [`fork_repair.py`](examples/control/branching/fork_repair.py) | Fork graph/workdir snapshots into independent repair branches and compare results. |
@@ -669,10 +641,7 @@ Add `--include-optional`, `--include-live`, `--include-sandbox`, or
 | [`autoresearch/`](examples/autoresearch/) | TinyStories autoresearch loop with custom `@tool`s, delegation, and Modal GPU trials. |
 | [`graph/`](examples/graph/) | Offline tour of the `Graph` API: query, navigate, mutate, save/load, timeline retrace, fork, render. |
 | [`run_examples.py`](examples/run_examples.py) | Manifest-driven smoke runner for offline, optional, live, sandbox, and manual examples. |
-| [`view_demo.py`](examples/view_demo.py) | Build synthetic `Graph` snapshots and launch the Gradio viewer. |
-| [`notebooks/coding_agent.ipynb`](examples/notebooks/coding_agent.ipynb) | Build the agent, run the boids task end-to-end, and inspect the saved run/viewer. |
-| [`notebooks/viz_walkthrough.ipynb`](examples/notebooks/viz_walkthrough.ipynb) | Visualization helpers against a saved fixture. |
-| [`notebooks/node_basics.ipynb`](examples/notebooks/node_basics.ipynb) | `Graph` query API tour. |
+| [`view_demo.py`](examples/view_demo.py) | Build synthetic minimal `Graph` snapshots and launch the lightweight viewer. |
 
 ## Benchmarks
 

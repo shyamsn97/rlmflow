@@ -534,16 +534,18 @@ def test_set_graph_discards_stale_repl_without_advancing():
     assert [node.type for node in current.nodes] == ["user_query"]
 
 
-def test_step_returns_snapshot_not_live_graph():
+def test_step_returns_live_graph_and_snapshot_is_explicit():
     flow = Flow(StubLLM(), max_depth=0)
     graph = flow.start("q")
 
     advanced = flow.step(graph)
 
-    assert advanced is not flow.graph
-    assert advanced.to_dict() == flow.graph.to_dict()
+    assert advanced is flow.graph
+    snapshot = advanced.snapshot()
+    assert snapshot is not flow.graph
+    assert snapshot.to_dict() == flow.graph.to_dict()
     flow.graph.nodes.append(UserQuery(content="mutated live graph"))
-    assert advanced.to_dict() != flow.graph.to_dict()
+    assert snapshot.to_dict() != flow.graph.to_dict()
 
 
 def test_step_preserves_repl_for_same_graph_history():

@@ -53,7 +53,16 @@ class Example:
 
 EXAMPLES: list[Example] = [
     Example("controller-injection", "examples/control/controller_injection.py"),
-    Example("eager-children", "examples/control/delegation/eager_children.py"),
+    Example(
+        "step-until",
+        "examples/control/delegation/step_until.py",
+        category="live",
+        args=("--max-iters", "8", "--out-dir", "{tmp}/step-until"),
+        env=("OPENAI_API_KEY",),
+        modules=("openai",),
+        timeout=300,
+        note="uses a live model to demonstrate minimal step(..., until=...) boundaries",
+    ),
     Example("llm-query-batched", "examples/llm_query_batched.py"),
     Example(
         "structured-output",
@@ -100,9 +109,8 @@ EXAMPLES: list[Example] = [
     Example(
         "view-demo",
         "examples/view_demo.py",
-        category="manual",
-        modules=("gradio", "plotly"),
-        note="opens the interactive viewer",
+        args=("--no-launch",),
+        note="opens a minimal render_tree-backed viewer or prints a fallback",
     ),
     Example(
         "tui-chat",
@@ -155,6 +163,19 @@ EXAMPLES: list[Example] = [
         env=("OPENAI_API_KEY",),
         modules=("openai",),
         timeout=300,
+    ),
+    Example(
+        "needle-minimal-filesystem",
+        "examples/needle/minimal_filesystem.py",
+        category="live",
+        args=(
+            "--num-files", "30", "--lines-per-file", "40", "--max-iters", "8",
+            "--out-dir", "{tmp}/needle-minimal-filesystem",
+        ),
+        env=("OPENAI_API_KEY",),
+        modules=("openai",),
+        timeout=300,
+        note="uses the tiny rflow.minimal graph/event stack with FILE_TOOLS",
     ),
     Example(
         "dspy-drop-in",
@@ -215,21 +236,12 @@ EXAMPLES: list[Example] = [
         note="runs live agents and Modal GPU jobs; may incur Modal costs",
     ),
     Example(
-        "sandbox-e2b",
-        "examples/sandboxes/e2b_agent.py",
+        "sandbox-docker",
+        "examples/sandboxes/docker_agent.py",
         category="sandbox",
-        args=("--max-iters", "2", "--skip-setup"),
-        env=("OPENAI_API_KEY", "E2B_API_KEY"),
-        modules=("e2b", "openai"),
-        timeout=600,
-    ),
-    Example(
-        "sandbox-daytona",
-        "examples/sandboxes/daytona_agent.py",
-        category="sandbox",
-        args=("--max-iters", "2", "--skip-setup"),
-        env=("OPENAI_API_KEY", "DAYTONA_API_KEY"),
-        modules=("daytona", "openai"),
+        args=("--max-iters", "2", "--no-live"),
+        env=("OPENAI_API_KEY",),
+        modules=("openai",),
         timeout=600,
     ),
     Example(

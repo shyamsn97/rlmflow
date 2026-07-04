@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import re
 import shutil
@@ -14,9 +15,19 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import rflow
-from rflow.prompts import DEFAULT_BUILDER
-from rflow.tools import FILE_TOOLS, tool
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal import (
+    DEFAULT_BUILDER,
+    DockerRuntime,
+    FILE_TOOLS,
+    Flow,
+    Graph,
+    LiveTreeRenderer,
+    LocalRuntime,
+    SubprocessRuntime,
+    render_tree,
+    tool,
+)
 
 try:  # Allow both `python examples/autoresearch/run.py` and imports.
     from .modal_runner import ModalConfig, preflight, submit, validate_gpu
@@ -490,7 +501,6 @@ def run(args: argparse.Namespace) -> None:
         "submitted_trial_timeout_s": args.submitted_trial_timeout_s,
         "agent_runtime": args.agent_runtime,
         "docker_image": args.docker_image,
-        "eager_children": args.eager_children,
         "preflight": preflight(modal_config),
         "run_id": state.run_id,
     }
@@ -501,14 +511,12 @@ def run(args: argparse.Namespace) -> None:
     runtime.register_tools(FILE_TOOLS)
     runtime.register_tools(build_autoresearch_tools(state))
 
-    flow = rflow.Flow(
+    flow = Flow(
         build_llm(args.model),
         runtime=runtime,
         max_depth=args.max_depth,
         max_iters=args.max_iters,
-        child_max_iters=args.child_iters,
         max_concurrency=args.parallel,
-        eager_children=args.eager_children,
         prompt_builder=build_prompt_builder(),
     )
 
@@ -524,39 +532,39 @@ planner batch, and print results. Continue until
 submission_status()["remaining_submissions"] == 0.
 """
     graph_dir = args.out / "graph"
-    graph = flow.start(query, inputs={"task_instructions": (example_dir / "program.md").read_text()})
+    graph = flow.start(
+        Graph(query=query),
+        inputs={"task_instructions": (example_dir / "program.md").read_text()},
+    )
     try:
         graph.save(graph_dir)
-        if args.no_live:
-            while not graph.finished:
-                graph = flow.step(graph)
-                graph.save(graph_dir)
-                print(graph.tree(), flush=True)
-        else:
-            from rflow.utils.viz import live_view
+        renderer = LiveTreeRenderer(clear=not args.no_live)
 
-            with live_view() as view:
-                view(graph)
-                while not graph.finished:
-                    graph = flow.step(graph)
-                    graph.save(graph_dir)
-                    view(graph)
+        async def drive() -> None:
+            async for event in flow.run_streaming(graph):
+                graph.save(graph_dir)
+                if args.no_live:
+                    print(render_tree(graph), flush=True)
+                else:
+                    renderer.handle(event, graph)
+
+        asyncio.run(drive())
         print(graph.result())
         write_run_report(state, args.out)
     finally:
-        flow.close()
+        flow.close_repls(graph.graph_id)
 
 
 def build_llm(model: str):
-    return rflow.AnthropicClient(model) if model.startswith("claude") else rflow.OpenAIClient(model)
+    return AnthropicClient(model) if model.startswith("claude") else OpenAIClient(model)
 
 
 def build_runtime(kind: str, docker_image: str, workdir: Path):
     if kind == "docker":
-        return rflow.DockerRuntime(docker_image, working_directory=workdir)
+        return DockerRuntime(docker_image, working_directory=workdir)
     if kind == "local":
-        return rflow.LocalRuntime(working_directory=workdir)
-    return rflow.SubprocessRuntime(working_directory=workdir)
+        return LocalRuntime(working_directory=workdir)
+    return SubprocessRuntime(working_directory=workdir)
 
 
 def write_run_report(state: AutoresearchState, out_dir: Path) -> None:
@@ -658,7 +666,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parallel", type=int, default=4)
     parser.add_argument("--max-submissions", type=int, default=16)
     parser.add_argument("--max-iters", type=int, default=40)
-    parser.add_argument("--child-iters", type=int, default=8)
     parser.add_argument("--max-depth", type=int, default=2)
     parser.add_argument("--app-name", default="rlmflow-autoresearch")
     parser.add_argument("--modal-timeout-s", type=int, default=1200)
@@ -668,8 +675,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--docker-image", default="rlmflow:local")
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--no-live", action="store_true")
-    parser.add_argument("--eager-children", dest="eager_children", action="store_true", default=True)
-    parser.add_argument("--no-eager-children", dest="eager_children", action="store_false")
     args = parser.parse_args()
     if args.out is None:
         args.out = default_out_dir()

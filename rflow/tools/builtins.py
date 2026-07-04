@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Awaitable, Callable
 from hashlib import blake2s
 from typing import TYPE_CHECKING, Any
 
@@ -26,8 +27,6 @@ from rflow.tools.registry import HIDDEN_REPL_TOOL_NAMES
 from rflow.tools.tools import get_tool_metadata, tool
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from rflow.graph import Graph
 
 #: Default ceiling (in characters) for a child agent's ``query`` string. The
@@ -101,7 +100,11 @@ def make_spawn_child(flow: BaseFlow, engine_context: EngineContext):
 
 
 def make_launch_subagents(
-    spawn_child, *, max_query_chars: int = DEFAULT_MAX_QUERY_CHARS
+    launch_children: (
+        Callable[[list[dict[str, Any]], list[str]], Awaitable[list[object]]] | None
+    ),
+    *,
+    max_query_chars: int = DEFAULT_MAX_QUERY_CHARS,
 ):
     """Build the public ``launch_subagents(specs)`` launcher.
 
@@ -111,68 +114,111 @@ def make_launch_subagents(
     """
 
     @tool(
-        "Launch one or many sub-agents in parallel and wait for all. Must be "
-        "awaited at the top level. specs is a list of dicts; each requires a "
+        "Launch one or many sub-agents in parallel and wait for all. Await from "
+        "normal REPL async code. specs is a list of dicts; each requires a "
         "short 'query' (the child's task; put bulk data in 'inputs', not here) "
         "and may set 'name', 'model', 'inputs', and 'output_schema'. "
         "Returns child results in spec order."
     )
     async def launch_subagents(specs):
+        launch_specs, launch_names = _validate_launch_specs(specs, max_query_chars)
+        if launch_children is None:
+            raise RuntimeError(
+                "launch_subagents(...) is not bound to the Flow scheduler"
+            )
+        return await launch_children(launch_specs, launch_names)
+
+    return launch_subagents
+
+
+def _validate_launch_specs(
+    specs: object, max_query_chars: int
+) -> tuple[list[dict[str, Any]], list[str]]:
+    if not isinstance(specs, list):
+        raise TypeError("launch_subagents(...) takes a list of dict specs")
+    if not specs:
+        raise ValueError("launch_subagents(...) requires at least one spec")
+    launch_specs: list[dict[str, Any]] = []
+    launch_names: list[str] = []
+    seen_names: set[str] = set()
+    for spec in specs:
+        if not isinstance(spec, dict):
+            raise TypeError("launch_subagents(...) requires every spec to be a dict")
+        if "query" not in spec:
+            raise KeyError("launch_subagents(...) spec missing required 'query'")
+        query = spec["query"]
+        if not isinstance(query, str):
+            raise TypeError(
+                "launch_subagents(...) spec 'query' must be a str; got "
+                f"{type(query).__name__}"
+            )
+        if len(query) > max_query_chars:
+            raise ValueError(
+                f"launch_subagents(...) spec 'query' is too long "
+                f"({len(query)} chars > {max_query_chars} limit). 'query' "
+                "must be a short instruction. Move the large/helpful payload "
+                "(context, data, specs, file contents) into 'inputs' (a "
+                "str -> str dict) and have 'query' refer to it by key, e.g. "
+                "\"Answer INPUTS['question'] using INPUTS['corpus']\"."
+            )
+        inputs = spec.get("inputs")
+        if isinstance(inputs, dict) and "query" in inputs:
+            raise ValueError(
+                "launch_subagents(...) spec inputs must not contain reserved "
+                "key 'query'; put the child task in the top-level spec "
+                "'query' and use another input key for supporting text"
+            )
+        name = spec.get("name", "subagent")
+        if not isinstance(name, str):
+            raise TypeError(
+                "launch_subagents(...) spec 'name' must be a str; got "
+                f"{type(name).__name__}"
+            )
+        if name in seen_names:
+            raise ValueError(
+                f"launch_subagents(...) duplicate child name {name!r}; "
+                "choose a unique 'name' for each spec"
+            )
+        seen_names.add(name)
+        clean = dict(spec)
+        clean["name"] = name
+        launch_specs.append(clean)
+        launch_names.append(name)
+    return launch_specs, launch_names
+
+
+def make_graph_wait_launch_subagents(
+    spawn_child,
+    *,
+    graph_wait: Callable[[WaitRequest], Awaitable[object]] | None,
+    max_query_chars: int = DEFAULT_MAX_QUERY_CHARS,
+):
+    """Legacy remote launcher until remote async tool calls replace graph_wait."""
+
+    @tool(
+        "Launch one or many sub-agents in parallel and wait for all. Await from "
+        "normal REPL async code. specs is a list of dicts; each requires a "
+        "short 'query' (the child's task; put bulk data in 'inputs', not here) "
+        "and may set 'name', 'model', 'inputs', and 'output_schema'. "
+        "Returns child results in spec order."
+    )
+    async def launch_subagents(specs):
+        clean_specs, clean_names = _validate_launch_specs(specs, max_query_chars)
         if not isinstance(specs, list):
             raise TypeError("launch_subagents(...) takes a list of dict specs")
         if not specs:
             raise ValueError("launch_subagents(...) requires at least one spec")
-        results: list = [None] * len(specs)
+        results: list = [None] * len(clean_specs)
         agent_ids: list[str] = []
         positions: list[int] = []
         launch_specs: list[dict[str, Any]] = []
         launch_names: list[str] = []
-        seen_names: set[str] = set()
-        for i, spec in enumerate(specs):
-            if not isinstance(spec, dict):
-                raise TypeError(
-                    "launch_subagents(...) requires every spec to be a dict"
-                )
-            if "query" not in spec:
-                raise KeyError("launch_subagents(...) spec missing required 'query'")
-            query = spec["query"]
-            if not isinstance(query, str):
-                raise TypeError(
-                    "launch_subagents(...) spec 'query' must be a str; got "
-                    f"{type(query).__name__}"
-                )
-            if len(query) > max_query_chars:
-                raise ValueError(
-                    f"launch_subagents(...) spec 'query' is too long "
-                    f"({len(query)} chars > {max_query_chars} limit). 'query' "
-                    "must be a short instruction. Move the large/helpful payload "
-                    "(context, data, specs, file contents) into 'inputs' (a "
-                    "str -> str dict) and have 'query' refer to it by key, e.g. "
-                    "\"Answer INPUTS['question'] using INPUTS['corpus']\"."
-                )
-            inputs = spec.get("inputs")
-            if isinstance(inputs, dict) and "query" in inputs:
-                raise ValueError(
-                    "launch_subagents(...) spec inputs must not contain reserved "
-                    "key 'query'; put the child task in the top-level spec "
-                    "'query' and use another input key for supporting text"
-                )
-            name = spec.get("name", "subagent")
-            if not isinstance(name, str):
-                raise TypeError(
-                    "launch_subagents(...) spec 'name' must be a str; got "
-                    f"{type(name).__name__}"
-                )
-            if name in seen_names:
-                raise ValueError(
-                    f"launch_subagents(...) duplicate child name {name!r}; "
-                    "choose a unique 'name' for each spec"
-                )
-            seen_names.add(name)
+        for i, spec in enumerate(clean_specs):
+            name = clean_names[i]
             spawned = spawn_child(
                 name=name,
                 query=spec["query"],
-                inputs=inputs,
+                inputs=spec.get("inputs"),
                 model=spec.get("model", "default"),
                 output_schema=spec.get("output_schema"),
                 strict_name=True,
@@ -190,11 +236,17 @@ def make_launch_subagents(
                 launch_specs.append(dict(spec))
                 launch_names.append(str(name))
         if agent_ids:
-            waited = await WaitRequest(
-                agent_ids,
-                launch_id=_launch_id_from_names(launch_names, agent_ids),
-                launch_specs=launch_specs,
-                launch_names=launch_names,
+            if graph_wait is None:
+                raise RuntimeError(
+                    "launch_subagents(...) is not bound to a graph wait bridge"
+                )
+            waited = await graph_wait(
+                WaitRequest(
+                    agent_ids,
+                    launch_id=_launch_id_from_names(launch_names, agent_ids),
+                    launch_specs=launch_specs,
+                    launch_names=launch_names,
+                )
             )
             for pos, result in zip(positions, waited):
                 results[pos] = result

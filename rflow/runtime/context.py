@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,6 +20,9 @@ class EngineContext:
     output_schema: dict[str, Any] | None = None
     done_result: str | None = None
     recovery_launch_id: str | None = None
+    launch_children: (
+        Callable[[list[dict[str, Any]], list[str]], Awaitable[list[object]]] | None
+    ) = None
 
 
 __all__ = ["EngineContext"]

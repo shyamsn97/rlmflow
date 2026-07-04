@@ -254,12 +254,12 @@ def test_live_streams_and_returns_snapshots():
     flow = Flow(ScriptedLLM(_delegating_reply), max_depth=1, max_iters=5)
     flow.start("parent")
     view = viz.LiveView(console=Console(file=io.StringIO()))
-    snapshots = [flow.graph]
+    snapshots = [flow.graph.snapshot()]
     with view:
         view(flow.graph)
         while not flow.graph.finished:
             flow.step()
-            snapshots.append(flow.graph)
+            snapshots.append(flow.graph.snapshot())
             view(flow.graph)
     assert snapshots[-1].result() == "p:child-answer"
 

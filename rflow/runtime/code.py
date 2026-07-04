@@ -1,9 +1,8 @@
 """Static checks on agent-emitted code blocks.
 
-The engine understands graph-aware awaits: ``await launch_subagents(...)`` and
-async helpers that eventually yield the same :class:`WaitRequest`. The checks
-below keep invalid bare control calls and unsupported async shapes recoverable
-without trying to prove every helper's runtime behavior statically.
+The REPL supports normal top-level Python ``await``. The checks below only keep
+private graph transport calls out of agent code and make the public graph
+launcher's missing ``await`` recoverable before execution.
 """
 
 from __future__ import annotations
@@ -115,15 +114,6 @@ class _WaitSyntaxChecker(ast.NodeVisitor):
         self.generic_visit(node)
         self.await_depth -= 1
 
-    def visit_Yield(self, node: ast.Yield) -> None:  # noqa: N802
-        self._add(
-            node,
-            "use `await launch_subagents([...])`; top-level `yield` is not supported",
-        )
-
-    def visit_YieldFrom(self, node: ast.YieldFrom) -> None:  # noqa: N802
-        self._add(node, "top-level `yield from` is not supported")
-
     def visit_Call(self, node: ast.Call) -> None:  # noqa: N802
         if _is_awaitable_call(node) and self.await_depth == 0:
             name = node.func.id  # type: ignore[union-attr]
@@ -132,27 +122,6 @@ class _WaitSyntaxChecker(ast.NodeVisitor):
         if name in _INTERNAL_CONTROL_CALLS:
             self._add(node, f"`{name}(...)` is internal; use `launch_subagents(...)`")
         self.generic_visit(node)
-
-    def visit_ListComp(self, node: ast.ListComp) -> None:  # noqa: N802
-        self._check_comprehension(node)
-
-    def visit_SetComp(self, node: ast.SetComp) -> None:  # noqa: N802
-        self._check_comprehension(node)
-
-    def visit_DictComp(self, node: ast.DictComp) -> None:  # noqa: N802
-        self._check_comprehension(node)
-
-    def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:  # noqa: N802
-        self._check_comprehension(node)
-
-    def _check_comprehension(self, node: ast.AST) -> None:
-        for child in ast.walk(node):
-            if isinstance(child, ast.Await) or _is_awaitable_call(child):
-                self._add(
-                    node,
-                    "`await launch_subagents(...)` is not supported in comprehensions",
-                )
-                return
 
 
 __all__ = ["check_wait_syntax", "find_code_blocks", "replace_code_block"]

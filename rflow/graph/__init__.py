@@ -1,6 +1,11 @@
 """RecursiveFlow graph data model — nodes, the :class:`Graph`, views, actions."""
 
-from rflow.graph.actions import Action, ActionPlan, CallLLM, Exec, Recover, Resume
+from rflow.graph.actions import Action, ActionPlan, CallLLM, Exec, Recover
+from rflow.graph.events import (
+    GraphEdited,
+    GraphEvent,
+    GraphNodeCommitted,
+)
 from rflow.graph.graph import (
     ActionNode,
     ChildHandle,
@@ -61,10 +66,13 @@ __all__ = [
     "CallLLM",
     "Exec",
     "Recover",
-    "Resume",
     # handles
     "ChildHandle",
     "WaitRequest",
+    # events
+    "GraphEdited",
+    "GraphEvent",
+    "GraphNodeCommitted",
     # graph + helpers
     "Graph",
     "append_message",

@@ -23,7 +23,7 @@ from rflow.runtime.code import (
 from rflow.runtime.context import EngineContext
 from rflow.runtime.docker import DockerRepl, DockerRuntime, build_argv
 from rflow.runtime.local_process import SubprocessRepl, SubprocessRuntime
-from rflow.runtime.repl import DoneSignal, REPL
+from rflow.runtime.repl import REPL, DoneSignal
 from rflow.runtime.runtime import (
     LocalRuntime,
     RemoteRepl,

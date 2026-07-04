@@ -58,7 +58,7 @@ ROLE_LAUNCH_LINE = "`await launch_subagents(specs) -> list`: recursive sub-agent
 ROLE_SHOW_VARS_LINE = "`SHOW_VARS()` — list public REPL variables and their type names."
 ROLE_PRINT_LINE = "`print(...)`: print concise status, summaries, samples, and checks. The REPL is NOT a Jupyter cell: only stdout is shown back to you between turns; a bare expression on the last line is silently discarded. Never dump large `INPUTS` values; REPL output is truncated."
 ROLE_DONE_LINE = "`done(answer)` — submit the completed final answer. If this agent has an output schema, pass a JSON-compatible Python value matching that schema; otherwise pass the final string. Do not call it until the task is complete and verified. Failed checks are not a final answer: repair or delegate repair, then re-run verification before calling `done(...)`."
-ROLE_LAUNCH_NOTE = '`launch_subagents` must be awaited from REPL-driven code: at top level, or inside an `async def` helper called with top-level `await`. Do not put `await` inside a plain `def`. It always returns a list, even for one child: `results = await launch_subagents([{"query": "...", "inputs": {"data": text}}]); answer = results[0]`. Forward inputs with `dict(INPUTS)` if useful.'
+ROLE_LAUNCH_NOTE = 'Normal top-level Python `await` is supported: async clients and helpers can be used directly. Use `await launch_subagents([...])` for graph child agents. It returns a list even for one child: `results = await launch_subagents([{"query": "...", "inputs": {"data": text}}]); answer = results[0]`.'
 
 STRATEGY_TEXT = """
 REPL outputs are truncated, so inspect long `INPUTS` values structurally instead of printing them whole. Always wrap inspections in `print(...)`.

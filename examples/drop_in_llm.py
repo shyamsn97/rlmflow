@@ -23,7 +23,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import rflow
+from rflow.clients import OpenAIClient
+from rflow.minimal import Flow, FlowLLM, Graph
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:
@@ -50,7 +51,7 @@ def _save_example_graph(
 
 
 
-def ask(llm: rflow.LLMClient, question: str) -> str:
+def ask(llm, question: str) -> str:
     """A generic helper that takes any LLMClient. Doesn't know or care
     whether it got a plain OpenAI client or a full recursive agent."""
     reply = llm.chat([{"role": "user", "content": question}])
@@ -62,23 +63,24 @@ def ask(llm: rflow.LLMClient, question: str) -> str:
 
 def demo_plain_llm():
     print("=== plain OpenAI client ===")
-    llm = rflow.OpenAIClient(model="gpt-4o-mini")
+    llm = OpenAIClient(model="gpt-4o-mini")
     answer = ask(llm, "In one sentence: what is the capital of France?")
     print(answer, "\n")
 
 
 def demo_flow_as_llm():
     print("=== Flow as LLMClient (drop-in) ===")
-    agent = rflow.Flow(
-        rflow.OpenAIClient(model="gpt-4o-mini"),
-        max_iters=5,
-        max_budget=20_000,
+    agent = FlowLLM(
+        Flow(
+            OpenAIClient(model="gpt-4o-mini"),
+            max_iters=5,
+        )
     )
     answer = ask(agent, "Compute 17 * 23 using a ```repl``` block, then call done().")
     print(answer, "\n")
-    if agent.graph is not None:
+    if agent.last_graph is not None:
         _save_example_graph(
-            agent.graph,
+            agent.last_graph,
             __file__,
             "drop-in-llm",
             out_dir=_example_run_dir(__file__, "drop-in-llm") / "flow-as-llm",
@@ -88,25 +90,26 @@ def demo_flow_as_llm():
 
 def demo_nested_flow():
     print("=== nested Flow (outer agent uses inner agent as its LLM) ===")
-    inner = rflow.Flow(
-        rflow.OpenAIClient(model="gpt-4o-mini"),
-        max_iters=3,
+    inner = FlowLLM(
+        Flow(
+            OpenAIClient(model="gpt-4o-mini"),
+            max_iters=3,
+        )
     )
-    outer = rflow.Flow(
+    outer = Flow(
         inner,
         max_iters=3,
-        max_budget=50_000,
     )
-    answer = outer.run("What's the 7th Fibonacci number? Use ```repl``` to compute.")
+    graph = Graph(query="What's the 7th Fibonacci number? Use ```repl``` to compute.")
+    answer = outer.run(graph)
     print(answer)
-    if outer.graph is not None:
-        _save_example_graph(
-            outer.graph,
-            __file__,
-            "drop-in-llm",
-            out_dir=_example_run_dir(__file__, "drop-in-llm") / "nested-flow",
-        )
-    outer.close()
+    _save_example_graph(
+        graph,
+        __file__,
+        "drop-in-llm",
+        out_dir=_example_run_dir(__file__, "drop-in-llm") / "nested-flow",
+    )
+    outer.close_repls(graph.graph_id)
     inner.close()
 
 

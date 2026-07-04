@@ -15,13 +15,22 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import random
 import string
 import tempfile
 from pathlib import Path
 
-import rflow
-from rflow.tools import FILE_TOOLS
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal import (
+    DockerRuntime,
+    FILE_TOOLS,
+    Flow,
+    Graph,
+    LiveTreeRenderer,
+    LocalRuntime,
+    SubprocessRuntime,
+)
 
 
 def generate_haystack(
@@ -48,9 +57,9 @@ def generate_haystack(
 
 def build_llm(model: str):
     return (
-        rflow.AnthropicClient(model)
+        AnthropicClient(model)
         if model.startswith("claude")
-        else rflow.OpenAIClient(model)
+        else OpenAIClient(model)
     )
 
 
@@ -117,18 +126,18 @@ def main():
         print(f"Generated {args.num_files} files in {haystack_path}")
 
         if args.docker_image:
-            runtime = rflow.DockerRuntime(args.docker_image, working_directory=workdir)
+            runtime = DockerRuntime(args.docker_image, working_directory=workdir)
         elif args.in_process_local:
-            runtime = rflow.LocalRuntime(working_directory=workdir)
+            runtime = LocalRuntime(working_directory=workdir)
         else:
-            runtime = rflow.SubprocessRuntime(working_directory=workdir)
+            runtime = SubprocessRuntime(working_directory=workdir)
         runtime.register_tools(FILE_TOOLS)
 
         llm_clients = None
         if args.fast_model:
             llm_clients = {"fast": build_llm(args.fast_model)}
 
-        flow = rflow.Flow(
+        flow = Flow(
             build_llm(args.model),
             llm_clients=llm_clients,
             runtime=runtime,
@@ -137,20 +146,23 @@ def main():
         )
 
         graph = flow.start(
-            f"There are {args.num_files} text files in haystack/. "
-            "Exactly one line in one file matches the pattern "
-            "`The magic number is <number>`. Find and return the number. "
-            "There are too many files to search manually, so split the work into batches and delegate the search to subagents."
+            Graph(
+                query=(
+                    f"There are {args.num_files} text files in haystack/. "
+                    "Exactly one line in one file matches the pattern "
+                    "`The magic number is <number>`. Find and return the number. "
+                    "There are too many files to search manually, so split the work "
+                    "into batches and delegate the search to subagents."
+                )
+            )
         )
 
-        if args.no_viz:
-            while not graph.finished:
-                graph = flow.step(graph)
-                print(graph.tree())
-        else:
-            from rflow.utils.viz import live
+        async def drive() -> None:
+            renderer = LiveTreeRenderer(clear=not args.no_viz)
+            async for event in flow.run_streaming(graph):
+                renderer.handle(event, graph)
 
-            graph = live(flow, graph)[-1]
+        asyncio.run(drive())
 
         print(f"\n{'=' * 40}")
         print(f"Result:         {graph.result()}")
@@ -162,11 +174,9 @@ def main():
             print(f"Graph saved to {path}")
 
         if args.viewer:
-            from rflow.utils.viewer import open_viewer
+            print("Viewer support is not part of the minimal example path.")
 
-            open_viewer([graph])
-
-        flow.close()
+        flow.close_repls(graph.graph_id)
     finally:
         if tmp is not None:
             tmp.cleanup()

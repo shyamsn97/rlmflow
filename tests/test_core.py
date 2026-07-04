@@ -9,12 +9,15 @@ new-stack replacement for the core legacy engine tests.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import threading
 
 from rflow import (
     Flow,
     Graph,
+    GraphEvent,
+    GraphNodeCommitted,
     SupervisingOutput,
     create_final_action_message,
     is_done,
@@ -39,6 +42,34 @@ def test_start_records_query_node_at_seq_zero():
     assert graph.nodes[0].seq == 0
 
 
+def test_graph_event_sink_receives_committed_node_metadata():
+    events: list[GraphEvent] = []
+    flow = make_flow(graph_event_sink=events.append)
+
+    graph = flow.start("say ok")
+
+    assert len(events) == 1
+    event = events[0]
+    assert isinstance(event, GraphNodeCommitted)
+    assert event.type == "node_committed"
+    assert event.agent_id == "root"
+    assert event.node_type == "user_query"
+    assert event.seq == 0
+    assert event.global_step == 0
+    assert graph.nodes[event.seq].id == event.node_id
+
+    flow.step()
+
+    assert [event.node_type for event in events] == [
+        "user_query",
+        "llm_action",
+        "llm_output",
+    ]
+    for event in events:
+        assert isinstance(event, GraphNodeCommitted)
+        assert flow.graph[event.agent_id].nodes[event.seq].id == event.node_id
+
+
 def test_one_shot_run_reaches_done():
     flow = make_flow('```repl\ndone("ok")\n```')
     assert flow.run("say ok") == "ok"
@@ -60,6 +91,59 @@ def test_step_splits_llm_half_then_exec_half():
     flow.step()  # exec half: ExecAction + DoneOutput
     assert is_done(graph.current())
     assert graph.result() == "ok"
+
+
+def test_step_until_idle_finishes_in_one_call():
+    flow = make_flow('```repl\ndone("ok")\n```')
+    graph = flow.start("say ok")
+
+    flow.step(until="idle")
+
+    assert graph.result() == "ok"
+    assert [event.node_type for event in flow.last_step_events] == [
+        "llm_action",
+        "llm_output",
+        "exec_action",
+        "done_output",
+    ]
+
+
+def test_step_until_event_with_n_stops_after_event_budget():
+    flow = make_flow('```repl\ndone("ok")\n```')
+    graph = flow.start("say ok")
+
+    flow.step(until="event", n=2)
+
+    assert graph.current().type == "llm_output"
+    assert [event.node_type for event in flow.last_step_events] == [
+        "llm_action",
+        "llm_output",
+    ]
+
+
+def test_step_until_callable_stops_after_matching_event():
+    flow = make_flow('```repl\ndone("ok")\n```')
+    graph = flow.start("say ok")
+
+    flow.step(until=lambda event, _graph: event.node_type == "llm_output")
+
+    assert graph.current().type == "llm_output"
+    assert flow.last_step_events[-1].node_type == "llm_output"
+
+
+def test_run_stream_respects_until_and_n_boundaries():
+    flow = make_flow('```repl\ndone("ok")\n```')
+
+    async def collect():
+        return [event async for event in flow.run_stream("say ok", until="event", n=2)]
+
+    events = asyncio.run(collect())
+
+    assert [event.node_type for event in events] == [
+        "llm_action",
+        "llm_output",
+    ]
+    assert flow.graph.current().type == "llm_output"
 
 
 def test_run_returns_result_string_and_marks_finished():
@@ -114,12 +198,12 @@ def test_parallel_step_default_pool_runs_independent_flows_concurrently():
 
     class BarrierFlow(Flow):
         def step_llm(self, agent: Graph, *, force_final: bool) -> None:
-            self._append(agent, LLMAction(model="default"))
+            self.commit_node(agent, LLMAction(model="default"))
             with lock:
                 entered.append(agent.query)
             barrier.wait(timeout=1)
             reply = f'```repl\ndone("{agent.query}")\n```'
-            self._append(
+            self.commit_node(
                 agent,
                 LLMOutput(reply=reply, code=f'done("{agent.query}")', model="default"),
             )

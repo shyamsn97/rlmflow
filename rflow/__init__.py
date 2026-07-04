@@ -43,13 +43,15 @@ from rflow.graph import (
     ExecAction,
     ExecOutput,
     Graph,
+    GraphEdited,
+    GraphEvent,
+    GraphNodeCommitted,
     LLMAction,
     LLMOutput,
     Node,
     NodesView,
     ObservationNode,
     Recover,
-    Resume,
     ResumeAction,
     SupervisingOutput,
     UserQuery,
@@ -78,6 +80,7 @@ from rflow.graph import (
     truncate_after,
     truncate_agent,
 )
+from rflow.integrations.tui import tui
 from rflow.prompts import (
     DEFAULT_BUILDER,
     SYSTEM_PROMPT,
@@ -85,10 +88,9 @@ from rflow.prompts import (
     create_final_action_message,
     create_nudge_message,
 )
-from rflow.runtime.repl import REPL, DoneSignal
 from rflow.runtime import DockerRuntime, LocalRuntime, Runtime, SubprocessRuntime
+from rflow.runtime.repl import REPL, DoneSignal
 from rflow.tools import FILE_TOOLS, get_tool_metadata, tool
-from rflow.integrations.tui import tui
 from rflow.utils.trace import Trace, load_trace, save_trace
 
 __all__ = [
@@ -113,6 +115,9 @@ __all__ = [
     "FILE_TOOLS",
     "Flow",
     "Graph",
+    "GraphEdited",
+    "GraphEvent",
+    "GraphNodeCommitted",
     "LLMAction",
     "LLMChannel",
     "LLMClient",
@@ -127,7 +132,6 @@ __all__ = [
     "parallel_step",
     "Recover",
     "REPL",
-    "Resume",
     "ResumeAction",
     "Runtime",
     "SYSTEM_PROMPT",

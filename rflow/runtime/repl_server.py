@@ -141,6 +141,7 @@ class ReplServer:
             ns = self.repl.namespace
             ns["launch_subagents"] = make_launch_subagents(
                 ns["_rflow_spawn_child"],
+                graph_wait=self.repl.graph_wait,
                 max_query_chars=msg.get("max_query_chars") or DEFAULT_MAX_QUERY_CHARS,
             )
             return {"ok": True}

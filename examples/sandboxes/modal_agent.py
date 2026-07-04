@@ -12,20 +12,21 @@ Run:
     python examples/sandboxes/modal_agent.py --model gpt-5
 """
 
+# pyright: reportMissingImports=false
+
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 from pathlib import Path
-
-import modal
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import rflow  # noqa: E402
-from rflow.runtime.sandbox.modal import ModalRuntime  # noqa: E402
+from rflow.clients import OpenAIClient  # noqa: E402
+from rflow.minimal import Flow, Graph, LiveTreeRenderer, ModalRuntime  # noqa: E402
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:
@@ -49,8 +50,6 @@ def _save_example_graph(
     )
     print(f"{label} {path}")
     return path
-
-from rflow.utils.viz import live  # noqa: E402
 
 REMOTE_REPO = "/opt/rlmflow"
 
@@ -111,16 +110,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_turn(flow: rflow.Flow, query: str, *, use_live: bool) -> rflow.Graph:
-    graph = flow.start(query)
-    if use_live:
-        return live(flow, graph)[-1]
-    while not graph.finished:
-        graph = flow.step(graph)
+async def run_turn(flow: Flow, query: str, *, use_live: bool) -> Graph:
+    graph = flow.start(Graph(query=query))
+    renderer = LiveTreeRenderer(clear=use_live)
+    async for event in flow.run_streaming(graph):
+        renderer.handle(event, graph)
     return graph
 
 
-def local_rlmflow_image() -> modal.Image:
+def local_rlmflow_image():
+    import modal
+
     log(f"preparing Modal image from local checkout: {REPO_ROOT} -> {REMOTE_REPO}")
     return (
         modal.Image.debian_slim()
@@ -160,21 +160,21 @@ def main() -> None:
         f"creating Flow with model={args.model}, fast_model={args.fast_model}, "
         f"max_iters={args.max_iters}, max_depth={args.max_depth}"
     )
-    flow = rflow.Flow(
-        rflow.OpenAIClient(model=args.model),
-        llm_clients={"fast": rflow.OpenAIClient(model=args.fast_model)},
+    flow = Flow(
+        OpenAIClient(model=args.model),
+        llm_clients={"fast": OpenAIClient(model=args.fast_model)},
         runtime=runtime,
         max_depth=args.max_depth,
         max_iters=args.max_iters,
     )
     log("running platformer task; first run may build/start Modal sandbox")
     try:
-        graph = run_turn(flow, PLATFORMER_QUERY, use_live=not args.no_live)
+        graph = asyncio.run(run_turn(flow, PLATFORMER_QUERY, use_live=not args.no_live))
         print(graph.result())
         _save_example_graph(graph, __file__, "sandbox-modal", out_dir=args.out_dir)
     finally:
         log("closing Flow")
-        flow.close()
+        flow.close_repls()
 
 
 if __name__ == "__main__":

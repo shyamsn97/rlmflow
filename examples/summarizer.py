@@ -16,10 +16,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import random
 from pathlib import Path
 
-import rflow
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal import DockerRuntime, Flow, Graph, LiveTreeRenderer
 
 _TOPICS = [
     "the migration to the new billing system",
@@ -74,9 +76,9 @@ def generate_long_document(sections: int, *, seed: int = 7) -> str:
 
 def build_llm(model: str):
     return (
-        rflow.AnthropicClient(model)
+        AnthropicClient(model)
         if model.startswith("claude")
-        else rflow.OpenAIClient(model)
+        else OpenAIClient(model)
     )
 
 
@@ -141,15 +143,13 @@ def main() -> None:
     else:
         document = generate_long_document(args.sections)
 
-    runtime = (
-        rflow.DockerRuntime(args.docker_image) if args.docker_image else None
-    )
+    runtime = DockerRuntime(args.docker_image) if args.docker_image else None
 
     llm_clients = None
     if args.fast_model:
         llm_clients = {"fast": build_llm(args.fast_model)}
 
-    flow = rflow.Flow(
+    flow = Flow(
         build_llm(args.model),
         llm_clients=llm_clients,
         runtime=runtime,
@@ -157,16 +157,14 @@ def main() -> None:
         max_iters=args.max_iters,
     )
 
-    graph = flow.start(SUMMARIZE_QUERY, {"document": document})
+    graph = flow.start(Graph(query=SUMMARIZE_QUERY), {"document": document})
 
-    if args.no_viz:
-        while not graph.finished:
-            graph = flow.step(graph)
-            print(graph.tree())
-    else:
-        from rflow.utils.viz import live
+    async def drive() -> None:
+        renderer = LiveTreeRenderer(clear=not args.no_viz)
+        async for event in flow.run_streaming(graph):
+            renderer.handle(event, graph)
 
-        graph = live(flow, graph)[-1]
+    asyncio.run(drive())
 
     print(f"\n{'=' * 60}\nFINAL SUMMARY\n{'=' * 60}")
     print(graph.result())
@@ -176,11 +174,9 @@ def main() -> None:
         print(f"\nGraph saved to {path}")
 
     if args.viewer:
-        from rflow.utils.viewer import open_viewer
+        print("Viewer support is not part of the minimal example path.")
 
-        open_viewer([graph])
-
-    flow.close()
+    flow.close_repls(graph.graph_id)
 
 
 if __name__ == "__main__":

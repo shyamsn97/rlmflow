@@ -16,11 +16,12 @@ This example demonstrates the intended shape for user-authored skills:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import tempfile
 from pathlib import Path
 
-import rflow
-from rflow.prompts import DEFAULT_BUILDER
+from rflow.clients import OpenAIClient
+from rflow.minimal import DEFAULT_BUILDER, Flow, Graph
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:
@@ -120,10 +121,10 @@ def skills_section(skill_paths: list[Path]):
     return render
 
 
-def build_flow(skills_dir: Path, *, model: str) -> rflow.Flow:
+def build_flow(skills_dir: Path, *, model: str) -> Flow:
     """Create a flow whose prompt includes the installed skill."""
     skill_path = install_example_skill(skills_dir)
-    flow = rflow.Flow(rflow.OpenAIClient(model=model), max_iters=5)
+    flow = Flow(OpenAIClient(model=model), max_iters=5)
     flow.prompt_builder = DEFAULT_BUILDER.section(
         "skills",
         skills_section([skill_path]),
@@ -170,19 +171,19 @@ def main() -> None:
             "(0, 1), (1, 2), (2, 2), (3, 4), then report m, b, the "
             "predicted values, and the L2 residual norm."
         )
-        graph = flow.start(query)
+        graph = flow.start(Graph(query=query))
 
         print(f"Wrote skill artifact under: {skills_dir}")
         print("- skills/numpy-linear-algebra/SKILL.md")
         if args.print_prompt:
             print("\n--- rendered system prompt ---\n")
-            print(graph.system_prompt)
+            print(flow.build_system_prompt(graph))
             print("\n--- live run ---\n")
 
-        while not graph.finished:
-            graph = flow.step(graph)
+        asyncio.run(flow.step(graph, until="done"))
         print(graph.result())
         _save_example_graph(graph, __file__, "skills", out_dir=args.out_dir)
+        flow.close_repls(graph.graph_id)
     finally:
         if tmp is not None:
             tmp.cleanup()

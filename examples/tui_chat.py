@@ -18,8 +18,8 @@ import argparse
 import os
 from pathlib import Path
 
-import rflow
-from rflow.tools import FILE_TOOLS
+from rflow.clients import OpenAIClient
+from rflow.minimal import FILE_TOOLS, Flow, LocalRuntime, tui
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:
@@ -39,12 +39,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=30,
         help="Max LLM turns for the root agent before it is forced to finalize.",
-    )
-    parser.add_argument(
-        "--child-max-iters",
-        type=int,
-        default=20,
-        help="Max LLM turns for each child agent before it is forced to finalize.",
     )
     parser.add_argument(
         "--max-steps-per-turn",
@@ -70,32 +64,32 @@ def main() -> None:
     workdir = out_dir / "workdir"
     workdir.mkdir(parents=True, exist_ok=True)
 
-    runtime = rflow.LocalRuntime(working_directory=workdir)
+    runtime = LocalRuntime(working_directory=workdir)
     runtime.register_tools(FILE_TOOLS)
 
-    flow = rflow.Flow(
-        rflow.OpenAIClient(model=args.model),
+    flow = Flow(
+        OpenAIClient(model=args.model),
         runtime=runtime,
         max_depth=args.max_depth,
         max_iters=args.max_iters,
-        child_max_iters=args.child_max_iters,
     )
 
     graph = None
     try:
-        graph = flow.tui(
+        graph = tui(
+            flow,
             max_steps_per_turn=args.max_steps_per_turn,
+            out_dir=out_dir,
         )
     finally:
         try:
-            latest = graph if graph is not None else flow.graph
-            if latest is not None:
-                path = latest.save(out_dir / "graph")
+            if graph is not None:
+                path = graph.save(out_dir / "graph")
                 print(f"Graph saved to {path}")
-                if latest.result():
-                    print(f"Result: {latest.result()}")
+                if graph.result():
+                    print(f"Result: {graph.result()}")
         finally:
-            flow.close()
+            flow.close_repls()
 
 
 if __name__ == "__main__":

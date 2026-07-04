@@ -12,9 +12,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import argparse
+import asyncio
 
-import rflow
-from rflow.utils.viz import live
+from rflow.clients import TinkerClient
+from rflow.minimal import Flow, Graph, LiveTreeRenderer
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:
@@ -67,19 +68,25 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    llm = rflow.TinkerClient(
+    llm = TinkerClient(
         base_model=None if args.model_path else args.base_model,
         model_path=args.model_path,
         renderer=args.renderer,
         max_tokens=args.max_tokens,
     )
-    flow = rflow.Flow(llm, max_iters=args.max_iters)
+    flow = Flow(llm, max_iters=args.max_iters)
     print(f"Query: {args.query}\n")
-    graph = flow.start(args.query)
-    graph = live(flow, graph)[-1]
+    graph = flow.start(Graph(query=args.query))
+
+    async def drive() -> None:
+        renderer = LiveTreeRenderer()
+        async for event in flow.run_streaming(graph):
+            renderer.handle(event, graph)
+
+    asyncio.run(drive())
     print(graph.result())
     _save_example_graph(graph, __file__, "tinker-agent")
-    flow.close()
+    flow.close_repls(graph.graph_id)
 
 
 if __name__ == "__main__":

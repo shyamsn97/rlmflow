@@ -116,11 +116,12 @@ class ExecOutput(CodeObservation):
 
 
 class SupervisingOutput(CodeObservation):
-    """Code suspended at ``await launch_subagents(...)``.
+    """Code reached ``await launch_subagents(...)``.
 
-    The agent's REPL coroutine is paused; the scheduler gates on the
-    children in ``waiting_on``. Once they settle, a :class:`ResumeAction`
-    drives the coroutine forward. ``output`` is anything printed before
+    The durable graph records which children the parent is waiting on. In the
+    local scheduler path, the parent coroutine awaits a live future while the
+    scheduler runs those children; once they settle, a :class:`ResumeAction`
+    records that the parent continued. ``output`` is anything printed before
     the await.
     """
 
@@ -392,6 +393,10 @@ class Graph:
         """Return a copy of this subtree (deep by default for safe editing)."""
         return deepcopy(self) if deep else _dc_replace(self)
 
+    def snapshot(self) -> "Graph":
+        """Return a stable deep copy for UI, recording, and external readers."""
+        return self.copy(deep=True)
+
     def repl_inputs(self) -> dict[str, str]:
         """Public ``INPUTS`` dict for this agent's REPL.
 
@@ -420,10 +425,9 @@ class Graph:
     def get_runnable_nodes(self) -> list[str]:
         """Ids of agents that can advance by one action right now.
 
-        A leaf is runnable unless it's finished or mid-step; a supervisor
-        (paused at ``await launch_subagents(...)``) is runnable only once all
-        the children it waits on have finished. Otherwise recurse into the
-        unfinished children to surface runnable descendants.
+        A leaf is runnable unless it's finished or mid-step; a supervisor wait
+        gates on its children. Until those children finish, recurse into them to
+        surface runnable descendants.
         """
         agents = self.agents
         out: list[str] = []

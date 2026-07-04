@@ -23,30 +23,22 @@ agent that is ready to move. A model turn is usually two steps: LLM call
 (`LLMOutput -> ExecAction -> CodeObservation`). See [`node_model.md`](node_model.md)
 for the typed node flow.
 
-## Eager Children
+## Minimal Step Boundaries
 
-By default, children advance in synchronized batches. If child A's current step
-takes 10 seconds and child B's current step takes 2 seconds, child B waits for
-that batch before starting its next step.
+In the minimal event loop, delegated children fan out through the shared async
+pool once the parent reaches `await launch_subagents([...])`. The caller controls
+how much of that graph event stream to observe with `Flow.step(..., until=...)`.
 
-Set `eager_children=True` for a work-conserving drain after a parent awaits a
-launcher:
+Common boundaries:
 
 ```python
-agent = rflow.Flow(
-    rflow.OpenAIClient(model="gpt-5"),
-    max_depth=2,
-    child_max_iters=20,
-    max_concurrency=8,
-    eager_children=True,
-)
+await flow.step(graph)  # default: until="node"
+await flow.step(until="supervising")
+await flow.step(until="node", n=3)
+await flow.step(until=lambda event, graph: graph.finished)
 ```
 
-Children still do not run before the parent reaches
-`await launch_subagents([...])`. Once the parent is supervising, runnable
-children refill the worker pool until all waited-on descendants finish.
-
-See [`examples/control/delegation/eager_children.py`](../examples/control/delegation/eager_children.py)
+See [`examples/control/delegation/step_until.py`](../examples/control/delegation/step_until.py)
 for a deterministic offline demo.
 
 ## Save And Resume
@@ -192,9 +184,5 @@ You can also subclass `Flow` and override `build_system_prompt`,
 
 - [`examples/showcase.py`](../examples/showcase.py) — stepping, snapshots,
   save/load, and live terminal visualization.
-- [`examples/notebooks/coding_agent.ipynb`](../examples/notebooks/coding_agent.ipynb)
-  — live LLM run that writes files and saves the run.
-- [`examples/notebooks/node_basics.ipynb`](../examples/notebooks/node_basics.ipynb)
-  — querying the `Graph` API.
-- [`examples/notebooks/viz_walkthrough.ipynb`](../examples/notebooks/viz_walkthrough.ipynb)
-  — visualization helpers against a saved fixture.
+- [`examples/graph/`](../examples/graph/) — querying, mutating, saving, forking,
+  and rendering minimal graphs.

@@ -36,13 +36,6 @@ class Exec:
 
 
 @dataclass(frozen=True, slots=True)
-class Resume:
-    """Resume a coroutine paused on children. ``ResumeAction -> CodeObservation``."""
-
-    agent_id: str
-
-
-@dataclass(frozen=True, slots=True)
 class Recover:
     """Inject a recovery observation for a stranded supervisor."""
 
@@ -50,8 +43,8 @@ class Recover:
     launch_id: str
 
 
-Action = CallLLM | Exec | Resume | Recover
+Action = CallLLM | Exec | Recover
 ActionPlan = dict[str, Action]
 
 
-__all__ = ["Action", "ActionPlan", "CallLLM", "Exec", "Recover", "Resume"]
+__all__ = ["Action", "ActionPlan", "CallLLM", "Exec", "Recover"]

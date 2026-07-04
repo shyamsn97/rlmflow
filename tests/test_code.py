@@ -98,15 +98,12 @@ def test_wait_check_accepts_conditional_await():
     )
 
 
-def test_wait_check_rejects_top_level_yield():
-    err = check_wait_syntax("x = yield h")
-    assert err is not None and "yield" in err
-    assert err.startswith("ERROR:")
+def test_wait_check_leaves_yield_to_python_execution():
+    assert check_wait_syntax("x = yield h") is None
 
 
-def test_wait_check_rejects_yield_from():
-    err = check_wait_syntax("yield from gen()")
-    assert err is not None and "yield from" in err
+def test_wait_check_allows_generator_functions():
+    assert check_wait_syntax("def g():\n    yield 1\nprint(sum(g()))") is None
 
 
 def test_wait_check_rejects_naked_wait():
@@ -129,9 +126,9 @@ def test_wait_check_rejects_naked_launch_subagents():
     assert err is not None and "must be awaited" in err
 
 
-def test_wait_check_rejects_wait_in_comprehension():
+def test_wait_check_rejects_internal_wait_in_comprehension():
     err = check_wait_syntax("[await flow_wait(h) for h in hs]")
-    assert err is not None and ("internal" in err or "comprehensions" in err)
+    assert err is not None and "internal" in err
 
 
 def test_wait_check_accepts_nested_async_launch():
@@ -140,6 +137,10 @@ def test_wait_check_accepts_nested_async_launch():
 
 def test_wait_check_allows_unknown_await_for_runtime_driver():
     assert check_wait_syntax("x = await something_else()") is None
+
+
+def test_wait_check_allows_regular_asyncio_await():
+    assert check_wait_syntax("import asyncio\nawait asyncio.sleep(0)") is None
 
 
 def test_wait_check_ignores_plain_code():

@@ -127,7 +127,6 @@ exclude_lines = [
 target-version = "py311"
 line-length = 100
 extend-exclude = [
-    "examples/notebooks",
     "examples/_data",
     "examples/autoresearch_mini/prepare.py",
     "examples/autoresearch_mini/train.py",

@@ -48,12 +48,10 @@ run:
 		--parallel "$(PARALLEL)" \
 		--max-submissions "$(MAX_SUBMISSIONS)" \
 		--max-iters "$(MAX_ITERS)" \
-		--child-iters "$(CHILD_ITERS)" \
 		--created-trial-timeout-s "$(CREATED_TRIAL_TIMEOUT_S)" \
 		--agent-runtime "$(AGENT_RUNTIME)" \
 		--docker-image "$(DOCKER_IMAGE)" \
 		$(if $(SUBMITTED_TRIAL_TIMEOUT_S),--submitted-trial-timeout-s "$(SUBMITTED_TRIAL_TIMEOUT_S)",) \
-		$(if $(EAGER_CHILDREN),--eager-children,) \
 		$(if $(OUT),--out "$(OUT)",) \
 		$(if $(NO_LIVE),--no-live,)
 

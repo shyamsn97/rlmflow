@@ -1,11 +1,10 @@
-"""Minimal REPL — stateful code execution with top-level-await suspension.
+"""Minimal REPL — stateful code execution with normal asyncio.
 
 One :class:`REPL` per agent. It runs an LLM code block in a persistent
-namespace and captures stdout. If the block has a *top-level* ``await``
-(i.e. ``await launch_subagents([...])``), the block is compiled as a
-coroutine and driven with ``send()``; it suspends when it yields a
-:class:`~rflow.graph.WaitRequest` and resumes when the engine sends the
-child results back in.
+namespace and captures stdout. If the block has a *top-level* ``await``, the
+block is compiled as a coroutine and run on this REPL's asyncio event loop.
+Ordinary async Python is handled by asyncio; graph delegation is just another
+async tool awaited by agent code.
 
 stdout is captured through a thread-local buffer so REPLs running in
 parallel threads don't clobber each other's output.
@@ -14,6 +13,8 @@ parallel threads don't clobber each other's output.
 from __future__ import annotations
 
 import ast
+import asyncio
+import contextvars
 import inspect
 import io
 import os
@@ -24,15 +25,17 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from rflow.graph import WaitRequest
 from rflow.runtime.context import EngineContext
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-_capture = threading.local()
+_capture_buf: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar(
+    "rflow_capture_buf", default=None
+)
 
-# ``os.chdir`` and ``os.environ`` mutate process-global state, so local REPLs
-# serialize the overlay + execute window whenever either is used. The lock is
-# reentrant so a host tool can synchronously drive another local Flow.
+# ``os.chdir`` mutates process-global state, so local REPLs serialize code blocks
+# that need a working-directory overlay. Environment overlays are best-effort
+# metadata for subprocesses; holding the lock across async child delegation would
+# deadlock the scheduler.
 _PROCESS_STATE_LOCK = threading.RLock()
 
 
@@ -72,7 +75,7 @@ class _StdoutProxy:
         self.real = real
 
     def write(self, s):
-        buf = getattr(_capture, "buf", None)
+        buf = _capture_buf.get()
         return buf.write(s) if buf is not None else self.real.write(s)
 
     def flush(self):
@@ -83,21 +86,18 @@ class _StdoutProxy:
 
 
 class REPL:
-    """A stateful Python namespace that can suspend on top-level await.
+    """A stateful Python namespace that runs top-level await on asyncio.
 
-    Outcomes from :meth:`start` / :meth:`resume` are ``(suspended, payload)``:
-
-    * ``(False, stdout)`` — the block ran to completion (or errored; see
-      :attr:`errored`);
-    * ``(True, (WaitRequest, pre_output))`` — it suspended on a top-level
-      ``await launch_subagents(...)``.
+    :meth:`start` returns captured stdout after the block completes. Errors are
+    captured into stdout and flagged on :attr:`errored`.
     """
 
     def __init__(self, working_directory: str | Path | None = None) -> None:
         self.namespace: dict[str, Any] = {"__builtins__": __builtins__}
         self.engine_context = EngineContext()
         self.process_env: dict[str, str] = {}
-        self.coro = None
+        self.loop = asyncio.new_event_loop()
+        self.task: asyncio.Task | None = None
         self.errored = False
         self._buf = io.StringIO()
         # ``None`` → run in the process cwd as-is (the default; no chdir, no
@@ -113,7 +113,7 @@ class REPL:
     # ── stdout capture ────────────────────────────────────────────────
 
     @contextmanager
-    def _capture(self):
+    def _capture(self, *, process_overlay: bool = True):
         """Run a fresh step with this thread's stdout routed into a buffer.
 
         Resets the buffer/error state on entry, and turns any agent error
@@ -121,24 +121,21 @@ class REPL:
         """
         self._buf = io.StringIO()
         self.errored = False
-        prev_buf = getattr(_capture, "buf", None)
-        _capture.buf = self._buf
+        token = _capture_buf.set(self._buf)
         prev_cwd: str | None = None
         old_env: dict[str, str] = {}
         missing_env: set[str] = set()
-        needs_process_lock = self.working_directory is not None or bool(
-            self.process_env
-        )
+        needs_process_lock = process_overlay and self.working_directory is not None
         if needs_process_lock:
             _PROCESS_STATE_LOCK.acquire()
-        if self.process_env:
+        if process_overlay and self.process_env:
             for key, value in self.process_env.items():
                 if key in os.environ:
                     old_env[key] = os.environ[key]
                 else:
                     missing_env.add(key)
                 os.environ[key] = value
-        if self.working_directory is not None:
+        if process_overlay and self.working_directory is not None:
             prev_cwd = os.getcwd()
             os.chdir(self.working_directory)
         try:
@@ -151,14 +148,15 @@ class REPL:
             self._buf.write(f"\n{type(exc).__name__}: {exc}")
             self.errored = True
         finally:
-            _capture.buf = prev_buf
+            _capture_buf.reset(token)
             if prev_cwd is not None:
                 os.chdir(prev_cwd)
-            for key in self.process_env:
-                if key in missing_env:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = old_env[key]
+            if process_overlay:
+                for key in self.process_env:
+                    if key in missing_env:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = old_env[key]
             if needs_process_lock:
                 _PROCESS_STATE_LOCK.release()
 
@@ -166,32 +164,71 @@ class REPL:
     def _output(self) -> str:
         return _ANSI_RE.sub("", self._buf.getvalue()).strip()
 
+    def drain_output(self) -> str:
+        """Return captured output so far and reset the active capture buffer."""
+        out = self._output
+        self._buf = io.StringIO()
+        if _capture_buf.get() is not None:
+            _capture_buf.set(self._buf)
+        return out
+
     # ── execution ─────────────────────────────────────────────────────
 
-    def start(self, code: str) -> tuple[bool, object]:
+    def start(self, code: str) -> str:
         """Run a fresh code block in the persistent namespace."""
-        self.coro = None
+        if self.task is not None and not self.task.done():
+            self.errored = True
+            return "RuntimeError: REPL already has a running async task"
+        self.task = None
         try:
             tree = ast.parse(code)
         except SyntaxError as exc:
             self.errored = True
-            return False, f"SyntaxError: {exc}"
-        with self._capture():
-            self.coro = self._exec_block(tree)
-        if self.coro is None:
-            return False, self._output
-        return self._drive(None)
+            return f"SyntaxError: {exc}"
+        with self._capture(process_overlay=False):
+            task = self._exec_block(tree)
+            if task is not None:
+                self._run_to_completion(task)
+        return self._output
 
-    def resume(self, send_value: object) -> tuple[bool, object]:
-        """Send ``send_value`` into the suspended coroutine and drive on."""
-        return self._drive(send_value)
+    async def start_async(self, code: str) -> str:
+        """Run a code block on the current asyncio loop.
+
+        This is the scheduler path. Top-level ``await`` yields the scheduler
+        loop normally, so ``await launch_subagents(...)`` can wait on child graph
+        work without suspending the Python frame back to Flow.
+        """
+        if self.task is not None and not self.task.done():
+            self.errored = True
+            return "RuntimeError: REPL already has a running async task"
+        self.task = None
+        try:
+            tree = ast.parse(code)
+        except SyntaxError as exc:
+            self.errored = True
+            return f"SyntaxError: {exc}"
+        task: asyncio.Task | None = None
+        with self._capture():
+            try:
+                task = self._exec_block_on_current_loop(tree)
+                if task is not None:
+                    await task
+            finally:
+                self.task = None
+        return self._output
 
     def close(self) -> None:
-        """No-op: in-process REPLs hold no external resources.
+        """Cancel pending async work and close this REPL's event loop.
 
         Present so :class:`REPL` satisfies the ``ReplBackend`` protocol that
         remote backends (Docker/Modal) implement with real teardown.
         """
+        if self.loop.is_closed():
+            return
+        asyncio.set_event_loop(self.loop)
+        self._cancel_background_tasks()
+        self.loop.close()
+        self.task = None
 
     def _exec_block(self, tree: ast.AST):
         """Execute the block. Return its coroutine if it has a top-level
@@ -201,25 +238,50 @@ class REPL:
             return None
         code = compile(tree, "<rlm>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
         result = eval(code, self.namespace)  # creates the coroutine; runs nothing yet
-        return result if inspect.iscoroutine(result) else None
+        if not inspect.iscoroutine(result):
+            return None
+        asyncio.set_event_loop(self.loop)
+        self.task = self.loop.create_task(result)
+        return self.task
 
-    def _drive(self, send_value: object) -> tuple[bool, object]:
-        """Advance the coroutine to its next ``await`` (suspend) or its end."""
-        if self.coro is None:
+    def _exec_block_on_current_loop(self, tree: ast.AST):
+        """Execute a block on the running scheduler loop."""
+        if not _has_top_level_await(tree):
+            exec(compile(tree, "<rlm>", "exec"), self.namespace)
+            return None
+        code = compile(tree, "<rlm>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+        result = eval(code, self.namespace)
+        if not inspect.iscoroutine(result):
+            return None
+        self.task = asyncio.create_task(result)
+        return self.task
+
+    def _cancel_background_tasks(self, *, exclude: asyncio.Task | None = None) -> None:
+        """Cancel detached tasks; they are not durable REPL/graph state."""
+        tasks = [
+            task
+            for task in asyncio.all_tasks(self.loop)
+            if task is not exclude and not task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            self.loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+
+    def _run_to_completion(self, task: asyncio.Task) -> None:
+        """Run one asyncio task to completion."""
+        asyncio.set_event_loop(self.loop)
+        try:
+            self.loop.run_until_complete(task)
+        except DoneSignal:
+            pass
+        except (GeneratorExit, KeyboardInterrupt):
+            raise
+        except BaseException as exc:  # noqa: BLE001 - agent errors are output
+            self._buf.write(f"\n{type(exc).__name__}: {exc}")
             self.errored = True
-            return False, "RuntimeError: no suspended coroutine to resume"
-        with self._capture():
-            try:
-                request = self.coro.send(send_value)
-            except StopIteration:
-                self.coro = None
-                return False, self._output
-            if isinstance(request, WaitRequest):
-                return True, (request, self._output)
-            raise TypeError(
-                "only graph-aware awaits that yield WaitRequest are supported"
-            )
-        return False, self._output
+        self._cancel_background_tasks(exclude=task)
+        self.task = None
 
 
 __all__ = ["DoneSignal", "REPL"]

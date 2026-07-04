@@ -1,137 +1,41 @@
-"""Editing a Graph in place.
-
-A Graph is mutable. The engine writes through ``add_node`` /
-``add_child`` during a run, but you can use the same helpers offline to
-edit a persisted graph: rewrite a result, drop an agent, swap a node.
-
-Demonstrates:
-
-- ``graph.add_node(node)``                    — append a node
-- ``graph.update_node(node_id, **changes)``   — copy-with-changes by id
-- ``graph.set_node(node_id, new_node)``       — full swap by id
-- ``graph.remove_node(node_id)``              — drop a node
-- ``graph.add_child(child)`` / ``graph.remove_child(aid)``
-- ``graph.update(**fields)``                  — bulk top-level edit
-- ``graph.all_nodes.replace / update / remove``   — by id, anywhere in subtree
-- ``graph.copy(deep=True)``                   — clone before mutating
-
-Run:
-    python examples/graph/03_mutate.py
-"""
+"""Mutating a minimal Graph."""
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
-import rflow
+from rflow.minimal import DoneOutput, Graph, UserQuery, render_tree
 
 
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
-
-
-def _save_example_graph(
-    graph,
-    source_file: str | Path,
-    name: str,
-    *,
-    out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
-) -> Path:
-    path = graph.save(
-        Path(out_dir) if out_dir is not None else _example_run_dir(source_file, name)
+def build_graph() -> Graph:
+    spec = importlib.util.spec_from_file_location(
+        "graph_01_query", Path(__file__).with_name("01_query.py")
     )
-    print(f"{label} {path}")
-    return path
-
-
-
-def base_graph() -> rflow.Graph:
-    root_q = rflow.UserQuery(agent_id="root", seq=0, content="hello")
-    root_done = rflow.DoneOutput(agent_id="root", seq=1, result="ok")
-    child_q = rflow.UserQuery(agent_id="root.child", seq=0, content="sub")
-    child_done = rflow.DoneOutput(agent_id="root.child", seq=1, result="sub ok")
-    child = rflow.Graph.from_meta_dict(
-        {"agent_id": "root.child", "depth": 1, "parent_agent_id": "root"},
-        nodes=[child_q, child_done],
-    )
-    return rflow.Graph.from_meta_dict(
-        {"agent_id": "root", "depth": 0, "query": "hello"},
-        nodes=[root_q, root_done],
-        children={"root.child": child},
-    )
-
-
-def banner(title: str) -> None:
-    print("\n" + "─" * 60)
-    print(title)
-    print("─" * 60)
-
-
-def summary(g: rflow.Graph) -> str:
-    return (
-        f"agents={list(g.agents)} nodes={len(g.all_nodes)} "
-        f"result={g.result()!r} model={g.model_label}"
-    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load 01_query.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.build_graph()
 
 
 def main() -> None:
-    g = base_graph()
-    banner("baseline")
-    print(summary(g))
+    graph = build_graph()
+    print("before:\n" + render_tree(graph))
 
-    banner("graph.copy(deep=True) — clone before mutating")
-    twin = g.copy(deep=True)
-    twin.update(model="gpt-5", inputs={"temperature": "0.0"})
-    print(f"original: {summary(g)}")
-    print(f"twin    : {summary(twin)}")
-
-    banner("update_node — copy-with-changes by id")
-    result_id = g.all_nodes.results()[0].id
-    g.update_node(result_id, result="ok (rewritten)")
-    print(summary(g))
-
-    banner("set_node — swap a node object")
-    g.set_node(
-        result_id,
-        rflow.DoneOutput(
-            agent_id="root",
-            seq=1,
-            result="ok (full swap)",
-            id=result_id,
-        ),
+    graph.remove_child("root.test")
+    sibling = Graph(
+        agent_id="root.docs",
+        query="write docs",
+        depth=1,
+        parent_agent_id="root",
     )
-    print(summary(g))
+    sibling.commit(UserQuery(content=sibling.query))
+    sibling.commit(DoneOutput(result="wrote README"))
+    graph.children[sibling.agent_id] = sibling
 
-    banner("nodes.update — same edit, but addressed via the flat view")
-    child_result_id = g["root.child"].all_nodes.results()[0].id
-    g.all_nodes.update(child_result_id, result="sub ok (via subtree view)")
-    print(f"root.child result -> {g['root.child'].result()!r}")
-
-    banner("add_node — append onto a sub-Graph")
-    g["root.child"].add_node(
-        rflow.UserQuery(agent_id="root.child", seq=2, content="follow-up")
-    )
-    print(f"root.child nodes: {[n.type for n in g['root.child'].nodes]}")
-
-    banner("add_child / remove_child — attach + detach sub-agents")
-    sibling = rflow.Graph.from_meta_dict(
-        {"agent_id": "root.sibling", "depth": 1, "parent_agent_id": "root"},
-        nodes=[rflow.UserQuery(agent_id="root.sibling", seq=0, content="hi")],
-    )
-    g.add_child(sibling)
-    print(f"after add_child : {list(g.agents)}")
-    g.remove_child("root.child")
-    print(f"after remove    : {list(g.agents)}")
-
-    banner("graph.update — bulk top-level field edit")
-    g.update(query="hello (updated)", model="gpt-5-mini")
-    print(f"query={g.query!r} model={g.model!r}")
-    _save_example_graph(g, __file__, "graph-mutate")
+    graph.replace_node(graph.current().id, DoneOutput(result="package shipped with docs"))
+    print("\nafter:\n" + render_tree(graph))
 
 
 if __name__ == "__main__":

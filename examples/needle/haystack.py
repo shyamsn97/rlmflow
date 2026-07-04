@@ -15,11 +15,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import random
 import string
 from pathlib import Path
 
-import rflow
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal import DockerRuntime, Flow, Graph, LiveTreeRenderer
 
 
 def generate_massive_context(
@@ -79,25 +81,23 @@ def main():
 
     haystack, answer, needle_line = generate_massive_context(num_lines=args.num_lines)
 
-    runtime = (
-        rflow.DockerRuntime(args.docker_image) if args.docker_image else None
-    )
+    runtime = DockerRuntime(args.docker_image) if args.docker_image else None
 
     llm = (
-        rflow.AnthropicClient(args.model)
+        AnthropicClient(args.model)
         if args.model.startswith("claude")
-        else rflow.OpenAIClient(args.model)
+        else OpenAIClient(args.model)
     )
     llm_clients = None
     if args.fast_model:
         fast = (
-            rflow.AnthropicClient(args.fast_model)
+            AnthropicClient(args.fast_model)
             if args.fast_model.startswith("claude")
-            else rflow.OpenAIClient(args.fast_model)
+            else OpenAIClient(args.fast_model)
         )
         llm_clients = {"fast": fast}
 
-    flow = rflow.Flow(
+    flow = Flow(
         llm,
         llm_clients=llm_clients,
         runtime=runtime,
@@ -106,21 +106,22 @@ def main():
     )
 
     graph = flow.start(
-        "I'm looking for a magic number buried somewhere in the haystack in "
-        "INPUTS['haystack']. What is it? Chunk the string and search the pieces "
-        "in parallel.",
+        Graph(
+            query=(
+                "I'm looking for a magic number buried somewhere in the haystack in "
+                "INPUTS['haystack']. What is it? Chunk the string and search the "
+                "pieces in parallel."
+            )
+        ),
         inputs={"haystack": haystack},
     )
 
-    if args.no_viz:
-        while not graph.finished:
-            graph = flow.step(graph)
-            print(graph.tree())
-    else:
-        from rflow.utils.viz import live
+    async def drive() -> None:
+        renderer = LiveTreeRenderer(clear=not args.no_viz)
+        async for event in flow.run_streaming(graph):
+            renderer.handle(event, graph)
 
-        graphs = live(flow, graph)
-        graph = graphs[-1]
+    asyncio.run(drive())
 
     print(f"\n{'=' * 40}")
     print(f"Result:         {graph.result()}")
@@ -132,11 +133,9 @@ def main():
         print(f"Graph saved to {path}")
 
     if args.viewer:
-        from rflow.utils.viewer import open_viewer
+        print("Viewer support is not part of the minimal example path.")
 
-        open_viewer([graph])
-
-    flow.close()
+    flow.close_repls(graph.graph_id)
 
 
 if __name__ == "__main__":

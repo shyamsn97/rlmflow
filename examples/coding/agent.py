@@ -12,17 +12,25 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 from pathlib import Path
 
-import rflow
-from rflow.tools import FILE_TOOLS
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal import (
+    DockerRuntime,
+    FILE_TOOLS,
+    Flow,
+    Graph,
+    LiveTreeRenderer,
+    LocalRuntime,
+)
 
 
 def build_llm(model: str):
     return (
-        rflow.AnthropicClient(model)
+        AnthropicClient(model)
         if model.startswith("claude")
-        else rflow.OpenAIClient(model)
+        else OpenAIClient(model)
     )
 
 
@@ -66,12 +74,12 @@ def main():
     # in-process with the cwd switched into `workdir`; Docker runs each agent in a
     # container with `workdir` bind-mounted to /workspace. Same interface.
     if args.docker_image:
-        runtime = rflow.DockerRuntime(args.docker_image, working_directory=workdir)
+        runtime = DockerRuntime(args.docker_image, working_directory=workdir)
     else:
-        runtime = rflow.LocalRuntime(working_directory=workdir)
+        runtime = LocalRuntime(working_directory=workdir)
     runtime.register_tools(FILE_TOOLS)
 
-    flow = rflow.Flow(
+    flow = Flow(
         build_llm(args.model),
         llm_clients={"fast": build_llm(args.fast_model)},
         runtime=runtime,
@@ -91,25 +99,21 @@ def main():
             if not query or query.lower() in ("quit", "exit", "q"):
                 break
 
-            graph = flow.start(query)
-            if args.no_viz:
-                while not graph.finished:
-                    graph = flow.step(graph)
-            else:
-                from rflow.utils.viz import live_view
+            graph = flow.start(Graph(query=query))
 
-                with live_view() as view:
-                    view(graph)
-                    while not graph.finished:
-                        graph = flow.step(graph)
-                        view(graph)
+            async def drive() -> None:
+                renderer = LiveTreeRenderer(clear=not args.no_viz)
+                async for event in flow.run_streaming(graph):
+                    renderer.handle(event, graph)
+
+            asyncio.run(drive())
 
             print(f"\n{graph.result() or '(no result)'}\n")
             path = graph.save(workdir / "graph")
             print(f"Graph saved to {path}")
             print(f"Files written under {workdir}")
     finally:
-        flow.close()
+        flow.close_repls()
 
 
 if __name__ == "__main__":

@@ -15,8 +15,8 @@ from pathlib import Path
 
 import dspy
 
-import rflow
-from rflow.integrations.dspy import RecursiveFlowLM
+from rflow.clients import OpenAIClient
+from rflow.minimal import Flow, FlowLLM, MinimalDSPyLM
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:
@@ -44,21 +44,23 @@ def _save_example_graph(
 
 
 def main() -> None:
-    flow = rflow.Flow(
-        rflow.OpenAIClient(model="gpt-4o-mini"),
-        max_depth=1,
-        max_iters=5,
+    agent = FlowLLM(
+        Flow(
+            OpenAIClient(model="gpt-4o-mini"),
+            max_depth=1,
+            max_iters=5,
+        )
     )
 
-    dspy.configure(lm=RecursiveFlowLM(flow, model="rlmflow/gpt-4o-mini"))
+    dspy.configure(lm=MinimalDSPyLM(agent, model="rlmflow/gpt-4o-mini"))
 
     qa = dspy.ChainOfThought("question -> answer")
     result = qa(question="What is 17 * 23? Show a short calculation.")
     print(result.answer)
-    if flow.graph is not None:
-        _save_example_graph(flow.graph, __file__, "dspy-drop-in")
+    if agent.last_graph is not None:
+        _save_example_graph(agent.last_graph, __file__, "dspy-drop-in")
 
-    flow.close()
+    agent.close()
 
 
 if __name__ == "__main__":
