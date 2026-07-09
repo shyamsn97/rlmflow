@@ -1,67 +1,11 @@
-"""Minimal tool metadata and prompt formatting."""
+"""Built-in file tools for the minimal REPL."""
 
 from __future__ import annotations
 
-import inspect
 import re
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-
-@dataclass(frozen=True)
-class ToolMetadata:
-    name: str
-    description: str
-    proxy: bool = False
-
-
-def _default_tool_name(name: str) -> str:
-    return name[5:] if name.startswith("tool_") else name
-
-
-def tool(description: str, *, name: str | None = None, proxy: bool = False) -> Callable:
-    def decorator(fn):
-        fn._tool_meta = ToolMetadata(
-            name=name or _default_tool_name(fn.__name__),
-            description=description.strip(),
-            proxy=proxy,
-        )
-        return fn
-
-    return decorator
-
-
-def get_tool_metadata(fn: Any) -> ToolMetadata | None:
-    target = getattr(fn, "__func__", fn)
-    return getattr(target, "_tool_meta", None)
-
-
-def format_tool_line(fn: Callable) -> str:
-    meta = get_tool_metadata(fn)
-    if meta is None:
-        return ""
-    try:
-        sig = str(inspect.signature(fn))
-    except (TypeError, ValueError):
-        sig = "(...)"
-    return f"- `{meta.name}{sig}`: {meta.description}"
-
-
-def partition_repl_namespace(
-    namespace: Mapping[str, Any], *, hidden_names: frozenset[str] | set[str] = frozenset()
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    visible: dict[str, Any] = {}
-    hidden: dict[str, Any] = {}
-    for name, value in namespace.items():
-        if name.startswith("_") or name == "SHOW_VARS" or not callable(value):
-            continue
-        if name in hidden_names:
-            hidden[name] = value
-        else:
-            visible[name] = value
-    return visible, hidden
+from rflow.minimal.tools.tools import tool
 
 
 @tool("Read a file and return its contents.")
@@ -163,18 +107,13 @@ FILE_TOOLS = [
 
 
 __all__ = [
-    "ToolMetadata",
     "FILE_TOOLS",
     "append_file",
     "edit_file",
-    "format_tool_line",
-    "get_tool_metadata",
     "grep",
     "line_count",
     "ls",
-    "partition_repl_namespace",
     "read_file",
     "read_lines",
-    "tool",
     "write_file",
 ]

@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal.clients import AnthropicClient, OpenAIClient
 from rflow.minimal import (
     DEFAULT_BUILDER,
     DockerRuntime,
@@ -532,16 +532,14 @@ planner batch, and print results. Continue until
 submission_status()["remaining_submissions"] == 0.
 """
     graph_dir = args.out / "graph"
-    graph = flow.start(
-        Graph(query=query),
-        inputs={"task_instructions": (example_dir / "program.md").read_text()},
-    )
+    graph = Graph(query=query)
+    inputs = {"task_instructions": (example_dir / "program.md").read_text()}
     try:
         graph.save(graph_dir)
         renderer = LiveTreeRenderer(clear=not args.no_live)
 
         async def drive() -> None:
-            async for event in flow.run_streaming(graph):
+            async for event in flow.run_streaming(graph, inputs=inputs):
                 graph.save(graph_dir)
                 if args.no_live:
                     print(render_tree(graph), flush=True)

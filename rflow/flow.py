@@ -21,8 +21,8 @@ from typing import Any
 
 import rflow.prompts.projection as prompt_projection
 from rflow.base import BaseFlow
-from rflow.clients.llm import LLMClient, LLMUsage
-from rflow.clients.llm_channel import LLMChannel
+from rflow.minimal.clients.llm import LLMClient, LLMUsage
+from rflow.minimal.clients.llm_channel import LLMChannel
 from rflow.event_stream import EventStream
 from rflow.graph import (
     ChildHandle,
@@ -211,6 +211,7 @@ class Flow(BaseFlow):
     ) -> AsyncIterator[GraphEvent]:
         self.start(query, inputs, output_schema=output_schema)
         drive = asyncio.create_task(self._drive_async(until=until, n=n))
+
         async def close_when_done() -> None:
             try:
                 await drive

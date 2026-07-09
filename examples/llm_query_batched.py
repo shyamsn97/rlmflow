@@ -100,13 +100,11 @@ def main() -> None:
         use_llm_query=True,
     )
 
-    graph = flow.start(
-        Graph(
-            query=(
-                "Classify the reviews. You must use `await "
-                "llm_query_batched(prompts)` for the per-review classifications, "
-                "then call done(...) with one line per review."
-            )
+    graph = Graph(
+        query=(
+            "Classify the reviews. You must use `await "
+            "llm_query_batched(prompts)` for the per-review classifications, "
+            "then call done(...) with one line per review."
         )
     )
 

@@ -4,30 +4,27 @@ This package mirrors Tau's clean layering style while keeping rflow's core
 choice: the recursive graph is the source of truth.
 """
 
-from rflow.minimal.adapters import FlowLLM, MinimalDSPyLM, messages_to_query
-from rflow.minimal.code import find_code_blocks
-from rflow.minimal.events import (
-    AddChild,
-    AppendNode,
-    Event,
-    GraphAction,
-    GraphCreated,
-    RemoveChild,
-    RemoveNode,
-    ReplaceNode,
-)
 from rflow.minimal.flow import Flow, code_block
 from rflow.minimal.graph import (
     ActionNode,
+    AddChild,
+    AppendNode,
     DoneOutput,
     ErrorOutput,
+    Event,
     ExecAction,
     ExecOutput,
     Graph,
+    GraphAction,
+    GraphCheckpoint,
+    GraphCreated,
     LLMOutput,
     LLMUsage,
     Node,
     ObservationNode,
+    RemoveChild,
+    RemoveNode,
+    ReplaceNode,
     ResumeAction,
     SupervisingOutput,
     UserQuery,
@@ -35,17 +32,17 @@ from rflow.minimal.graph import (
     load_run,
     node_from_dict,
 )
-from rflow.minimal.pool import AsyncPool, SequentialPool
+from rflow.minimal.integrations import DSPyFlow, FlowLLM, messages_to_query
+from rflow.minimal.parallel import FlowGroup, group_flows
+from rflow.minimal.pool import AsyncPool, Pool, SequentialPool
 from rflow.minimal.prompts import DEFAULT_BUILDER, SYSTEM_PROMPT, PromptBuilder
-from rflow.minimal.rendering import (
-    LiveTreeRenderer,
-    render_tree,
-)
-from rflow.minimal.repl import DoneSignal, MissingReplError, Repl
 from rflow.minimal.runtime import (
     DockerRuntime,
+    DoneSignal,
     LocalRuntime,
+    MissingReplError,
     ModalRuntime,
+    Repl,
     ReplLike,
     Runtime,
     SubprocessRuntime,
@@ -63,8 +60,16 @@ from rflow.minimal.tools import (
     get_tool_metadata,
     tool,
 )
-from rflow.minimal.tui import tui
-from rflow.minimal.viewer import open_viewer
+from rflow.minimal.utils import find_code_blocks
+from rflow.minimal.view import (
+    LiveTreeRenderer,
+    open_viewer,
+    render_tree,
+    replay,
+    save_image,
+    save_steps,
+    tui,
+)
 
 __all__ = [
     "ActionNode",
@@ -82,9 +87,11 @@ __all__ = [
     "FILE_TOOLS",
     "find_code_blocks",
     "Flow",
+    "FlowGroup",
     "FlowLLM",
     "Graph",
     "GraphAction",
+    "GraphCheckpoint",
     "GraphCreated",
     "LLMOutput",
     "LLMUsage",
@@ -92,11 +99,15 @@ __all__ = [
     "LocalRuntime",
     "MissingReplError",
     "ModalRuntime",
-    "MinimalDSPyLM",
+    "DSPyFlow",
     "Node",
     "ObservationNode",
     "open_viewer",
+    "Pool",
     "PromptBuilder",
+    "replay",
+    "save_image",
+    "save_steps",
     "Repl",
     "ReplLike",
     "RemoveChild",
@@ -117,6 +128,7 @@ __all__ = [
     "code_block",
     "format_tool_line",
     "get_tool_metadata",
+    "group_flows",
     "json_schema_for",
     "load_run",
     "messages_to_query",

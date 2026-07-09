@@ -142,7 +142,7 @@ from pathlib import Path
 
 import asyncio
 
-from rflow.clients import OpenAIClient
+from rflow.minimal.clients import OpenAIClient
 from rflow.minimal import FILE_TOOLS, Flow, Graph, LocalRuntime, open_viewer, render_tree
 
 workdir = Path("examples/_runs/quickstart")
@@ -158,7 +158,7 @@ flow = Flow(
 )
 
 query = "Build a Python text-based adventure game with combat and inventory."
-graph = flow.start(Graph(query=query))
+graph = Graph(query=query)
 
 async def drive() -> None:
     async for _event in flow.run_streaming(graph):

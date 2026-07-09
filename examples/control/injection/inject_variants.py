@@ -29,8 +29,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rflow.clients import AnthropicClient, OpenAIClient
-from rflow.minimal import ExecOutput, Flow, Graph, SupervisingOutput
+from rflow.minimal.clients import AnthropicClient, OpenAIClient
+from rflow.minimal import ExecOutput, Flow, Graph, SupervisingOutput, group_flows
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:
@@ -227,32 +227,20 @@ def main() -> None:
             max_iters=30,
         )
 
-    # One Flow per variant; step active variants through one shared parallel batch.
+    # One Flow per variant; group them and stream both graphs' events together.
     cols_flow = new_flow()
     root_flow = new_flow()
 
-    async def step_variants() -> None:
-        async def step(flow: Flow, graph: Graph) -> None:
-            try:
-                await flow.step(graph, until="node")
-            except RuntimeError as exc:
-                if "run is already active" not in str(exc):
-                    raise
-                await flow.step(until="node")
+    async def run_variants() -> None:
+        group = group_flows(
+            cols=(cols_flow, cols_graph),
+            root=(root_flow, root_graph),
+        )
+        async for event in group:
+            node_type = getattr(event, "node_type", event.type)
+            print(f"step: {event.graph_id} -> {node_type}")
 
-        while not (cols_graph.finished and root_graph.finished):
-            active: list[tuple[Flow, Graph]] = []
-            if not cols_graph.finished:
-                active.append((cols_flow, cols_graph))
-            if not root_graph.finished:
-                active.append((root_flow, root_graph))
-
-            await asyncio.gather(*(step(flow, graph) for flow, graph in active))
-            cols_state = cols_graph.current().type if cols_graph.current() else "<empty>"
-            root_state = root_graph.current().type if root_graph.current() else "<empty>"
-            print(f"step: Variation A={cols_state}, Variation B={root_state}")
-
-    asyncio.run(step_variants())
+    asyncio.run(run_variants())
 
     cols_flow.close_repls(cols_graph.graph_id)
     root_flow.close_repls(root_graph.graph_id)

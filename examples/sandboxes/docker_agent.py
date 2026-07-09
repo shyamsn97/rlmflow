@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from rflow.clients import AnthropicClient, OpenAIClient  # noqa: E402
+from rflow.minimal.clients import AnthropicClient, OpenAIClient  # noqa: E402
 from rflow.minimal import DockerRuntime, Flow, Graph, LiveTreeRenderer  # noqa: E402
 
 
@@ -63,7 +63,7 @@ def build_llm(model: str):
 
 
 async def run_turn(flow: Flow, query: str, *, use_live: bool) -> Graph:
-    graph = flow.start(Graph(query=query))
+    graph = Graph(query=query)
     renderer = LiveTreeRenderer(clear=use_live)
     async for event in flow.run_streaming(graph):
         renderer.handle(event, graph)

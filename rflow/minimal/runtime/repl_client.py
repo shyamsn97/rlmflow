@@ -1,4 +1,4 @@
-"""Host-side client and transports for the minimal remote REPL protocol."""
+"""Host-side client for the minimal remote REPL protocol."""
 
 from __future__ import annotations
 
@@ -8,36 +8,35 @@ import textwrap
 from collections.abc import Callable
 from typing import Any, Protocol
 
-from rflow.minimal.protocol import (
+from rflow.minimal.runtime.protocol import (
     InjectImportRequest,
     InjectProxyRequest,
     InjectRequest,
     InjectSourceRequest,
     ProxyCall,
     ProxyResponse,
+    RemoveRequest,
     ReplResponse,
     RunRequest,
+    SetEnvRequest,
     WireModel,
 )
-from rflow.minimal.repl import DoneSignal, MissingReplError
+from rflow.minimal.runtime.repl import DoneSignal, MissingReplError
 from rflow.minimal.tools import get_tool_metadata
 
 
 class ReplConnection(Protocol):
-    """Connection used by :class:`ReplClient` to talk to a deployed server."""
+    """Minimal send/recv boundary used by ReplClient."""
 
-    def send(self, msg: WireModel) -> None:
-        ...
+    def send(self, msg: WireModel) -> None: ...
 
-    def recv(self) -> ReplResponse | ProxyCall:
-        ...
+    def recv(self) -> ReplResponse | ProxyCall: ...
 
-    def close(self) -> None:
-        ...
+    def close(self) -> None: ...
 
 
 class ReplClient:
-    """ReplLike host client for any transport speaking the minimal protocol."""
+    """ReplLike host client for a deployed minimal REPL server."""
 
     def __init__(self, connection: ReplConnection) -> None:
         self.connection = connection
@@ -76,22 +75,48 @@ class ReplClient:
         for name, fn in tools.items():
             if name == "INPUTS":
                 continue
+            # ``done`` is a framework primitive: always a host proxy with special
+            # completion semantics, even if seeded without tool metadata.
             if name == "done":
                 self._done = fn
                 self._inject_proxy("done", self._remote_done)
-            elif name == "launch_subagents":
-                self._inject_proxy("_minimal_launch_subagents", self._sync_callable(fn))
-                self._inject_launcher()
-            elif not callable(fn):
-                self.call(
-                    InjectRequest(id=self._next_id("inject"), name=name, value=fn)
-                )
             else:
-                meta = get_tool_metadata(fn)
-                if meta is not None and meta.proxy:
-                    self._inject_proxy(name, self._sync_callable(fn))
-                else:
-                    self._inject_local_tool(name, fn)
+                # Everything else (launch_subagents, llm_query_batched, user
+                # tools) is driven by its own metadata via inject_tool.
+                self.inject_tool(name, fn)
+
+    def inject_tool(self, name: str, fn: Any) -> None:
+        """Ship one tool into the remote namespace (dynamic tools).
+
+        Proxy tools run back on the host; other callables are imported or
+        source-shipped into the sandbox; plain values are injected directly.
+        """
+        self.namespace[name] = fn
+        if not callable(fn):
+            self.call(InjectRequest(id=self._next_id("inject"), name=name, value=fn))
+            return
+        meta = get_tool_metadata(fn)
+        if meta is not None and meta.proxy:
+            self._inject_proxy(
+                name, self._sync_callable(fn), is_async=meta.is_async
+            )
+        else:
+            self._inject_local_tool(name, fn)
+
+    def remove_tool(self, name: str) -> None:
+        self.namespace.pop(name, None)
+        self.proxied.pop(name, None)
+        self.call(RemoveRequest(id=self._next_id("remove"), name=name))
+
+    def set_process_env(self, env: dict[str, str]) -> None:
+        if not env:
+            return
+        self.call(
+            SetEnvRequest(
+                id=self._next_id("set_env"),
+                values={str(k): str(v) for k, v in env.items()},
+            )
+        )
 
     async def run(self, code: str) -> str:
         if not code.strip():
@@ -110,20 +135,13 @@ class ReplClient:
     def close(self) -> None:
         self.connection.close()
 
-    def _inject_proxy(self, name: str, fn: Callable[..., object]) -> None:
+    def _inject_proxy(
+        self, name: str, fn: Callable[..., object], *, is_async: bool = False
+    ) -> None:
         self.proxied[name] = fn
-        self.call(InjectProxyRequest(id=self._next_id("inject_proxy"), name=name))
-
-    def _inject_launcher(self) -> None:
         self.call(
-            InjectSourceRequest(
-                id=self._next_id("inject_source"),
-                name="launch_subagents",
-                func_name="launch_subagents",
-                source=(
-                    "async def launch_subagents(specs):\n"
-                    "    return _minimal_launch_subagents(specs)\n"
-                ),
+            InjectProxyRequest(
+                id=self._next_id("inject_proxy"), name=name, is_async=is_async
             )
         )
 
@@ -199,7 +217,4 @@ class ReplClient:
         return asyncio.run_coroutine_threadsafe(wait(), self._loop).result()
 
 
-__all__ = [
-    "ReplConnection",
-    "ReplClient",
-]
+__all__ = ["ReplClient", "ReplConnection"]

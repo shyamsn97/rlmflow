@@ -48,7 +48,7 @@ def pushd(path: Path) -> Iterator[None]:
 
 
 def build_rflow_llm(model: str):
-    from rflow.clients import AnthropicClient, OpenAIClient
+    from rflow.minimal.clients import AnthropicClient, OpenAIClient
 
     return (
         AnthropicClient(model)
@@ -122,11 +122,14 @@ def run_rflow(
 
     print(f"\n=== rflow run ===\nworkdir: {run_dir}\nmodel: {model}\n")
     try:
-        graph = flow.start(Graph(query=TASK, output_schema=BoidsSimulation))
+        graph = Graph(query=TASK)
 
         async def drive() -> None:
             renderer = LiveTreeRenderer(clear=not no_viz)
-            async for event in flow.run_streaming(graph):
+            async for event in flow.run_streaming(
+                graph,
+                output_schema=BoidsSimulation,
+            ):
                 graph.save(run_dir / "graph")
                 renderer.handle(event, graph)
 

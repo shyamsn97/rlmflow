@@ -6,6 +6,7 @@ but callers should inspect/replay this graph for durable state.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from copy import deepcopy
@@ -119,6 +120,32 @@ NODE_TYPES = {
 }
 
 
+def _digest(nodes: list[Node]) -> str:
+    """Fingerprint of a node prefix for checkpoint staleness detection.
+
+    Changes if any node below the checkpoint is added, removed, replaced, or has
+    its code edited. Used by ``Graph.revert`` to refuse when history was rewritten.
+    """
+    h = hashlib.md5(usedforsecurity=False)
+    for i, node in enumerate(nodes):
+        h.update(f"{i}:{node.type}:{getattr(node, 'code', '')}".encode())
+    return h.hexdigest()[:12]
+
+
+@dataclass(frozen=True)
+class GraphCheckpoint:
+    """A savepoint = an index into an agent's node stream + a staleness digest.
+
+    ``position`` is ``len(agent.nodes)`` at checkpoint time; ``revert`` truncates
+    back to it. ``digest`` fingerprints ``nodes[:position]`` so a revert refuses if
+    that prefix was rewritten out from under the checkpoint.
+    """
+
+    agent_id: str
+    position: int
+    digest: str
+
+
 @dataclass
 class Graph:
     agent_id: str = "root"
@@ -130,7 +157,7 @@ class Graph:
     parent_agent_id: str | None = None
     output_schema: object | None = None
     nodes: list[Node] = field(default_factory=list)
-    children: dict[str, "Graph"] = field(default_factory=dict)
+    children: dict[str, Graph] = field(default_factory=dict)
 
     def current(self) -> Node | None:
         return self.nodes[-1] if self.nodes else None
@@ -171,11 +198,11 @@ class Graph:
         self.nodes.append(node)
         return node
 
-    def agent_for(self, agent_id: str | None = None) -> "Graph":
+    def agent_for(self, agent_id: str | None = None) -> Graph:
         return self if agent_id is None else self[agent_id]
 
     def inject_action(self, content: str, *, agent_id: str | None = None) -> Any:
-        from rflow.minimal.events import AppendNode
+        from rflow.minimal.graph.events import AppendNode
 
         target = self.agent_for(agent_id)
         return AppendNode(
@@ -197,7 +224,7 @@ class Graph:
         agent_id: str | None = None,
         keep_children: bool = True,
         session: Literal["isolated", "shared"] = "isolated",
-    ) -> "Graph":
+    ) -> Graph:
         if session not in {"isolated", "shared"}:
             raise ValueError("session must be 'isolated' or 'shared'")
         forked = deepcopy(self)
@@ -211,7 +238,7 @@ class Graph:
         return forked
 
     def rewind_action(self, node_id: str, *, agent_id: str | None = None) -> Any:
-        from rflow.minimal.events import RemoveNode
+        from rflow.minimal.graph.events import RemoveNode
 
         target = self.agent_for(agent_id)
         return RemoveNode(
@@ -226,10 +253,39 @@ class Graph:
         apply_graph_action(self, action)
         return action
 
+    def checkpoint(self, *, agent_id: str | None = None) -> GraphCheckpoint:
+        agent = self.agent_for(agent_id)
+        return GraphCheckpoint(
+            agent_id=agent.agent_id,
+            position=len(agent.nodes),
+            digest=_digest(agent.nodes),
+        )
+
+    def revert(self, checkpoint: GraphCheckpoint) -> Any:
+        """Truncate an agent's node stream back to ``checkpoint.position``.
+
+        Refuses (raises) if the checkpoint is stale (nodes truncated below it) or
+        if the prefix was rewritten (digest mismatch). Reuses the ``RemoveNode``
+        path, so it emits a normal graph action and keeps history visible.
+        """
+        agent = self.agent_for(checkpoint.agent_id)
+        if checkpoint.position > len(agent.nodes):
+            raise ValueError(
+                "stale checkpoint: agent has fewer nodes than checkpoint.position"
+            )
+        if _digest(agent.nodes[: checkpoint.position]) != checkpoint.digest:
+            raise ValueError(
+                "checkpoint digest mismatch: history was rewritten below the checkpoint"
+            )
+        if checkpoint.position == len(agent.nodes):
+            return None  # already at the checkpoint; nothing to truncate
+        node_id = agent.nodes[checkpoint.position].id
+        return self.rewind(node_id, agent_id=checkpoint.agent_id)
+
     def replace_node_action(
         self, node_id: str, node: Node, *, agent_id: str | None = None
     ) -> Any:
-        from rflow.minimal.events import ReplaceNode
+        from rflow.minimal.graph.events import ReplaceNode
 
         target = self.agent_for(agent_id)
         return ReplaceNode(
@@ -250,7 +306,7 @@ class Graph:
     def remove_child_action(
         self, child_agent_id: str, *, parent_agent_id: str | None = None
     ) -> Any:
-        from rflow.minimal.events import RemoveChild
+        from rflow.minimal.graph.events import RemoveChild
 
         parent = self.agent_for(parent_agent_id)
         return RemoveChild(
@@ -273,16 +329,16 @@ class Graph:
         for agent in self.walk():
             agent.graph_id = graph_id
 
-    def walk(self) -> Iterator["Graph"]:
+    def walk(self) -> Iterator[Graph]:
         yield self
         for child in self.children.values():
             yield from child.walk()
 
     @property
-    def agents(self) -> dict[str, "Graph"]:
+    def agents(self) -> dict[str, Graph]:
         return {agent.agent_id: agent for agent in self.walk()}
 
-    def __getitem__(self, agent_id: str) -> "Graph":
+    def __getitem__(self, agent_id: str) -> Graph:
         return self.agents[agent_id]
 
     def __contains__(self, agent_id: object) -> bool:
@@ -294,7 +350,7 @@ class Graph:
         return save_run(self, path, metadata=metadata)
 
     @classmethod
-    def load(cls, path: str | Path) -> "Graph":
+    def load(cls, path: str | Path) -> Graph:
         return load_run(path)
 
     def to_dict(self) -> dict[str, Any]:
@@ -314,7 +370,7 @@ class Graph:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Graph":
+    def from_dict(cls, data: dict[str, Any]) -> Graph:
         return cls(
             agent_id=data.get("agent_id", "root"),
             graph_id=data.get("graph_id") or new_graph_id(),
@@ -344,7 +400,7 @@ def node_from_dict(data: dict[str, Any]) -> Node:
 
 
 def apply_graph_action(graph: Graph | None, action: Any) -> Graph:
-    from rflow.minimal.events import (
+    from rflow.minimal.graph.events import (
         AddChild,
         AppendNode,
         GraphCreated,
@@ -563,6 +619,7 @@ __all__ = [
     "ExecAction",
     "ExecOutput",
     "Graph",
+    "GraphCheckpoint",
     "LLMUsage",
     "LLMOutput",
     "load_run",

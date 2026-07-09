@@ -16,7 +16,7 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal.clients import AnthropicClient, OpenAIClient
 from rflow.minimal import Event, Flow, Graph, render_tree
 
 
@@ -95,7 +95,7 @@ async def run_example(args: argparse.Namespace) -> Graph:
         max_iters=args.max_iters,
         max_concurrency=args.max_concurrency,
     )
-    graph = flow.start(Graph(query=QUERY))
+    graph = Graph(query=QUERY)
     observed: list[Event] = []
 
     events = await flow.step(graph)  # default: until="node"

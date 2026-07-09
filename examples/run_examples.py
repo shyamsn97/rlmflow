@@ -129,6 +129,22 @@ EXAMPLES: list[Example] = [
         timeout=300,
     ),
     Example(
+        "skills",
+        "examples/skills.py",
+        category="live",
+        args=("--out-dir", "{tmp}/skills"),
+        env=("OPENAI_API_KEY",),
+        modules=("openai",),
+        timeout=300,
+        note="on-disk SKILL.md loaded into a callable prompt section; live LLM",
+    ),
+    Example(
+        "dynamic-skills",
+        "examples/dynamic_skills.py",
+        args=("--print-prompt", "--out-dir", "{tmp}/dynamic-skills"),
+        note="agent installs a skill mid-run via add_skill; prompt grows next turn",
+    ),
+    Example(
         "summarizer",
         "examples/summarizer.py",
         category="live",

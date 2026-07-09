@@ -27,8 +27,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rflow.clients import AnthropicClient, OpenAIClient
-from rflow.minimal import Flow, render_tree
+from rflow.minimal.clients import AnthropicClient, OpenAIClient
+from rflow.minimal import Flow, Graph, render_tree
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:
@@ -137,11 +137,15 @@ def run(model: str, out_dir: Path) -> None:
         max_depth=2,
     )
 
-    graph = flow.start(QUERY, {"grid": GRID}, output_schema=WordSearchResult)
+    graph = Graph(query=QUERY)
     print(render_tree(graph))
 
     async def run_to_done() -> None:
-        async for _event in flow.run_streaming(graph):
+        async for _event in flow.run_streaming(
+            graph,
+            inputs={"grid": GRID},
+            output_schema=WordSearchResult,
+        ):
             print(render_tree(graph))
 
     asyncio.run(run_to_done())

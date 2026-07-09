@@ -6,7 +6,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from dataclasses import dataclass
 
-from rflow.clients.llm import LLMClient, LLMUsage
+from rflow.minimal.clients.llm import LLMClient, LLMUsage
 
 
 @dataclass

@@ -9,10 +9,10 @@ import io
 import os
 import sys
 import threading
-from contextlib import contextmanager
 from collections.abc import Callable
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 
 class MissingReplError(Exception):
@@ -21,6 +21,29 @@ class MissingReplError(Exception):
 
 class DoneSignal(BaseException):
     """Raised by ``done(...)`` to end a block immediately."""
+
+
+@runtime_checkable
+class ReplLike(Protocol):
+    namespace: dict[str, Any]
+    done_result: str | None
+    errored: bool
+
+    def seed(
+        self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]
+    ) -> None: ...
+
+    def inject_tool(self, name: str, fn: Any) -> None: ...
+
+    def remove_tool(self, name: str) -> None: ...
+
+    def set_process_env(self, env: dict[str, str]) -> None: ...
+
+    async def run(self, code: str) -> str: ...
+
+    def drain(self) -> str: ...
+
+    def close(self) -> None: ...
 
 
 _stdout_buf: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar(
@@ -75,6 +98,7 @@ class Repl:
         self.namespace: dict[str, Any] = {"__builtins__": __builtins__}
         self.done_result: str | None = None
         self.errored = False
+        self.process_env: dict[str, str] = {}
         self._buf = io.StringIO()
         self.working_directory = (
             Path(working_directory).resolve() if working_directory is not None else None
@@ -94,9 +118,22 @@ class Repl:
         _stdout_buf.set(self._buf)
         return output
 
-    def seed(self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]) -> None:
+    def seed(
+        self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]
+    ) -> None:
         self.namespace.update(tools)
         self.namespace["INPUTS"] = dict(inputs)
+
+    def inject_tool(self, name: str, fn: Any) -> None:
+        """Add/replace a single tool in the live namespace (dynamic tools)."""
+        self.namespace[name] = fn
+
+    def remove_tool(self, name: str) -> None:
+        self.namespace.pop(name, None)
+
+    def set_process_env(self, env: dict[str, str]) -> None:
+        """Public ``RFLOW_*`` metadata applied to ``os.environ`` during exec."""
+        self.process_env = {str(k): str(v) for k, v in env.items()}
 
     def close(self) -> None:
         """Release runtime resources; local minimal REPLs have none."""
@@ -111,6 +148,7 @@ class Repl:
             _CWD_LOCK.acquire()
             previous_cwd = os.getcwd()
             os.chdir(self.working_directory)
+        restore_env = self._apply_process_env()
         try:
             yield
         except DoneSignal:
@@ -119,10 +157,27 @@ class Repl:
             self.errored = True
             self._buf.write(f"{type(exc).__name__}: {exc}")
         finally:
+            restore_env()
             _stdout_buf.reset(token)
             if previous_cwd is not None:
                 os.chdir(previous_cwd)
                 _CWD_LOCK.release()
+
+    def _apply_process_env(self) -> Callable[[], None]:
+        """Set ``process_env`` on ``os.environ`` and return an undo callback."""
+        if not self.process_env:
+            return lambda: None
+        saved = {key: os.environ.get(key) for key in self.process_env}
+        os.environ.update(self.process_env)
+
+        def restore() -> None:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+        return restore
 
     async def run(self, code: str) -> str:
         with self.capture():
@@ -149,4 +204,10 @@ class Repl:
         return self.output
 
 
-__all__ = ["DoneSignal", "MissingReplError", "Repl", "has_top_level_await"]
+__all__ = [
+    "DoneSignal",
+    "MissingReplError",
+    "Repl",
+    "ReplLike",
+    "has_top_level_await",
+]

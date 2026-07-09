@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rflow.clients import OpenAIClient
+from rflow.minimal.clients import OpenAIClient
 from rflow.minimal import Flow, FlowLLM, Graph
 
 

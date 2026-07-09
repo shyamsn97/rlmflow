@@ -15,7 +15,7 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal.clients import AnthropicClient, OpenAIClient
 from rflow.minimal import (
     DockerRuntime,
     FILE_TOOLS,
@@ -99,7 +99,7 @@ def main():
             if not query or query.lower() in ("quit", "exit", "q"):
                 break
 
-            graph = flow.start(Graph(query=query))
+            graph = Graph(query=query)
 
             async def drive() -> None:
                 renderer = LiveTreeRenderer(clear=not args.no_viz)

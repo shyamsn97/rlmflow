@@ -20,8 +20,8 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-from rflow.clients import OpenAIClient
 from rflow.minimal import DEFAULT_BUILDER, Flow, Graph
+from rflow.minimal.clients import OpenAIClient
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:

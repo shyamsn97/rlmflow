@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from rflow.clients.llm import LLMClient, LLMUsage
+from rflow.minimal.clients.llm import LLMClient, LLMUsage
 from rflow.graph import ChildHandle, Graph, LLMOutput
 from rflow.graph.actions import Action
 from rflow.runtime.context import EngineContext

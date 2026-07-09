@@ -20,7 +20,7 @@ import random
 import string
 from pathlib import Path
 
-from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal.clients import AnthropicClient, OpenAIClient
 from rflow.minimal import DockerRuntime, Flow, Graph, LiveTreeRenderer
 
 
@@ -105,20 +105,17 @@ def main():
         max_iters=args.max_iters,
     )
 
-    graph = flow.start(
-        Graph(
-            query=(
-                "I'm looking for a magic number buried somewhere in the haystack in "
-                "INPUTS['haystack']. What is it? Chunk the string and search the "
-                "pieces in parallel."
-            )
-        ),
-        inputs={"haystack": haystack},
+    graph = Graph(
+        query=(
+            "I'm looking for a magic number buried somewhere in the haystack in "
+            "INPUTS['haystack']. What is it? Chunk the string and search the "
+            "pieces in parallel."
+        )
     )
 
     async def drive() -> None:
         renderer = LiveTreeRenderer(clear=not args.no_viz)
-        async for event in flow.run_streaming(graph):
+        async for event in flow.run_streaming(graph, inputs={"haystack": haystack}):
             renderer.handle(event, graph)
 
     asyncio.run(drive())

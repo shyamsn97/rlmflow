@@ -18,7 +18,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rflow.clients import OpenAIClient
+from rflow.minimal.clients import OpenAIClient
 from rflow.minimal import Flow, Graph, LiveTreeRenderer, render_tree
 
 
@@ -84,15 +84,15 @@ def main() -> None:
         "agents."
     )
 
-    graph = flow.start(
-        Graph(query=query),
-        {"trip_brief": TRIP_BRIEF},
-        output_schema=PackingPlan,
-    )
+    graph = Graph(query=query)
 
     async def drive() -> None:
         renderer = LiveTreeRenderer()
-        async for event in flow.run_streaming(graph):
+        async for event in flow.run_streaming(
+            graph,
+            inputs={"trip_brief": TRIP_BRIEF},
+            output_schema=PackingPlan,
+        ):
             renderer.handle(event, graph)
 
     asyncio.run(drive())

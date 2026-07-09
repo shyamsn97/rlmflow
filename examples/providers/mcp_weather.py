@@ -19,7 +19,7 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
-from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal.clients import AnthropicClient, OpenAIClient
 from rflow.minimal import (
     Flow,
     Graph,
@@ -305,7 +305,7 @@ def main() -> None:
             max_depth=args.max_depth,
             max_iters=args.max_iters,
         )
-        graph = flow.start(Graph(query=args.query))
+        graph = Graph(query=args.query)
         graph = asyncio.run(run_until_done(flow, graph, show_live=not args.no_viz))
 
         print(f"\n{'=' * 60}\nWEATHER PACKING RECOMMENDATION\n{'=' * 60}")

@@ -18,7 +18,7 @@ import argparse
 import os
 from pathlib import Path
 
-from rflow.clients import OpenAIClient
+from rflow.minimal.clients import OpenAIClient
 from rflow.minimal import FILE_TOOLS, Flow, LocalRuntime, tui
 
 

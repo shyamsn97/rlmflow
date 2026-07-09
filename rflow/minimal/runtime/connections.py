@@ -1,4 +1,7 @@
-"""Subprocess connection for ``rflow.minimal.remote_server``."""
+"""Subprocess/container transport for the minimal remote REPL protocol.
+
+``PopenConnection`` is shared by the subprocess and Docker runtimes.
+"""
 
 from __future__ import annotations
 
@@ -7,18 +10,18 @@ import subprocess as sp
 from contextlib import suppress
 from pathlib import Path
 
-from rflow.minimal.protocol import (
+from rflow.minimal.runtime.protocol import (
     ProxyCall,
     ReplResponse,
     WireModel,
     dump_message,
     parse_client_message,
 )
-from rflow.minimal.remote import ReplConnection
+from rflow.minimal.runtime.repl_client import ReplConnection
 
 
-class PopenServerConnection(ReplConnection):
-    """Connect ReplClient to a remote_server subprocess."""
+class PopenConnection(ReplConnection):
+    """Connect ReplClient to a repl_server subprocess/container."""
 
     def __init__(
         self,
@@ -133,4 +136,4 @@ class PopenServerConnection(ReplConnection):
                 return
 
 
-__all__ = ["PopenServerConnection"]
+__all__ = ["PopenConnection"]

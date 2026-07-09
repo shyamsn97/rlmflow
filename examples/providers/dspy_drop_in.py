@@ -15,8 +15,8 @@ from pathlib import Path
 
 import dspy
 
-from rflow.clients import OpenAIClient
-from rflow.minimal import Flow, FlowLLM, MinimalDSPyLM
+from rflow.minimal.clients import OpenAIClient
+from rflow.minimal import DSPyFlow, Flow, FlowLLM
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:
@@ -52,7 +52,7 @@ def main() -> None:
         )
     )
 
-    dspy.configure(lm=MinimalDSPyLM(agent, model="rlmflow/gpt-4o-mini"))
+    dspy.configure(lm=DSPyFlow(agent, model="rlmflow/gpt-4o-mini"))
 
     qa = dspy.ChainOfThought("question -> answer")
     result = qa(question="What is 17 * 23? Show a short calculation.")

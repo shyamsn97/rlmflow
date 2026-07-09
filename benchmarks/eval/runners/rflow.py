@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from rflow import Flow, LocalRuntime
-from rflow.clients.llm import LLMClient, LLMUsage
+from rflow.minimal.clients.llm import LLMClient, LLMUsage
 
 from benchmarks.eval import runner
 from benchmarks.eval.metrics import graph_metrics

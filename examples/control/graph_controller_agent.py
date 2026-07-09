@@ -18,7 +18,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal.clients import AnthropicClient, OpenAIClient
 from rflow.minimal import (
     DEFAULT_BUILDER,
     DoneOutput,
@@ -560,7 +560,7 @@ def main() -> None:
         build_llm(args.controller_model),
         max_iters=args.controller_max_iters,
     )
-    controller_graph = controller.start(Graph(query=CONTROLLER_TASK))
+    controller_graph = Graph(query=CONTROLLER_TASK)
     controller_graph, snapshots = asyncio.run(
         _drive_controller(
             controller,

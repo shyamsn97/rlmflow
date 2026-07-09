@@ -14,7 +14,7 @@ from pathlib import Path
 import argparse
 import asyncio
 
-from rflow.clients import TinkerClient
+from rflow.minimal.clients import TinkerClient
 from rflow.minimal import Flow, Graph, LiveTreeRenderer
 
 
@@ -76,7 +76,7 @@ def main() -> None:
     )
     flow = Flow(llm, max_iters=args.max_iters)
     print(f"Query: {args.query}\n")
-    graph = flow.start(Graph(query=args.query))
+    graph = Graph(query=args.query)
 
     async def drive() -> None:
         renderer = LiveTreeRenderer()

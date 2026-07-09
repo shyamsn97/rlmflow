@@ -1,6 +1,6 @@
 """Compare repair branches with the Graph-centric API.
 
-Each repair attempt is a separate ``flow.start(...)`` run in its own working
+Each repair attempt is a separate ``Graph(...)`` run in its own working
 directory; the resulting graphs are directly comparable.
 
 Usage:
@@ -111,7 +111,7 @@ def run_branch(root: Path, name: str, implementation: str, label: str):
     flow = Flow(
         RepairLLM(implementation, label), runtime=runtime, max_depth=0, max_iters=3
     )
-    graph = flow.start(Graph(query=TASK))
+    graph = Graph(query=TASK)
     asyncio.run(flow.step(graph, until="done"))
     passed, output = run_tests(workdir)
     graph.save(workdir / "graph")

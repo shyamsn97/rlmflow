@@ -21,7 +21,7 @@ import string
 import tempfile
 from pathlib import Path
 
-from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal.clients import AnthropicClient, OpenAIClient
 from rflow.minimal import (
     DockerRuntime,
     FILE_TOOLS,
@@ -145,15 +145,13 @@ def main():
             max_iters=args.max_iters,
         )
 
-        graph = flow.start(
-            Graph(
-                query=(
-                    f"There are {args.num_files} text files in haystack/. "
-                    "Exactly one line in one file matches the pattern "
-                    "`The magic number is <number>`. Find and return the number. "
-                    "There are too many files to search manually, so split the work "
-                    "into batches and delegate the search to subagents."
-                )
+        graph = Graph(
+            query=(
+                f"There are {args.num_files} text files in haystack/. "
+                "Exactly one line in one file matches the pattern "
+                "`The magic number is <number>`. Find and return the number. "
+                "There are too many files to search manually, so split the work "
+                "into batches and delegate the search to subagents."
             )
         )
 

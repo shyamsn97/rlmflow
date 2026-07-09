@@ -130,7 +130,7 @@ def main() -> None:
     flow = file_flow(workdir, max_depth=args.max_depth, max_iters=args.max_iters)
 
     banner("1. Step-by-step execution")
-    graph = flow.start(Graph(query="Create hello.py and goodbye.py. Delegate each file."))
+    graph = Graph(query="Create hello.py and goodbye.py. Delegate each file.")
     history = asyncio.run(run(flow, graph, args.no_viz))
     final = history[-1]
     print(f"\n{GREEN}Result:{RESET} {final.result()}")
@@ -168,7 +168,7 @@ def main() -> None:
 
     banner("6. Gym-style loop")
     flow3 = file_flow(workdir, max_depth=0, max_iters=args.max_iters)
-    graph3 = flow3.start(Graph(query="Write a haiku about recursion to haiku.txt"))
+    graph3 = Graph(query="Write a haiku about recursion to haiku.txt")
     rewards = asyncio.run(gym_loop(flow3, graph3))
     print(f"{GREEN}Result:{RESET} {graph3.result()}")
     print(f"Total reward: {sum(rewards):.1f}")

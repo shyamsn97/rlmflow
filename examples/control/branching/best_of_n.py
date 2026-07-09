@@ -1,6 +1,6 @@
 """Best-of-N with independent Flow branches.
 
-Each branch is a fresh ``flow.start(...)`` run saved to its own ``graph.json``,
+Each branch is a fresh ``Graph(...)`` run saved to its own ``graph.json``,
 demonstrating the Graph-centric surface.
 
 Usage:
@@ -76,7 +76,7 @@ def score(result: str) -> tuple[int, dict[str, str]]:
 def run_branch(root: Path, idx: int) -> tuple[str, int, dict[str, str], int]:
     llm = MockLLM(seed=idx)
     flow = Flow(llm, max_depth=1, max_iters=10)
-    graph = flow.start(Graph(query=QUERY))
+    graph = Graph(query=QUERY)
     asyncio.run(flow.step(graph, until="done"))
     # Each branch persists to its own directory (graph.json).
     graph.save(root / f"branch_{idx}")

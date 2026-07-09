@@ -8,7 +8,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from rflow.clients.llm import LLMClient, LLMUsage
+from rflow.minimal.clients.llm import LLMClient, LLMUsage
 
 try:
     import dspy

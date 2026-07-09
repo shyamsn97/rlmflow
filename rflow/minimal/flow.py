@@ -3,21 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
-import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import suppress
+from copy import deepcopy
+from dataclasses import replace
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Any
 
-from rflow.minimal.code import find_code_blocks
-from rflow.minimal.events import (
-    AddChild,
-    AppendNode,
-    Event,
-    GraphAction,
-    GraphCreated,
-)
 from rflow.minimal.graph import (
     DoneOutput,
     ErrorOutput,
@@ -26,31 +18,57 @@ from rflow.minimal.graph import (
     Graph,
     LLMOutput,
     LLMUsage,
-    ResumeAction,
-    SupervisingOutput,
+    Node,
     UserQuery,
     apply_graph_action,
 )
-from rflow.minimal.pool import AsyncPool, SequentialPool
-from rflow.minimal.prompts import DEFAULT_BUILDER, PromptBuilder
-from rflow.minimal.repl import DoneSignal
-from rflow.minimal.runtime import LocalRuntime, ReplLike, Runtime
-from rflow.minimal.structured import Schema, StructuredOutputParser, json_schema_for
-from rflow.minimal.tools import get_tool_metadata, tool
-
-ReplKey = tuple[str, str]
-Pool = AsyncPool | SequentialPool
-StepUntil = (
-    Literal["event", "node", "done", "finished", "idle", "supervising", "error"]
-    | Callable[[Event, Graph], bool]
-    | int
+from rflow.minimal.graph.events import (
+    AppendNode,
+    Event,
+    EventStream,
+    GraphAction,
+    GraphCreated,
+    StepUntil,
+    reached,
 )
+from rflow.minimal.pool import AsyncPool, Pool
+from rflow.minimal.prompts import DEFAULT_BUILDER, PromptBuilder
+from rflow.minimal.prompts.messages import build_messages, merge_summary
+from rflow.minimal.runtime import LocalRuntime, Runtime
+from rflow.minimal.runtime.env import agent_process_env
+from rflow.minimal.runtime.repl import ReplLike
+from rflow.minimal.structured import Schema, StructuredOutputParser, json_schema_for
+from rflow.minimal.tools import tool
+from rflow.minimal.tools.builtins import make_done, make_launch_subagents
+from rflow.minimal.utils import (
+    ReplKey,
+    budget_exceeded,
+    call_sync_or_async,
+    code_block,
+    common_prefix_len,
+    graph_from_input,
+    iter_budget,
+    llm_output_metadata,
+    repl_key,
+    sampling_kwargs,
+    tool_name,
+    truncate_output,
+    usage_from_client,
+)
+
 GraphInput = Graph | str | None
 
+#: Default cap on a subagent ``query`` length: keep queries short instructions and
+#: push bulk payloads into ``inputs`` instead.
+DEFAULT_MAX_QUERY_CHARS = 2_000
 
-def code_block(text: str) -> str:
-    blocks = find_code_blocks(text)
-    return blocks[0] if blocks else ""
+#: Names owned by the harness/graph; ``add_tool``/``remove_tool`` won't touch them.
+_RESERVED_TOOL_NAMES = frozenset({"done", "launch_subagents", "INPUTS"})
+
+#: Sentinel results recorded when a run ends without an agent-produced answer.
+TERMINATED = "[terminated]"
+BUDGET_EXCEEDED = "[budget exceeded]"
+MAX_ITERS_EXCEEDED = "[max_iters exceeded]"
 
 
 class Flow:
@@ -66,33 +84,44 @@ class Flow:
         *,
         max_depth: int = 2,
         max_iters: int = 20,
+        child_max_iters: int | None = None,
+        max_messages: int | None = None,
+        max_output_length: int = 4_000,
+        max_query_chars: int = DEFAULT_MAX_QUERY_CHARS,
+        max_budget: int | None = None,
+        llm_request_timeout: float | None = None,
         system_prompt: str | None = None,
         prompt_builder: PromptBuilder | None = None,
-        show_vars: bool = False,
         tools: list[Any] | None = None,
         runtime: Runtime | None = None,
         llm_clients: dict[str, Any] | None = None,
         max_concurrency: int | None = None,
         pool: Pool | None = None,
         use_llm_query: bool = False,
+        enable_structured_output: bool = True,
     ) -> None:
         self.llm = llm
         self.max_depth = max_depth
         self.max_iters = max_iters
+        self.child_max_iters = child_max_iters
+        self.max_messages = max_messages
+        self.max_output_length = max_output_length
+        self.max_query_chars = max_query_chars
+        self.max_budget = max_budget
+        self.llm_request_timeout = llm_request_timeout
         self.system_prompt = system_prompt
         self.prompt_builder = prompt_builder or DEFAULT_BUILDER
-        self.show_vars = show_vars
-        self.tools = {self._tool_name(fn): fn for fn in tools or []}
+        self.tools = {tool_name(fn): fn for fn in tools or []}
         self.runtime = runtime or LocalRuntime()
         self.pool = pool or AsyncPool(max_concurrency=max_concurrency)
         self.use_llm_query = use_llm_query
-        self.enable_structured_output = True
+        self.enable_structured_output = enable_structured_output
         self.output_parser = StructuredOutputParser()
         self._llm_clients = {"default": llm, **(llm_clients or {})}
         self.repls: dict[ReplKey, ReplLike] = {}
-        self._events: asyncio.Queue[Event] | None = None
-        self._run_task: asyncio.Task[None] | None = None
+        self._terminate_requested: set[str] = set()
         self._run_graph: Graph | None = None
+        self._stream: EventStream | None = None
 
     def start(
         self,
@@ -101,7 +130,7 @@ class Flow:
         *,
         output_schema: Schema | None = None,
     ) -> Graph:
-        graph = self._graph_from_input(graph_or_query, inputs, output_schema)
+        graph = graph_from_input(graph_or_query, inputs, output_schema)
         self._ensure_user_query(graph)
         return graph
 
@@ -123,8 +152,8 @@ class Flow:
         *,
         output_schema: Schema | None = None,
     ) -> str:
-        graph = self._graph_from_input(graph_or_query, inputs, output_schema)
-        async for _event in self.run_stream(graph):
+        graph = graph_from_input(graph_or_query, inputs, output_schema)
+        async for _event in self.run_streaming(graph):
             pass
         return graph.result()
 
@@ -140,40 +169,10 @@ class Flow:
         if n is not None and n < 1:
             raise ValueError("n must be >= 1")
         graph = await self._ensure_run(graph_or_query, inputs, output_schema)
-
-        def reached(event: Event, events: list[Event]) -> bool:
-            if isinstance(until, int):
-                return len(events) >= until
-            if callable(until):
-                return bool(until(event, graph)) or (
-                    n is not None and len(events) >= n
-                )
-            if until == "event":
-                return len(events) >= (n or 1)
-            if until == "node":
-                return sum(e.type == "append_node" for e in events) >= (n or 1)
-            if until in {"done", "finished", "idle"}:
-                return event.type == "append_node" and event.node_type == "done_output"
-            if until == "supervising":
-                return (
-                    event.type == "append_node"
-                    and event.node_type == "supervising_output"
-                )
-            if until == "error":
-                return (
-                    event.type == "append_node" and event.node_type == "error_output"
-                )
-            raise ValueError(f"unknown step boundary: {until!r}")
-
         events: list[Event] = []
-        while True:
-            event = await self._next_event()
-            if event is None:
-                break
+        while (event := await self._next_event()) is not None:
             events.append(event)
-            if reached(event, events):
-                break
-            if self._run_task is None:
+            if reached(until, n, event, events, graph) or self._stream is None:
                 break
         return events
 
@@ -192,21 +191,12 @@ class Flow:
                     break
                 yield event
         finally:
-            task = self._clear_run()
-            if task is not None:
-                if not task.done():
-                    task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
+            if self._stream is not None:
+                await self._stream.aclose()
+            self._clear_run()
 
-    def run_stream(
-        self,
-        graph_or_query: Graph | str,
-        inputs: dict[str, str] | None = None,
-        *,
-        output_schema: Schema | None = None,
-    ) -> AsyncIterator[Event]:
-        return self.run_streaming(graph_or_query, inputs, output_schema=output_schema)
+    #: Alias for :meth:`run_streaming` (same async generator, shorter name).
+    run_stream = run_streaming
 
     async def _ensure_run(
         self,
@@ -214,29 +204,32 @@ class Flow:
         inputs: dict[str, str] | None = None,
         output_schema: Schema | None = None,
     ) -> Graph:
-        if self._run_task is not None:
+        if self._stream is not None:
             if graph_or_query is not None:
                 raise RuntimeError("a run is already active")
             if self._run_graph is None:
                 raise RuntimeError("active run is missing its graph")
             return self._run_graph
 
-        self._events = asyncio.Queue()
+        stream = EventStream()
+        self._stream = stream
         if graph_or_query is None:
             if self._run_graph is None:
-                self._events = None
+                self._stream = None
                 raise ValueError("first run needs a graph or query")
             graph = self._run_graph
         else:
-            graph = self._graph_from_input(graph_or_query, inputs, output_schema)
+            graph = graph_from_input(graph_or_query, inputs, output_schema)
             if isinstance(graph_or_query, str):
-                self.apply_action(graph, GraphCreated(type="graph_created", graph=graph))
+                self.apply_action(
+                    graph, GraphCreated(type="graph_created", graph=graph)
+                )
             self._ensure_user_query(graph)
         if graph.finished:
-            self._events = None
+            self._stream = None
             return graph
         self._run_graph = graph
-        self._run_task = asyncio.create_task(self._run_agent(graph))
+        stream.start(self.run_agent(graph))
         return graph
 
     def _ensure_user_query(self, graph: Graph) -> None:
@@ -245,85 +238,106 @@ class Flow:
         self.append_node(graph, UserQuery(content=graph.query))
 
     async def _next_event(self) -> Event | None:
-        if self._run_task is None or self._events is None:
+        if self._stream is None:
             return None
-        if self._run_task.done() and self._events.empty():
-            await self._run_task
+        event = await self._stream.next()
+        if event is None:
             self._clear_run()
-            return None
-        return await self._events.get()
+        return event
 
-    def _clear_run(self) -> asyncio.Task[None] | None:
-        task = self._run_task
-        self._run_task = None
-        self._events = None
+    def _clear_run(self) -> None:
+        self._stream = None
         self._run_graph = None
-        return task
 
-    async def _run_agent(self, graph: Graph) -> None:
-        for _ in range(self.max_iters):
+    async def run_agent(self, graph: Graph) -> None:
+        max_iters = iter_budget(graph.depth, self.max_iters, self.child_max_iters)
+        for i in range(max_iters):
             if graph.finished:
                 return
-
-            # Provider turn: model output becomes a graph node/event.
-            reply, usage = await self.pool.run(
-                self._call_chat(self.messages(graph), graph.model)
-            )
-            code = code_block(reply)
-            self.append_node(
-                graph,
-                LLMOutput(
-                    content=reply,
-                    code=code,
-                    metadata={
-                        "model": graph.model,
-                        "usage": {
-                            "input_tokens": usage.input_tokens,
-                            "output_tokens": usage.output_tokens,
-                        },
-                    },
-                ),
-            )
-
-            # Action turn: even invalid/missing code is recorded as the attempted action.
-            self.append_node(graph, ExecAction(code=code))
-
-            # Observation turn: running the action produces exactly one result node.
-            repl = self.repl_for(graph)
-            repl.done_result = None
-            try:
-                out = await repl.run(code)
-            except Exception as exc:  # noqa: BLE001
-                self.close_repl(graph)
-                out = f"REPL execution failed: {type(exc).__name__}: {exc}"
-                self.append_node(graph, ErrorOutput(content=out, output=out, error="exec"))
-                continue
-
-            if repl.done_result is not None:
-                self.append_node(
-                    graph,
-                    DoneOutput(content=out, output=out, result=repl.done_result),
-                )
+            if graph.agent_id in self._terminate_requested:
+                self.append_node(graph, DoneOutput(result=TERMINATED))
                 return
-            node = (
-                ErrorOutput(content=out, output=out, error="exec")
-                if repl.errored
-                else ExecOutput(content=out or "(no output)", output=out)
-            )
+            if budget_exceeded(self._run_graph or graph, self.max_budget):
+                self.append_node(graph, DoneOutput(result=BUDGET_EXCEEDED))
+                return
+            # Last iteration: force a final done(...) instead of silently quitting.
+            code = await self.llm_turn(graph, force_final=i == max_iters - 1)
+            node = await self.exec_turn(graph, code)
+            if isinstance(node, DoneOutput):
+                return
+        if not graph.finished:
+            self.append_node(graph, DoneOutput(result=MAX_ITERS_EXCEEDED))
+
+    def terminate(self, agent_ids: Iterable[str] | None = None) -> None:
+        """Cooperatively stop agents (default: all running): each finishes its
+        current turn, then records ``done("[terminated]")`` instead of iterating on.
+        """
+        if agent_ids is None:
+            agent_ids = self._run_graph.agents if self._run_graph is not None else ()
+        self._terminate_requested.update(agent_ids)
+
+    async def llm_turn(self, graph: Graph, *, force_final: bool = False) -> str:
+        """Provider + action turns: model output and the attempted action."""
+        reply, usage = await self._pooled_chat(graph, force_final=force_final)
+        code = code_block(reply)
+        metadata = llm_output_metadata(graph.model, usage)
+        self.append_node(graph, LLMOutput(content=reply, code=code, metadata=metadata))
+        # Even invalid/missing code is recorded as the attempted action.
+        self.append_node(graph, ExecAction(code=code))
+        return code
+
+    async def exec_turn(self, graph: Graph, code: str, *, replay: bool = False) -> Node:
+        """Observation turn: run the action against the repl -> one result node.
+
+        With ``replay=True`` the node is returned but not appended (used to rebuild
+        live repl state from a graph that already holds these result nodes).
+        """
+        repl = self.repl_for(graph)
+        repl.done_result = None
+        try:
+            out = await repl.run(code)
+        except Exception as exc:  # noqa: BLE001
+            # Only a dead session reaches here (user-code errors set repl.errored):
+            # drop the handle so repl_for respawns next turn.
+            self.close_repl(graph)
+            out = f"REPL execution failed: {type(exc).__name__}: {exc}"
+            node = ErrorOutput(content=out, output=out, error="exec")
+            if not replay:
+                self.append_node(graph, node)
+            return node
+
+        # Cap the observation re-entering context (full data stays in repl vars;
+        # done_result is never truncated).
+        out = truncate_output(out, self.max_output_length)
+        if repl.done_result is not None:
+            node = DoneOutput(content=out, output=out, result=repl.done_result)
+        elif repl.errored:
+            node = ErrorOutput(content=out, output=out, error="exec")
+        else:
+            node = ExecOutput(content=out or "(no output)", output=out)
+        if not replay:
             self.append_node(graph, node)
-        self.append_node(graph, DoneOutput(result="[max_iters exceeded]"))
+        return node
 
     def repl_for(self, graph: Graph) -> ReplLike:
-        key = self._repl_key(graph)
+        key = repl_key(graph)
         repl = self.repls.get(key)
         if repl is None:
             repl = self.runtime.open(graph)
             repl.seed(self.build_tools(graph, repl), graph.inputs)
+            repl.set_process_env(
+                agent_process_env(
+                    agent_id=graph.agent_id,
+                    depth=graph.depth,
+                    parent_agent_id=graph.parent_agent_id,
+                    max_depth=self.max_depth,
+                )
+            )
             self.repls[key] = repl
         return repl
 
     def close_repl(self, graph: Graph) -> None:
-        repl = self.repls.pop(self._repl_key(graph), None)
+        repl = self.repls.pop(repl_key(graph), None)
         if repl is not None:
             with suppress(Exception):
                 repl.close()
@@ -335,106 +349,124 @@ class Flow:
             with suppress(Exception):
                 repl.close()
 
-    def _done(self, graph: Graph, repl: ReplLike):
-        def done(answer: object) -> None:
-            if graph.output_schema is not None:
-                content = answer if isinstance(answer, str) else json.dumps(answer)
-                self.output_parser(content, graph.output_schema)
-                repl.done_result = content
-            else:
-                repl.done_result = str(answer)
-            print(f"[done] {repl.done_result}")
-            raise DoneSignal()
+    async def rebuild_repl(self, graph: Graph, *, agent_id: str | None = None) -> ReplLike:
+        """Reconstruct an agent's REPL by replaying its ``ExecAction`` code blocks
+        (no LLM calls, no appended nodes). The correctness floor for forks/reverts.
+        """
+        agent = graph.agent_for(agent_id)
+        self.close_repl(agent)
+        for node in agent.nodes:
+            if isinstance(node, ExecAction) and node.code:
+                await self.exec_turn(agent, node.code, replay=True)
+        return self.repl_for(agent)
 
-        return done
+    async def fork(
+        self,
+        graph: Graph,
+        *,
+        from_node_id: str | None = None,
+        agent_id: str | None = None,
+    ) -> Graph:
+        """Independent branch of ``graph`` (deepcopy, fresh ``graph_id``) with its
+        REPL rebuilt to match the optionally-rewound trajectory. Never mutates parent.
+        """
+        child = graph.fork(from_node_id=from_node_id, agent_id=agent_id)
+        await self.rebuild_repl(child, agent_id=agent_id)
+        return child
+
+    async def merge(
+        self,
+        parent: Graph,
+        child: Graph,
+        *,
+        agent_id: str | None = None,
+        summary: str | Callable[[Graph], str] | None = None,
+    ) -> None:
+        """Fold a child branch's post-fork DELTA back into the parent: keep its
+        ``ExecAction``s (replayable, hidden from the prompt) plus one summary node,
+        and bring its variables into the parent REPL via ``_merge_repl_state``.
+        """
+        p, c = parent.agent_for(agent_id), child.agent_for(agent_id)
+        delta = c.nodes[common_prefix_len(p.nodes, c.nodes):]
+
+        for node in delta:
+            if isinstance(node, ExecAction):
+                self.append_node(p, deepcopy(node))
+
+        if summary is None:
+            text = merge_summary(child, delta)
+        else:
+            text = summary(child) if callable(summary) else summary
+        self.append_node(p, ExecOutput(content=text, output=text))
+
+        await self._merge_repl_state(parent, child, delta, agent_id=agent_id)
+
+    async def _merge_repl_state(
+        self,
+        parent: Graph,
+        child: Graph,
+        delta: list[Node],
+        *,
+        agent_id: str | None = None,
+    ) -> None:
+        """Bring the child branch's variables into the parent's live REPL: adopt
+        the child's running REPL when the parent has none (else rebuild from its
+        graph); otherwise re-exec just the delta's ``ExecAction`` code.
+        """
+        p, c = parent.agent_for(agent_id), child.agent_for(agent_id)
+        p_key, c_key = repl_key(p), repl_key(c)
+
+        if p_key not in self.repls:
+            child_repl = self.repls.pop(c_key, None)
+            if child_repl is not None:
+                self.repls[p_key] = child_repl
+            else:
+                await self.rebuild_repl(parent, agent_id=agent_id)
+            return
+
+        for node in delta:
+            if isinstance(node, ExecAction) and node.code:
+                await self.exec_turn(p, node.code, replay=True)
+
+    def discard(self, *children: Graph) -> None:
+        """Eagerly close rejected branches' REPLs. Optional (parent was never
+        mutated, so GC suffices); only frees remote sandboxes. No-op on LocalRuntime.
+        """
+        for child in children:
+            self.close_repls(child.graph_id)
 
     def launch_subagents(self, parent: Graph, repl: ReplLike):
-        async def launch_subagents(specs: list[dict[str, Any]]) -> list[Any]:
-            results: list[Any] = []
-            child_ids: list[str] = []
-            for index, spec in enumerate(specs):
-                name = spec.get("name", f"child{index}")
-                if parent.depth >= self.max_depth:
-                    results.append(f"[refused: max depth {self.max_depth}]")
-                    continue
-                child_id = f"{parent.agent_id}.{name}"
-                child = Graph(
-                    agent_id=child_id,
-                    graph_id=parent.graph_id,
-                    query=spec["query"],
-                    inputs=dict(spec.get("inputs") or {}),
-                    model=spec.get("model", "default"),
-                    output_schema=(
-                        json_schema_for(spec["output_schema"])
-                        if spec.get("output_schema") is not None
-                        else None
-                    ),
-                    depth=parent.depth + 1,
-                    parent_agent_id=parent.agent_id,
-                )
-                self.apply_action(
-                    parent,
-                    AddChild(
-                        type="add_child",
-                        parent_agent_id=parent.agent_id,
-                        child=child,
-                    )
-                )
-                self.append_node(child, UserQuery(content=spec["query"]))
-                child_ids.append(child_id)
-                results.append("")
-
-            self.append_node(
-                parent,
-                SupervisingOutput(output=repl.drain(), waiting_on=child_ids),
-            )
-            await self.pool.gather(*(self._run_agent(parent[cid]) for cid in child_ids))
-            self.append_node(parent, ResumeAction(resumed_from=child_ids))
-            for i, child_id in enumerate(child_ids):
-                child = parent[child_id]
-                result = child.result()
-                results[i] = (
-                    self.output_parser(result, child.output_schema)
-                    if child.output_schema is not None
-                    else result
-                )
-            return results
-
-        return launch_subagents
+        """Public factory for the recursive spawn tool (see ``tools.builtins``)."""
+        return make_launch_subagents(self, parent, repl)
 
     def append_node(self, graph: Graph, node) -> Event:
-        return self.apply_action(
-            graph,
-            AppendNode(
-                type="append_node",
-                agent_id=graph.agent_id,
-                node_type=node.type,
-                node=node,
-            )
+        action = AppendNode(
+            type="append_node", agent_id=graph.agent_id, node_type=node.type, node=node
         )
+        return self.apply_action(graph, action)
 
     def apply_action(self, graph: Graph, action: GraphAction) -> GraphAction:
         base = None if isinstance(action, GraphCreated) else graph
         apply_graph_action(base, action)
-        if self._events is not None:
-            self._events.put_nowait(action)
+        if self._stream is not None:
+            # Stamp originating graph_id so merged streams (FlowGroup) self-describe.
+            event = (
+                action
+                if isinstance(action, GraphCreated)
+                else replace(action, graph_id=graph.graph_id)
+            )
+            self._stream.emit(event)
         return action
 
-    def messages(self, graph: Graph) -> list[dict[str, str]]:
-        msgs = [
-            {
-                "role": "system",
-                "content": self.build_system_prompt(graph),
-            }
-        ]
-        for node in graph.nodes:
-            if isinstance(node, UserQuery):
-                msgs.append({"role": "user", "content": node.content})
-            elif isinstance(node, LLMOutput):
-                msgs.append({"role": "assistant", "content": node.content})
-            elif isinstance(node, (ExecOutput, ErrorOutput, SupervisingOutput)):
-                msgs.append({"role": "user", "content": node.content or node.output})
-        return msgs
+    def messages(
+        self, graph: Graph, *, force_final: bool = False
+    ) -> list[dict[str, str]]:
+        return build_messages(
+            graph,
+            self.build_system_prompt(graph),
+            max_messages=self.max_messages,
+            force_final=force_final,
+        )
 
     def build_system_prompt(self, graph: Graph) -> str:
         if self.system_prompt is not None:
@@ -442,23 +474,27 @@ class Flow:
         return self.prompt_builder.build(self, graph)
 
     async def chat(self, graph: Graph) -> str:
-        reply, _usage = await self.pool.run(
-            self._call_chat(self.messages(graph), graph.model)
-        )
+        reply, _usage = await self._pooled_chat(graph)
         return reply
 
+    async def _pooled_chat(
+        self, graph: Graph, *, force_final: bool = False
+    ) -> tuple[str, LLMUsage]:
+        messages = self.messages(graph, force_final=force_final)
+        return await self.pool.run(self._call_chat(messages, graph.model))
+
     async def _call_chat(
-        self, messages: list[dict[str, str]], model: str = "default"
+        self,
+        messages: list[dict[str, str]],
+        model: str = "default",
+        **llm_kwargs: Any,
     ) -> tuple[str, LLMUsage]:
         client = self.llm_client(model)
-        chat = client.chat
-        if inspect.iscoroutinefunction(chat):
-            reply = await chat(messages)
-            return reply, self._usage_from_client(client)
-        reply = await asyncio.to_thread(chat, messages)
-        if inspect.isawaitable(reply):
-            reply = await reply
-        return reply, self._usage_from_client(client)
+        call = call_sync_or_async(client.chat, messages, **llm_kwargs)
+        if self.llm_request_timeout is not None:
+            call = asyncio.wait_for(call, self.llm_request_timeout)
+        reply = await call
+        return reply, usage_from_client(client)
 
     def llm_client(self, model: str = "default"):
         try:
@@ -467,18 +503,9 @@ class Flow:
             keys = ", ".join(sorted(self._llm_clients))
             raise ValueError(f"unknown model {model!r}. available: {keys}") from exc
 
-    def _usage_from_client(self, client: Any) -> LLMUsage:
-        usage = getattr(client, "last_usage", None)
-        if usage is None:
-            return LLMUsage()
-        return LLMUsage(
-            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
-            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
-        )
-
     @tool(
-        "Await with a list of independent one-shot prompts to run model calls "
-        "through Flow's shared pool.",
+        "Run a list of independent one-shot prompts as concurrent model calls "
+        "through Flow's shared pool; returns a list of results.",
         proxy=True,
     )
     async def llm_query_batched(
@@ -487,6 +514,10 @@ class Flow:
         *,
         model: str = "default",
         output_schema: Schema | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+        stop: list[str] | None = None,
     ) -> list:
         if not isinstance(prompts, list) or not all(
             isinstance(prompt, str) for prompt in prompts
@@ -497,11 +528,18 @@ class Flow:
         sent = prompts
         if schema is not None:
             hint = self.output_parser.system_prompt_hint(schema)
-            sent = [f"{prompt}\n\nReturn JSON matching this schema:\n{hint}" for prompt in prompts]
+            sent = [
+                f"{prompt}\n\nReturn JSON matching this schema:\n{hint}"
+                for prompt in prompts
+            ]
+
+        llm_kwargs = sampling_kwargs(
+            temperature=temperature, top_p=top_p, max_tokens=max_tokens, stop=stop
+        )
 
         async def call(prompt: str) -> str:
             text, _usage = await self._call_chat(
-                [{"role": "user", "content": prompt}], model
+                [{"role": "user", "content": prompt}], model, **llm_kwargs
             )
             return text
 
@@ -510,16 +548,38 @@ class Flow:
             return [self.output_parser(text, schema) for text in texts]
         return texts
 
+    def add_tool(self, fn: Any, *, name: str | None = None) -> None:
+        """Register a tool after construction and push it into every live REPL.
+
+        The tool is callable on the next turn of already-running agents and is
+        included when new agents seed their REPLs. The per-turn system prompt
+        reflects it automatically (``@tool``-decorated tools render a doc line).
+        This is the hook that lets a tool create more tools at runtime.
+        """
+        key = name or tool_name(fn)
+        if key in _RESERVED_TOOL_NAMES:
+            raise ValueError(f"{key!r} is reserved and cannot be overridden")
+        self.tools[key] = fn
+        for repl in self.repls.values():
+            repl.inject_tool(key, fn)
+
+    def remove_tool(self, name: str) -> Any:
+        """Unregister a tool and drop it from every live REPL. Returns it (or None)."""
+        if name in _RESERVED_TOOL_NAMES:
+            raise ValueError(f"{name!r} is reserved and cannot be removed")
+        fn = self.tools.pop(name, None)
+        for repl in self.repls.values():
+            repl.remove_tool(name)
+        return fn
+
     def tool_namespace_for_prompt(self, graph: Graph) -> dict[str, Any]:
-        repl = self.repls.get(self._repl_key(graph))
-        if repl is not None:
-            return repl.namespace
-        return self.build_tools(graph)
+        repl = self.repls.get(repl_key(graph))
+        return repl.namespace if repl is not None else self.build_tools(graph)
 
     def build_tools(self, graph: Graph, repl: ReplLike | None = None) -> dict[str, Any]:
         repl = repl or SimpleNamespace(done_result=None, drain=lambda: "")
         tools = {
-            "done": self._done(graph, repl),
+            "done": make_done(self, graph, repl),
             "launch_subagents": self.launch_subagents(graph, repl),
             "INPUTS": dict(graph.inputs),
         }
@@ -529,33 +589,6 @@ class Flow:
             for name, fn in namespace.items():
                 tools.setdefault(name, fn)
         return tools
-
-    @staticmethod
-    def _tool_name(fn: Any) -> str:
-        meta = get_tool_metadata(fn)
-        return meta.name if meta is not None else fn.__name__
-
-    @staticmethod
-    def _repl_key(graph: Graph) -> ReplKey:
-        return (graph.graph_id, graph.agent_id)
-
-    @staticmethod
-    def _graph_from_input(
-        graph_or_query: Graph | str,
-        inputs: dict[str, str] | None = None,
-        output_schema: Schema | None = None,
-    ) -> Graph:
-        if isinstance(graph_or_query, Graph):
-            if inputs is not None:
-                graph_or_query.inputs = dict(inputs)
-            if output_schema is not None:
-                graph_or_query.output_schema = json_schema_for(output_schema)
-            return graph_or_query
-        return Graph(
-            query=graph_or_query,
-            inputs=dict(inputs or {}),
-            output_schema=json_schema_for(output_schema) if output_schema else None,
-        )
 
 
 __all__ = ["Flow", "LLMUsage", "code_block"]

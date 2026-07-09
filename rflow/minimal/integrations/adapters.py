@@ -87,7 +87,7 @@ def _chat_completion_response(*, model: str, text: str, usage: dict[str, int]) -
     )
 
 
-class MinimalDSPyLM(_BaseLM):
+class DSPyFlow(_BaseLM):
     """DSPy ``BaseLM`` adapter for any sync ``chat(messages)`` object."""
 
     def __init__(
@@ -101,7 +101,7 @@ class MinimalDSPyLM(_BaseLM):
         if _DSPY_IMPORT_ERROR is not None:  # pragma: no cover - optional extra.
             raise ModuleNotFoundError(
                 "The DSPy integration requires the optional `dspy` dependency. "
-                "Install it with `pip install -e \".[dspy]\"`."
+                'Install it with `pip install -e ".[dspy]"`.'
             ) from _DSPY_IMPORT_ERROR
 
         super().__init__(model=model, model_type=model_type, **kwargs)
@@ -130,4 +130,4 @@ class MinimalDSPyLM(_BaseLM):
         return self.forward(prompt=prompt, messages=messages, **kwargs)
 
 
-__all__ = ["FlowLLM", "MinimalDSPyLM", "messages_to_query"]
+__all__ = ["DSPyFlow", "FlowLLM", "messages_to_query"]

@@ -48,7 +48,9 @@ class StructuredOutputParser:
         try:
             return _adapter_for(schema).validate_json(content)
         except ValidationError as exc:
-            raise StructuredOutputError(content=content, schema=schema, cause=exc) from exc
+            raise StructuredOutputError(
+                content=content, schema=schema, cause=exc
+            ) from exc
 
 
 def _adapter_for(schema: type[BaseModel] | TypeAdapter[Any]) -> TypeAdapter[Any]:
@@ -62,7 +64,9 @@ def _adapter_for(schema: type[BaseModel] | TypeAdapter[Any]) -> TypeAdapter[Any]
     )
 
 
-def _json_schema_for_pydantic(schema: type[BaseModel] | TypeAdapter[Any]) -> dict[str, Any]:
+def _json_schema_for_pydantic(
+    schema: type[BaseModel] | TypeAdapter[Any],
+) -> dict[str, Any]:
     return _adapter_for(schema).json_schema()
 
 

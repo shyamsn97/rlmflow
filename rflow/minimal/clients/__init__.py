@@ -1,12 +1,13 @@
 """LLM clients and request scheduling.
 
-``llm`` holds the :class:`~rflow.clients.llm.LLMClient` protocol, token usage,
-retry helpers, and the concrete provider clients (OpenAI / Anthropic / Tinker).
-``llm_channel`` holds the bounded :class:`~rflow.clients.llm_channel.LLMChannel`
+``llm`` holds the :class:`~rflow.minimal.clients.llm.LLMClient` protocol, token
+usage, retry helpers, and the concrete provider clients (OpenAI / Anthropic /
+Tinker). ``llm_channel`` holds the bounded
+:class:`~rflow.minimal.clients.llm_channel.LLMChannel`
 that owns the shared HTTP thread pool for a run. Both are re-exported here.
 """
 
-from rflow.clients.llm import (
+from rflow.minimal.clients.llm import (
     AnthropicClient,
     LLMClient,
     LLMUsage,
@@ -15,7 +16,7 @@ from rflow.clients.llm import (
     is_retryable,
     retry_transient,
 )
-from rflow.clients.llm_channel import LLMChannel, LLMLane
+from rflow.minimal.clients.llm_channel import LLMChannel, LLMLane
 
 __all__ = [
     "AnthropicClient",

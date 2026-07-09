@@ -1,4 +1,4 @@
-"""Sandbox-side JSON-line REPL server for minimal runtimes."""
+"""Sandbox-side server for the minimal remote REPL protocol."""
 
 from __future__ import annotations
 
@@ -7,11 +7,12 @@ import asyncio
 import importlib
 import os
 import sys
+from pathlib import Path
 from typing import TextIO
 
 from pydantic import ValidationError
 
-from rflow.minimal.protocol import (
+from rflow.minimal.runtime.protocol import (
     CapabilitiesRequest,
     CapabilityMap,
     InjectImportRequest,
@@ -21,6 +22,7 @@ from rflow.minimal.protocol import (
     PingRequest,
     ProxyCall,
     ProxyResponse,
+    RemoveRequest,
     ReplRequest,
     ReplResponse,
     RunRequest,
@@ -28,19 +30,23 @@ from rflow.minimal.protocol import (
     dump_message,
     parse_request,
 )
-from rflow.minimal.repl import DoneSignal, Repl
+from rflow.minimal.runtime.repl import DoneSignal, Repl
 from rflow.minimal.tools import tool
 
 
-class RemoteServer:
+class ReplServer:
+    """One deployed protocol server around one stateful REPL."""
+
     def __init__(
         self,
+        *,
+        workdir: str | Path | None = None,
         protocol_in: TextIO | None = None,
         protocol_out: TextIO | None = None,
     ) -> None:
         self._in = protocol_in or sys.stdin
         self._out = protocol_out or sys.stdout
-        self.repl = Repl()
+        self.repl = Repl(working_directory=workdir)
         self.capabilities = CapabilityMap()
         self._next_proxy_id = 0
 
@@ -52,10 +58,12 @@ class RemoteServer:
         self._next_proxy_id += 1
         return f"proxy-{self._next_proxy_id}-{name}"
 
-    def make_proxy(self, name: str):
+    def make_proxy(self, name: str, *, is_async: bool = False):
         def proxy(*args: object, **kwargs: object) -> object:
             proxy_id = self._proxy_id(name)
-            self.write(ProxyCall(id=proxy_id, proxy=name, args=list(args), kwargs=kwargs))
+            self.write(
+                ProxyCall(id=proxy_id, proxy=name, args=list(args), kwargs=kwargs)
+            )
             resp = ProxyResponse.model_validate_json(self._in.readline())
             if resp.done:
                 if name == "done" and args:
@@ -65,7 +73,15 @@ class RemoteServer:
                 raise RuntimeError(resp.error or "proxy call failed")
             return resp.value
 
-        return proxy
+        if not is_async:
+            return proxy
+
+        # Awaitable in the sandbox for async proxy tools (e.g. launch_subagents,
+        # llm_query_batched); the body is a synchronous host round-trip.
+        async def async_proxy(*args: object, **kwargs: object) -> object:
+            return proxy(*args, **kwargs)
+
+        return async_proxy
 
     async def handle(self, msg: ReplRequest) -> ReplResponse:
         if isinstance(msg, PingRequest):
@@ -78,11 +94,16 @@ class RemoteServer:
         if isinstance(msg, InjectRequest):
             self.repl.namespace[msg.name] = msg.value
             return ReplResponse(id=msg.id)
+        if isinstance(msg, RemoveRequest):
+            self.repl.namespace.pop(msg.name, None)
+            return ReplResponse(id=msg.id)
         if isinstance(msg, SetEnvRequest):
             os.environ.update({str(k): str(v) for k, v in msg.values.items()})
             return ReplResponse(id=msg.id)
         if isinstance(msg, InjectProxyRequest):
-            self.repl.namespace[msg.name] = self.make_proxy(msg.name)
+            self.repl.namespace[msg.name] = self.make_proxy(
+                msg.name, is_async=msg.is_async
+            )
             return ReplResponse(id=msg.id)
         if isinstance(msg, InjectImportRequest):
             target = importlib.import_module(msg.module)
@@ -98,7 +119,7 @@ class RemoteServer:
             return ReplResponse(id=msg.id)
         return ReplResponse(id=msg.id, ok=False, error=f"unknown command: {msg.cmd!r}")
 
-    async def serve(self) -> None:
+    async def serve_stdio(self) -> None:
         while True:
             line = self._in.readline()
             if not line:
@@ -126,14 +147,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="minimal rflow remote REPL")
     parser.add_argument("--workdir")
     args = parser.parse_args()
-    if args.workdir:
-        os.makedirs(args.workdir, exist_ok=True)
-        os.chdir(args.workdir)
-    asyncio.run(RemoteServer().serve())
+    asyncio.run(ReplServer(workdir=args.workdir).serve_stdio())
 
 
 if __name__ == "__main__":
     main()
 
 
-__all__ = ["RemoteServer", "main"]
+__all__ = ["ReplServer", "main"]

@@ -19,7 +19,7 @@ import string
 import tempfile
 from pathlib import Path
 
-from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal.clients import AnthropicClient, OpenAIClient
 from rflow.minimal import FILE_TOOLS, Flow, Graph, LiveTreeRenderer, LocalRuntime
 
 

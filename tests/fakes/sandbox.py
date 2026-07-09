@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from rflow.clients.llm import LLMClient
+from rflow.minimal.clients.llm import LLMClient
 from rflow.runtime.repl_server import ReplServer
 
 _REPL_DETECT = "from rflow.runtime.repl_server import main"

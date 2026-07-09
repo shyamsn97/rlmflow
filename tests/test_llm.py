@@ -27,7 +27,7 @@ from rflow.integrations.structured import (
     StructuredOutputParser,
     json_schema_for,
 )
-from rflow.clients.llm import TinkerClient, is_retryable, retry_transient
+from rflow.minimal.clients.llm import TinkerClient, is_retryable, retry_transient
 from rflow.runtime.context import EngineContext
 
 from rflow import is_errored

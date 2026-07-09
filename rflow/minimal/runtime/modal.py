@@ -1,23 +1,30 @@
-"""Modal deployment connection for ``rflow.minimal.remote_server``."""
+"""Modal Sandbox runtime for the minimal remote REPL protocol."""
 
 from __future__ import annotations
 
+import importlib
 import threading
 from collections import deque
 from contextlib import suppress
+from typing import TYPE_CHECKING
 
-from rflow.minimal.protocol import (
+from rflow.minimal.runtime.protocol import (
     ProxyCall,
     ReplResponse,
     WireModel,
     dump_message,
     parse_client_message,
 )
-from rflow.minimal.remote import ReplConnection
+from rflow.minimal.runtime.repl import ReplLike
+from rflow.minimal.runtime.repl_client import ReplClient, ReplConnection
+from rflow.minimal.runtime.runtime import Runtime
+
+if TYPE_CHECKING:
+    from rflow.minimal.graph import Graph
 
 
-class ModalServerConnection(ReplConnection):
-    """Connect ReplClient to a remote_server process in a Modal Sandbox."""
+class ModalConnection(ReplConnection):
+    """Connect ReplClient to a repl_server process in a Modal Sandbox."""
 
     def __init__(
         self,
@@ -45,7 +52,7 @@ class ModalServerConnection(ReplConnection):
         if self.container is not None:
             return
         try:
-            import modal
+            modal = importlib.import_module("modal")
         except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency
             raise ModuleNotFoundError(
                 "Modal remote REPL requires the optional `modal` dependency."
@@ -56,7 +63,7 @@ class ModalServerConnection(ReplConnection):
             "python",
             "-u",
             "-m",
-            "rflow.minimal.remote_server",
+            "rflow.minimal.runtime.repl_server",
             "--workdir",
             self.remote_workdir,
             app=app,
@@ -125,4 +132,41 @@ def _to_text(data: object) -> str:
     return str(data)
 
 
-__all__ = ["ModalServerConnection"]
+class ModalRuntime(Runtime):
+    """Run each agent in a Modal Sandbox using the minimal remote protocol."""
+
+    def __init__(
+        self,
+        app_name: str = "rlmflow",
+        *,
+        remote_workdir: str = "/workspace",
+        image: object = None,
+        timeout: int = 3600,
+        repl_timeout: float = 30,
+        **container_kwargs: object,
+    ) -> None:
+        super().__init__(working_directory=remote_workdir)
+        self.app_name = app_name
+        self.remote_workdir = remote_workdir
+        self.image = image
+        self.timeout = timeout
+        self.repl_timeout = repl_timeout
+        self.container_kwargs = dict(container_kwargs)
+
+    def deploy_repl_server(self, graph: Graph) -> ReplClient:
+        return ReplClient(
+            ModalConnection(
+                self.app_name,
+                remote_workdir=self.remote_workdir,
+                image=self.image,
+                timeout=self.timeout,
+                repl_timeout=self.repl_timeout,
+                **self.container_kwargs,
+            )
+        )
+
+    def open(self, graph: Graph) -> ReplLike:
+        return self.deploy_repl_server(graph)
+
+
+__all__ = ["ModalConnection", "ModalRuntime"]

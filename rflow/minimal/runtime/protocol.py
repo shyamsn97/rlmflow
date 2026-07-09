@@ -36,6 +36,11 @@ class InjectRequest(BaseRequest):
     value: Any
 
 
+class RemoveRequest(BaseRequest):
+    cmd: Literal["remove"] = "remove"
+    name: str
+
+
 class SetEnvRequest(BaseRequest):
     cmd: Literal["set_env"] = "set_env"
     values: dict[str, str]
@@ -44,6 +49,7 @@ class SetEnvRequest(BaseRequest):
 class InjectProxyRequest(BaseRequest):
     cmd: Literal["inject_proxy"] = "inject_proxy"
     name: str
+    is_async: bool = False
 
 
 class InjectImportRequest(BaseRequest):
@@ -65,6 +71,7 @@ ReplRequest = Annotated[
     | CapabilitiesRequest
     | RunRequest
     | InjectRequest
+    | RemoveRequest
     | SetEnvRequest
     | InjectProxyRequest
     | InjectImportRequest
@@ -140,6 +147,7 @@ __all__ = [
     "PingRequest",
     "ProxyCall",
     "ProxyResponse",
+    "RemoveRequest",
     "ReplRequest",
     "ReplResponse",
     "RunRequest",

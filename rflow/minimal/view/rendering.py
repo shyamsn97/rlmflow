@@ -6,7 +6,6 @@ read the current graph snapshot, matching Tau's "core emits, UI consumes" split.
 
 from __future__ import annotations
 
-from rflow.minimal.events import Event
 from rflow.minimal.graph import (
     DoneOutput,
     ErrorOutput,
@@ -18,6 +17,7 @@ from rflow.minimal.graph import (
     SupervisingOutput,
     UserQuery,
 )
+from rflow.minimal.graph.events import Event
 
 
 class LiveTreeRenderer:

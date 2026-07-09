@@ -6,7 +6,7 @@ from pathlib import Path
 
 from rflow.minimal.flow import Flow
 from rflow.minimal.graph import Graph
-from rflow.minimal.rendering import render_tree
+from rflow.minimal.view.rendering import render_tree
 
 
 def tui(
@@ -25,7 +25,7 @@ def tui(
         from textual.widgets import Footer, Header, RichLog, Static, TextArea
     except ImportError as exc:  # pragma: no cover - optional extra.
         raise ImportError(
-            "minimal.tui() requires the TUI extra: `pip install -e \".[tui]\"`."
+            'minimal.tui() requires the TUI extra: `pip install -e ".[tui]"`.'
         ) from exc
 
     save_dir = Path(out_dir).resolve() if out_dir is not None else None
@@ -90,10 +90,7 @@ def tui(
                 async for event in flow.run_streaming(self.graph):
                     steps += 1
                     self._refresh(event.type)
-                    if (
-                        max_steps_per_turn is not None
-                        and steps >= max_steps_per_turn
-                    ):
+                    if max_steps_per_turn is not None and steps >= max_steps_per_turn:
                         self.query_one("#chat", RichLog).write(
                             f"Stopped at step cap ({max_steps_per_turn})."
                         )

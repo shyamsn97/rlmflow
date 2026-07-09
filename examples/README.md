@@ -108,7 +108,7 @@ For fully locked-down local runs, pass a `DockerRuntime`:
 
 ```python
 from rflow.minimal import DockerRuntime, Flow
-from rflow.clients import OpenAIClient
+from rflow.minimal.clients import OpenAIClient
 
 runtime = DockerRuntime("rlmflow:local", working_directory="./proj")
 flow = Flow(OpenAIClient(model="gpt-4o"), runtime=runtime)

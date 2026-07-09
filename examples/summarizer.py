@@ -20,7 +20,7 @@ import asyncio
 import random
 from pathlib import Path
 
-from rflow.clients import AnthropicClient, OpenAIClient
+from rflow.minimal.clients import AnthropicClient, OpenAIClient
 from rflow.minimal import DockerRuntime, Flow, Graph, LiveTreeRenderer
 
 _TOPICS = [
@@ -157,11 +157,11 @@ def main() -> None:
         max_iters=args.max_iters,
     )
 
-    graph = flow.start(Graph(query=SUMMARIZE_QUERY), {"document": document})
+    graph = Graph(query=SUMMARIZE_QUERY)
 
     async def drive() -> None:
         renderer = LiveTreeRenderer(clear=not args.no_viz)
-        async for event in flow.run_streaming(graph):
+        async for event in flow.run_streaming(graph, inputs={"document": document}):
             renderer.handle(event, graph)
 
     asyncio.run(drive())

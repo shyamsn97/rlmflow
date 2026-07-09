@@ -3,7 +3,7 @@
 Quick start::
 
     from rflow import Flow
-    from rflow.clients import OpenAIClient
+    from rflow.minimal.clients import OpenAIClient
 
     flow = Flow(OpenAIClient(model="gpt-4o"))
     print(flow.run("What is 17 * 23? Verify with code."))
@@ -18,7 +18,7 @@ The whole tree advances by synchronized steps; drive it yourself with
 """
 
 from rflow.base import BaseFlow, BaseOutputParser
-from rflow.clients import (
+from rflow.minimal.clients import (
     AnthropicClient,
     LLMChannel,
     LLMClient,
