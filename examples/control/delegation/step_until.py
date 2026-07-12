@@ -1,4 +1,4 @@
-"""Show minimal ``Flow.step(..., until=...)`` boundaries during delegation.
+"""Show minimal ``Flow.run_streaming(..., until=...)`` boundaries during delegation.
 
 Minimal Flow does not expose the old ``eager_children`` toggle. Delegation fans
 out child agents by default through the shared async pool. This example focuses
@@ -16,8 +16,8 @@ import argparse
 import asyncio
 from pathlib import Path
 
-from rflow.minimal.clients import AnthropicClient, OpenAIClient
-from rflow.minimal import Event, Flow, Graph, render_tree
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow import Event, Flow, Graph, render_tree
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:
@@ -44,7 +44,7 @@ def _save_example_graph(
 
 
 QUERY = """\
-Show minimal `Flow.step(..., until=...)` boundaries with delegated child agents.
+Show minimal `Flow.run_streaming(..., until=...)` boundaries with delegated child agents.
 
 In your first REPL block, launch two child agents in one `await launch_subagents`
 call, then call done with their joined results. Use exactly these child names:
@@ -98,31 +98,34 @@ async def run_example(args: argparse.Namespace) -> Graph:
     graph = Graph(query=QUERY)
     observed: list[Event] = []
 
-    events = await flow.step(graph)  # default: until="node"
-    observed.extend(events)
-    print_events("default step(): first appended node", events, graph)
+    async def collect(*flow_args, **flow_kwargs) -> list[Event]:
+        return [event async for event in flow.run_streaming(*flow_args, **flow_kwargs)]
 
-    events = await flow.step(until="supervising")
+    events = await collect(graph, until="next")
+    observed.extend(events)
+    print_events("until='next': first appended node", events, graph)
+
+    events = await collect(until="supervising")
     observed.extend(events)
     print_events("until='supervising': parent has fanned out children", events, graph)
 
-    def first_child_done(event: Event, _graph: Graph) -> bool:
+    def first_child_done(event: Event, graph: Graph) -> bool:
         return (
             event.type == "append_node"
             and event.agent_id != "root"
             and event.node_type == "done_output"
         )
 
-    events = await flow.step(until=first_child_done)
+    events = await collect(until=first_child_done)
     observed.extend(events)
     print_events("until=<callable>: stop when any child is done", events, graph)
 
-    events = await flow.step(until="node", n=2)
+    events = await collect(until="next", n=2)
     observed.extend(events)
-    print_events("until='node', n=2: consume two more node appends", events, graph)
+    print_events("until='next', n=2: consume two more global steps", events, graph)
 
     while not graph.finished:
-        events = await flow.step(until=lambda _event, current: current.finished)
+        events = await collect(until=lambda event, current: current.finished)
         observed.extend(events)
         print_events("until=<callable>: run is finished", events, graph)
 
@@ -135,7 +138,7 @@ async def run_example(args: argparse.Namespace) -> Graph:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Show minimal Flow.step(..., until=...) boundaries."
+        description="Show minimal Flow.run_streaming(..., until=...) boundaries."
     )
     parser.add_argument("--model", default="gpt-5-mini")
     parser.add_argument("--max-depth", type=int, default=1)
@@ -151,7 +154,7 @@ def main() -> None:
     graph = asyncio.run(run_example(args))
     print("\n=== verdict ===")
     print("Delegated children fan out under the shared pool.")
-    print("The caller chooses observation boundaries with step(..., until=...).")
+    print("The caller chooses observation boundaries with run_streaming(..., until=...).")
     print(f"Result: {graph.result()}")
     _save_example_graph(graph, __file__, "step-until", out_dir=args.out_dir)
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from rflow.minimal import ExecOutput, Flow, Graph, LLMUsage, UserQuery
+from rflow import ExecOutput, Flow, Graph, LLMUsage
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:
@@ -98,7 +98,7 @@ def observation_injection() -> None:
     assert OBSERVATION in projected
     print("message projection contains the controller observation.")
 
-    asyncio.run(flow.step(graph, until="done"))
+    flow.run(graph)
     assert graph.result() == "used the injected controller observation"
     print_states("after stepping: run reacted and finished", graph)
     print(f"result={graph.result()!r}")
@@ -118,22 +118,15 @@ def controller_stop_instruction() -> None:
     graph = Graph(query="This run will be stopped by the controller.")
 
     async def run_with_controller_stop() -> None:
-        injected = False
-        async for event in flow.run_streaming(graph):
-            if (
-                not injected
-                and event.type == "append_node"
-                and event.node_type == "exec_output"
-            ):
-                injected = True
-                flow.append_node(
-                    graph,
-                    UserQuery(
-                        content=(
-                            "Controller stop request: finalize now with current state."
-                        )
-                    ),
-                )
+        # Stream the run to its first resting observation, then react. Because
+        # ``until`` halts the run at the boundary (the driver does not run ahead),
+        # the instruction we inject is guaranteed to be the next thing the agent
+        # reads when we resume it.
+        async for _event in flow.run_streaming(graph, until="idle"):
+            pass
+        graph.inject("Controller stop request: finalize now with current state.")
+        async for _event in flow.run_streaming(until="done"):
+            pass
 
     asyncio.run(run_with_controller_stop())
     assert graph.result() == "controller stopped the run"

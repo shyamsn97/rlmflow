@@ -8,6 +8,33 @@ each one is called out under **Breaking** below.
 
 ## [Unreleased]
 
+### Changed
+
+- **`rflow.minimal` is now the core package.** The minimal graph-first stack was
+  promoted to the top-level `rflow` package; everything outside it was retired.
+  Imports move from `rflow.minimal.*` to `rflow.*` (for example
+  `from rflow import Flow, Graph, LocalRuntime, FILE_TOOLS`), and LLM clients
+  live under `from rflow.clients import OpenAIClient, AnthropicClient`.
+- **Async, in-place streaming API.** `Flow` drives runs with `flow.run(query)`
+  (sync), `await flow.arun(...)`, and
+  `async for event in flow.run_streaming(graph, until=..., n=...)`.
+  `run_streaming` yields the `Event`s it emits and mutates the `Graph` in place.
+- **Visualization consolidated in `rflow.view`.** `render_tree`,
+  `LiveTreeRenderer`, `open_viewer`, `replay`, `save_image`, and `save_steps` are
+  re-exported from `rflow`. Static exports take a run directory, a `Graph`, or a
+  list of snapshots.
+- **DSPy adapter renamed** from `RecursiveFlowLM` to `DSPyFlow`; wrap a `Flow`
+  in `FlowLLM` first: `DSPyFlow(FlowLLM(flow), model=...)`.
+- **`group_flows(...)`** replaces `parallel_step` for running multiple flows
+  concurrently and merging their event streams over the shared `Pool`.
+
+### Removed
+
+- The `rlmflow` CLI (`view` / `render` / `version`) and the `rflow.utils`
+  observability/export surface (`save_trace`/`load_trace`, mermaid/dot/d2/gantt
+  exports, `save_html`/`save_gif`, `Node.plot`). Use `rflow.view` and
+  `graph.save(...)` / `Graph.load(...)` instead.
+
 ## [0.4.0] — 2026-06-12
 
 ### Added

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from benchmarks.eval import model
 from benchmarks.eval.types import Model
-from rflow.minimal.clients.llm import OpenAIClient
+from rflow.clients.llm import OpenAIClient
 
 
 @model("openai")

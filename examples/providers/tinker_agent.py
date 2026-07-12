@@ -14,8 +14,8 @@ from pathlib import Path
 import argparse
 import asyncio
 
-from rflow.minimal.clients import TinkerClient
-from rflow.minimal import Flow, Graph, LiveTreeRenderer
+from rflow.clients import TinkerClient
+from rflow import Flow, Graph, LiveTreeRenderer
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:

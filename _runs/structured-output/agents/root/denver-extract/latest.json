@@ -1,0 +1,8 @@
+{
+  "agent_id": "root.denver-extract",
+  "latest_node_id": "n_fdd24245",
+  "seq": 6,
+  "type": "done_output",
+  "terminal": true,
+  "result": "{\"city\": \"Denver\", \"condition\": \"clouds\", \"high_f\": 72.0, \"packing_tip\": \"Pack a light jacket or sweater and breathable layers\\u2014cloudy skies with a high around 72.0\\u00b0F can feel cooler in the morning and evening.\"}"
+}

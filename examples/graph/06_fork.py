@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from rflow.minimal import DoneOutput, Graph, UserQuery, render_tree
+from rflow import DoneOutput, Graph, UserQuery, render_tree
 
 
 def seed_graph() -> Graph:

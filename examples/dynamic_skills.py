@@ -25,14 +25,13 @@ one and, seeing that skill now in its own prompt, solves the task on turn two.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from rflow.minimal import DEFAULT_BUILDER, Flow, Graph, LLMUsage
-from rflow.minimal.clients import OpenAIClient
-from rflow.minimal.tools import tool
+from rflow import DEFAULT_BUILDER, Flow, Graph, LLMUsage
+from rflow.clients import OpenAIClient
+from rflow.tools import tool
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:
@@ -196,7 +195,7 @@ def main() -> None:
         print(library.render())
 
     print("\n--- run ---\n")
-    asyncio.run(flow.step(graph, until="done"))
+    flow.run(graph)
 
     print(f"\nagent installed skills: {library.names()}")
     if args.print_prompt:

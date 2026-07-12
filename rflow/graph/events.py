@@ -1,38 +1,120 @@
-"""Typed live notifications for graph changes.
+"""Graph action events for minimal rflow.
 
-These are not the source of truth. A :class:`~rflow.graph.graph.Graph` remains
-the durable state; events are small hints for live UIs, recorders, and
-controllers to re-read the changed part of the graph.
+The recursive ``Graph`` is the durable source of truth. Graph actions are the
+state transitions applied to that graph and streamed to observers. Every action
+subclasses :class:`Event`, so observers can dispatch with ``isinstance`` instead
+of string tags.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from rflow.graph.graph import DoneOutput, ExecOutput, Graph, Node
+
+
+class Event:
+    """Base class for graph action events streamed to observers."""
+
+    __slots__ = ()
+    #: Discriminator tag (kept for wire/JSON); prefer ``isinstance`` in code.
+    type: str
+    #: Id of the graph this event belongs to.
+    graph_id: str
+
 
 @dataclass(frozen=True, slots=True)
-class GraphNodeCommitted:
-    """Normal execution committed a new node to one agent trajectory."""
+class GraphCreated(Event):
+    type: Literal["graph_created"]
+    graph: Graph
 
-    type: Literal["node_committed"]
+    @property
+    def graph_id(self) -> str:
+        return self.graph.graph_id
+
+
+@dataclass(frozen=True, slots=True)
+class AppendNode(Event):
+    type: Literal["append_node"]
+    agent_id: str
+    node_type: str
+    node: Node
+    graph_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ReplaceNode(Event):
+    type: Literal["replace_node"]
     agent_id: str
     node_id: str
     node_type: str
-    seq: int
-    global_step: int | None
+    node: Node
+    graph_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
-class GraphEdited:
-    """An explicit graph edit changed existing graph state."""
-
-    type: Literal["graph_edited"]
-    affected_agents: tuple[str, ...]
-    reason: str
-
-
-GraphEvent = GraphNodeCommitted | GraphEdited
+class RemoveNode(Event):
+    type: Literal["remove_node"]
+    agent_id: str
+    node_id: str
+    subtree: bool = False
+    graph_id: str = ""
 
 
-__all__ = ["GraphEdited", "GraphEvent", "GraphNodeCommitted"]
+@dataclass(frozen=True, slots=True)
+class AddChild(Event):
+    type: Literal["add_child"]
+    parent_agent_id: str
+    child: Graph
+    graph_id: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class RemoveChild(Event):
+    type: Literal["remove_child"]
+    parent_agent_id: str
+    child_agent_id: str
+    graph_id: str = ""
+
+
+GraphAction = (
+    GraphCreated | AppendNode | ReplaceNode | RemoveNode | AddChild | RemoveChild
+)
+
+StepUntil = (
+    Literal["next", "idle", "done", "finished", "supervising", "error"]
+    | Callable[[Event, Graph], bool]
+)
+
+
+def is_rest(event: Event) -> bool:
+    """Whether an event leaves its agent at a resting node (clean output / done).
+
+    ``error_output`` is *not* a rest point, so an ``idle`` step keeps advancing past
+    an error until the agent recovers to a clean ``exec_output``.
+    """
+    return isinstance(event, AppendNode) and isinstance(
+        event.node, (ExecOutput, DoneOutput)
+    )
+
+
+def is_node(event: Event, node_cls: type[Node] | tuple[type[Node], ...]) -> bool:
+    """Whether ``event`` appends a node of the given subclass(es)."""
+    return isinstance(event, AppendNode) and isinstance(event.node, node_cls)
+
+
+__all__ = [
+    "AddChild",
+    "AppendNode",
+    "Event",
+    "GraphAction",
+    "GraphCreated",
+    "RemoveChild",
+    "RemoveNode",
+    "ReplaceNode",
+    "StepUntil",
+    "is_node",
+    "is_rest",
+]

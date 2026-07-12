@@ -11,11 +11,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import shutil
 from pathlib import Path
 
-from rflow.minimal import Flow, Graph, LLMUsage
+from rflow import Flow, Graph, LLMUsage
 
 FRUITS = [
     ("lemon", "citrus"),
@@ -77,7 +76,7 @@ def run_branch(root: Path, idx: int) -> tuple[str, int, dict[str, str], int]:
     llm = MockLLM(seed=idx)
     flow = Flow(llm, max_depth=1, max_iters=10)
     graph = Graph(query=QUERY)
-    asyncio.run(flow.step(graph, until="done"))
+    flow.run(graph)
     # Each branch persists to its own directory (graph.json).
     graph.save(root / f"branch_{idx}")
     flow.close_repls(graph.graph_id)

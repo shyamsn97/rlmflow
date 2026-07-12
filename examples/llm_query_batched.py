@@ -14,7 +14,7 @@ from pathlib import Path
 
 import threading
 
-from rflow.minimal import Flow, Graph, LLMUsage, render_tree
+from rflow import Flow, Graph, LLMUsage, render_tree
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:

@@ -18,8 +18,8 @@ from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-from rflow.minimal.clients import AnthropicClient, OpenAIClient
-from rflow.minimal import (
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow import (
     DEFAULT_BUILDER,
     DoneOutput,
     ErrorOutput,
@@ -207,11 +207,13 @@ class WorkerPoolControl:
     async def _advance_runs(runs: list[WorkerRun]) -> None:
         async def step(run: WorkerRun) -> None:
             try:
-                await run.worker.step(run.graph, until="node")
+                async for _event in run.worker.run_streaming(run.graph, until="next"):
+                    pass
             except RuntimeError as exc:
                 if "run is already active" not in str(exc):
                     raise
-                await run.worker.step(until="node")
+                async for _event in run.worker.run_streaming(until="next"):
+                    pass
 
         await asyncio.gather(*(step(run) for run in runs))
 
@@ -486,11 +488,15 @@ async def _drive_controller(
 
     async def step_controller() -> None:
         try:
-            await controller.step(controller_graph, until="node")
+            async for _event in controller.run_streaming(
+                controller_graph, until="next"
+            ):
+                pass
         except RuntimeError as exc:
             if "run is already active" not in str(exc):
                 raise
-            await controller.step(until="node")
+            async for _event in controller.run_streaming(until="next"):
+                pass
 
     if not show_live:
         while not controller_graph.finished:

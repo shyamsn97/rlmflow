@@ -14,7 +14,7 @@ Use full replacement only when you want to own that entire protocol yourself.
 Before changing the prompt, render the one your agent already sees:
 
 ```python
-graph = agent.start("Summarize this document.", context=document)
+graph = agent.start("Summarize this document.", {"document": document})
 print(agent.build_system_prompt(graph))
 ```
 
@@ -24,41 +24,36 @@ want to inspect:
 ```python
 import rflow
 
-graph = rflow.Graph(
-    query="Summarize this document.",
-    agent_id="root",
-    depth=0,
-    config=agent.node_config(),
-)
+graph = rflow.Graph(query="Summarize this document.", agent_id="root", depth=0)
 print(agent.build_system_prompt(graph))
 ```
 
-Each `Graph` stores the prompt snapshot that was used for that agent's
-first call:
-
-```python
-print(graph.system_prompt)
-```
+`build_system_prompt(graph)` is deterministic for a given `graph`, so the prompt
+an agent saw is always reproducible from its saved `Graph`.
 
 ## Default Builder Shape
 
-The default builder has seven sections, in order:
+The default builder has these sections, in order:
 
 | Section | Purpose |
 | --- | --- |
-| `role` | Opening contract + REPL namespace. `output_schema` blurbs appear when `enable_structured_output=True`. |
+| `role` | Opening contract + REPL namespace. |
 | `strategy` | Orchestrator principles: probe inputs, decompose/fanout, truncation, fix failures before `done()`. |
 | `format` | One `repl` block per turn; use `print(...)` for inspection. |
-| `examples` | Three core recipes (sub-agent slice fanout, verify→repair→re-verify, local search before `llm_query_batched`). |
+| `examples` | Core recipes (observe inputs, fan out slices, delegate). |
 | `final` | `done(...)` contract and repair discipline. |
-| `structured-output` | Per-agent `done(value)` schema when `enable_structured_output=True` and the agent has `output_schema`. |
-| `tools` | Runtime-generated tool list (custom user tools registered with the engine). |
-| `status` | Runtime-generated agent id, depth, and config status. |
+| `structured-output` | Per-agent `done(value)` schema when the agent has an `output_schema`. |
+| `structured-output-option` | How to request structured output from subagents (only when `enable_structured_output=True` and the agent can spawn children). |
+| `tools` | Runtime-generated tool list (custom tools registered with the runtime, plus extra model aliases). |
+| `inputs` | Runtime-generated manifest of the agent's `INPUTS`. |
+| `status` | Runtime-generated agent depth / spawn-budget status. |
+| `first-turn` | Bootstrap-only safeguard; drops out once the agent has produced any `llm_output`. |
 
-The first five render headless and back-to-back, so the rendered prompt reads
-as one continuous narrative; the split exists so each piece is independently
-swappable via `DEFAULT_BUILDER.update(name, ...)`. `tools` and `status` are
-callable sections filled from the current engine and graph at build time.
+The static text sections render back-to-back so the prompt reads as one
+continuous narrative; the split exists so each piece is independently swappable
+via `DEFAULT_BUILDER.update(name, ...)`. `tools`, `inputs`, `status`,
+`structured-output*`, `examples`, and `first-turn` are callable sections filled
+from the current flow and graph at build time.
 
 ## Recommended: Derive From `DEFAULT_BUILDER`
 
@@ -72,7 +67,7 @@ Add a new section anywhere relative to the existing ones:
 
 ```python
 import rflow
-from rflow.prompts.default import DEFAULT_BUILDER
+from rflow.prompts import DEFAULT_BUILDER
 
 project_rules = """
 - Preserve API compatibility unless the task explicitly asks for a breaking change.
@@ -96,7 +91,7 @@ agent.prompt_builder = prompt
 Replace just the piece you want to customize. The rest of the prompt is unchanged:
 
 ```python
-from rflow.prompts.default import DEFAULT_BUILDER
+from rflow.prompts import DEFAULT_BUILDER
 
 domain_strategy = """
 **When to delegate:** spawn one child per independent file/module. Keep the root
@@ -123,8 +118,9 @@ prompt = DEFAULT_BUILDER.section(
 
 ### Remove A Section
 
-You can remove sections, but only the ones you added — removing `system`
-removes the entire delegation protocol.
+You can remove sections, but be careful — removing core sections like `role`,
+`strategy`, `format`, or `final` strips the delegation/REPL protocol. Prefer
+removing only sections you added.
 
 ```python
 prompt = DEFAULT_BUILDER.remove("project_rules")
@@ -183,11 +179,11 @@ This is the most fragile option. If the prompt omits `launch_subagents`, `INPUTS
 Subclass `Flow` when the prompt should depend on the current agent,
 depth, query, available tools, or project state. The hook receives the
 agent's `Graph` — all run-invariants are flat fields on it
-(`agent_id`, `depth`, `query`, `config`, `model`, …).
+(`agent_id`, `depth`, `query`, `inputs`, `model`, …).
 
 ```python
 import rflow
-from rflow.prompts.default import DEFAULT_BUILDER
+from rflow.prompts import DEFAULT_BUILDER
 
 
 class AuditFlow(rflow.Flow):

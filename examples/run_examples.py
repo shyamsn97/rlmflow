@@ -191,7 +191,7 @@ EXAMPLES: list[Example] = [
         env=("OPENAI_API_KEY",),
         modules=("openai",),
         timeout=300,
-        note="uses the tiny rflow.minimal graph/event stack with FILE_TOOLS",
+        note="uses the tiny rflow graph/event stack with FILE_TOOLS",
     ),
     Example(
         "dspy-drop-in",

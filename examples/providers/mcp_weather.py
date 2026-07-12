@@ -19,8 +19,8 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
-from rflow.minimal.clients import AnthropicClient, OpenAIClient
-from rflow.minimal import (
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow import (
     Flow,
     Graph,
     LiveTreeRenderer,

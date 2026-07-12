@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from benchmarks.eval import model
 from benchmarks.eval.types import Model
-from rflow.minimal.clients.llm import AnthropicClient
+from rflow.clients.llm import AnthropicClient
 
 
 @model("anthropic")

@@ -1,8 +1,7 @@
-"""Public process environment keys exposed to agent code.
+"""Public ``RFLOW_*`` process environment exposed to agent code.
 
-These keys are safe, string-valued metadata that an agent can read via
-``os.environ``. Private control state such as output schemas and done results
-lives in :class:`rflow.runtime.context.EngineContext` instead.
+These are safe, string-valued metadata an agent can read via ``os.environ``.
+Private control state (output schemas, done results) never travels this way.
 """
 
 from __future__ import annotations

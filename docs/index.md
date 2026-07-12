@@ -11,16 +11,18 @@ Pick the doc that matches what you're trying to do.
 
 ## Use rlmflow
 
-- [Control](control.md) — step loop, save/load resume, rewind,
+- [Control](control.md) — streaming loop, save/load resume, rewind,
   forks, `INPUTS`, delegation via `launch_subagents`,
   inline-first strategy, custom tools.
+- [Streaming and scheduling](streaming.md) — detailed guide to
+  `run_streaming(..., until=...)`, per-agent queues, boundaries, and delegation.
 - [Skills](skills.md) — workspace `SKILL.md` files, always-on skills,
   query-selected skills, child-only skills, run-memory skills.
 - [Node injection](injections.md) — append typed controller events to a
-  running graph, then commit them through `agent.step(graph)`.
+  running graph, then continue with `agent.run(graph)` / `agent.run_streaming(graph)`.
 - [Observability](observability.md) — querying the `Graph`,
-  run layout, export helpers, live tree, gantt, topology
-  exports, Gradio viewer, CLI.
+  run layout, the live terminal tree, the Gradio viewer, and static
+  image/step exports.
 - [Node model](node_model.md) — typed graph state taxonomy, action /
   observation alternation, delegation wait/resume flow.
 - [Runtimes](runtimes.md) — `Runtime` protocol, shipped runtimes

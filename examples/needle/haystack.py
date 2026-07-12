@@ -20,8 +20,8 @@ import random
 import string
 from pathlib import Path
 
-from rflow.minimal.clients import AnthropicClient, OpenAIClient
-from rflow.minimal import DockerRuntime, Flow, Graph, LiveTreeRenderer
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow import DockerRuntime, Flow, Graph, LiveTreeRenderer
 
 
 def generate_massive_context(

@@ -1,6 +1,6 @@
 """Run a platformer-building Flow task inside Docker.
 
-Each agent's code runs in a Docker container via ``rflow.minimal.DockerRuntime``.
+Each agent's code runs in a Docker container via ``rflow.DockerRuntime``.
 
 Setup:
     docker build -t rlmflow:local .
@@ -21,8 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from rflow.minimal.clients import AnthropicClient, OpenAIClient  # noqa: E402
-from rflow.minimal import DockerRuntime, Flow, Graph, LiveTreeRenderer  # noqa: E402
+from rflow.clients import AnthropicClient, OpenAIClient  # noqa: E402
+from rflow import DockerRuntime, Flow, Graph, LiveTreeRenderer  # noqa: E402
 
 
 PLATFORMER_QUERY = """\

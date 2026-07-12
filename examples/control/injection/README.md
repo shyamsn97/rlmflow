@@ -18,8 +18,10 @@ truncate the now-obsolete children, adopt the edited graph on a fresh
 
 Inspect the baseline with:
 
-```bash
-rlmflow view examples/_runs/word-search/baseline
+```python
+from rflow import open_viewer
+
+open_viewer("examples/_runs/word-search/baseline")
 ```
 
 ## Flow
@@ -56,8 +58,8 @@ in a direct deterministic scanner.
 
 - The edited node is a real `SupervisingOutput` from the baseline trace.
 - `truncate="descendants"` removes obsolete waited-on child routes.
-- Each variant gets its own `Flow`; `graph = flow.step(edited)` adopts the copy
-  and advances it (no `flow.graph = ...`).
-- Both variants are stepped in the same loop so you can watch them diverge.
+- Each variant gets its own `Flow`; `flow.run_streaming(edited, until=...)`
+  continues the edited copy (no `flow.graph = ...`).
+- Both variants are streamed in the same loop so you can watch them diverge.
 - `graph.result()` returns the structured word-search payload from `DoneOutput`,
   and the example validates it with `WordSearchResult.model_validate(...)`.

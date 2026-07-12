@@ -25,8 +25,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from rflow.minimal.clients import OpenAIClient  # noqa: E402
-from rflow.minimal import Flow, Graph, LiveTreeRenderer, ModalRuntime  # noqa: E402
+from rflow.clients import OpenAIClient  # noqa: E402
+from rflow import Flow, Graph, LiveTreeRenderer, ModalRuntime  # noqa: E402
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:

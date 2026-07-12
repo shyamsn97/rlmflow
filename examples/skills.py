@@ -16,12 +16,11 @@ This example demonstrates the intended shape for user-authored skills:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import tempfile
 from pathlib import Path
 
-from rflow.minimal import DEFAULT_BUILDER, Flow, Graph
-from rflow.minimal.clients import OpenAIClient
+from rflow import DEFAULT_BUILDER, Flow, Graph
+from rflow.clients import OpenAIClient
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:
@@ -180,7 +179,7 @@ def main() -> None:
             print(flow.build_system_prompt(graph))
             print("\n--- live run ---\n")
 
-        asyncio.run(flow.step(graph, until="done"))
+        flow.run(graph)
         print(graph.result())
         _save_example_graph(graph, __file__, "skills", out_dir=args.out_dir)
         flow.close_repls(graph.graph_id)

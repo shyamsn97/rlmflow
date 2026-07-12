@@ -22,7 +22,7 @@ import shutil
 from copy import deepcopy
 from pathlib import Path
 
-from rflow.minimal import (
+from rflow import (
     FILE_TOOLS,
     Flow,
     Graph,
@@ -99,7 +99,10 @@ async def gym_loop(flow: Flow, graph: Graph) -> list[float]:
     rewards: list[float] = []
     step = 0
     while not graph.finished:
-        await flow.step(graph if step == 0 else None)
+        async for _event in flow.run_streaming(
+            graph if step == 0 else None, until="next"
+        ):
+            pass
         step += 1
         current = graph.current()
         reward = 1.0 if graph.finished else 0.0

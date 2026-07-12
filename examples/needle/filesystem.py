@@ -21,8 +21,8 @@ import string
 import tempfile
 from pathlib import Path
 
-from rflow.minimal.clients import AnthropicClient, OpenAIClient
-from rflow.minimal import (
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow import (
     DockerRuntime,
     FILE_TOOLS,
     Flow,

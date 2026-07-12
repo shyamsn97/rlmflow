@@ -1,6 +1,6 @@
 # Graph features
 
-Tiny self-contained scripts that show what a `rflow.minimal.Graph` can do. No
+Tiny self-contained scripts that show what a `rflow.Graph` can do. No
 LLM keys needed — every example builds its own graph by hand, so they finish in
 milliseconds and can be read top-to-bottom.
 

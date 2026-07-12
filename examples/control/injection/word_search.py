@@ -27,8 +27,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rflow.minimal.clients import AnthropicClient, OpenAIClient
-from rflow.minimal import Flow, Graph, render_tree
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow import Flow, Graph, render_tree
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:

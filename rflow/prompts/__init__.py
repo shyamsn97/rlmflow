@@ -1,26 +1,23 @@
-"""Prompt content + the immutable :class:`PromptBuilder` that assembles it.
+"""System prompt building and chat-message projection."""
 
-``DEFAULT_BUILDER`` is the live builder rendered by ``Flow.build_system_prompt``;
-``SYSTEM_PROMPT`` is its static (agent-independent) render, used as the default
-``Flow.system_prompt`` fallback. Derive custom prompts without mutating the
-original via ``DEFAULT_BUILDER.update("role", ...)`` / ``.section(...)``.
-"""
-
-from __future__ import annotations
-
-from rflow.prompts.builder import PromptBuilder, Section, SectionBody
-from rflow.prompts.default import DEFAULT_BUILDER, SYSTEM_PROMPT
-from rflow.prompts.messages import (
-    create_final_action_message,
-    create_nudge_message,
+from rflow.prompts.prompts import (
+    DEFAULT_BUILDER,
+    MAX_STATIC_PROMPT_CHARS,
+    SYSTEM_PROMPT,
+    PromptBuilder,
+    Section,
+    SectionBody,
+    status_section,
+    tools_section,
 )
 
 __all__ = [
     "DEFAULT_BUILDER",
+    "MAX_STATIC_PROMPT_CHARS",
     "PromptBuilder",
     "SYSTEM_PROMPT",
     "Section",
     "SectionBody",
-    "create_final_action_message",
-    "create_nudge_message",
+    "status_section",
+    "tools_section",
 ]

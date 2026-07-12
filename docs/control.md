@@ -1,45 +1,81 @@
 # Control
 
-`Graph` is the control surface. `Flow.start(...)` creates a graph, and every
-`Flow.step(graph)` returns a fresh advanced snapshot. Save/load, rewind, branch,
-inject, and resume are all graph operations.
+`Graph` is the control surface. `Flow.run_streaming(graph, until=...)` advances
+it in place and yields the `Event`s it emitted. Save/load, rewind, fork, inject,
+and resume are all graph operations.
 
 ## Step Loop
 
 ```python
+import asyncio
+from rflow import render_tree
+
 agent = rflow.Flow(rflow.OpenAIClient(model="gpt-5"), max_depth=2)
 graph = agent.start(query)
-while not graph.finished:
-    graph = agent.step(graph)
+
+async def drive():
+    async for _event in agent.run_streaming(graph):
+        print(render_tree(graph))
+
+asyncio.run(drive())
 ```
 
-`agent.run(query)` drives the same loop and returns `graph.result()`.
-`agent.chat(messages)` is the `LLMClient` interface; the latest user message
-becomes the query and the recursive loop runs under the hood.
+`agent.run(query)` drives the same loop synchronously and returns
+`graph.result()`; `await agent.arun(query)` is the async form. `agent.chat(messages)`
+is the `LLMClient` interface — the latest user message becomes the query and the
+recursive loop runs under the hood.
 
-Each `step(graph)` advances one observation-to-observation transition for every
-agent that is ready to move. A model turn is usually two steps: LLM call
-(`obs -> LLMAction -> LLMOutput`) and code execution
-(`LLMOutput -> ExecAction -> CodeObservation`). See [`node_model.md`](node_model.md)
-for the typed node flow.
+`run_streaming` yields one typed `Event` per commit and mutates `graph` in place.
+Every model turn is an `LLMOutput` (the model's code) followed by exactly one
+observation: `ExecOutput`, `DoneOutput`, `ErrorOutput`, or `SupervisingOutput`.
+See [`node_model.md`](node_model.md) for the typed node flow.
 
-## Minimal Step Boundaries
+## Stream Boundaries
 
-In the minimal event loop, delegated children fan out through the shared async
-pool once the parent reaches `await launch_subagents([...])`. The caller controls
-how much of that graph event stream to observe with `Flow.step(..., until=...)`.
+`Flow.run_streaming(graph, until=...)` streams until a boundary and **halts there**
+— the driver does not enqueue more work past what you observe, so edits you make
+between streaming calls are seen when the run resumes. Pass the graph on the first
+call; omit it on later calls to continue the active run.
 
-Common boundaries:
+Two boundary families:
+
+**Global steps** advance every active agent in parallel, then halt the whole
+frontier:
 
 ```python
-await flow.step(graph)  # default: until="node"
-await flow.step(until="supervising")
-await flow.step(until="node", n=3)
-await flow.step(until=lambda event, graph: graph.finished)
+async for event in flow.run_streaming(graph, until="next"):
+    ...
+async for event in flow.run_streaming(until="idle"):
+    ...
 ```
 
-See [`examples/control/delegation/step_until.py`](../examples/control/delegation/step_until.py)
-for a deterministic offline demo.
+- `next` surfaces everything, including errors — it stops *on* an `error_output`.
+- `idle` runs each agent to a clean rest (`exec_output`/`done_output`), healing
+  errors on the way (an `error_output` is not a rest point, so the agent keeps
+  going and fixes it). A supervising parent with live children just no-ops.
+
+Other boundaries stop when that event is observed:
+
+```python
+async for event in flow.run_streaming(graph, until="supervising"):
+    ...
+async for event in flow.run_streaming(until=lambda event, graph: graph.finished):
+    ...
+```
+
+Because the run halts at the boundary, reactive control is deterministic:
+
+```python
+async for _event in flow.run_streaming(graph, until="idle"):
+    pass
+graph.inject("Finalize now with the best current evidence.")
+async for _event in flow.run_streaming(until="done"):
+    pass
+```
+
+See [`examples/control/controller_injection.py`](../examples/control/controller_injection.py)
+and [`examples/control/delegation/step_until.py`](../examples/control/delegation/step_until.py).
+For the full scheduler model, see [`streaming.md`](streaming.md).
 
 ## Save And Resume
 
@@ -49,60 +85,45 @@ A saved graph directory is the durable run:
 graph.save("runs/deep_research")
 
 resumed = rflow.Graph.load("runs/deep_research")
-while not resumed.finished:
-    resumed = agent.step(resumed)
+agent.run(resumed)   # or: async for _ in agent.run_streaming(resumed): ...
 ```
 
-For live checkpointing, save after every step. The same path is overwritten with
-the latest complete graph/run layout.
+For live checkpointing, call `graph.save(...)` inside the stream loop. The same
+path is overwritten with the latest complete graph/run layout.
 
 ## Rewind And Branch
 
-Keep every `Graph` snapshot in a list and resume any one of them:
+`Graph` mutates in place, so keep restore points with `checkpoint()` /
+`revert(...)`, or drop everything after a node with `rewind(node_id)`:
 
 ```python
-history = [agent.start(query)]
-while not history[-1].finished:
-    history.append(agent.step(history[-1]))
-
-graph = history[-5]
-while not graph.finished:
-    graph = agent.step(graph)
+cp = graph.checkpoint()
+agent.run(graph)
+graph.revert(cp)        # back to the checkpoint
+graph.rewind(node_id)   # or truncate history after a specific node
 ```
 
-Branch by copying or loading a graph and saving the result somewhere else:
+Fork an independent branch (deep copy with a fresh `graph_id`) and continue it
+somewhere else:
 
 ```python
-branch = history[-5].copy(deep=True)
-while not branch.finished:
-    branch = agent.step(branch)
+branch = graph.fork(session="isolated")
+agent.run(branch)
 branch.save("runs/repair-branch")
 ```
 
 ## Node Injection
 
-Controllers can append typed nodes to a graph and commit them through the normal
-step loop. This is useful for budget nudges, human feedback, and forced
-finalization:
+Controllers can append a user-turn observation to any agent and continue the
+run. This is useful for budget nudges, human feedback, and forced finalization:
 
 ```python
-graph = graph.inject(
-    target="root.worker",
-    node=rflow.ExecOutput(
-        output="Injected controller observation: answer now.",
-        content="Injected controller observation: answer now.",
-    ),
-)
-graph = agent.step(graph)
-
-graph = graph.inject(
-    target="root.worker",
-    node=rflow.ExecAction(code='done("best available answer")'),
-)
-graph = agent.step(graph)
+graph.inject("Answer now with the best current evidence.", agent_id="root.worker")
+agent.run(graph)   # or: async for _ in agent.run_streaming(graph): ...
 ```
 
-See [`injections.md`](injections.md) and
+`replace_node`, `rewind`, and `remove_child` rewrite existing history the same
+way. See [`injections.md`](injections.md) and
 [`examples/control/controller_injection.py`](../examples/control/controller_injection.py).
 
 ## Delegation
@@ -177,8 +198,8 @@ agent.prompt_builder = (
 )
 ```
 
-You can also subclass `Flow` and override `build_system_prompt`,
-`build_messages`, `format_exec_output`, `first_prompt`, or `step`.
+You can also subclass `Flow` and override `build_system_prompt` (or set
+`agent.prompt_builder` directly) to fully control the prompt.
 
 ## Walkthroughs
 

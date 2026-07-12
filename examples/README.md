@@ -85,12 +85,16 @@ A finished run is saved automatically under `_runs/`; reopen it with:
 
 ```bash
 python examples/summarizer.py        # saves to examples/_runs/summarizer/
-rlmflow view examples/_runs/summarizer
-rlmflow render examples/_runs/summarizer -f html -o viewer.html
 ```
 
-The saved directory holds `graph.json` (and optionally `trace.json` when you
-capture a step sequence with `save_trace`).
+```python
+from rflow import open_viewer, save_image
+
+open_viewer("examples/_runs/summarizer")            # interactive Gradio app
+save_image("examples/_runs/summarizer", "run.png")  # static PNG (rlmflow[image])
+```
+
+The saved directory holds `graph.json` plus per-agent logs under `agents/`.
 
 ## Docker And Modal
 
@@ -107,8 +111,8 @@ Install the matching extra first: `rlmflow[modal]` or `rlmflow[sandbox]`.
 For fully locked-down local runs, pass a `DockerRuntime`:
 
 ```python
-from rflow.minimal import DockerRuntime, Flow
-from rflow.minimal.clients import OpenAIClient
+from rflow import DockerRuntime, Flow
+from rflow.clients import OpenAIClient
 
 runtime = DockerRuntime("rlmflow:local", working_directory="./proj")
 flow = Flow(OpenAIClient(model="gpt-4o"), runtime=runtime)

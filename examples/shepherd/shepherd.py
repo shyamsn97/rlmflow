@@ -38,8 +38,8 @@ import re
 import shutil
 from pathlib import Path
 
-from rflow.minimal.clients import AnthropicClient, OpenAIClient
-from rflow.minimal import ExecAction, Flow, Graph, LLMOutput
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow import ExecAction, Flow, Graph, LLMOutput
 
 ANSWER = "8675309"
 NUM_CHUNKS = 5

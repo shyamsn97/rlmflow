@@ -48,7 +48,7 @@ def pushd(path: Path) -> Iterator[None]:
 
 
 def build_rflow_llm(model: str):
-    from rflow.minimal.clients import AnthropicClient, OpenAIClient
+    from rflow.clients import AnthropicClient, OpenAIClient
 
     return (
         AnthropicClient(model)
@@ -104,7 +104,7 @@ def run_rflow(
     max_concurrency: int,
     no_viz: bool,
 ) -> None:
-    from rflow.minimal import FILE_TOOLS, Flow, Graph, LiveTreeRenderer, LocalRuntime
+    from rflow import FILE_TOOLS, Flow, Graph, LiveTreeRenderer, LocalRuntime
 
     reset_run_dir(run_dir, force=True)
     (run_dir / "task.txt").write_text(TASK)

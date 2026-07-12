@@ -29,8 +29,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rflow.minimal.clients import AnthropicClient, OpenAIClient
-from rflow.minimal import ExecOutput, Flow, Graph, SupervisingOutput, group_flows
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow import ExecOutput, Flow, Graph, SupervisingOutput, group_flows
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:

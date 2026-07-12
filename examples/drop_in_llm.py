@@ -23,8 +23,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rflow.minimal.clients import OpenAIClient
-from rflow.minimal import Flow, FlowLLM, Graph
+from rflow.clients import OpenAIClient
+from rflow import Flow, FlowLLM, Graph
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:

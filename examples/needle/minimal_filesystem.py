@@ -1,6 +1,6 @@
 """Minimal needle-in-a-haystack search across many files.
 
-This is the tiny `rflow.minimal` version of `examples/needle/filesystem.py`.
+This is the tiny `rflow` version of `examples/needle/filesystem.py`.
 It keeps the graph caller-owned, runs filesystem tools through LocalRuntime, and
 streams graph events while the agent searches.
 
@@ -19,8 +19,8 @@ import string
 import tempfile
 from pathlib import Path
 
-from rflow.minimal.clients import AnthropicClient, OpenAIClient
-from rflow.minimal import FILE_TOOLS, Flow, Graph, LiveTreeRenderer, LocalRuntime
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow import FILE_TOOLS, Flow, Graph, LiveTreeRenderer, LocalRuntime
 
 
 def generate_haystack(

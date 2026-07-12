@@ -20,8 +20,8 @@ import asyncio
 import random
 from pathlib import Path
 
-from rflow.minimal.clients import AnthropicClient, OpenAIClient
-from rflow.minimal import DockerRuntime, Flow, Graph, LiveTreeRenderer
+from rflow.clients import AnthropicClient, OpenAIClient
+from rflow import DockerRuntime, Flow, Graph, LiveTreeRenderer
 
 _TOPICS = [
     "the migration to the new billing system",

@@ -15,8 +15,8 @@ from pathlib import Path
 
 import dspy
 
-from rflow.minimal.clients import OpenAIClient
-from rflow.minimal import DSPyFlow, Flow, FlowLLM
+from rflow.clients import OpenAIClient
+from rflow import DSPyFlow, Flow, FlowLLM
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:

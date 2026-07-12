@@ -1,0 +1,8 @@
+{
+  "agent_id": "root.austin-extract",
+  "latest_node_id": "n_9dde6ba2",
+  "seq": 6,
+  "type": "done_output",
+  "terminal": true,
+  "result": "{\"city\": \"Austin\", \"condition\": \"sun\", \"high_f\": 96.0, \"packing_tip\": \"Pack lightweight, breathable clothing, sunscreen, sunglasses, a hat, and a reusable water bottle to stay hydrated and protected in the 96\\u00b0F sun.\"}"
+}

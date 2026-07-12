@@ -37,7 +37,7 @@ EVAL_MODAL_CPU ?= 1
 EVAL_MODAL_TIMEOUT ?= 3600
 EVAL_OUT_DIR ?= benchmarks/eval/runs
 EVAL_DATASET_PARAMS ?=
-EVAL_RUNNER_PARAMS ?= --runner-param rflow-local.max_iters=$(EVAL_MAX_ITERS) --runner-param rflow-local.max_depth=$(EVAL_MAX_DEPTH) --runner-param rflow-local.include_llm_query=$(EVAL_INCLUDE_LLM_QUERY)
+EVAL_RUNNER_PARAMS ?= --runner-param rflow-local.max_iters=$(EVAL_MAX_ITERS) --runner-param rflow-local.max_depth=$(EVAL_MAX_DEPTH) --runner-param rflow-local.use_llm_query=$(EVAL_INCLUDE_LLM_QUERY)
 EVAL_ARGS ?=
 EVAL_WANDB_PROJECT ?= rflow-eval
 EVAL_WANDB_ENTITY ?=

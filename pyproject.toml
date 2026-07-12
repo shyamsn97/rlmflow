@@ -96,14 +96,12 @@ Homepage = "https://github.com/shyamsn97/rlmflow"
 Repository = "https://github.com/shyamsn97/rlmflow"
 Issues = "https://github.com/shyamsn97/rlmflow/issues"
 
-[project.scripts]
-rlmflow = "rflow.cli:main"
-
 [tool.hatch.build.targets.wheel]
 packages = ["rflow"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 addopts = "-q --strict-markers"
 # ``pytest-timeout`` is listed in the ``dev`` optional dependencies. If a test
 # ever hangs (REPL stdio deadlock, runaway proxy loop), this caps the damage

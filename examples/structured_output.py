@@ -18,8 +18,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rflow.minimal.clients import OpenAIClient
-from rflow.minimal import Flow, Graph, LiveTreeRenderer, render_tree
+from rflow.clients import OpenAIClient
+from rflow import Flow, Graph, LiveTreeRenderer, render_tree
 
 
 class CityForecast(BaseModel):

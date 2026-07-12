@@ -1,15 +1,4 @@
-"""Built-in filesystem tools.
-
-These are pure functions that operate relative to the current working
-directory.  The caller is responsible for ``os.chdir(workspace)`` or
-setting the cwd on the runtime before registering them.
-
-Usage::
-
-    from rflow.tools import FILE_TOOLS
-
-    runtime.register_tools(FILE_TOOLS)
-"""
+"""Built-in file tools for the minimal REPL."""
 
 from __future__ import annotations
 
@@ -113,7 +102,18 @@ FILE_TOOLS = [
     ls,
     read_lines,
     line_count,
-    # list_files,
-    # count_files,
     grep,
+]
+
+
+__all__ = [
+    "FILE_TOOLS",
+    "append_file",
+    "edit_file",
+    "grep",
+    "line_count",
+    "ls",
+    "read_file",
+    "read_lines",
+    "write_file",
 ]

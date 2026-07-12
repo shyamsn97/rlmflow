@@ -18,8 +18,8 @@ import argparse
 import os
 from pathlib import Path
 
-from rflow.minimal.clients import OpenAIClient
-from rflow.minimal import FILE_TOOLS, Flow, LocalRuntime, tui
+from rflow.clients import OpenAIClient
+from rflow import FILE_TOOLS, Flow, LocalRuntime, tui
 
 
 def _example_run_dir(source_file: str | Path, name: str) -> Path:

@@ -1,0 +1,39 @@
+{
+  "agent_id": "root.denver-extract",
+  "graph_id": "g_3cdd49fc8db14267ba7f310178027201",
+  "depth": 1,
+  "query": "From INPUTS['segment'] extract city, forecast condition (one of: rain, sun, clouds), and forecast high as a number in F. Write a one-sentence packing_tip tailored to that forecast. Return an object matching the CityForecast schema.",
+  "inputs": {
+    "segment": "- City: Denver\n- Forecast condition: clouds\n- Forecast high: 72.0 F"
+  },
+  "model": "default",
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "city": {
+        "type": "string"
+      },
+      "condition": {
+        "type": "string",
+        "enum": [
+          "rain",
+          "sun",
+          "clouds"
+        ]
+      },
+      "high_f": {
+        "type": "number"
+      },
+      "packing_tip": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "city",
+      "condition",
+      "high_f",
+      "packing_tip"
+    ]
+  },
+  "parent_agent_id": "root"
+}

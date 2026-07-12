@@ -1,75 +1,64 @@
-"""Shared scaffolding for the minimal-stack (``rflow.Flow`` / ``rflow.Graph``) tests."""
+"""Shared stubs and fixtures for the rflow test suite."""
 
-from __future__ import annotations
-
-from collections.abc import Callable
-
-from rflow import Flow, Graph, LLMClient
+from rflow import ExecAction, ExecOutput, Graph, LLMOutput, LLMUsage, UserQuery
 
 
-class ScriptedLLM(LLMClient):
-    """Pick a reply from the live message list via a callback.
+class StubLLM:
+    def __init__(self, fn):
+        self.fn = fn
 
-    ``reply_for`` receives the chat messages the engine built for this turn and
-    returns the assistant string. Stateless by design so it can be reused across
-    parallel agents in one run.
-    """
-
-    def __init__(self, reply_for: Callable[[list[dict[str, str]]], str]) -> None:
-        self._reply_for = reply_for
-        self.calls = 0
-
-    def chat(self, messages: list[dict[str, str]], *args, **kwargs) -> str:
-        self.calls += 1
-        return self._reply_for(messages)
+    def chat(self, messages):
+        return self.fn(messages)
 
 
-class StubLLM(ScriptedLLM):
-    """Always returns the same reply (good for one-shot agents)."""
+class UsageLLM:
+    def __init__(self, reply, input_tokens=0, output_tokens=0):
+        self.reply = reply
+        self.last_usage = None
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
 
-    def __init__(self, reply: str = '```repl\ndone("ok")\n```') -> None:
-        super().__init__(lambda _messages: reply)
-
-
-def make_flow(reply: str = '```repl\ndone("ok")\n```', **kwargs) -> Flow:
-    kwargs.setdefault("max_iters", 5)
-    kwargs.setdefault("max_depth", 2)
-    return Flow(StubLLM(reply), **kwargs)
-
-
-def run_to_completion(
-    flow: Flow, query: str, inputs: dict[str, str] | None = None, **start_kwargs
-) -> Graph:
-    """Drive a fresh run to completion and return the final root graph.
-
-    Extra keyword args (e.g. ``output_schema=...``) are forwarded to ``start``.
-    Capped so a misbehaving stub can't hang the suite (``pytest-timeout`` is the
-    backstop, but failing the assertion gives a clearer message).
-    """
-    flow.start(query, inputs, **start_kwargs)
-    steps = 0
-    while not flow.graph.finished:
-        flow.step()
-        steps += 1
-        assert steps < 200, "run did not finish within 200 steps"
-    return flow.graph
+    def chat(self, messages):
+        self.last_usage = LLMUsage(self.input_tokens, self.output_tokens)
+        return self.reply(messages) if callable(self.reply) else self.reply
 
 
-def types(graph: Graph) -> list[str]:
-    """Node types of one agent's trajectory, in order."""
-    return [n.type for n in graph.nodes]
+def first_user(messages):
+    return next(m["content"] for m in messages if m["role"] == "user")
 
 
-def first_user_text(messages: list[dict[str, str]]) -> str:
-    """The first ``user`` message content (an agent's bootstrap task line)."""
-    return next((m["content"] for m in messages if m["role"] == "user"), "")
+def assert_llm_outputs_are_followed_by_exec_actions(graph):
+    for agent in graph.walk():
+        for index, node in enumerate(agent.nodes):
+            if node.type == "llm_output":
+                assert index + 1 < len(agent.nodes)
+                assert agent.nodes[index + 1].type == "exec_action"
 
 
-__all__ = [
-    "ScriptedLLM",
-    "StubLLM",
-    "make_flow",
-    "run_to_completion",
-    "types",
-    "first_user_text",
-]
+def seed_exec_graph(*code_blocks):
+    """A graph shaped like a real trajectory: (llm_output, exec_action, exec_output)*."""
+    graph = Graph(query="q")
+    graph.commit(UserQuery(content="q"))
+    for code in code_blocks:
+        graph.commit(LLMOutput(content="turn", code=code))
+        graph.commit(ExecAction(code=code))
+        graph.commit(ExecOutput(content="", output=""))
+    return graph
+
+
+async def worker_step(flow, graph, code):
+    """Simulate one exec turn on a branch: record the action, then run it."""
+    graph.commit(ExecAction(code=code))
+    await flow.exec_turn(graph, code)
+
+
+def counting_replies(*replies):
+    """StubLLM callable returning ``replies`` in order, repeating the last."""
+    state = {"n": 0}
+
+    def reply(_messages):
+        index = min(state["n"], len(replies) - 1)
+        state["n"] += 1
+        return replies[index]
+
+    return reply

@@ -1,0 +1,8 @@
+{
+  "agent_id": "root.seattle-extract",
+  "latest_node_id": "n_fc86b0e9",
+  "seq": 6,
+  "type": "done_output",
+  "terminal": true,
+  "result": "{\"city\": \"Seattle\", \"condition\": \"rain\", \"high_f\": 60.0, \"packing_tip\": \"Pack a waterproof jacket or compact umbrella and a light layer \\u2014 at 60\\u00b0F in rainy Seattle you'll want to stay dry without overheating.\"}"
+}
