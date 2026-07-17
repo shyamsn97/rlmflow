@@ -12,6 +12,7 @@ from rflow.runtime.repl_client import ReplClient
 
 from helpers import (
     StubLLM,
+    first_user,
 )
 
 
@@ -45,8 +46,64 @@ def test_minimal_add_tool_reaches_agents_spawned_later():
     flow = Flow(StubLLM(lambda _messages: "```repl\ndone(str(answer()))\n```"))
     flow.add_tool(answer)
 
-    assert flow.run(Graph(query="q")) == "42"
+    assert flow.run(graph=Graph(query="q")) == "42"
 
+
+
+def test_minimal_injected_tools_are_available_to_subagents():
+    """Objects injected via ``Flow(tools=[...])`` — functions *and* classes —
+    are seeded into every agent's REPL, including subagents spawned via
+    ``launch_subagents`` (child REPLs rebuild the same tool namespace)."""
+
+    def shout(text: str) -> str:
+        return text.upper()
+
+    class Box:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def label(self) -> str:
+            return f"box:{self.value}"
+
+    def reply(messages):
+        if first_user(messages) == "parent":
+            return (
+                "```repl\n"
+                "results = await launch_subagents("
+                "[{'name': 'a', 'query': 'child'}])\n"
+                "done(results[0])\n"
+                "```"
+            )
+        # The child uses both the injected function and the injected class.
+        return '```repl\ndone(shout("hi") + "|" + Box(7).label())\n```'
+
+    flow = Flow(StubLLM(reply), tools=[shout, Box], max_depth=1)
+
+    assert asyncio.run(flow.arun(graph=Graph(query="parent"))) == "HI|box:7"
+
+
+def test_minimal_add_tool_reaches_subagents_spawned_later():
+    """A tool injected at runtime via ``add_tool`` reaches a child spawned after
+    it was registered (build_tools re-seeds ``flow.tools`` for every new REPL)."""
+
+    def stamp() -> str:
+        return "stamped"
+
+    def reply(messages):
+        if first_user(messages) == "parent":
+            return (
+                "```repl\n"
+                "results = await launch_subagents("
+                "[{'name': 'a', 'query': 'child'}])\n"
+                "done(results[0])\n"
+                "```"
+            )
+        return "```repl\ndone(stamp())\n```"
+
+    flow = Flow(StubLLM(reply), max_depth=1)
+    flow.add_tool(stamp)
+
+    assert asyncio.run(flow.arun(graph=Graph(query="parent"))) == "stamped"
 
 
 def test_minimal_remove_tool_drops_from_live_repl_and_flow():
@@ -105,7 +162,7 @@ def test_minimal_repl_client_inject_and_remove_tool():
     async def run():
         try:
             repl.seed({"done": done}, {})
-            repl.inject_tool("echo", echo)
+            repl.inject("echo", echo)
             injected = await repl.run('print(echo("hey"))')
             repl.remove_tool("echo")
             removed = await repl.run(
@@ -160,7 +217,7 @@ def test_minimal_repl_client_async_proxy_tool_is_awaitable():
     async def run():
         try:
             repl.seed({"done": done}, {})
-            repl.inject_tool("adouble", adouble)
+            repl.inject("adouble", adouble)
             return await repl.run("v = await adouble(21)\nprint(v)")
         finally:
             repl.close()

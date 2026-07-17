@@ -16,18 +16,17 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 from rflow.clients import OpenAIClient
 from rflow import FILE_TOOLS, Flow, LocalRuntime, tui
 
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
+from common import example_run_dir  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -49,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=_example_run_dir(__file__, "tui-chat"),
+        default=example_run_dir("tui-chat"),
         help="Directory for the workdir and saved graph.",
     )
     return parser.parse_args()

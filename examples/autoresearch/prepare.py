@@ -89,20 +89,28 @@ def _load_tokens(split: str, device: str | None = None) -> torch.Tensor:
     return torch.load(path, map_location=device)
 
 
-def make_dataloader(batch_size: int, seq_len: int, split: str):
+def make_dataloader(batch_size: int, seq_len: int, split: str, seed: int | None = None):
     assert split in {"train", "val"}
     data = _load_tokens(split)
+    generator = None
+    if seed is not None:
+        generator = torch.Generator(device=data.device).manual_seed(seed)
     while True:
-        ix = torch.randint(0, data.numel() - seq_len - 1, (batch_size,), device=data.device)
+        ix = torch.randint(0, data.numel() - seq_len - 1, (batch_size,), device=data.device, generator=generator)
         x = torch.stack([data[i : i + seq_len] for i in ix])
         y = torch.stack([data[i + 1 : i + seq_len + 1] for i in ix])
         yield x, y
 
 
+EVAL_SEED = 1234
+
+
 @torch.no_grad()
 def evaluate_bpb(model, batch_size: int, seq_len: int) -> float:
     model.eval()
-    loader = make_dataloader(batch_size, seq_len, "val")
+    # Fixed seed so every trial is scored on the *same* val batches -> the
+    # leaderboard measures real improvements, not val-sampling noise.
+    loader = make_dataloader(batch_size, seq_len, "val", seed=EVAL_SEED)
     tokenizer = Tokenizer.from_directory()
     token_bytes = torch.tensor(
         [

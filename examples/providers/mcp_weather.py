@@ -19,16 +19,22 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
-from rflow.clients import AnthropicClient, OpenAIClient
 from rflow import (
     Flow,
     Graph,
+    GraphCheckpointer,
     LiveTreeRenderer,
     LocalRuntime,
     get_tool_metadata,
     tool,
     render_tree,
 )
+
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
+
+from common import build_client  # noqa: E402
 
 DEFAULT_QUERY = """I will be in Seattle today, Austin 3 days after that, and San Francisco 5 days after that. Check the weather and tell me what to pack for each city.
 """
@@ -256,21 +262,20 @@ def mcp_tools(client: MCPStdioClient) -> dict[str, Any]:
     return tools
 
 
-def build_llm(model: str):
-    return (
-        AnthropicClient(model)
-        if model.startswith("claude")
-        else OpenAIClient(model)
-    )
-
-
-async def run_until_done(flow: Flow, graph: Graph, *, show_live: bool) -> Graph:
+async def run_until_done(
+    flow: Flow, graph: Graph, *, show_live: bool, out_dir: Path
+) -> Graph:
     renderer = LiveTreeRenderer(clear=show_live)
-    async for event in flow.run_streaming(graph):
-        if show_live:
-            renderer.handle(event, graph)
-        else:
-            print(render_tree(graph))
+    checkpointer = GraphCheckpointer(out_dir)
+    try:
+        async for event in flow.run_streaming(graph=graph):
+            checkpointer.handle(event, graph)
+            if show_live:
+                renderer.handle(event, graph)
+            else:
+                print(render_tree(graph))
+    finally:
+        checkpointer.close()
     return graph
 
 
@@ -300,20 +305,23 @@ def main() -> None:
             runtime.register_tool(fn, name=name)
 
         flow = Flow(
-            build_llm(args.model),
+            build_client(args.model),
             runtime=runtime,
             max_depth=args.max_depth,
             max_iters=args.max_iters,
         )
         graph = Graph(query=args.query)
-        graph = asyncio.run(run_until_done(flow, graph, show_live=not args.no_viz))
+        graph = asyncio.run(
+            run_until_done(
+                flow, graph, show_live=not args.no_viz, out_dir=Path(args.out_dir)
+            )
+        )
 
         print(f"\n{'=' * 60}\nWEATHER PACKING RECOMMENDATION\n{'=' * 60}")
         print(graph.result())
 
         if args.out_dir:
-            path = graph.save(Path(args.out_dir))
-            print(f"\nGraph saved to {path}")
+            print(f"\nGraph checkpointed to {Path(args.out_dir)}")
 
         flow.close_repls(graph.graph_id)
     finally:

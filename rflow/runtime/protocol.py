@@ -43,7 +43,7 @@ class RemoveRequest(BaseRequest):
 
 class SetEnvRequest(BaseRequest):
     cmd: Literal["set_env"] = "set_env"
-    values: dict[str, str]
+    values: dict[str, Any]
 
 
 class InjectProxyRequest(BaseRequest):
@@ -95,6 +95,7 @@ class ReplResponse(WireModel):
     error: str | None = None
     value: Any = None
     done: bool = False
+    env: dict[str, Any] | None = None
     capabilities: CapabilityMap | None = None
 
 

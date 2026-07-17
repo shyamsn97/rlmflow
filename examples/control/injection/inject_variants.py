@@ -24,37 +24,19 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel
 
-from rflow.clients import AnthropicClient, OpenAIClient
-from rflow import ExecOutput, Flow, Graph, SupervisingOutput, group_flows
+from rflow import ExecOutput, Flow, Graph, GraphCheckpointer, SupervisingOutput
 
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
-
-
-def _save_example_graph(
-    graph,
-    source_file: str | Path,
-    name: str,
-    *,
-    out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
-) -> Path:
-    path = graph.save(
-        Path(out_dir) if out_dir is not None else _example_run_dir(source_file, name)
-    )
-    print(f"{label} {path}")
-    return path
-
+from common import build_client, example_run_dir, save_example_graph  # noqa: E402
 
 
 class WordHit(BaseModel):
@@ -98,12 +80,6 @@ Instead of delegating to sub-agents, write a backtracking algorithm to find the 
 """
 
 
-def client_for_model(model: str):
-    return (
-        AnthropicClient(model)
-        if model.startswith("claude")
-        else OpenAIClient(model)
-    )
 
 
 def word_search_runs_dir() -> Path:
@@ -178,18 +154,14 @@ def replace_supervisor_with_prompt(
     prompt: str,
 ) -> Graph:
     variant = graph.fork(session="isolated")
-    old = supervising_node(variant, agent_id)
-    target = variant[agent_id]
-    target.nodes = target.nodes[: old.seq]
-    target.commit(
+    variant.replace(
+        supervising_node(variant, agent_id),
         ExecOutput(
             output=prompt,
             content=f"REPL output for previous block:\n{prompt}",
-        )
+        ),
+        truncate="descendants",
     )
-    for child_id in old.waiting_on:
-        if child_id in target.children:
-            variant.remove_child(child_id, parent_agent_id=agent_id)
     return variant
 
 
@@ -220,53 +192,58 @@ def main() -> None:
         ROOT_DIRECT_SCAN_PROMPT,
     )
 
-    def new_flow() -> Flow:
-        return Flow(
-            client_for_model(args.model),
-            max_depth=2,
-            max_iters=30,
-        )
+    # One Flow is the engine; it drives both variant graphs at once and merges
+    # their event streams (each event carries graph_id).
+    flow = Flow(
+        build_client(args.model),
+        max_depth=2,
+        max_iters=30,
+    )
 
-    # One Flow per variant; group them and stream both graphs' events together.
-    cols_flow = new_flow()
-    root_flow = new_flow()
+    out = args.out.resolve()
+    # One checkpointer per variant, keyed by graph_id, since parallel_stream
+    # interleaves events for both graphs (each event carries graph_id).
+    graphs = {cols_graph.graph_id: cols_graph, root_graph.graph_id: root_graph}
+    checkpointers = {
+        cols_graph.graph_id: GraphCheckpointer(out / "variant-cols"),
+        root_graph.graph_id: GraphCheckpointer(out / "variant-root"),
+    }
 
     async def run_variants() -> None:
-        group = group_flows(
-            cols=(cols_flow, cols_graph),
-            root=(root_flow, root_graph),
-        )
-        async for event in group:
-            node_type = getattr(event, "node_type", event.type)
-            print(f"step: {event.graph_id} -> {node_type}")
+        try:
+            async for event in flow.parallel_stream(cols_graph, root_graph):
+                gid = event.graph_id
+                checkpointers[gid].handle(event, graphs[gid])
+                node_type = getattr(event, "node_type", event.type)
+                print(f"step: {gid} -> {node_type}")
+        finally:
+            for checkpointer in checkpointers.values():
+                checkpointer.close()
 
     asyncio.run(run_variants())
 
-    cols_flow.close_repls(cols_graph.graph_id)
-    root_flow.close_repls(root_graph.graph_id)
+    flow.close_repls(cols_graph.graph_id)
+    flow.close_repls(root_graph.graph_id)
 
-    out = args.out.resolve()
     cols_dir = cols_graph.save(out / "variant-cols")
     root_dir = root_graph.save(out / "variant-root")
 
     summarize("Variation A: prompt root.cols to scan columns directly", cols_graph)
     validate_result("Variation A", cols_graph)
     print(f"saved -> {cols_dir}")
-    _save_example_graph(
+    save_example_graph(
         cols_graph,
-        __file__,
         "injection-variants",
-        out_dir=_example_run_dir(__file__, "injection-variants") / "variant-cols",
+        out_dir=example_run_dir("injection-variants") / "variant-cols",
     )
 
     summarize("Variation B: prompt root to write a direct scanner", root_graph)
     validate_result("Variation B", root_graph)
     print(f"saved -> {root_dir}")
-    _save_example_graph(
+    save_example_graph(
         root_graph,
-        __file__,
         "injection-variants",
-        out_dir=_example_run_dir(__file__, "injection-variants") / "variant-root",
+        out_dir=example_run_dir("injection-variants") / "variant-root",
     )
 
 

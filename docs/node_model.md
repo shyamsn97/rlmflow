@@ -125,7 +125,7 @@ After the resume observation, the parent returns to normal LLM/exec flow.
 
 ## Streaming Semantics
 
-`flow.run_streaming(graph, until=..., n=...)` advances the run and yields the
+`flow.run_streaming(graph=graph, until=..., n=...)` advances the run and yields the
 `Event`s emitted; the graph is mutated in place. One logical reasoning turn is
 usually multiple node transitions:
 

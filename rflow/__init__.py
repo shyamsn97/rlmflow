@@ -4,6 +4,15 @@ This package mirrors Tau's clean layering style while keeping rflow's core
 choice: the recursive graph is the source of truth.
 """
 
+from rflow.consumers import (
+    ConsumerGroup,
+    GraphCheckpointer,
+    LiveTreeRenderer,
+    StreamConsumer,
+    WorkspaceSync,
+    render_tree,
+)
+from rflow.consumers.tui import tui
 from rflow.flow import Flow, code_block
 from rflow.graph import (
     ActionNode,
@@ -18,6 +27,7 @@ from rflow.graph import (
     GraphAction,
     GraphCheckpoint,
     GraphCreated,
+    InsertNode,
     LLMOutput,
     LLMUsage,
     Node,
@@ -33,8 +43,7 @@ from rflow.graph import (
     node_from_dict,
 )
 from rflow.integrations import DSPyFlow, FlowLLM, messages_to_query
-from rflow.parallel import FlowGroup, group_flows
-from rflow.pool import AsyncPool, Pool, SequentialPool
+from rflow.pool import Pool, SequentialPool, ThreadPool
 from rflow.prompts import DEFAULT_BUILDER, SYSTEM_PROMPT, PromptBuilder
 from rflow.runtime import (
     DockerRuntime,
@@ -61,21 +70,13 @@ from rflow.tools import (
     tool,
 )
 from rflow.utils import find_code_blocks
-from rflow.view import (
-    LiveTreeRenderer,
-    open_viewer,
-    render_tree,
-    replay,
-    save_image,
-    save_steps,
-    tui,
-)
+from rflow.utils.viewer import open_viewer, replay, save_image, save_steps
 
 __all__ = [
     "ActionNode",
     "AddChild",
     "AppendNode",
-    "AsyncPool",
+    "ConsumerGroup",
     "DEFAULT_BUILDER",
     "DoneOutput",
     "DoneSignal",
@@ -87,12 +88,13 @@ __all__ = [
     "FILE_TOOLS",
     "find_code_blocks",
     "Flow",
-    "FlowGroup",
     "FlowLLM",
     "Graph",
     "GraphAction",
     "GraphCheckpoint",
+    "GraphCheckpointer",
     "GraphCreated",
+    "InsertNode",
     "LLMOutput",
     "LLMUsage",
     "LiveTreeRenderer",
@@ -122,13 +124,15 @@ __all__ = [
     "StructuredOutputParser",
     "SubprocessRuntime",
     "SupervisingOutput",
+    "StreamConsumer",
+    "ThreadPool",
     "ToolMetadata",
     "UserQuery",
+    "WorkspaceSync",
     "apply_graph_action",
     "code_block",
     "format_tool_line",
     "get_tool_metadata",
-    "group_flows",
     "json_schema_for",
     "load_run",
     "messages_to_query",

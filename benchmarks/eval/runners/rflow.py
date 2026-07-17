@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 
-from rflow import Flow, LocalRuntime
+from rflow import Flow, Graph, LocalRuntime
 from rflow.clients.llm import LLMClient, LLMUsage
 
 from benchmarks.eval import runner
@@ -42,16 +42,16 @@ class RFlowLocalRunner(Runner):
             use_llm_query=self.use_llm_query,
         )
         start = time.perf_counter()
-        # `start` seeds the durable graph; `run_streaming` then drives the whole
-        # tree, mutating that graph in place and emitting one event per commit.
-        graph = flow.start(example.prompt, example.inputs())
+        # Seed the durable graph; `run_streaming` then drives the whole tree,
+        # mutating that graph in place and emitting one event per commit.
+        graph = Graph(query=example.prompt, inputs=example.inputs() or {})
         cap = self.max_steps or max(200, self.max_iters * max(1, self.max_depth + 1) * 25)
         steps = 0
         error = None
 
         async def drive() -> None:
             nonlocal steps
-            async for event in flow.run_streaming(graph):
+            async for event in flow.run_streaming(graph=graph):
                 if event.type != "append_node":
                     continue
                 steps += 1

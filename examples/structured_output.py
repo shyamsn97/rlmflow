@@ -13,13 +13,27 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel
 
 from rflow.clients import OpenAIClient
-from rflow import Flow, Graph, LiveTreeRenderer, render_tree
+from rflow import (
+    ConsumerGroup,
+    Flow,
+    Graph,
+    GraphCheckpointer,
+    LiveTreeRenderer,
+    render_tree,
+)
+
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
+
+from common import example_run_dir  # noqa: E402
 
 
 class CityForecast(BaseModel):
@@ -67,7 +81,7 @@ def main() -> None:
     parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument(
         "--out-dir",
-        default=str(Path(__file__).resolve().parents[1] / "_runs" / "structured-output"),
+        default=str(example_run_dir("structured-output")),
         help="save the final run here (default: examples/_runs/structured-output/)",
     )
     args = parser.parse_args()
@@ -86,14 +100,20 @@ def main() -> None:
 
     graph = Graph(query=query)
 
+    consumers = ConsumerGroup([LiveTreeRenderer()])
+    if args.out_dir:
+        consumers.append(GraphCheckpointer(Path(args.out_dir)))
+
     async def drive() -> None:
-        renderer = LiveTreeRenderer()
-        async for event in flow.run_streaming(
-            graph,
-            inputs={"trip_brief": TRIP_BRIEF},
-            output_schema=PackingPlan,
-        ):
-            renderer.handle(event, graph)
+        try:
+            async for event in flow.run_streaming(
+                graph=graph,
+                inputs={"trip_brief": TRIP_BRIEF},
+                output_schema=PackingPlan,
+            ):
+                consumers.handle(event, graph)
+        finally:
+            consumers.close()
 
     asyncio.run(drive())
 
@@ -110,8 +130,7 @@ def main() -> None:
     print(render_tree(graph))
 
     if args.out_dir:
-        path = graph.save(Path(args.out_dir))
-        print(f"\nGraph saved to {path}")
+        print(f"\nGraph checkpointed to {Path(args.out_dir)}")
 
     flow.close_repls(graph.graph_id)
 

@@ -1,122 +1,96 @@
-"""Small async pools for minimal Flow scheduling."""
+"""Pools bound blocking leaf work — the one place a real thread is ever held.
+
+A ``Pool`` caps how many *blocking* leaf calls run at once (a sync
+``client.chat`` or any other blocking callable). It is a small strategy object:
+swap the subclass to change how leaf work is scheduled.
+
+- :class:`ThreadPool` — offload blocking calls to a bounded thread pool.
+- :class:`SequentialPool` — run one leaf call at a time (deterministic; debug).
+- (future) a Ray-backed pool for distributing leaf calls across a cluster.
+
+Agent scheduling is **not** a pool concern: each agent turn is an unbounded
+``asyncio`` task on Flow's ``TaskQueue``. Nothing that *waits on another unit of
+the same pool* is ever submitted here, so a pool cannot deadlock — it only ever
+holds a thread for a single leaf call that runs to completion on its own.
+
+Async callables never touch a pool's threads: they are awaited on the event loop
+and self-bound via their own connection pool.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from contextvars import ContextVar
-from typing import TypeVar
-
-T = TypeVar("T")
-_ACTIVE_POOLS: ContextVar[frozenset[int]] = ContextVar(
-    "minimal_rflow_active_pools", default=frozenset()
-)
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 
 class Pool(ABC):
-    """Schedule async work with a policy defined by subclasses."""
-
-    max_concurrency: int | None
+    """Run blocking leaf calls under a policy defined by subclasses."""
 
     @abstractmethod
-    def limit(self) -> AbstractAsyncContextManager[None]:
-        """Hold one concurrency slot for the duration of the ``async with`` body.
+    async def call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Invoke ``fn`` under the pool's policy and return its result.
 
-        Unlike :meth:`run`, this lets callers stream results out while still
-        occupying a slot — e.g. keeping a long-lived generator counted as active.
-        Safe to acquire and release across different tasks.
+        Coroutine functions are awaited directly (never a thread). Plain
+        functions run according to the pool; if such a function still returns an
+        awaitable, that is awaited too.
         """
 
-    @abstractmethod
-    async def run(self, work: Awaitable[T]) -> T:
-        """Run a single unit of work under the pool's policy."""
-
-    @abstractmethod
-    async def gather(self, *work: Awaitable[T]) -> list[T]:
-        """Run several units of work, returning results in order."""
+    def close(self) -> None:
+        """Release any resources the pool holds (default: nothing)."""
 
 
-class AsyncPool(Pool):
-    """Bound concurrent async work with a semaphore.
+class ThreadPool(Pool):
+    """Offload blocking leaf calls to a bounded thread pool.
 
-    If work scheduled through the pool schedules more work on the same pool, the
-    nested work runs directly. That avoids deadlocking a parent that is waiting
-    for children while holding a pool slot.
+    ``workers`` is the cap: at most that many blocking calls run at once. Pass
+    ``None`` to leave blocking calls on asyncio's default executor (effectively
+    unbounded). A single ``ThreadPool`` can be shared across flows to give them
+    one global thread budget.
     """
 
-    def __init__(self, max_concurrency: int | None = None) -> None:
-        if max_concurrency is not None and max_concurrency < 1:
-            raise ValueError("max_concurrency must be >= 1")
-        self.max_concurrency = max_concurrency
-        self._semaphore = (
-            None if max_concurrency is None else asyncio.Semaphore(max_concurrency)
+    def __init__(self, workers: int | None = None) -> None:
+        if workers is not None and workers < 1:
+            raise ValueError("workers must be >= 1")
+        self.workers = workers
+        self._executor = (
+            ThreadPoolExecutor(max_workers=workers) if workers is not None else None
         )
 
-    @asynccontextmanager
-    async def limit(self) -> AsyncIterator[None]:
-        # Plain slot hold: no ContextVar token (it may be released in a different
-        # task than it was acquired, and tokens are context-bound). Nested-work
-        # deadlock avoidance lives in `run`, which is what nested work goes through.
-        if self._semaphore is None or id(self) in _ACTIVE_POOLS.get():
-            yield
-            return
-        async with self._semaphore:
-            yield
+    async def call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        if inspect.iscoroutinefunction(fn):
+            return await fn(*args, **kwargs)
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            self._executor, functools.partial(fn, *args, **kwargs)
+        )
+        return await result if inspect.isawaitable(result) else result
 
-    async def run(self, work: Awaitable[T]) -> T:
-        if self._semaphore is None or id(self) in _ACTIVE_POOLS.get():
-            return await work
-        async with self._semaphore:
-            active = _ACTIVE_POOLS.get()
-            token = _ACTIVE_POOLS.set(active | {id(self)})
-            try:
-                return await work
-            finally:
-                _ACTIVE_POOLS.reset(token)
-
-    async def gather(self, *work: Awaitable[T]) -> list[T]:
-        tasks = [asyncio.create_task(self.run(item)) for item in work]
-        try:
-            return list(await asyncio.gather(*tasks))
-        except BaseException:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            raise
+    def close(self) -> None:
+        if self._executor is not None:
+            self._executor.shutdown(wait=False)
 
 
 class SequentialPool(Pool):
-    """Run async work one item at a time."""
+    """Run one leaf call at a time (no worker threads).
 
-    max_concurrency = 1
+    Serializes every call behind a lock, so at most one leaf runs at once — sync
+    calls run inline (blocking the loop for their duration) and async calls are
+    awaited one after another. Deterministic; useful for debugging.
+    """
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
 
-    @asynccontextmanager
-    async def limit(self) -> AsyncIterator[None]:
+    async def call(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         async with self._lock:
-            yield
-
-    async def run(self, work: Awaitable[T]) -> T:
-        async with self._lock:
-            return await work
-
-    async def gather(self, *work: Awaitable[T]) -> list[T]:
-        results: list[T] = []
-        for index, item in enumerate(work):
-            try:
-                results.append(await item)
-            except BaseException:
-                for leftover in work[index + 1 :]:
-                    if inspect.iscoroutine(leftover):
-                        leftover.close()
-                raise
-        return results
+            if inspect.iscoroutinefunction(fn):
+                return await fn(*args, **kwargs)
+            result = fn(*args, **kwargs)
+            return await result if inspect.isawaitable(result) else result
 
 
-__all__ = ["Pool", "AsyncPool", "SequentialPool"]
+__all__ = ["Pool", "SequentialPool", "ThreadPool"]

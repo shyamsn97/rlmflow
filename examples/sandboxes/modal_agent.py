@@ -26,30 +26,16 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from rflow.clients import OpenAIClient  # noqa: E402
-from rflow import Flow, Graph, LiveTreeRenderer, ModalRuntime  # noqa: E402
+from rflow import (  # noqa: E402
+    ConsumerGroup,
+    Flow,
+    Graph,
+    GraphCheckpointer,
+    LiveTreeRenderer,
+    ModalRuntime,
+)
 
-
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
-
-
-def _save_example_graph(
-    graph,
-    source_file: str | Path,
-    name: str,
-    *,
-    out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
-) -> Path:
-    path = graph.save(
-        Path(out_dir) if out_dir is not None else _example_run_dir(source_file, name)
-    )
-    print(f"{label} {path}")
-    return path
+from examples.common import save_example_graph  # noqa: E402
 
 REMOTE_REPO = "/opt/rlmflow"
 
@@ -110,11 +96,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def run_turn(flow: Flow, query: str, *, use_live: bool) -> Graph:
+async def run_turn(flow: Flow, query: str, *, use_live: bool, out_dir: Path) -> Graph:
     graph = Graph(query=query)
-    renderer = LiveTreeRenderer(clear=use_live)
-    async for event in flow.run_streaming(graph):
-        renderer.handle(event, graph)
+    consumers = ConsumerGroup(
+        [
+            LiveTreeRenderer(clear=use_live),
+            GraphCheckpointer(out_dir / "graph"),
+        ]
+    )
+    try:
+        async for event in flow.run_streaming(graph=graph):
+            consumers.handle(event, graph)
+    finally:
+        consumers.close()
     return graph
 
 
@@ -169,9 +163,16 @@ def main() -> None:
     )
     log("running platformer task; first run may build/start Modal sandbox")
     try:
-        graph = asyncio.run(run_turn(flow, PLATFORMER_QUERY, use_live=not args.no_live))
+        graph = asyncio.run(
+            run_turn(
+                flow,
+                PLATFORMER_QUERY,
+                use_live=not args.no_live,
+                out_dir=Path(args.out_dir),
+            )
+        )
         print(graph.result())
-        _save_example_graph(graph, __file__, "sandbox-modal", out_dir=args.out_dir)
+        save_example_graph(graph, "sandbox-modal", out_dir=args.out_dir)
     finally:
         log("closing Flow")
         flow.close_repls()

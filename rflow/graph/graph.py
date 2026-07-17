@@ -159,6 +159,14 @@ class Graph:
     nodes: list[Node] = field(default_factory=list)
     children: dict[str, Graph] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        if self.output_schema is not None:
+            from rflow.structured import json_schema_for
+
+            self.output_schema = json_schema_for(self.output_schema)
+        if self.query and not self.nodes:
+            self.append(self.query)
+
     def current(self) -> Node | None:
         return self.nodes[-1] if self.nodes else None
 
@@ -201,30 +209,161 @@ class Graph:
     def agent_for(self, agent_id: str | None = None) -> Graph:
         return self if agent_id is None else self[agent_id]
 
-    def inject_action(self, content: str, *, agent_id: str | None = None) -> Any:
-        from rflow.graph.events import AppendNode
+    def inject_action(
+        self,
+        node: Node | str,
+        *,
+        at: Node | str | None = None,
+        mode: Literal["after", "before", "replace"] = "after",
+        agent_id: str | None = None,
+    ) -> Any:
+        """Build the graph action for an inject/append/prepend/replace (no apply)."""
+        from rflow.graph.events import AppendNode, InsertNode, ReplaceNode
 
-        target = self.agent_for(agent_id)
-        return AppendNode(
-            type="append_node",
-            agent_id=target.agent_id,
-            node_type="user_query",
-            node=UserQuery(content=content),
+        if mode not in ("after", "before", "replace"):
+            raise ValueError("mode must be 'after', 'before', or 'replace'")
+        if mode == "replace" and at is None:
+            raise ValueError("inject(mode='replace') requires an 'at' anchor")
+
+        new_node = UserQuery(content=node) if isinstance(node, str) else node
+        if isinstance(at, Node):
+            agent_id = agent_id or at.agent_id or None
+        agent = self.agent_for(agent_id)
+
+        if mode == "replace":
+            anchor_id = at.id if isinstance(at, Node) else at
+            replaced = next((n for n in agent.nodes if n.id == anchor_id), None)
+            if replaced is None:
+                raise KeyError(anchor_id)
+            return ReplaceNode(
+                type="replace_node",
+                agent_id=agent.agent_id,
+                node=new_node,
+                replaced_node=replaced,
+            )
+
+        index = _insertion_index(agent, at, mode)
+        if index >= len(agent.nodes):
+            return AppendNode(
+                type="append_node",
+                agent_id=agent.agent_id,
+                node=new_node,
+            )
+        return InsertNode(
+            type="insert_node",
+            agent_id=agent.agent_id,
+            node=new_node,
+            index=index,
         )
 
-    def inject(self, content: str, *, agent_id: str | None = None) -> Any:
-        action = self.inject_action(content, agent_id=agent_id)
+    def inject(
+        self,
+        node: Node | str,
+        *,
+        at: Node | str | None = None,
+        mode: Literal["after", "before", "replace"] = "after",
+        agent_id: str | None = None,
+        truncate: Literal["none", "descendants"] = "none",
+    ) -> Any:
+        """Insert or replace a node in an agent's trajectory — the base edit op.
+
+        ``node`` is a :class:`Node`, or a string that is wrapped as a
+        ``UserQuery`` (the common "steer with a new instruction" case). ``at``
+        anchors the edit (a Node or node id); it defaults to the end for
+        ``"after"`` and the start for ``"before"``, and is required for
+        ``"replace"``. With ``truncate="descendants"`` every node past the edit
+        is dropped and orphaned children pruned, re-routing the branch.
+
+        Prefer the :meth:`append`, :meth:`prepend`, and :meth:`replace` helpers;
+        they are thin wrappers over this method. Live runs that need the edit
+        emitted into the stream should use ``flow.apply_action`` with
+        :meth:`inject_action` instead.
+        """
+        if truncate not in ("none", "descendants"):
+            raise ValueError("truncate must be 'none' or 'descendants'")
+
+        action = self.inject_action(node, at=at, mode=mode, agent_id=agent_id)
         apply_graph_action(self, action)
+        if truncate == "descendants":
+            agent = self.agent_for(action.agent_id)
+            del agent.nodes[action.node.seq + 1 :]
+            _prune_orphaned_children(agent)
         return action
+
+    def append(
+        self,
+        node: Node | str,
+        *,
+        agent_id: str | None = None,
+        truncate: Literal["none", "descendants"] = "none",
+    ) -> Any:
+        """Add ``node`` at the end of the agent's trajectory."""
+        return self.inject(node, mode="after", agent_id=agent_id, truncate=truncate)
+
+    def prepend(self, node: Node | str, *, agent_id: str | None = None) -> Any:
+        """Add ``node`` at the start of the agent's trajectory."""
+        return self.inject(node, mode="before", agent_id=agent_id)
+
+    def append_query(
+        self,
+        query: str = "",
+        *,
+        inputs: dict[str, str] | None = None,
+        output_schema: object | None = None,
+        merge_inputs: bool = True,
+    ) -> Any:
+        """Start a new turn: append a ``UserQuery`` and optionally apply
+        ``inputs`` / set ``output_schema``.
+
+        Appending a non-terminal node flips ``finished`` back to false, so the
+        next ``run``/``run_streaming`` re-drives the same agent with its full
+        history and warm REPL — this is how one graph serves a long-running,
+        multi-turn agent. ``inputs`` merges into the existing dict unless
+        ``merge_inputs=False`` replaces it; a truthy ``output_schema`` becomes
+        the contract for this turn's ``done``.
+
+        This bare method only mutates graph state. Inside a live run, drive
+        through ``flow`` (``run_streaming(graph=..., query=...)`` /
+        ``resolve_run``) so the new turn is emitted into the event stream and
+        ``INPUTS`` is synced to the running REPL.
+        """
+        if inputs:
+            self.inputs = {**self.inputs, **inputs} if merge_inputs else dict(inputs)
+        if output_schema is not None:
+            from rflow.structured import json_schema_for
+
+            self.output_schema = json_schema_for(output_schema)
+        return self.append(UserQuery(content=query))
+
+    def replace(
+        self,
+        at: Node | str,
+        node: Node,
+        *,
+        agent_id: str | None = None,
+        truncate: Literal["none", "descendants"] = "none",
+    ) -> Any:
+        """Swap the node at ``at`` for ``node``; ``truncate='descendants'`` re-routes."""
+        return self.inject(
+            node, at=at, mode="replace", agent_id=agent_id, truncate=truncate
+        )
 
     def fork(
         self,
         *,
         from_node_id: str | None = None,
         agent_id: str | None = None,
+        keep_anchor: bool = False,
         keep_children: bool = True,
         session: Literal["isolated", "shared"] = "isolated",
     ) -> Graph:
+        """Branch a copy, optionally rewound to ``from_node_id``.
+
+        By default ``from_node_id`` is the first node removed, so the branch ends
+        *before* it (undo that node and re-decide). With ``keep_anchor=True`` the
+        anchor is retained and only its descendants are dropped, so the branch
+        ends *at* it (resume/continue forward from that node).
+        """
         if session not in {"isolated", "shared"}:
             raise ValueError("session must be 'isolated' or 'shared'")
         forked = deepcopy(self)
@@ -232,7 +371,18 @@ class Graph:
             forked.set_graph_id(new_graph_id())
         target = forked.agent_for(agent_id)
         if from_node_id is not None:
-            forked.rewind(from_node_id, agent_id=target.agent_id)
+            cut_id = from_node_id
+            if keep_anchor:
+                index = next(
+                    (i for i, n in enumerate(target.nodes) if n.id == from_node_id),
+                    None,
+                )
+                if index is None:
+                    raise KeyError(from_node_id)
+                successor = target.nodes[index + 1 :]
+                cut_id = successor[0].id if successor else None
+            if cut_id is not None:
+                forked.rewind(cut_id, agent_id=target.agent_id)
         if not keep_children:
             target.children.clear()
         return forked
@@ -241,10 +391,13 @@ class Graph:
         from rflow.graph.events import RemoveNode
 
         target = self.agent_for(agent_id)
+        removed = next((n for n in target.nodes if n.id == node_id), None)
+        if removed is None:
+            raise KeyError(node_id)
         return RemoveNode(
             type="remove_node",
             agent_id=target.agent_id,
-            node_id=node_id,
+            node=removed,
             subtree=True,
         )
 
@@ -282,37 +435,19 @@ class Graph:
         node_id = agent.nodes[checkpoint.position].id
         return self.rewind(node_id, agent_id=checkpoint.agent_id)
 
-    def replace_node_action(
-        self, node_id: str, node: Node, *, agent_id: str | None = None
-    ) -> Any:
-        from rflow.graph.events import ReplaceNode
-
-        target = self.agent_for(agent_id)
-        return ReplaceNode(
-            type="replace_node",
-            agent_id=target.agent_id,
-            node_id=node_id,
-            node_type=node.type,
-            node=node,
-        )
-
-    def replace_node(
-        self, node_id: str, node: Node, *, agent_id: str | None = None
-    ) -> Any:
-        action = self.replace_node_action(node_id, node, agent_id=agent_id)
-        apply_graph_action(self, action)
-        return action
-
     def remove_child_action(
         self, child_agent_id: str, *, parent_agent_id: str | None = None
     ) -> Any:
         from rflow.graph.events import RemoveChild
 
         parent = self.agent_for(parent_agent_id)
+        child = parent.children.get(child_agent_id)
+        if child is None:
+            raise KeyError(child_agent_id)
         return RemoveChild(
             type="remove_child",
             parent_agent_id=parent.agent_id,
-            child_agent_id=child_agent_id,
+            child=child,
         )
 
     def remove_child(
@@ -404,6 +539,7 @@ def apply_graph_action(graph: Graph | None, action: Any) -> Graph:
         AddChild,
         AppendNode,
         GraphCreated,
+        InsertNode,
         RemoveChild,
         RemoveNode,
         ReplaceNode,
@@ -416,16 +552,21 @@ def apply_graph_action(graph: Graph | None, action: Any) -> Graph:
 
     if isinstance(action, AppendNode):
         graph[action.agent_id].commit(action.node)
+    elif isinstance(action, InsertNode):
+        agent = graph[action.agent_id]
+        action.node.agent_id = agent.agent_id
+        agent.nodes.insert(action.index, action.node)
+        _resequence(agent)
     elif isinstance(action, ReplaceNode):
         agent = graph[action.agent_id]
         for index, node in enumerate(agent.nodes):
-            if node.id == action.node_id:
+            if node.id == action.replaced_node_id:
                 action.node.agent_id = agent.agent_id
                 action.node.seq = node.seq
                 agent.nodes[index] = action.node
                 break
         else:
-            raise KeyError(action.node_id)
+            raise KeyError(action.replaced_node_id)
     elif isinstance(action, RemoveNode):
         agent = graph[action.agent_id]
         index = next(
@@ -453,6 +594,40 @@ def apply_graph_action(graph: Graph | None, action: Any) -> Graph:
 def _resequence(graph: Graph) -> None:
     for index, node in enumerate(graph.nodes):
         node.seq = index
+
+
+def _insertion_index(agent: Graph, at: Node | str | None, mode: str) -> int:
+    """Resolve where an ``after``/``before`` insert lands in the agent's stream.
+
+    ``at=None`` means the end (``after``) or the start (``before``); otherwise the
+    slot just after / at the anchor node.
+    """
+    if at is None:
+        return len(agent.nodes) if mode == "after" else 0
+    anchor_id = at.id if isinstance(at, Node) else at
+    index = next(
+        (i for i, node in enumerate(agent.nodes) if node.id == anchor_id), None
+    )
+    if index is None:
+        raise KeyError(anchor_id)
+    return index + 1 if mode == "after" else index
+
+
+def _prune_orphaned_children(agent: Graph) -> None:
+    """Drop child agents no longer referenced by the agent's remaining nodes.
+
+    A child is "referenced" while some surviving ``SupervisingOutput.waiting_on``
+    or ``ResumeAction.resumed_from`` still names it. After truncating a delegating
+    turn, the launch that spawned those children is gone, so they are orphaned and
+    removed (along with their own subtrees).
+    """
+    referenced: set[str] = set()
+    for node in agent.nodes:
+        referenced.update(getattr(node, "waiting_on", None) or [])
+        referenced.update(getattr(node, "resumed_from", None) or [])
+    for child_id in list(agent.children):
+        if child_id not in referenced:
+            del agent.children[child_id]
 
 
 def save_run(

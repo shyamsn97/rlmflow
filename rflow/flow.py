@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import suppress
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -21,19 +22,16 @@ from rflow.graph import (
     Node,
     ResumeAction,
     SupervisingOutput,
-    UserQuery,
     apply_graph_action,
 )
 from rflow.graph.events import (
-    AppendNode,
     Event,
     GraphAction,
     GraphCreated,
     StepUntil,
-    is_node,
-    is_rest,
+    is_idle,
 )
-from rflow.pool import AsyncPool, Pool
+from rflow.pool import Pool, ThreadPool
 from rflow.prompts import DEFAULT_BUILDER, PromptBuilder
 from rflow.prompts.messages import build_messages, merge_summary
 from rflow.runtime import LocalRuntime, Runtime
@@ -45,8 +43,8 @@ from rflow.tools import tool
 from rflow.tools.builtins import make_done, make_launch_subagents
 from rflow.utils import (
     ReplKey,
+    accepts_kwarg,
     budget_exceeded,
-    call_sync_or_async,
     code_block,
     common_prefix_len,
     graph_from_input,
@@ -58,8 +56,6 @@ from rflow.utils import (
     truncate_output,
     usage_from_client,
 )
-
-GraphInput = Graph | str | None
 
 #: Default cap on a subagent ``query`` length: keep queries short instructions and
 #: push bulk payloads into ``inputs`` instead.
@@ -75,6 +71,22 @@ MAX_ITERS_EXCEEDED = "[max_iters exceeded]"
 
 
 FULL_RUN = frozenset({"done", "finished"})
+
+
+@dataclass
+class Run:
+    """Per-graph run state: one active streaming run per trajectory (graph_id).
+
+    Engine config stays on ``Flow`` (shared, graph-agnostic). Each run owns its
+    own scheduler and ``until`` boundary.
+    """
+
+    graph: Graph
+    tasks: TaskQueue
+    until: StepUntil = "done"
+    #: True while a ``run_streaming`` consumer is actively driving this run.
+    #: Guards against two consumers stealing events from one graph's queue.
+    streaming: bool = False
 
 
 class Flow:
@@ -101,7 +113,7 @@ class Flow:
         tools: list[Any] | None = None,
         runtime: Runtime | None = None,
         llm_clients: dict[str, Any] | None = None,
-        max_concurrency: int | None = None,
+        workers: int | None = None,
         pool: Pool | None = None,
         use_llm_query: bool = False,
         enable_structured_output: bool = True,
@@ -119,168 +131,323 @@ class Flow:
         self.prompt_builder = prompt_builder or DEFAULT_BUILDER
         self.tools = {tool_name(fn): fn for fn in tools or []}
         self.runtime = runtime or LocalRuntime()
-        self.pool = pool or AsyncPool(max_concurrency=max_concurrency)
+        # The one pool: caps how many *blocking* leaf calls (sync ``client.chat``)
+        # run at once. Agent scheduling is unbounded async and never enters here.
+        # ``workers=None`` leaves blocking calls on asyncio's default executor.
+        self.pool = pool or ThreadPool(workers=workers)
         self.use_llm_query = use_llm_query
         self.enable_structured_output = enable_structured_output
         self.output_parser = StructuredOutputParser()
         self._llm_clients = {"default": llm, **(llm_clients or {})}
         self.repls: dict[ReplKey, ReplLike] = {}
         self._terminate_requested: set[str] = set()
-        self.suppressed_agents: set[str] = set()
-        #: Active-run state: set up by ``ensure_run`` and cleared by ``finish_run``.
-        self.tasks: TaskQueue | None = None
-        self.run_graph: Graph | None = None
-        self.until: StepUntil = "done"
-
-    def start(
-        self,
-        graph_or_query: Graph | str,
-        inputs: dict[str, str] | None = None,
-        *,
-        output_schema: Schema | None = None,
-    ) -> Graph:
-        graph = graph_from_input(graph_or_query, inputs, output_schema)
-        self.seed_query(graph)
-        return graph
+        #: Active runs keyed by ``graph_id`` (one per trajectory). Created by
+        #: ``run_for`` and cleared by ``finish_run``; mirrors how ``repls`` keys.
+        self.runs: dict[str, Run] = {}
 
     def run(
         self,
-        graph_or_query: Graph | str,
-        inputs: dict[str, str] | None = None,
         *,
+        graph: Graph | None = None,
+        query: str | None = None,
+        inputs: dict[str, str] | None = None,
         output_schema: Schema | None = None,
+        merge_inputs: bool = True,
     ) -> str:
         return asyncio.run(
-            self.arun(graph_or_query, inputs, output_schema=output_schema)
+            self.arun(
+                graph=graph,
+                query=query,
+                inputs=inputs,
+                output_schema=output_schema,
+                merge_inputs=merge_inputs,
+            )
         )
 
     async def arun(
         self,
-        graph_or_query: Graph | str,
-        inputs: dict[str, str] | None = None,
         *,
+        graph: Graph | None = None,
+        query: str | None = None,
+        inputs: dict[str, str] | None = None,
         output_schema: Schema | None = None,
+        merge_inputs: bool = True,
     ) -> str:
-        graph = graph_from_input(graph_or_query, inputs, output_schema)
-        async for _event in self.run_streaming(graph):
+        run = self.resolve_run(
+            graph=graph,
+            query=query,
+            inputs=inputs,
+            output_schema=output_schema,
+            merge_inputs=merge_inputs,
+        )
+        async for _event in self._drive(run, until="done"):
             pass
-        return graph.result()
+        return run.graph.result()
+
+    async def parallel_stream(
+        self,
+        *graphs: Graph | str,
+        until: StepUntil = "done",
+        n: int | None = None,
+        close_repls: bool = False,
+    ) -> AsyncIterator[Event]:
+        """Drive several graphs on this one flow, merging their events into one
+        stream. Each graph gets its own run (keyed by ``graph_id``) with its own
+        scheduler and ``until`` boundary; every event carries ``graph_id`` so the
+        merged stream is self-describing. Graphs must be distinct — two entries
+        for the same ``graph_id`` would drive one run twice (``run_streaming``
+        rejects the second).
+        """
+        streams = [
+            aiter(
+                self.run_streaming(
+                    graph=graph_from_input(g),
+                    until=until,
+                    n=n,
+                    close_repls=close_repls,
+                )
+            )
+            for g in graphs
+        ]
+        # One in-flight "next event" task per live stream; whichever resolves
+        # first is yielded, then re-armed. No sentinels, no queue, no bound.
+        pending = {asyncio.ensure_future(anext(it)): it for it in streams}
+        try:
+            while pending:
+                done, _ = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    it = pending.pop(task)
+                    try:
+                        yield task.result()
+                    except StopAsyncIteration:
+                        continue
+                    pending[asyncio.ensure_future(anext(it))] = it
+        finally:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for it in streams:
+                await it.aclose()
+
+    async def parallel_run(
+        self,
+        *graphs: Graph | str,
+        until: StepUntil = "done",
+        n: int | None = None,
+        close_repls: bool = False,
+    ) -> list[Graph]:
+        """Drive several graphs to completion, returning them in argument order.
+
+        String queries are coerced to graphs first so the caller gets back the
+        live graphs (and their ``result()``) without holding them beforehand.
+        """
+        coerced = [graph_from_input(g) for g in graphs]
+        async for _event in self.parallel_stream(
+            *coerced, until=until, n=n, close_repls=close_repls
+        ):
+            pass
+        return coerced
 
     async def run_streaming(
         self,
-        graph_or_query: GraphInput = None,
-        inputs: dict[str, str] | None = None,
         *,
+        graph: Graph | None = None,
+        query: str | None = None,
+        inputs: dict[str, str] | None = None,
         output_schema: Schema | None = None,
+        merge_inputs: bool = True,
         until: StepUntil = "done",
         n: int | None = None,
+        close_repls: bool = False,
     ) -> AsyncIterator[Event]:
-        """Stream events while scheduling follow-up work according to ``until``."""
+        """Stream events while scheduling follow-up work according to ``until``.
+
+        Pass ``query`` alone to start a fresh graph, or ``graph`` alone to resume
+        one. Passing both appends ``query`` as a new ``UserQuery`` turn on
+        ``graph`` before driving — the long-running / multi-turn case, where one
+        graph is re-driven across turns with its full history and warm REPL.
+        ``inputs``/``output_schema`` are applied to the graph first, so they take
+        effect even when resuming a finished graph; ``inputs`` merges into any
+        existing values unless ``merge_inputs=False`` replaces them. See
+        :meth:`resolve_run` for this phase-1 resolution.
+
+        A run may only have one active streaming consumer at a time; concurrent
+        streaming of the same graph raises. Set ``close_repls=True`` to also tear
+        down this graph's REPLs when the run finishes (default keeps them for
+        pause/resume, fork, and post-run inspection).
+        """
+        # Phase 1: resolve/register the run. Phase 2: drive it (see :meth:`_drive`).
+        run = self.resolve_run(
+            graph=graph,
+            query=query,
+            inputs=inputs,
+            output_schema=output_schema,
+            merge_inputs=merge_inputs,
+        )
+        async for event in self._drive(run, until=until, n=n, close_repls=close_repls):
+            yield event
+
+    async def _drive(
+        self,
+        run: Run,
+        *,
+        until: StepUntil = "done",
+        n: int | None = None,
+        close_repls: bool = False,
+    ) -> AsyncIterator[Event]:
+        """Phase 2: schedule agents and yield events until the ``until`` boundary.
+
+        Assumes ``run`` is already resolved/registered. One active consumer per
+        run; concurrent drives of the same graph raise.
+        """
         if n is not None and n < 1:
             raise ValueError("n must be >= 1")
+        if run.streaming:
+            raise RuntimeError("this graph is already being streamed")
+        graph = run.graph
 
-        # Continue an active scheduler if one exists; otherwise create the graph
-        # and queue for a new run. The graph stays caller-owned throughout.
-        if self.tasks is not None:
-            if self.run_graph is None:
-                raise RuntimeError("active run is missing its graph")
-            if graph_or_query not in (None, self.run_graph):
-                raise RuntimeError("a run is already active")
-            graph = self.run_graph
-        else:
-            if graph_or_query is None:
-                raise ValueError("first run needs a graph or query")
-            self.tasks = TaskQueue()
-            graph = graph_from_input(graph_or_query, inputs, output_schema)
-            if isinstance(graph_or_query, str):
-                self.apply_action(
-                    graph, GraphCreated(type="graph_created", graph=graph)
-                )
-            self.seed_query(graph)
-            if graph.finished:
-                await self.finish_run()
-                return
-            self.run_graph = graph
-
-        if self.tasks is None:
-            return
-        self.until = until
+        run.streaming = True
+        run.until = until
         limit = n or 1
         steps = 0
         exc: BaseException | None = None
         try:
             while True:
-                # If there are no buffered events, seed one small task for every
-                # ready agent. Boundaries work by choosing not to enqueue more.
-                if not self.tasks.has_events():
+                # No buffered events: seed one task per ready agent. Boundaries
+                # work by choosing not to enqueue more.
+                if not run.tasks.has_events():
                     for agent in graph.walk():
-                        self.schedule_agent(agent)
+                        self.schedule_agent(run, agent)
 
-                async for agent_id, event in self.tasks.stream():
+                async for item in run.tasks.items():
+                    event = item.item
                     yield event
-                    agent = graph.agent_for(agent_id)
-                    # After each emitted event, decide whether this agent gets
-                    # another task. "Stop" is just absence of follow-up work.
-                    if self.should_continue(agent, event, until):
-                        self.schedule_agent(agent)
+                    agent = graph.agent_for(item.agent_id)
+                    # "Stop" is just absence of follow-up work for this agent.
+                    if self.should_continue(run, agent, event):
+                        self.schedule_agent(run, agent)
                     else:
-                        self.tasks.stop(agent.agent_id)
+                        run.tasks.stop(agent.agent_id)
 
-                exc = self.tasks.exception() if self.tasks is not None else None
+                exc = run.tasks.exception()
                 if graph.finished or until in FULL_RUN:
                     break
 
-                # A non-full boundary leaves the scheduler alive so the caller can
+                # A non-full boundary keeps the scheduler alive for the caller to
                 # inspect or edit the graph before the next streaming call.
                 steps += 1
                 if steps >= limit:
                     return
         finally:
             # Full runs and finished bounded runs own teardown; paused bounded
-            # runs keep their queue so a later call can continue from the graph.
-            if self.tasks is not None and (until in FULL_RUN or graph.finished):
-                exc = self.tasks.exception()
-                await self.finish_run()
+            # runs keep their queue so a later call can resume from the graph.
+            run.streaming = False
+            if until in FULL_RUN or graph.finished:
+                exc = run.tasks.exception()
+                await self.finish_run(run, close_repls=close_repls)
         if exc is not None:
             raise exc
 
-    async def finish_run(self) -> None:
-        if self.tasks is not None:
-            await self.tasks.aclose()
-        self.tasks = self.run_graph = None
-        self.until = "done"
+    def run_for(self, graph: Graph) -> Run:
+        """Return the active run for ``graph``, creating one if needed.
 
-    def seed_query(self, graph: Graph) -> None:
-        if not graph.nodes:
-            self.append_node(graph, UserQuery(content=graph.query))
+        Pure run registry, keyed by ``graph.graph_id``: an existing (live or
+        paused) run is resumed, otherwise a fresh run is registered. All state
+        resolution (coercion, new turns, event emission) happens in
+        :meth:`resolve_run` before this is called; this method never mutates the
+        graph or emits.
+        """
+        run = self.runs.get(graph.graph_id)
+        if run is None:
+            run = self.runs[graph.graph_id] = Run(graph=graph, tasks=TaskQueue())
+        return run
 
-    async def commit(self, graph: Graph, node: Node) -> Event:
-        """Append a node and emit it to that agent's queue."""
-        return self.append_node(graph, node)
+    def resolve_run(
+        self,
+        *,
+        graph: Graph | None = None,
+        query: str | None = None,
+        inputs: dict[str, str] | None = None,
+        output_schema: Schema | None = None,
+        merge_inputs: bool = True,
+    ) -> Run:
+        """Resolve graph state and register the run, emitting structural events.
 
-    def schedule_agent(self, graph: Graph) -> None:
-        if self.tasks is not None and not graph.finished:
-            self.tasks.add(graph.agent_id, lambda: self.run_agent_task(graph))
+        Phase 1 of driving: turn the caller's request into a live, registered run
+        before the phase-2 drive loop touches it. Exactly one of two shapes:
 
-    def should_continue(self, graph: Graph, event: Event, until: StepUntil) -> bool:
+        - ``query`` alone builds a fresh graph, announced with ``GraphCreated``.
+        - ``graph`` is resumed; ``inputs``/``output_schema`` are applied in place
+          (so they take effect even on a finished graph), then any ``query`` is
+          appended as a fresh ``UserQuery`` turn, emitted as an ``AppendNode`` so
+          consumers/checkpointers observe it. ``inputs`` merges into existing
+          values unless ``merge_inputs=False``; updated values are synced into a
+          warm REPL if one already exists.
+
+        Registration happens before emission because :meth:`apply_action` only
+        streams events for graphs that already have a run.
+        """
+        if graph is None:
+            if query is None:
+                raise ValueError("resolve_run requires graph= or query=")
+            graph = Graph(
+                query=query, inputs=dict(inputs or {}), output_schema=output_schema
+            )
+            run = self.run_for(graph)
+            self.apply_action(graph, GraphCreated(type="graph_created", graph=graph))
+            return run
+
+        if inputs:
+            graph.inputs = {**graph.inputs, **inputs} if merge_inputs else dict(inputs)
+        if output_schema is not None:
+            graph.output_schema = json_schema_for(output_schema)
+        run = self.run_for(graph)
+        if inputs:
+            self._sync_repl_inputs(graph)
+        if query is not None:
+            self.append_node(graph, query)
+        return run
+
+    def _sync_repl_inputs(self, graph: Graph) -> None:
+        """Push the graph's current ``inputs`` into a warm REPL, if any.
+
+        A resumed graph may already own a live REPL whose ``INPUTS`` namespace
+        was seeded at creation; re-inject so a new turn sees updated values.
+        """
+        repl = self.repls.get(repl_key(graph))
+        if repl is not None:
+            repl.inject("INPUTS", dict(graph.inputs))
+
+    async def finish_run(self, run: Run, *, close_repls: bool = False) -> None:
+        await run.tasks.aclose()
+        self.runs.pop(run.graph.graph_id, None)
+        if close_repls:
+            self.close_repls(run.graph.graph_id)
+
+    def schedule_agent(self, run: Run, graph: Graph) -> None:
+        if not graph.finished:
+            run.tasks.add(graph.agent_id, lambda: self.run_agent_task(graph))
+
+    def should_continue(self, run: Run, graph: Graph, event: Event) -> bool:
         if graph.finished:
             return False
-        if graph.agent_id in self.suppressed_agents:
+        if isinstance(event.node, (SupervisingOutput, ResumeAction)):
             return False
-        if is_node(event, (SupervisingOutput, ResumeAction)):
-            return False
+        until = run.until
         if until in FULL_RUN:
             return True
         if until == "next":
             return False
         if until == "idle":
-            return not is_rest(event)
+            return not is_idle(event)
         if until == "error":
-            return not is_node(event, ErrorOutput)
+            return not isinstance(event.node, ErrorOutput)
         if until == "supervising":
-            return not is_node(event, SupervisingOutput)
+            return not isinstance(event.node, SupervisingOutput)
         if callable(until):
-            return not bool(until(event, self.run_graph or graph))
+            return not bool(until(event, run.graph))
         raise ValueError(f"unknown until boundary: {until!r}")
 
     async def run_agent_task(self, graph: Graph) -> None:
@@ -288,15 +455,17 @@ class Flow:
         if graph.finished:
             return
         if graph.agent_id in self._terminate_requested:
-            await self.commit(graph, DoneOutput(result=TERMINATED))
+            self.append_node(graph, DoneOutput(result=TERMINATED))
             return
-        if budget_exceeded(self.run_graph or graph, self.max_budget):
-            await self.commit(graph, DoneOutput(result=BUDGET_EXCEEDED))
+        run = self.runs.get(graph.graph_id)
+        root = run.graph if run is not None else graph
+        if budget_exceeded(root, self.max_budget):
+            self.append_node(graph, DoneOutput(result=BUDGET_EXCEEDED))
             return
 
         current = graph.current()
         if isinstance(current, LLMOutput):
-            await self.commit(graph, ExecAction(code=current.code))
+            self.append_node(graph, ExecAction(code=current.code))
             return
         if isinstance(current, ExecAction):
             await self.exec_turn(graph, current.code)
@@ -305,15 +474,14 @@ class Flow:
         llm_turns = sum(isinstance(node, LLMOutput) for node in graph.nodes)
         max_iters = iter_budget(graph.depth, self.max_iters, self.child_max_iters)
         if llm_turns >= max_iters:
-            await self.commit(graph, DoneOutput(result=MAX_ITERS_EXCEEDED))
+            self.append_node(graph, DoneOutput(result=MAX_ITERS_EXCEEDED))
             return
 
-        reply, usage = await self._pooled_chat(
-            graph, force_final=llm_turns == max_iters - 1
-        )
+        messages = self.messages(graph, force_final=llm_turns == max_iters - 1)
+        reply, usage = await self._call_chat(messages, graph.model)
         code = code_block(reply)
         metadata = llm_output_metadata(graph.model, usage)
-        await self.commit(graph, LLMOutput(content=reply, code=code, metadata=metadata))
+        self.append_node(graph, LLMOutput(content=reply, code=code, metadata=metadata))
 
     async def run_agent(self, graph: Graph) -> None:
         while not graph.finished:
@@ -324,7 +492,9 @@ class Flow:
         current turn, then records ``done("[terminated]")`` instead of iterating on.
         """
         if agent_ids is None:
-            agent_ids = self.run_graph.agents if self.run_graph is not None else ()
+            agent_ids = [
+                agent_id for run in self.runs.values() for agent_id in run.graph.agents
+            ]
         self._terminate_requested.update(agent_ids)
 
     async def exec_turn(self, graph: Graph, code: str, *, replay: bool = False) -> Node:
@@ -344,7 +514,7 @@ class Flow:
             out = f"REPL execution failed: {type(exc).__name__}: {exc}"
             node = ErrorOutput(content=out, output=out, error="exec")
             if not replay:
-                await self.commit(graph, node)
+                self.append_node(graph, node)
             return node
 
         # Cap the observation re-entering context (full data stays in repl vars;
@@ -357,7 +527,7 @@ class Flow:
         else:
             node = ExecOutput(content=out or "(no output)", output=out)
         if not replay:
-            await self.commit(graph, node)
+            self.append_node(graph, node)
         return node
 
     def repl_for(self, graph: Graph) -> ReplLike:
@@ -366,7 +536,7 @@ class Flow:
         if repl is None:
             repl = self.runtime.open(graph)
             repl.seed(self.build_tools(graph, repl), graph.inputs)
-            repl.set_process_env(
+            repl.update_env(
                 agent_process_env(
                     agent_id=graph.agent_id,
                     depth=graph.depth,
@@ -409,11 +579,18 @@ class Flow:
         *,
         from_node_id: str | None = None,
         agent_id: str | None = None,
+        keep_anchor: bool = False,
     ) -> Graph:
         """Independent branch of ``graph`` (deepcopy, fresh ``graph_id``) with its
         REPL rebuilt to match the optionally-rewound trajectory. Never mutates parent.
+
+        By default ``from_node_id`` is dropped (branch ends before it, to
+        re-decide); pass ``keep_anchor=True`` to retain it and continue from
+        after it.
         """
-        child = graph.fork(from_node_id=from_node_id, agent_id=agent_id)
+        child = graph.fork(
+            from_node_id=from_node_id, agent_id=agent_id, keep_anchor=keep_anchor
+        )
         await self.rebuild_repl(child, agent_id=agent_id)
         return child
 
@@ -482,17 +659,16 @@ class Flow:
         """Public factory for the recursive spawn tool (see ``tools.builtins``)."""
         return make_launch_subagents(self, parent, repl)
 
-    def append_node(self, graph: Graph, node) -> Event:
-        action = AppendNode(
-            type="append_node", agent_id=graph.agent_id, node_type=node.type, node=node
-        )
-        return self.apply_action(graph, action)
+    def append_node(self, graph: Graph, node: Node | str) -> Event:
+        """Append via :meth:`Graph.inject_action` and emit into the active run."""
+        return self.apply_action(graph, graph.inject_action(node))
 
     def apply_action(self, graph: Graph, action: GraphAction) -> GraphAction:
         base = None if isinstance(action, GraphCreated) else graph
         apply_graph_action(base, action)
-        if self.tasks is not None:
-            # Stamp originating graph_id so merged streams (FlowGroup) self-describe.
+        run = self.runs.get(graph.graph_id)
+        if run is not None:
+            # Stamp originating graph_id so merged streams (parallel_stream) self-describe.
             event = (
                 action
                 if isinstance(action, GraphCreated)
@@ -503,7 +679,7 @@ class Flow:
                 or getattr(event, "parent_agent_id", None)
                 or graph.agent_id
             )
-            self.tasks.emit(agent_id, event)
+            run.tasks.emit(agent_id, event)
         return action
 
     def messages(
@@ -521,24 +697,26 @@ class Flow:
             return self.system_prompt
         return self.prompt_builder.build(self, graph)
 
-    async def chat(self, graph: Graph) -> str:
-        reply, _usage = await self._pooled_chat(graph)
-        return reply
-
-    async def _pooled_chat(
-        self, graph: Graph, *, force_final: bool = False
-    ) -> tuple[str, LLMUsage]:
-        messages = self.messages(graph, force_final=force_final)
-        return await self.pool.run(self._call_chat(messages, graph.model))
-
     async def _call_chat(
         self,
         messages: list[dict[str, str]],
         model: str = "default",
         **llm_kwargs: Any,
     ) -> tuple[str, LLMUsage]:
+        # The single leaf call: blocking clients run on the pool's threads
+        # (capped by ``workers``), async clients stay on the loop.
         client = self.llm_client(model)
-        call = call_sync_or_async(client.chat, messages, **llm_kwargs)
+        # ``wait_for`` can't cancel a blocking thread mid-flight, so for blocking
+        # clients we also push ``timeout`` into the request itself (the only
+        # thing that bounds a hung call). Async clients are cancellable, so skip.
+        if (
+            self.llm_request_timeout is not None
+            and "timeout" not in llm_kwargs
+            and not inspect.iscoroutinefunction(client.chat)
+            and accepts_kwarg(client.chat, "timeout")
+        ):
+            llm_kwargs["timeout"] = self.llm_request_timeout
+        call = self.pool.call(client.chat, messages, **llm_kwargs)
         if self.llm_request_timeout is not None:
             call = asyncio.wait_for(call, self.llm_request_timeout)
         reply = await call
@@ -552,8 +730,9 @@ class Flow:
             raise ValueError(f"unknown model {model!r}. available: {keys}") from exc
 
     @tool(
-        "Run a list of independent one-shot prompts as concurrent model calls "
-        "through Flow's shared pool; returns a list of results.",
+        "Run a list of independent one-shot prompts as concurrent model calls; "
+        "blocking calls are bounded by Flow's worker pool. Returns a list of "
+        "results.",
         proxy=True,
     )
     async def llm_query_batched(
@@ -591,7 +770,7 @@ class Flow:
             )
             return text
 
-        texts = await self.pool.gather(*(call(prompt) for prompt in sent))
+        texts = await asyncio.gather(*(call(prompt) for prompt in sent))
         if schema is not None:
             return [self.output_parser(text, schema) for text in texts]
         return texts
@@ -609,7 +788,7 @@ class Flow:
             raise ValueError(f"{key!r} is reserved and cannot be overridden")
         self.tools[key] = fn
         for repl in self.repls.values():
-            repl.inject_tool(key, fn)
+            repl.inject(key, fn)
 
     def remove_tool(self, name: str) -> Any:
         """Unregister a tool and drop it from every live REPL. Returns it (or None)."""
@@ -639,4 +818,4 @@ class Flow:
         return tools
 
 
-__all__ = ["Flow", "LLMUsage", "code_block"]
+__all__ = ["Flow", "LLMUsage", "Run", "code_block"]

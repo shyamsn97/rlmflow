@@ -14,32 +14,16 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 
-from rflow import ExecOutput, Flow, Graph, LLMUsage
+from rflow import ExecOutput, Flow, Graph, GraphCheckpointer, LLMUsage
 
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
-
-
-def _save_example_graph(
-    graph,
-    source_file: str | Path,
-    name: str,
-    *,
-    out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
-) -> Path:
-    path = graph.save(
-        Path(out_dir) if out_dir is not None else _example_run_dir(source_file, name)
-    )
-    print(f"{label} {path}")
-    return path
+from common import example_run_dir, save_example_graph  # noqa: E402
 
 
 OBSERVATION = "Injected controller observation: finalize using this note."
@@ -82,7 +66,7 @@ def observation_injection() -> None:
     banner("1. Inject an observation and let the LLM react")
 
     flow = Flow(DemoLLM(), max_depth=0, max_iters=4)
-    graph = flow.start(Graph(query="Wait for a controller note, then finish."))
+    graph = Graph(query="Wait for a controller note, then finish.")
     assert_types(graph, ["user_query"])
 
     flow.append_node(graph, ExecOutput(output=OBSERVATION, content=OBSERVATION))
@@ -98,16 +82,24 @@ def observation_injection() -> None:
     assert OBSERVATION in projected
     print("message projection contains the controller observation.")
 
-    flow.run(graph)
+    run_dir = example_run_dir("controller-injection") / "observation-injection"
+    checkpointer = GraphCheckpointer(run_dir)
+
+    async def drive() -> None:
+        try:
+            async for event in flow.run_streaming(graph=graph):
+                checkpointer.handle(event, graph)
+        finally:
+            checkpointer.close()
+
+    asyncio.run(drive())
     assert graph.result() == "used the injected controller observation"
     print_states("after stepping: run reacted and finished", graph)
     print(f"result={graph.result()!r}")
-    _save_example_graph(
+    save_example_graph(
         graph,
-        __file__,
         "controller-injection",
-        out_dir=_example_run_dir(__file__, "controller-injection")
-        / "observation-injection",
+        out_dir=run_dir,
     )
 
 
@@ -116,28 +108,31 @@ def controller_stop_instruction() -> None:
 
     flow = Flow(DemoLLM(), max_depth=0, max_iters=4)
     graph = Graph(query="This run will be stopped by the controller.")
+    run_dir = example_run_dir("controller-injection") / "controller-stop-instruction"
+    checkpointer = GraphCheckpointer(run_dir)
 
     async def run_with_controller_stop() -> None:
         # Stream the run to its first resting observation, then react. Because
         # ``until`` halts the run at the boundary (the driver does not run ahead),
         # the instruction we inject is guaranteed to be the next thing the agent
         # reads when we resume it.
-        async for _event in flow.run_streaming(graph, until="idle"):
-            pass
-        graph.inject("Controller stop request: finalize now with current state.")
-        async for _event in flow.run_streaming(until="done"):
-            pass
+        try:
+            async for event in flow.run_streaming(graph=graph, until="idle"):
+                checkpointer.handle(event, graph)
+            graph.inject("Controller stop request: finalize now with current state.")
+            async for event in flow.run_streaming(graph=graph, until="done"):
+                checkpointer.handle(event, graph)
+        finally:
+            checkpointer.close()
 
     asyncio.run(run_with_controller_stop())
     assert graph.result() == "controller stopped the run"
     print_states("after controller stop instruction: clean done(...)", graph)
     print(f"result={graph.result()!r}")
-    _save_example_graph(
+    save_example_graph(
         graph,
-        __file__,
         "controller-injection",
-        out_dir=_example_run_dir(__file__, "controller-injection")
-        / "controller-stop-instruction",
+        out_dir=run_dir,
     )
 
 

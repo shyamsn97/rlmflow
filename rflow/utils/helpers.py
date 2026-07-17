@@ -9,7 +9,6 @@ from collections.abc import Callable
 from typing import Any
 
 from rflow.graph import Graph, LLMUsage, Node
-from rflow.structured import Schema, json_schema_for
 from rflow.tools import get_tool_metadata
 from rflow.utils.code import find_code_blocks
 
@@ -20,6 +19,23 @@ def code_block(text: str) -> str:
     """Return the first fenced code block in ``text`` (or ``""`` if none)."""
     blocks = find_code_blocks(text)
     return blocks[0] if blocks else ""
+
+
+def accepts_kwarg(fn: Any, name: str) -> bool:
+    """Whether ``fn`` accepts keyword ``name`` (explicitly or via ``**kwargs``).
+
+    Used to push ``timeout`` only to clients that take it, so lean fake/test
+    clients are never handed an unexpected kwarg.
+    """
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return True  # can't introspect (e.g. a C builtin); assume it accepts it
+    return any(
+        p.kind is p.VAR_KEYWORD
+        or (p.name == name and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY))
+        for p in params
+    )
 
 
 async def call_sync_or_async(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -56,23 +72,16 @@ def repl_key(graph: Graph) -> ReplKey:
     return (graph.graph_id, graph.agent_id)
 
 
-def graph_from_input(
-    graph_or_query: Graph | str,
-    inputs: dict[str, str] | None = None,
-    output_schema: Schema | None = None,
-) -> Graph:
-    """Coerce a query string (or existing graph) into a ready-to-run ``Graph``."""
+def graph_from_input(graph_or_query: Graph | str) -> Graph:
+    """Coerce a query string into a fresh root ``Graph``; pass graphs through.
+
+    Pure coercion for batch entry points (``parallel_run``/``parallel_stream``)
+    that accept either shape. State resolution (inputs, output_schema, new
+    turns) lives in :meth:`Flow.resolve_run`, not here.
+    """
     if isinstance(graph_or_query, Graph):
-        if inputs is not None:
-            graph_or_query.inputs = dict(inputs)
-        if output_schema is not None:
-            graph_or_query.output_schema = json_schema_for(output_schema)
         return graph_or_query
-    return Graph(
-        query=graph_or_query,
-        inputs=dict(inputs or {}),
-        output_schema=json_schema_for(output_schema) if output_schema else None,
-    )
+    return Graph(query=graph_or_query)
 
 
 def usage_from_client(client: Any) -> LLMUsage:
@@ -138,6 +147,7 @@ def llm_output_metadata(model: str, usage: LLMUsage) -> dict[str, Any]:
 
 __all__ = [
     "ReplKey",
+    "accepts_kwarg",
     "budget_exceeded",
     "call_sync_or_async",
     "code_block",

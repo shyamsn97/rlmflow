@@ -11,6 +11,7 @@ Run with:
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import dspy
@@ -18,28 +19,11 @@ import dspy
 from rflow.clients import OpenAIClient
 from rflow import DSPyFlow, Flow, FlowLLM
 
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
-
-
-def _save_example_graph(
-    graph,
-    source_file: str | Path,
-    name: str,
-    *,
-    out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
-) -> Path:
-    path = graph.save(
-        Path(out_dir) if out_dir is not None else _example_run_dir(source_file, name)
-    )
-    print(f"{label} {path}")
-    return path
+from common import save_example_graph  # noqa: E402
 
 
 
@@ -58,7 +42,7 @@ def main() -> None:
     result = qa(question="What is 17 * 23? Show a short calculation.")
     print(result.answer)
     if agent.last_graph is not None:
-        _save_example_graph(agent.last_graph, __file__, "dspy-drop-in")
+        save_example_graph(agent.last_graph, "dspy-drop-in")
 
     agent.close()
 

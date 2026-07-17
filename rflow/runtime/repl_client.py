@@ -41,6 +41,9 @@ class ReplClient:
     def __init__(self, connection: ReplConnection) -> None:
         self.connection = connection
         self.namespace: dict[str, Any] = {}
+        # Mirror of the sandbox's host-visible ``ENV`` state channel, refreshed
+        # from each run response (see Repl.env).
+        self.env: dict[str, Any] = {}
         self.done_result: str | None = None
         self.errored = False
         self.proxied: dict[str, Callable[..., object]] = {}
@@ -82,11 +85,11 @@ class ReplClient:
                 self._inject_proxy("done", self._remote_done)
             else:
                 # Everything else (launch_subagents, llm_query_batched, user
-                # tools) is driven by its own metadata via inject_tool.
-                self.inject_tool(name, fn)
+                # tools) is driven by its own metadata via inject.
+                self.inject(name, fn)
 
-    def inject_tool(self, name: str, fn: Any) -> None:
-        """Ship one tool into the remote namespace (dynamic tools).
+    def inject(self, name: str, fn: Any) -> None:
+        """Ship any Python object into the remote namespace.
 
         Proxy tools run back on the host; other callables are imported or
         source-shipped into the sandbox; plain values are injected directly.
@@ -106,15 +109,11 @@ class ReplClient:
         self.proxied.pop(name, None)
         self.call(RemoveRequest(id=self._next_id("remove"), name=name))
 
-    def set_process_env(self, env: dict[str, str]) -> None:
-        if not env:
+    def update_env(self, values: dict[str, Any]) -> None:
+        if not values:
             return
-        self.call(
-            SetEnvRequest(
-                id=self._next_id("set_env"),
-                values={str(k): str(v) for k, v in env.items()},
-            )
-        )
+        self.env.update(values)
+        self.call(SetEnvRequest(id=self._next_id("set_env"), values=dict(values)))
 
     async def run(self, code: str) -> str:
         if not code.strip():
@@ -125,6 +124,8 @@ class ReplClient:
             self.call, RunRequest(id=self._next_id("run"), code=code)
         )
         self.errored = resp.errored
+        if resp.env is not None:
+            self.env = resp.env
         return resp.output or ""
 
     def drain(self) -> str:

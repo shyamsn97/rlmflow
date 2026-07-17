@@ -797,7 +797,7 @@ class RecursiveFlowHero(Scene):
                 ("supervising_node = graph.filter(", DIM),
                 ("    filter=lambda node:", DIM),
                 ('    node.type == "supervising_output")', DIM),
-                ("forked_graph = graph.replace_node(", DIM),
+                ("forked_graph = graph.replace(", DIM),
                 ("    supervising_node,", DIM),
                 ("    rflow.ExecOutput(output=prompt),", DIM),
                 ('    truncate="descendants")', DIM),

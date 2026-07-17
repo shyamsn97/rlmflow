@@ -8,7 +8,7 @@ milliseconds and can be read top-to-bottom.
 |---|---|
 | `01_query.py` | `walk()`, `agents`, node types, errors, token usage, and final result |
 | `02_navigate.py` | child lookup, traversal, and `render_tree()` |
-| `03_mutate.py` | graph edits with `remove_child()` and `replace_node()` |
+| `03_mutate.py` | graph edits with `remove_child()` and `replace()` |
 | `04_save_load.py` | `Graph.save()` / `Graph.load()` JSON round-trip |
 | `05_timeline.py` | explicit snapshots as graph state changes |
 | `06_fork.py` | `graph.fork()` for divergent branches |

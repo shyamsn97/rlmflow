@@ -39,7 +39,7 @@ class FlowLLM:
 
     def chat(self, messages: list[dict[str, Any]], *args: Any, **kwargs: Any) -> str:
         graph = Graph(query=messages_to_query(messages))
-        result = self.flow.run(graph)
+        result = self.flow.run(graph=graph)
         self.last_graph = graph
         self.last_usage = graph.usage()
         return result

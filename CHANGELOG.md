@@ -8,6 +8,26 @@ each one is called out under **Breaking** below.
 
 ## [Unreleased]
 
+### Breaking
+
+- **`Flow.run` / `arun` / `run_streaming` are keyword-only.** The old
+  `graph_or_query` positional is gone; pass `query="..."` to start a fresh graph
+  or `graph=g` to resume one (`flow.run(query="q")`, `flow.run(graph=g)`,
+  `async for event in flow.run_streaming(graph=g, until=...)`). `parallel_run` /
+  `parallel_stream` keep their `*graphs` varargs. `Flow.run_for(graph)` is now a
+  pure run registry; graph resolution/emission moved to `Flow.resolve_run(...)`.
+
+### Added
+
+- **Long-running / multi-turn agents on one graph.** `graph.append_query(text,
+  *, inputs=None, output_schema=None, merge_inputs=True)` appends a new
+  `UserQuery` turn (flipping `finished` back to false) so the next run re-drives
+  the same trajectory with its full history and warm REPL. Equivalently, pass
+  `query=` to `run`/`run_streaming` alongside `graph=` to append and drive in one
+  call — the new turn is emitted as an `AppendNode` event, and updated `inputs`
+  are synced into the live REPL's `INPUTS`. `inputs` merges by default;
+  `merge_inputs=False` replaces.
+
 ### Changed
 
 - **`rflow.minimal` is now the core package.** The minimal graph-first stack was
@@ -15,9 +35,9 @@ each one is called out under **Breaking** below.
   Imports move from `rflow.minimal.*` to `rflow.*` (for example
   `from rflow import Flow, Graph, LocalRuntime, FILE_TOOLS`), and LLM clients
   live under `from rflow.clients import OpenAIClient, AnthropicClient`.
-- **Async, in-place streaming API.** `Flow` drives runs with `flow.run(query)`
-  (sync), `await flow.arun(...)`, and
-  `async for event in flow.run_streaming(graph, until=..., n=...)`.
+- **Async, in-place streaming API.** `Flow` drives runs with
+  `flow.run(query=...)` (sync), `await flow.arun(...)`, and
+  `async for event in flow.run_streaming(graph=..., until=..., n=...)`.
   `run_streaming` yields the `Event`s it emits and mutates the `Graph` in place.
 - **Visualization consolidated in `rflow.view`.** `render_tree`,
   `LiveTreeRenderer`, `open_viewer`, `replay`, `save_image`, and `save_steps` are

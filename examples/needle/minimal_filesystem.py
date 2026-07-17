@@ -16,11 +16,17 @@ import argparse
 import asyncio
 import random
 import string
+import sys
 import tempfile
 from pathlib import Path
 
-from rflow.clients import AnthropicClient, OpenAIClient
 from rflow import FILE_TOOLS, Flow, Graph, LiveTreeRenderer, LocalRuntime
+
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
+
+from common import build_client  # noqa: E402
 
 
 def generate_haystack(
@@ -43,14 +49,6 @@ def generate_haystack(
 
     print(f"Needle in file_{needle_file:04d}.txt line {needle_line}")
     return answer
-
-
-def build_llm(model: str):
-    return (
-        AnthropicClient(model)
-        if model.startswith("claude")
-        else OpenAIClient(model)
-    )
 
 
 async def run_example(args: argparse.Namespace) -> tuple[str, str]:
@@ -76,7 +74,7 @@ async def run_example(args: argparse.Namespace) -> tuple[str, str]:
         runtime = LocalRuntime(working_directory=workdir)
         runtime.register_tools(FILE_TOOLS)
         flow = Flow(
-            build_llm(args.model),
+            build_client(args.model),
             max_depth=args.max_depth,
             max_iters=args.max_iters,
             runtime=runtime,
@@ -91,7 +89,7 @@ async def run_example(args: argparse.Namespace) -> tuple[str, str]:
         )
         renderer = LiveTreeRenderer(clear=not args.no_clear)
 
-        async for event in flow.run_streaming(graph):
+        async for event in flow.run_streaming(graph=graph):
             renderer.handle(event, graph)
             if out_dir is not None:
                 metadata = {

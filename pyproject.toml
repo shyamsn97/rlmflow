@@ -126,6 +126,7 @@ target-version = "py311"
 line-length = 100
 extend-exclude = [
     "examples/_data",
+    "examples/_runs",
     "examples/autoresearch_mini/prepare.py",
     "examples/autoresearch_mini/train.py",
 ]

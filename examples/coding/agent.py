@@ -13,25 +13,25 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from pathlib import Path
 
-from rflow.clients import AnthropicClient, OpenAIClient
 from rflow import (
+    ConsumerGroup,
     DockerRuntime,
     FILE_TOOLS,
     Flow,
     Graph,
+    GraphCheckpointer,
     LiveTreeRenderer,
     LocalRuntime,
 )
 
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
-def build_llm(model: str):
-    return (
-        AnthropicClient(model)
-        if model.startswith("claude")
-        else OpenAIClient(model)
-    )
+from common import build_client  # noqa: E402
 
 
 def main():
@@ -80,12 +80,12 @@ def main():
     runtime.register_tools(FILE_TOOLS)
 
     flow = Flow(
-        build_llm(args.model),
-        llm_clients={"fast": build_llm(args.fast_model)},
+        build_client(args.model),
+        llm_clients={"fast": build_client(args.fast_model)},
         runtime=runtime,
         max_depth=args.max_depth,
         max_iters=args.max_iters,
-        max_concurrency=args.max_concurrency,
+        workers=args.max_concurrency,
     )
 
     print("Agent ready. Type a query, or 'quit' to exit.\n")
@@ -100,17 +100,27 @@ def main():
                 break
 
             graph = Graph(query=query)
+            graph_dir = workdir / "graph"
+            # Checkpoint the graph on every event (and a final flush on close),
+            # so a crash mid-run still leaves the latest graph on disk.
+            consumers = ConsumerGroup(
+                [
+                    LiveTreeRenderer(clear=not args.no_viz),
+                    GraphCheckpointer(graph_dir),
+                ]
+            )
 
             async def drive() -> None:
-                renderer = LiveTreeRenderer(clear=not args.no_viz)
-                async for event in flow.run_streaming(graph):
-                    renderer.handle(event, graph)
+                try:
+                    async for event in flow.run_streaming(graph=graph):
+                        consumers.handle(event, graph)
+                finally:
+                    consumers.close()
 
             asyncio.run(drive())
 
             print(f"\n{graph.result() or '(no result)'}\n")
-            path = graph.save(workdir / "graph")
-            print(f"Graph saved to {path}")
+            print(f"Graph checkpointed to {graph_dir}")
             print(f"Files written under {workdir}")
     finally:
         flow.close_repls()

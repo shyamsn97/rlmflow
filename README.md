@@ -83,12 +83,12 @@ The graph is the run itself:
 
 ```python
 import asyncio
-from rflow import render_tree
+from rflow import Graph, render_tree
 
-graph = agent.start(query)
+graph = Graph(query=query)
 
 async def drive():
-    async for _event in agent.run_streaming(graph):
+    async for _event in agent.run_streaming(graph=graph):
         print(render_tree(graph))
 
 asyncio.run(drive())
@@ -167,7 +167,7 @@ query = "Build a Python text-based adventure game with combat and inventory."
 graph = Graph(query=query)
 
 async def drive() -> None:
-    async for _event in flow.run_streaming(graph):
+    async for _event in flow.run_streaming(graph=graph):
         print(render_tree(graph))
 
 asyncio.run(drive())
@@ -188,42 +188,44 @@ later with `Graph.load(path)` or `open_viewer(path)`.
 
 ## Drop-in `LLMClient`
 
-`Flow` implements `LLMClient`, so it is a drop-in replacement for any raw LLM.
+`FlowLLM` wraps a `Flow` in the `LLMClient` `chat(messages)` interface, so a full
+recursive agent run is a drop-in replacement for any raw LLM.
 
 ```python
 import rflow
+from rflow import FlowLLM
 from rflow.clients import LLMClient, OpenAIClient
 
 def ask(llm: LLMClient, q: str) -> str:
     return llm.chat([{"role": "user", "content": q}])
 
-ask(OpenAIClient(model="gpt-4o-mini"), "2+2?")              # one LLM call
-ask(rflow.Flow(OpenAIClient(model="gpt-4o-mini")), "2+2?")  # full agent loop
+ask(OpenAIClient(model="gpt-4o-mini"), "2+2?")                      # one LLM call
+ask(FlowLLM(rflow.Flow(OpenAIClient(model="gpt-4o-mini"))), "2+2?")  # full agent loop
 ```
 
-Nest agents by passing one `Flow` as another's `llm`. See
+Nest agents by passing one `FlowLLM(inner_flow)` as another flow's `llm`. See
 [`examples/drop_in_llm.py`](examples/drop_in_llm.py).
 
 ## Stream and inspect
 
 `Flow` gives you three ways to drive a run, all over the same durable `Graph`:
 
-- `flow.run(query)` — run to completion and return the result string.
-- `async for event in flow.run_streaming(graph, until=..., n=...)` — stream to a
+- `flow.run(query=query)` — run to completion and return the result string.
+- `async for event in flow.run_streaming(graph=graph, until=..., n=...)` — stream to a
   boundary; the graph is mutated in place.
-- `async for event in flow.run_streaming(graph)` — stream every commit as it happens.
+- `async for event in flow.run_streaming(graph=graph)` — stream every commit as it happens.
 
 ```python
 import asyncio
-from rflow import render_tree
+from rflow import Graph, render_tree
 
-graph = agent.start(query)
+graph = Graph(query=query)
 
 async def drive():
-    async for _ in agent.run_streaming(graph, until="next", n=2):
+    async for _ in agent.run_streaming(graph=graph, until="next", n=2):
         pass                                      # advance two global steps
     print(render_tree(graph))                     # ...inspect...
-    async for _ in agent.run_streaming(until="done"):
+    async for _ in agent.run_streaming(graph=graph, until="done"):
         pass                                      # ...then run to completion
 
 asyncio.run(drive())
@@ -267,8 +269,9 @@ graph.to_dict()                 # full JSON-serializable payload
 
 Because `Graph` is the control surface, external controllers can edit it in place
 and continue the run. `graph.inject(text, agent_id=...)` appends a user-turn
-observation to any agent; `replace_node`, `rewind`, `checkpoint`/`revert`, and
-`remove_child` rewrite history. This is useful for human feedback, budget nudges,
+observation to any agent; its `mode`/`truncate` options and the
+`append`/`prepend`/`replace` helpers, plus `rewind`, `checkpoint`/`revert`, and
+`remove_child`, rewrite history. This is useful for human feedback, budget nudges,
 and forced finalization without losing traceability:
 
 ```python
@@ -277,7 +280,7 @@ graph.inject(
     "Answer with the best current evidence.",
     agent_id="root.scanner_api",
 )
-agent.run(graph)  # or: async for _ in agent.run_streaming(graph): ...
+agent.run(graph=graph)  # or: async for _ in agent.run_streaming(graph=graph): ...
 ```
 
 Injected nodes become ordinary graph nodes with the same shape as organic ones.
@@ -290,8 +293,8 @@ See [`docs/injections.md`](docs/injections.md) and
 and reopen it with `Graph.load(...)`:
 
 ```python
-graph = agent.start(query)
-agent.run(graph)
+graph = rflow.Graph(query=query)
+agent.run(graph=graph)
 run_dir = graph.save("runs/deep_research")
 
 latest = rflow.Graph.load(run_dir)
@@ -305,9 +308,9 @@ agent.run(branch)
 branch.save("runs/deep_research_repair")
 ```
 
-Controller edits use the same graph surface (`inject`, `replace_node`, `rewind`,
-`checkpoint`/`revert`) and then continue through `agent.run(graph)` or
-`agent.run(graph)` or `agent.run_streaming(graph)`. See [`examples/showcase.py`](examples/showcase.py),
+Controller edits use the same graph surface (`inject`/`append`/`prepend`/
+`replace`, `rewind`, `checkpoint`/`revert`) and then continue through
+`agent.run(graph=graph)` or `agent.run_streaming(graph=graph)`. See [`examples/showcase.py`](examples/showcase.py),
 [`docs/control.md`](docs/control.md), [`docs/injections.md`](docs/injections.md),
 and the live graph-controller pool example in
 [`examples/control/graph_controller_agent.py`](examples/control/graph_controller_agent.py).
@@ -328,7 +331,7 @@ import asyncio
 from rflow import render_tree
 
 async def drive():
-    async for _event in agent.run_streaming(graph):
+    async for _event in agent.run_streaming(graph=graph):
         print("\033[2J\033[H" + render_tree(graph))  # clear + redraw
 
 asyncio.run(drive())
@@ -479,10 +482,10 @@ The top-level docs are short, user-facing guides. The deep dive lives
 in [`docs/internals.md`](docs/internals.md). Research notes live under
 [`docs/research/`](docs/research/).
 
-- [**Internals**](docs/internals.md): deep reference — engine
-  architecture, step lifecycle, REPL `await` protocol, runtime backends,
-  graph persistence, and extension seams. This document is being refreshed
-  after the `Flow`/`Graph` rewrite.
+- [**Internals**](docs/internals.md): deep reference — the `Flow`/`Graph`/`Run`
+  split, the two phases of a run, the per-agent scheduler, exec turns,
+  delegation, REPL lifecycle, runtime backends, graph persistence, and extension
+  seams.
 - [Blog post](https://shyamsn97.github.io/blog/rflow/): long-form pitch —
   recursive agents, why graphs beat flat traces, and walkthroughs.
 - [Positioning](docs/positioning.md): when to use rlmflow vs
@@ -494,7 +497,7 @@ in [`docs/internals.md`](docs/internals.md). Research notes live under
 - [Skills](docs/skills.md): workspace `SKILL.md` files, query-selected
   skills, child-only skills, and run-memory skills.
 - [Node injection](docs/injections.md): append typed controller events to a
-  running graph and continue it with `agent.run(graph)` / `agent.run_streaming(graph)`.
+  running graph and continue it with `agent.run(graph=graph)` / `agent.run_streaming(graph=graph)`.
 - [Observability](docs/observability.md): querying the `Graph`,
   run layout, the live terminal tree, the Gradio viewer, and static
   image/step exports.

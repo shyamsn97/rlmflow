@@ -6,7 +6,13 @@ from rflow.tasks import TaskQueue
 
 
 async def collect(queue):
-    return [item async for item in queue.stream()]
+    items = []
+    while True:
+        item = await queue.next()
+        if item is None:
+            break
+        items.append((item.agent_id, item.item))
+    return items
 
 
 def test_taskqueue_streams_items_by_agent_id():

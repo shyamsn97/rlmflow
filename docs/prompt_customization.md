@@ -14,7 +14,7 @@ Use full replacement only when you want to own that entire protocol yourself.
 Before changing the prompt, render the one your agent already sees:
 
 ```python
-graph = agent.start("Summarize this document.", {"document": document})
+graph = rflow.Graph(query="Summarize this document.", inputs={"document": document})
 print(agent.build_system_prompt(graph))
 ```
 

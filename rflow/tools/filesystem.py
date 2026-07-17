@@ -30,17 +30,26 @@ def append_file(path: str, content: str) -> str:
     return f"Appended {len(content)} bytes to {path}"
 
 
-@tool("Find-and-replace edits. Each edit is (old, new).")
-def edit_file(path: str, *edits: tuple[str, str]) -> str:
+@tool(
+    "Find-and-replace edits. Each edit is (old, new). Each `old` must match "
+    "exactly once (add surrounding lines to disambiguate) unless replace_all=True. "
+    "Edits apply atomically: if any anchor is missing or ambiguous, nothing is written."
+)
+def edit_file(path: str, *edits: tuple[str, str], replace_all: bool = False) -> str:
     p = Path(path)
     text = p.read_text()
-    count = 0
-    for old, new in edits:
-        if old in text:
-            text = text.replace(old, new, 1)
-            count += 1
+    for i, (old, new) in enumerate(edits):
+        n = text.count(old)
+        if n == 0:
+            raise ValueError(f"edit {i}: anchor not found in {path}: {old!r}")
+        if n > 1 and not replace_all:
+            raise ValueError(
+                f"edit {i}: anchor appears {n}x in {path}; add surrounding lines "
+                f"to make it unique, or pass replace_all=True: {old!r}"
+            )
+        text = text.replace(old, new)
     p.write_text(text)
-    return f"Applied {count}/{len(edits)} edits to {path}"
+    return f"Applied {len(edits)} edits to {path}"
 
 
 def _display_path(path: Path, *, absolute: bool) -> str:

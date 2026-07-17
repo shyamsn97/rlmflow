@@ -44,7 +44,7 @@ Independent of the runtime:
 - `max_iters` — LLM calls per agent.
 - `max_budget` — total tokens across the subtree.
 - `max_output_length` — truncate oversized stdout.
-- `max_concurrency` — opt into threaded parallel children when set.
+- `workers` — cap concurrent blocking LLM calls on the flow's thread pool.
 
 ## Proxied tools
 
@@ -60,18 +60,25 @@ privileges. Keep that surface small and validate arguments.
 
 ## Overrides for approval gates
 
-Override `Flow.run_exec(agent, repl, code)` to gate, classify, or rewrite code
-before it touches the runtime. Return the same `(suspended, payload)` shape as
-the backend to short-circuit execution with a rejection string:
+Override `Flow.exec_turn(graph, code, *, replay=False)` to gate, classify, or
+rewrite code before it touches the runtime. Short-circuit by appending an
+`ErrorOutput` (the next model turn sees it as a normal failure observation)
+instead of running the code:
 
 ```python
 import rflow
 
 class ReviewingFlow(rflow.Flow):
-    def run_exec(self, agent, repl, code: str):
-        if "rm -rf" in code and input(f"run? {code}\n> ") != "y":
-            return False, "rejected by reviewer"
-        return super().run_exec(agent, repl, code)
+    async def exec_turn(self, graph, code, *, replay=False):
+        if not replay and "rm -rf" in code and input(f"run? {code}\n> ") != "y":
+            node = rflow.ErrorOutput(
+                content="rejected by reviewer",
+                output="rejected by reviewer",
+                error="rejected",
+            )
+            self.append_node(graph, node)
+            return node
+        return await super().exec_turn(graph, code, replay=replay)
 ```
 
 Wrap the runtime or backend if you want approval at the transport layer.

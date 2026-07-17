@@ -21,8 +21,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from rflow.clients import AnthropicClient, OpenAIClient  # noqa: E402
-from rflow import DockerRuntime, Flow, Graph, LiveTreeRenderer  # noqa: E402
+from rflow import (  # noqa: E402
+    ConsumerGroup,
+    DockerRuntime,
+    Flow,
+    Graph,
+    GraphCheckpointer,
+    LiveTreeRenderer,
+)
+
+from examples.common import build_client  # noqa: E402
 
 
 PLATFORMER_QUERY = """\
@@ -54,19 +62,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_llm(model: str):
-    return (
-        AnthropicClient(model)
-        if model.startswith("claude")
-        else OpenAIClient(model)
-    )
-
-
-async def run_turn(flow: Flow, query: str, *, use_live: bool) -> Graph:
+async def run_turn(flow: Flow, query: str, *, use_live: bool, out_dir: Path) -> Graph:
     graph = Graph(query=query)
-    renderer = LiveTreeRenderer(clear=use_live)
-    async for event in flow.run_streaming(graph):
-        renderer.handle(event, graph)
+    consumers = ConsumerGroup(
+        [
+            LiveTreeRenderer(clear=use_live),
+            GraphCheckpointer(out_dir),
+        ]
+    )
+    try:
+        async for event in flow.run_streaming(graph=graph):
+            consumers.handle(event, graph)
+    finally:
+        consumers.close()
     return graph
 
 
@@ -74,17 +82,23 @@ def main() -> None:
     args = parse_args()
     runtime = DockerRuntime(args.docker_image)
     flow = Flow(
-        build_llm(args.model),
-        llm_clients={"fast": build_llm(args.fast_model)},
+        build_client(args.model),
+        llm_clients={"fast": build_client(args.fast_model)},
         runtime=runtime,
         max_depth=args.max_depth,
         max_iters=args.max_iters,
     )
     try:
-        graph = asyncio.run(run_turn(flow, PLATFORMER_QUERY, use_live=not args.no_live))
+        graph = asyncio.run(
+            run_turn(
+                flow,
+                PLATFORMER_QUERY,
+                use_live=not args.no_live,
+                out_dir=Path(args.out_dir),
+            )
+        )
         print(graph.result())
-        path = graph.save(Path(args.out_dir))
-        print(f"Graph saved to {path}")
+        print(f"Graph checkpointed to {Path(args.out_dir)}")
     finally:
         flow.close_repls()
 

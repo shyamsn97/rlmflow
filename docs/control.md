@@ -1,6 +1,6 @@
 # Control
 
-`Graph` is the control surface. `Flow.run_streaming(graph, until=...)` advances
+`Graph` is the control surface. `Flow.run_streaming(graph=graph, until=...)` advances
 it in place and yields the `Event`s it emitted. Save/load, rewind, fork, inject,
 and resume are all graph operations.
 
@@ -11,19 +11,26 @@ import asyncio
 from rflow import render_tree
 
 agent = rflow.Flow(rflow.OpenAIClient(model="gpt-5"), max_depth=2)
-graph = agent.start(query)
+graph = rflow.Graph(query=query)
 
 async def drive():
-    async for _event in agent.run_streaming(graph):
+    async for _event in agent.run_streaming(graph=graph):
         print(render_tree(graph))
 
 asyncio.run(drive())
 ```
 
-`agent.run(query)` drives the same loop synchronously and returns
-`graph.result()`; `await agent.arun(query)` is the async form. `agent.chat(messages)`
-is the `LLMClient` interface — the latest user message becomes the query and the
-recursive loop runs under the hood.
+`agent.run(query=query)` drives the same loop synchronously and returns
+`graph.result()`; `await agent.arun(query=query)` is the async form. To use a
+flow anywhere an `LLMClient` is expected, wrap it in `FlowLLM(agent)` — its
+`chat(messages)` projects the messages to a query and runs the recursive loop
+under the hood (see the drop-in section in the README).
+
+`run`, `arun`, and `run_streaming` are keyword-only. Pass `query=` to start a
+fresh graph, or `graph=` to resume an existing one; passing both appends `query`
+as a new turn on that graph (see [Multi-turn runs](#multi-turn-runs)). `inputs=`
+and `output_schema=` are applied to the graph before driving (`inputs` merges by
+default; pass `merge_inputs=False` to replace).
 
 `run_streaming` yields one typed `Event` per commit and mutates `graph` in place.
 Every model turn is an `LLMOutput` (the model's code) followed by exactly one
@@ -32,7 +39,7 @@ See [`node_model.md`](node_model.md) for the typed node flow.
 
 ## Stream Boundaries
 
-`Flow.run_streaming(graph, until=...)` streams until a boundary and **halts there**
+`Flow.run_streaming(graph=graph, until=...)` streams until a boundary and **halts there**
 — the driver does not enqueue more work past what you observe, so edits you make
 between streaming calls are seen when the run resumes. Pass the graph on the first
 call; omit it on later calls to continue the active run.
@@ -43,9 +50,9 @@ Two boundary families:
 frontier:
 
 ```python
-async for event in flow.run_streaming(graph, until="next"):
+async for event in flow.run_streaming(graph=graph, until="next"):
     ...
-async for event in flow.run_streaming(until="idle"):
+async for event in flow.run_streaming(graph=graph, until="idle"):
     ...
 ```
 
@@ -57,19 +64,19 @@ async for event in flow.run_streaming(until="idle"):
 Other boundaries stop when that event is observed:
 
 ```python
-async for event in flow.run_streaming(graph, until="supervising"):
+async for event in flow.run_streaming(graph=graph, until="supervising"):
     ...
-async for event in flow.run_streaming(until=lambda event, graph: graph.finished):
+async for event in flow.run_streaming(graph=graph, until=lambda event, graph: graph.finished):
     ...
 ```
 
 Because the run halts at the boundary, reactive control is deterministic:
 
 ```python
-async for _event in flow.run_streaming(graph, until="idle"):
+async for _event in flow.run_streaming(graph=graph, until="idle"):
     pass
 graph.inject("Finalize now with the best current evidence.")
-async for _event in flow.run_streaming(until="done"):
+async for _event in flow.run_streaming(graph=graph, until="done"):
     pass
 ```
 
@@ -85,11 +92,34 @@ A saved graph directory is the durable run:
 graph.save("runs/deep_research")
 
 resumed = rflow.Graph.load("runs/deep_research")
-agent.run(resumed)   # or: async for _ in agent.run_streaming(resumed): ...
+agent.run(graph=resumed)   # or: async for _ in agent.run_streaming(graph=resumed): ...
 ```
 
 For live checkpointing, call `graph.save(...)` inside the stream loop. The same
 path is overwritten with the latest complete graph/run layout.
+
+## Multi-turn Runs
+
+One graph can serve a long-running, multi-turn agent. When a run finishes,
+`graph.finished` is true; appending a new `UserQuery` flips it back to unfinished,
+so the next `run`/`run_streaming` re-drives the *same* agent with its full history
+and warm REPL (variables from earlier turns are still in scope).
+
+The ergonomic path is to pass `query=` alongside `graph=`:
+
+```python
+agent.run(query="Audit the repo.")                 # turn 1 (fresh graph)
+graph = ...  # keep a handle to the graph you drove
+
+agent.run(graph=graph, query="Now write the fixes.")   # turn 2, same graph
+agent.run(graph=graph, query="Summarize what changed.", # turn 3, new inputs/schema
+          inputs={"format": "markdown"}, output_schema=Report)
+```
+
+`inputs` merges into the graph's existing `INPUTS` (and is re-synced into the warm
+REPL) unless `merge_inputs=False` replaces it; a truthy `output_schema` becomes the
+contract for that turn's `done(...)`. The bare graph op is `graph.append_query(...)`
+(same keywords), for when you want to stage the next turn without driving yet.
 
 ## Rewind And Branch
 
@@ -98,7 +128,7 @@ path is overwritten with the latest complete graph/run layout.
 
 ```python
 cp = graph.checkpoint()
-agent.run(graph)
+agent.run(graph=graph)
 graph.revert(cp)        # back to the checkpoint
 graph.rewind(node_id)   # or truncate history after a specific node
 ```
@@ -119,10 +149,11 @@ run. This is useful for budget nudges, human feedback, and forced finalization:
 
 ```python
 graph.inject("Answer now with the best current evidence.", agent_id="root.worker")
-agent.run(graph)   # or: async for _ in agent.run_streaming(graph): ...
+agent.run(graph=graph)   # or: async for _ in agent.run_streaming(graph=graph): ...
 ```
 
-`replace_node`, `rewind`, and `remove_child` rewrite existing history the same
+`inject`'s `mode`/`truncate` options (and the `append`/`prepend`/`replace`
+helpers), plus `rewind` and `remove_child`, rewrite existing history the same
 way. See [`injections.md`](injections.md) and
 [`examples/control/controller_injection.py`](../examples/control/controller_injection.py).
 

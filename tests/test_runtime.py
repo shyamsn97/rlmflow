@@ -43,7 +43,7 @@ def test_minimal_runtime_register_tools_are_prompted_and_executable():
     flow = Flow(StubLLM(reply), runtime=runtime)
     graph = Graph(query="q")
 
-    assert flow.run(graph) == "ok"
+    assert flow.run(graph=graph) == "ok"
     assert "`double" in seen["system"]
     assert "6" in graph.nodes[-1].output
 
@@ -64,7 +64,7 @@ def test_minimal_local_runtime_uses_working_directory(tmp_path):
     )
     graph = Graph(query="q")
 
-    assert flow.run(graph) == "hello"
+    assert flow.run(graph=graph) == "hello"
     assert (tmp_path / "note.txt").read_text() == "hello"
 
 
@@ -94,6 +94,68 @@ def test_minimal_repl_client_uses_minimal_repl_server():
     assert "remote" in output
     assert repl.done_result == "ok"
     assert not repl.errored
+
+
+
+def test_minimal_local_repl_env_channel_round_trips():
+    # Host seeds the env; agent code reads it via ENV and publishes new state;
+    # the host reads that back off ``repl.env`` (distinct from ``namespace``).
+    published = {}
+
+    def reply(messages):
+        return (
+            "```repl\n"
+            'ENV["solved"] = ENV["RFLOW_IS_ROOT"] == "1"\n'
+            'done(ENV["RFLOW_AGENT_ID"])\n'
+            "```"
+        )
+
+    flow = Flow(StubLLM(reply))
+    graph = Graph(query="q")
+
+    assert flow.run(graph=graph) == "root"
+    published.update(flow.repl_for(graph).env)
+    assert published["solved"] is True
+    assert published["RFLOW_AGENT_ID"] == "root"
+
+
+def test_minimal_subprocess_runtime_exposes_env_metadata():
+    flow = Flow(
+        StubLLM(
+            lambda _messages: (
+                '```repl\ndone(ENV["RFLOW_AGENT_ID"] + "|" + ENV["RFLOW_IS_ROOT"])\n```'
+            )
+        ),
+        runtime=SubprocessRuntime(),
+        max_depth=2,
+    )
+
+    assert flow.run(graph=Graph(query="q")) == "root|1"
+
+
+
+def test_minimal_repl_client_reads_back_published_env():
+    repl = ReplClient(
+        PopenConnection(
+            [sys.executable, "-u", "-m", "rflow.runtime.repl_server"],
+            label="test minimal remote REPL",
+            repl_timeout=5,
+        )
+    )
+
+    async def run():
+        try:
+            repl.seed({}, {})
+            repl.update_env({"RFLOW_AGENT_ID": "root.child"})
+            await repl.run('assert ENV["RFLOW_AGENT_ID"] == "root.child"\nENV["solved"] = True')
+            return dict(repl.env)
+        finally:
+            repl.close()
+
+    env = asyncio.run(run())
+
+    assert env["solved"] is True
+    assert env["RFLOW_AGENT_ID"] == "root.child"
 
 
 
@@ -140,7 +202,7 @@ def test_minimal_subprocess_runtime_executes_agent_code():
     )
     graph = Graph(query="q")
 
-    assert flow.run(graph) == "ok"
+    assert flow.run(graph=graph) == "ok"
     assert "subproc" in graph.nodes[-1].output
 
 
@@ -160,7 +222,7 @@ def test_minimal_subprocess_runtime_uses_working_directory(tmp_path):
     )
     graph = Graph(query="q")
 
-    assert flow.run(graph) == "hello"
+    assert flow.run(graph=graph) == "hello"
     assert (tmp_path / "note.txt").read_text() == "hello"
 
 
@@ -191,5 +253,5 @@ def test_minimal_subprocess_runtime_supports_awaited_launch_subagents():
 
     flow = Flow(StubLLM(reply), runtime=SubprocessRuntime(), max_depth=1)
 
-    assert flow.run(Graph(query="parent")) == "child-done"
+    assert flow.run(graph=Graph(query="parent")) == "child-done"
 

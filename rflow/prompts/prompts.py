@@ -138,10 +138,10 @@ Available in the REPL:
 """
 
 STRATEGY_TEXT = """
-With non-empty `INPUTS`, make turn 1 an inspection-only observation turn: `print`
-keys, sizes, and the windows needed to understand the task, and wait for the
-output before planning, delegating, or calling `done(...)`. REPL output is
-truncated, so inspect long inputs structurally instead of dumping them.
+When `INPUTS` are present their keys and sizes are already listed for you, so read
+what you need straight from the values (`INPUTS["key"]`). It is usually worth a
+quick look before acting on large or unfamiliar inputs; inspect long inputs in
+targeted windows rather than dumping them, since REPL output is truncated.
 
 Act as an orchestrator, not a solver: delegate independent branches with
 `await launch_subagents([...])`, and keep the root for preparing inputs,
@@ -258,9 +258,11 @@ def tools_section(flow: Any = None, graph: Any = None) -> str:
         flow.tool_namespace_for_prompt(graph),
         hidden_names=PROMPT_DOCUMENTED_TOOL_NAMES,
     )
-    lines = [
-        line for name in sorted(visible) if (line := format_tool_line(visible[name]))
-    ]
+    lines = []
+    for name in sorted(visible):
+        line = format_tool_line(visible[name])
+        if line:
+            lines.append(line)
     clients = getattr(flow, "_llm_clients", {})
     if len(clients) > 1:
         if lines:

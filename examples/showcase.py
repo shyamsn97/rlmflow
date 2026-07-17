@@ -19,18 +19,27 @@ from __future__ import annotations
 import argparse
 import asyncio
 import shutil
+import sys
 from copy import deepcopy
 from pathlib import Path
 
 from rflow import (
+    ConsumerGroup,
     FILE_TOOLS,
     Flow,
     Graph,
+    GraphCheckpointer,
     LLMUsage,
     LiveTreeRenderer,
     LocalRuntime,
     render_tree,
 )
+
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
+
+from common import example_run_dir  # noqa: E402
 
 BOLD = "\033[1m"
 DIM = "\033[2m"
@@ -82,27 +91,35 @@ def node_count(graph: Graph) -> int:
     return sum(len(agent.nodes) for agent in graph.walk())
 
 
-async def run(flow: Flow, graph: Graph, no_viz: bool) -> list[Graph]:
+async def run(flow: Flow, graph: Graph, no_viz: bool, out_dir: Path) -> list[Graph]:
     history = [deepcopy(graph)]
-    renderer = LiveTreeRenderer(clear=not no_viz)
+    consumers = ConsumerGroup(
+        [
+            LiveTreeRenderer(clear=not no_viz),
+            GraphCheckpointer(out_dir),
+        ]
+    )
     step = 0
-    async for event in flow.run_streaming(graph):
-        step += 1
-        history.append(deepcopy(graph))
-        if no_viz:
-            print(f"-- event {step}: {event.type} --")
-        renderer.handle(event, graph)
+    try:
+        async for event in flow.run_streaming(graph=graph):
+            step += 1
+            history.append(deepcopy(graph))
+            if no_viz:
+                print(f"-- event {step}: {event.type} --")
+            consumers.handle(event, graph)
+    finally:
+        consumers.close()
     return history
 
 
-async def gym_loop(flow: Flow, graph: Graph) -> list[float]:
+async def gym_loop(flow: Flow, graph: Graph, out_dir: Path) -> list[float]:
     rewards: list[float] = []
+    checkpointer = GraphCheckpointer(out_dir)
     step = 0
     while not graph.finished:
-        async for _event in flow.run_streaming(
-            graph if step == 0 else None, until="next"
-        ):
+        async for _event in flow.run_streaming(graph=graph, until="next"):
             pass
+        checkpointer.save(graph)
         step += 1
         current = graph.current()
         reward = 1.0 if graph.finished else 0.0
@@ -120,7 +137,7 @@ def main() -> None:
     parser.add_argument("--no-viz", action="store_true")
     parser.add_argument(
         "--out-dir",
-        default=str(Path(__file__).resolve().parents[1] / "_runs" / "showcase"),
+        default=str(example_run_dir("showcase")),
         help="working dir + saved run (default: examples/_runs/showcase/)",
     )
     args = parser.parse_args()
@@ -134,7 +151,7 @@ def main() -> None:
 
     banner("1. Step-by-step execution")
     graph = Graph(query="Create hello.py and goodbye.py. Delegate each file.")
-    history = asyncio.run(run(flow, graph, args.no_viz))
+    history = asyncio.run(run(flow, graph, args.no_viz, workdir / "run"))
     final = history[-1]
     print(f"\n{GREEN}Result:{RESET} {final.result()}")
 
@@ -172,7 +189,7 @@ def main() -> None:
     banner("6. Gym-style loop")
     flow3 = file_flow(workdir, max_depth=0, max_iters=args.max_iters)
     graph3 = Graph(query="Write a haiku about recursion to haiku.txt")
-    rewards = asyncio.run(gym_loop(flow3, graph3))
+    rewards = asyncio.run(gym_loop(flow3, graph3, workdir / "gym-run"))
     print(f"{GREEN}Result:{RESET} {graph3.result()}")
     print(f"Total reward: {sum(rewards):.1f}")
     gym_path = graph3.save(workdir / "gym-run")

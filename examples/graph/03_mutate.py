@@ -34,7 +34,7 @@ def main() -> None:
     sibling.commit(DoneOutput(result="wrote README"))
     graph.children[sibling.agent_id] = sibling
 
-    graph.replace_node(graph.current().id, DoneOutput(result="package shipped with docs"))
+    graph.replace(graph.current().id, DoneOutput(result="package shipped with docs"))
     print("\nafter:\n" + render_tree(graph))
 
 

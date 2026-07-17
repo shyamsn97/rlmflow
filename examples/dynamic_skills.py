@@ -17,29 +17,26 @@ and the prompt teaches it those skills one turn later.
     export OPENAI_API_KEY=...
     python examples/dynamic_skills.py --model gpt-4o-mini --print-prompt
 
-With no ``OPENAI_API_KEY`` set, the run uses ``ScriptedLLM``: a deterministic
-offline client that drives the *same* agent loop. It installs the skill on turn
-one and, seeing that skill now in its own prompt, solves the task on turn two.
+Runs against a real model by default. Pass ``--scripted`` to use ``ScriptedLLM``:
+a deterministic offline client that drives the *same* agent loop, installing the
+skill on turn one and, seeing it in its own prompt, solving the task on turn two.
 """
 
 from __future__ import annotations
 
 import argparse
-import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from rflow import DEFAULT_BUILDER, Flow, Graph, LLMUsage
-from rflow.clients import OpenAIClient
 from rflow.tools import tool
 
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
+from common import build_client, example_run_dir  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -165,7 +162,7 @@ def build_flow(library: SkillLibrary, llm, *, max_iters: int) -> Flow:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default="gpt-4o-mini", help="OpenAI model to use.")
+    parser.add_argument("--model", default="gpt-4o-mini", help="Model to use.")
     parser.add_argument("--max-iters", type=int, default=6)
     parser.add_argument(
         "--print-prompt",
@@ -173,20 +170,25 @@ def main() -> None:
         help="Print the Skills section before and after the run.",
     )
     parser.add_argument(
+        "--scripted",
+        action="store_true",
+        help="Use the deterministic offline ScriptedLLM instead of a real model.",
+    )
+    parser.add_argument(
         "--out-dir",
         type=Path,
-        default=_example_run_dir(__file__, "dynamic-skills"),
+        default=example_run_dir("dynamic-skills"),
         help="Save the final run here (default: examples/_runs/dynamic-skills/).",
     )
     args = parser.parse_args()
 
     library = SkillLibrary()
-    if os.environ.get("OPENAI_API_KEY"):
-        llm = OpenAIClient(model=args.model)
-        print(f"Using live OpenAI client ({args.model}).")
-    else:
+    if args.scripted:
         llm = ScriptedLLM()
-        print("No OPENAI_API_KEY - using the deterministic ScriptedLLM offline.")
+        print("Using the deterministic ScriptedLLM (offline).")
+    else:
+        llm = build_client(args.model)
+        print(f"Using live client ({args.model}).")
     flow = build_flow(library, llm, max_iters=args.max_iters)
 
     graph = Graph(query=QUERY)
@@ -195,7 +197,7 @@ def main() -> None:
         print(library.render())
 
     print("\n--- run ---\n")
-    flow.run(graph)
+    flow.run(graph=graph)
 
     print(f"\nagent installed skills: {library.names()}")
     if args.print_prompt:

@@ -27,7 +27,6 @@ def test_minimal_flow_launch_subagents_is_public():
 
     flow = Flow(StubLLM(reply), max_depth=1)
     graph = Graph(query="parent")
-    flow.start(graph)
     repl = flow.repl_for(graph)
     launch_subagents = flow.launch_subagents(graph, repl)
 
@@ -52,7 +51,7 @@ def test_minimal_flow_done():
     flow = Flow(StubLLM(lambda _messages: '```repl\ndone("ok")\n```'))
     graph = Graph(query="q")
 
-    assert flow.run(graph) == "ok"
+    assert flow.run(graph=graph) == "ok"
     assert [node.type for node in graph.nodes] == [
         "user_query",
         "llm_output",
@@ -83,7 +82,7 @@ def test_minimal_run_streaming_seeds_graph_inputs_and_output_schema():
 
     async def drive():
         async for _event in flow.run_streaming(
-            graph,
+            graph=graph,
             inputs={"context": "from-inputs"},
             output_schema=schema,
         ):
@@ -115,7 +114,7 @@ def test_minimal_flow_delegates_child_and_keeps_graph_shape():
     flow = Flow(StubLLM(reply), max_depth=1)
     graph = Graph(query="parent")
 
-    assert flow.run(graph) == "p:c"
+    assert flow.run(graph=graph) == "p:c"
     assert [node.type for node in graph.nodes] == [
         "user_query",
         "llm_output",
@@ -147,7 +146,7 @@ def test_minimal_child_specs_can_route_to_named_model():
     flow = Flow(default, llm_clients={"fast": fast}, max_depth=1)
     graph = Graph(query="parent")
 
-    assert flow.run(graph) == "fast child"
+    assert flow.run(graph=graph) == "fast child"
     assert graph["root.fast"].model == "fast"
 
 
@@ -156,7 +155,7 @@ def test_minimal_usage_accounting_is_stored_in_llm_output_metadata():
     flow = Flow(UsageLLM('```repl\ndone("ok")\n```', input_tokens=3, output_tokens=2))
     graph = Graph(query="q")
 
-    assert flow.run(graph) == "ok"
+    assert flow.run(graph=graph) == "ok"
     llm_output = next(node for node in graph.nodes if isinstance(node, LLMOutput))
     assert llm_output.metadata == {
         "model": "default",
@@ -172,7 +171,7 @@ def test_minimal_run_stream_emits_graph_events_only():
     flow = Flow(StubLLM(lambda _messages: '```repl\ndone("ok")\n```'))
 
     async def collect():
-        return [event async for event in flow.run_streaming("q")]
+        return [event async for event in flow.run_streaming(query="q")]
 
     events = asyncio.run(collect())
     assert events[0].type == "graph_created"
@@ -183,7 +182,6 @@ def test_minimal_run_stream_emits_graph_events_only():
         "append_node",
     }
     assert [event.node_type for event in events if event.type == "append_node"] == [
-        "user_query",
         "llm_output",
         "exec_action",
         "done_output",
@@ -196,7 +194,7 @@ def test_minimal_events_carry_graph_id():
     graph = Graph(query="q")
 
     async def collect():
-        return [event async for event in flow.run_streaming(graph)]
+        return [event async for event in flow.run_streaming(graph=graph)]
 
     events = asyncio.run(collect())
     appended = [event for event in events if event.type == "append_node"]
@@ -209,7 +207,7 @@ def test_minimal_run_streaming_emits_events():
     flow = Flow(StubLLM(lambda _messages: '```repl\ndone("ok")\n```'))
 
     async def collect():
-        return [event async for event in flow.run_streaming("q")]
+        return [event async for event in flow.run_streaming(query="q")]
 
     seen = asyncio.run(collect())
     graph = seen[0].graph
@@ -219,7 +217,6 @@ def test_minimal_run_streaming_emits_events():
     assert seen[-1].type == "append_node"
     assert seen[-1].node_type == "done_output"
     assert [event.node_type for event in seen if event.type == "append_node"] == [
-        "user_query",
         "llm_output",
         "exec_action",
         "done_output",
@@ -232,7 +229,7 @@ def test_minimal_run_streaming_mutates_passed_graph_in_place():
     graph = Graph(query="q")
 
     async def collect():
-        return [event async for event in flow.run_streaming(graph)]
+        return [event async for event in flow.run_streaming(graph=graph)]
 
     seen = asyncio.run(collect())
 
@@ -258,13 +255,13 @@ def test_minimal_reusing_same_graph_keeps_repl_state_after_edit():
     flow = Flow(StubLLM(lambda _messages: next(replies)))
     graph = Graph(query="first")
 
-    assert flow.run(graph) == "first"
+    assert flow.run(graph=graph) == "first"
     assert (graph.graph_id, "root") in flow.repls
 
     graph.nodes.pop()
     graph.commit(UserQuery(content="continue"))
 
-    assert flow.run(graph) == "42"
+    assert flow.run(graph=graph) == "42"
     assert graph.result() == "42"
 
 
@@ -274,8 +271,8 @@ def test_minimal_close_repls_can_target_one_graph_id():
     first = Graph(query="first")
     second = Graph(query="second")
 
-    flow.run(first)
-    flow.run(second)
+    flow.run(graph=first)
+    flow.run(graph=second)
 
     assert (first.graph_id, "root") in flow.repls
     assert (second.graph_id, "root") in flow.repls
@@ -296,15 +293,15 @@ def test_minimal_step_until_node_count_then_done():
     graph = Graph(query="q")
 
     async def collect():
-        first = [event async for event in flow.run_streaming(graph, until="next", n=2)]
-        rest = [event async for event in flow.run_streaming(until="done")]
+        first = [event async for event in flow.run_streaming(graph=graph, until="next", n=2)]
+        rest = [event async for event in flow.run_streaming(graph=graph, until="done")]
         return first, rest
 
     first, rest = asyncio.run(collect())
 
     assert [event.node_type for event in first if event.type == "append_node"] == [
-        "user_query",
         "llm_output",
+        "exec_action",
     ]
     assert rest[-1].type == "append_node"
     assert rest[-1].node_type == "done_output"
@@ -314,10 +311,10 @@ def test_minimal_step_until_node_count_then_done():
 
 def test_minimal_step_after_start_advances_existing_graph():
     flow = Flow(StubLLM(lambda _messages: '```repl\ndone("ok")\n```'))
-    graph = flow.start(Graph(query="q"))
+    graph = Graph(query="q")
 
     async def collect():
-        return [event async for event in flow.run_streaming(graph, until="next")]
+        return [event async for event in flow.run_streaming(graph=graph, until="next")]
 
     events = asyncio.run(collect())
 
@@ -337,7 +334,7 @@ def test_minimal_step_accepts_callable_boundary():
         return [
             event
             async for event in flow.run_streaming(
-                graph,
+                graph=graph,
                 until=lambda event, current: (
                     event.type == "append_node"
                     and event.node_type == "exec_action"
@@ -348,7 +345,6 @@ def test_minimal_step_accepts_callable_boundary():
     events = asyncio.run(collect())
 
     assert [event.node_type for event in events if event.type == "append_node"] == [
-        "user_query",
         "llm_output",
         "exec_action",
     ]
@@ -360,12 +356,11 @@ def test_minimal_step_supports_named_error_boundary():
     graph = Graph(query="q")
 
     async def collect():
-        return [event async for event in flow.run_streaming(graph, until="error")]
+        return [event async for event in flow.run_streaming(graph=graph, until="error")]
 
     events = asyncio.run(collect())
 
     assert [event.node_type for event in events if event.type == "append_node"] == [
-        "user_query",
         "llm_output",
         "exec_action",
         "error_output",
@@ -382,7 +377,7 @@ def test_minimal_truncate_output_caps_exec_observation_not_done_result():
     flow = Flow(StubLLM(reply), max_output_length=10)
     graph = Graph(query="q")
 
-    assert flow.run(graph) == "final"
+    assert flow.run(graph=graph) == "final"
     exec_output = next(
         node for node in graph.nodes if isinstance(node, ExecOutput)
     )
@@ -402,21 +397,20 @@ def test_minimal_max_query_chars_refuses_overlong_child_query():
     )
     flow = Flow(StubLLM(lambda _messages: reply), max_depth=1, max_query_chars=5)
 
-    assert "refused: query too long" in flow.run(Graph(query="parent"))
+    assert "refused: query too long" in flow.run(graph=Graph(query="parent"))
 
 
 
-def test_minimal_rflow_env_vars_visible_to_agent_and_restored():
+def test_minimal_rflow_env_vars_visible_to_agent():
     reply = (
         "```repl\n"
-        "import os\n"
-        'done(os.environ["RFLOW_AGENT_ID"] + "|" + os.environ["RFLOW_IS_ROOT"] '
-        '+ "|" + os.environ["RFLOW_MAX_DEPTH"])\n'
+        'done(ENV["RFLOW_AGENT_ID"] + "|" + ENV["RFLOW_IS_ROOT"] '
+        '+ "|" + ENV["RFLOW_MAX_DEPTH"])\n'
         "```"
     )
     flow = Flow(StubLLM(lambda _messages: reply), max_depth=3)
 
-    assert flow.run(Graph(query="q")) == "root|1|3"
+    assert flow.run(graph=Graph(query="q")) == "root|1|3"
     assert "RFLOW_AGENT_ID" not in os.environ
 
 
@@ -428,7 +422,7 @@ def test_minimal_max_budget_stops_run_when_token_cap_reached():
         max_iters=10,
     )
 
-    assert flow.run(Graph(query="q")) == "[budget exceeded]"
+    assert flow.run(graph=Graph(query="q")) == "[budget exceeded]"
 
 
 
@@ -436,7 +430,7 @@ def test_minimal_terminate_requests_agent_stop():
     flow = Flow(StubLLM(lambda _messages: '```repl\ndone("never")\n```'))
     flow.terminate(["root"])
 
-    assert flow.run(Graph(query="q")) == "[terminated]"
+    assert flow.run(graph=Graph(query="q")) == "[terminated]"
 
 
 
@@ -453,7 +447,7 @@ def test_minimal_child_max_iters_bounds_children_independently():
 
     flow = Flow(StubLLM(reply), max_depth=1, max_iters=10, child_max_iters=1)
 
-    assert flow.run(Graph(query="parent")) == "[max_iters exceeded]"
+    assert flow.run(graph=Graph(query="parent")) == "[max_iters exceeded]"
 
 
 
@@ -467,8 +461,55 @@ def test_minimal_llm_request_timeout_raises_on_slow_client():
 
     raised = False
     try:
-        flow.run(Graph(query="q"))
+        flow.run(graph=Graph(query="q"))
     except TimeoutError:
         raised = True
     assert raised
+
+
+def test_llm_request_timeout_pushes_down_to_blocking_client():
+    # asyncio.wait_for cannot cancel a blocking client running on a pool thread,
+    # so the request timeout must be pushed down to the request itself.
+    seen = {}
+
+    class BlockingLLM:
+        def chat(self, _messages, **kwargs):
+            seen["timeout"] = kwargs.get("timeout")
+            return '```repl\ndone("ok")\n```'
+
+    flow = Flow(BlockingLLM(), llm_request_timeout=5)
+    assert flow.run(graph=Graph(query="q")) == "ok"
+    assert seen["timeout"] == 5
+
+
+def test_llm_request_timeout_bounds_hung_blocking_client():
+    # A blocking SDK that honors `timeout` and raises must abort the run quickly,
+    # not block for its default (the bug: it hung ~600s despite wait_for).
+    import time
+
+    class HungSDK:
+        def chat(self, _messages, **kwargs):
+            if kwargs.get("timeout") is not None:
+                raise TimeoutError(f"exceeded {kwargs['timeout']}s")
+            time.sleep(60)
+            return 'done("x")'
+
+    flow = Flow(HungSDK(), llm_request_timeout=0.01)
+    raised = False
+    try:
+        flow.run(graph=Graph(query="q"))
+    except TimeoutError:
+        raised = True
+    assert raised
+
+
+def test_llm_request_timeout_skips_client_without_timeout_kwarg():
+    # A lean blocking client that does not accept `timeout` must not be handed
+    # one (no TypeError), even with a request timeout configured.
+    class LeanBlocking:
+        def chat(self, _messages):
+            return '```repl\ndone("ok")\n```'
+
+    flow = Flow(LeanBlocking(), llm_request_timeout=5)
+    assert flow.run(graph=Graph(query="q")) == "ok"
 

@@ -1,4 +1,6 @@
 import asyncio
+import threading
+import time
 
 from rflow import (
     Flow,
@@ -11,21 +13,24 @@ from helpers import (
 )
 
 
-def test_minimal_llm_query_batched_uses_shared_pool():
+def test_minimal_llm_query_batched_bounds_blocking_calls_by_workers():
+    lock = threading.Lock()
     active = 0
     max_seen = 0
 
-    async def reply(messages):
+    def reply(messages):
         nonlocal active, max_seen
-        active += 1
-        max_seen = max(max_seen, active)
+        with lock:
+            active += 1
+            max_seen = max(max_seen, active)
         try:
-            await asyncio.sleep(0.01)
+            time.sleep(0.02)
             return messages[-1]["content"].upper()
         finally:
-            active -= 1
+            with lock:
+                active -= 1
 
-    flow = Flow(StubLLM(reply), max_concurrency=2)
+    flow = Flow(StubLLM(reply), workers=2)
 
     async def collect():
         return await flow.llm_query_batched(["a", "b", "c", "d"])
@@ -49,7 +54,7 @@ def test_minimal_llm_query_batched_can_be_used_as_opt_in_tool():
     flow = Flow(StubLLM(reply), use_llm_query=True)
     graph = Graph(query="q")
 
-    assert flow.run(graph) == "A|B"
+    assert flow.run(graph=graph) == "A|B"
 
 
 

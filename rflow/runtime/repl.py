@@ -27,6 +27,7 @@ class DoneSignal(BaseException):
 @runtime_checkable
 class ReplLike(Protocol):
     namespace: dict[str, Any]
+    env: dict[str, Any]
     done_result: str | None
     errored: bool
 
@@ -34,11 +35,11 @@ class ReplLike(Protocol):
         self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]
     ) -> None: ...
 
-    def inject_tool(self, name: str, fn: Any) -> None: ...
+    def inject(self, name: str, fn: Any) -> None: ...
 
     def remove_tool(self, name: str) -> None: ...
 
-    def set_process_env(self, env: dict[str, str]) -> None: ...
+    def update_env(self, values: dict[str, Any]) -> None: ...
 
     async def run(self, code: str) -> str: ...
 
@@ -97,9 +98,15 @@ class Repl:
 
     def __init__(self, working_directory: str | Path | None = None) -> None:
         self.namespace: dict[str, Any] = {"__builtins__": __builtins__}
+        # Per-REPL environment: a flat key/value channel distinct from the
+        # Python namespace. The host seeds it (agent RFLOW_* metadata) and REPL
+        # code reads/writes it via the injected ``ENV`` handle
+        # (e.g. ``ENV["RFLOW_AGENT_ID"]`` or ``ENV["solved"] = True``). Because
+        # it is per-REPL it stays isolated across concurrent local agents.
+        self.env: dict[str, Any] = {}
+        self.namespace["ENV"] = self.env
         self.done_result: str | None = None
         self.errored = False
-        self.process_env: dict[str, str] = {}
         self._buf = io.StringIO()
         self.working_directory = (
             Path(working_directory).resolve() if working_directory is not None else None
@@ -125,16 +132,18 @@ class Repl:
         self.namespace.update(tools)
         self.namespace["INPUTS"] = dict(inputs)
 
-    def inject_tool(self, name: str, fn: Any) -> None:
-        """Add/replace a single tool in the live namespace (dynamic tools)."""
+    def inject(self, name: str, fn: Any) -> None:
+        """Bind any Python object (function, class, or value) into the live
+        namespace under ``name``. The general injection primitive; dynamic tools
+        are just one use of it."""
         self.namespace[name] = fn
 
     def remove_tool(self, name: str) -> None:
         self.namespace.pop(name, None)
 
-    def set_process_env(self, env: dict[str, str]) -> None:
-        """Public ``RFLOW_*`` metadata applied to ``os.environ`` during exec."""
-        self.process_env = {str(k): str(v) for k, v in env.items()}
+    def update_env(self, values: dict[str, Any]) -> None:
+        """Merge ``values`` into this REPL's ``env`` (host -> REPL metadata)."""
+        self.env.update(values)
 
     def close(self) -> None:
         """Release runtime resources; local minimal REPLs have none."""
@@ -149,7 +158,6 @@ class Repl:
             _CWD_LOCK.acquire()
             previous_cwd = os.getcwd()
             os.chdir(self.working_directory)
-        restore_env = self._apply_process_env()
         try:
             yield
         except DoneSignal:
@@ -162,27 +170,10 @@ class Repl:
             self.errored = True
             self._buf.write(f"{type(exc).__name__}: {exc}")
         finally:
-            restore_env()
             _stdout_buf.reset(token)
             if previous_cwd is not None:
                 os.chdir(previous_cwd)
                 _CWD_LOCK.release()
-
-    def _apply_process_env(self) -> Callable[[], None]:
-        """Set ``process_env`` on ``os.environ`` and return an undo callback."""
-        if not self.process_env:
-            return lambda: None
-        saved = {key: os.environ.get(key) for key in self.process_env}
-        os.environ.update(self.process_env)
-
-        def restore() -> None:
-            for key, value in saved.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
-
-        return restore
 
     async def run(self, code: str) -> str:
         with self.capture():

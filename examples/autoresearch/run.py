@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import random
 import re
 import shutil
 import subprocess
@@ -15,19 +16,26 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from rflow.clients import AnthropicClient, OpenAIClient
 from rflow import (
+    ConsumerGroup,
     DEFAULT_BUILDER,
     DockerRuntime,
     FILE_TOOLS,
     Flow,
     Graph,
+    GraphCheckpointer,
     LiveTreeRenderer,
     LocalRuntime,
     SubprocessRuntime,
-    render_tree,
+    WorkspaceSync,
     tool,
 )
+
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
+
+from common import build_client  # noqa: E402
 
 try:  # Allow both `python examples/autoresearch/run.py` and imports.
     from .modal_runner import ModalConfig, preflight, submit, validate_gpu
@@ -49,28 +57,66 @@ Autoresearch loop policy:
   submit a Modal job.
 - Use root -> planner -> implementation children. Children may block while
   `submit_trial(...)` runs the Modal job; multiple children run in parallel.
-- Planner focus areas: optimizer/schedule, size/depth/width, normalization,
-  regularization, attention, or exploit current best.
-- Implementation children edit only `INPUTS["trial_dir"]/train.py` and call
-  `submit_trial(INPUTS["slug"], INPUTS["hypothesis"])`. If it returns
-  `preflight_failed`, fix the syntax/import error and submit again. If it returns
-  any other failure row, return it to the parent.
+
+Diagnose before proposing:
+- Read at least one prior log with `get_run(n)` before planning a batch (start
+  with the baseline). Every hypothesis must cite a number from a log, e.g.
+  compare `num_steps` against your LR-schedule horizon, or read the final `lr`
+  and smooth-loss trend. Do not propose blind.
+
+Where the leverage is (spend the budget here):
+- The high-leverage knobs are peak `LEARNING_RATE`, `BATCH_SIZE`, model shape
+  (`n_layer`/`n_embd`/`n_head`), and whether the LR schedule spans the real
+  training horizon. In each planner batch cover at least one peak-LR trial, one
+  batch-size trial, and one model-shape trial before repeating a knob.
+- Do NOT spend most of the budget re-tuning optimizer betas, weight decay, or
+  normalization — those are low-leverage and produce noise-scale moves.
+
+Build on what worked; never repeat a trial:
+- Before proposing, call `list_runs()` and read every prior `slug`, `hypothesis`,
+  and `val_bpb`. NEVER propose a hypothesis or slug that already has a row
+  (succeeded, created, or submitted). Re-running finished work wastes the budget;
+  `create_trial` will reject an exact-duplicate hypothesis.
+- Exploit (about two thirds): branch from `best_run()` and push the winning knob
+  further or COMBINE winning changes (e.g. if lr=6e-4 and batch=128 both beat
+  baseline, try them together).
+- Diversify (about one third): branch from `sample_valid_run()` (a random
+  already-succeeded trial, not the best) toward a genuinely new knob combination.
+- Treat improvements smaller than run-to-run eval noise as "no effect"; don't
+  build a long greedy chain of ~0.001 gains.
+
+Editing train.py (do it the robust way):
+- Implementation children edit only `INPUTS["trial_dir"]/train.py`, then call
+  `submit_trial(INPUTS["slug"], INPUTS["hypothesis"])`.
+- ALWAYS edit by full-file rewrite: read the entire file, then `write_file` the
+  COMPLETE updated contents yourself, changing only the constants/lines your
+  hypothesis needs. Do NOT use `edit_file`, and NEVER construct source by string
+  mutation in the REPL (`code.replace(...)`, `.format(...)`, or f-string
+  templating of the source) — that has repeatedly corrupted lines (e.g. turning
+  `flush=True)` into `flush = 1798`).
+- If `submit_trial` returns `preflight_failed`, read the reported line number,
+  re-read the current file, and fix it with ONE more full-file `write_file`. If
+  it still fails, re-read `INPUTS["trial_dir"]/train.py` from scratch and rewrite
+  cleanly. Do not retry more than twice; if still broken, return the failure row.
+- If it returns any other failure row, return it to the parent.
 - All `launch_subagents(..., inputs=...)` values must be strings. Use `str(...)`
   for counts and JSON strings for structured values.
 
 Root sketch:
 ```repl
+import random
 baseline = run_baseline()
 best, status = best_run(), submission_status()
 if status["remaining_submissions"] == 0:
     done(str({"status": "complete", "best": best, "runs": list_runs()}))
-parent = best["slug"] if best else "baseline"
+seed = sample_valid_run() if random.random() < 0.34 else best
+parent = seed["slug"] if seed else "baseline"
 results = await launch_subagents([{
-    "name": "optimizer_schedule_hypotheses",
-    "query": "Plan optimizer/schedule trials; create_trial then launch implementers.",
+    "name": "hypotheses_batch",
+    "query": "Diagnose baseline log, then plan trials covering peak LR, batch, "
+             "and model shape; create_trial then launch implementers.",
     "inputs": {
         "task_instructions": INPUTS["task_instructions"],
-        "focus": "optimizer_schedule",
         "parent_slug": parent,
         "remaining_submissions": str(status["remaining_submissions"]),
     },
@@ -80,11 +126,22 @@ print(results, list_runs(), best_run(), submission_status())
 
 Planner sketch:
 ```repl
-ideas = [("rmsnorm_on_best", "Replace LayerNorm with RMSNorm only.")]
+runs = list_runs()                 # everything already tried (slug, hypothesis, val_bpb)
+print(get_run(0))                  # baseline log; cite a number in each hypothesis
+best = best_run()                  # build on the current leader, not baseline
+# Propose only NEW ideas: push a winning knob further or combine winning changes.
+ideas = [
+    ("lr6e4_batch128", "lr_peak_6e-4 and batch_128 both beat baseline; combine lr=6e-4 with batch=128."),
+    ("lr8e4", "lr 6e-4 improved over 3e-4; push peak LR to 8e-4 over the full horizon."),
+    ("depth_plus_2", "shape gains from width; add 2 layers to the best config within VRAM."),
+]
+tried = {r.get("slug") for r in runs} | {r.get("hypothesis") for r in runs}
+ideas = [(s, h) for s, h in ideas if s not in tried and h not in tried]
 trials = [create_trial(slug, hyp, parent_slug=INPUTS["parent_slug"]) for slug, hyp in ideas]
 children = [{
     "name": row["slug"],
-    "query": "Edit only INPUTS['trial_dir']/train.py, then submit_trial(...).",
+    "query": "Read INPUTS['trial_dir']/train.py in full, then write_file the complete "
+             "updated file changing only the constants your hypothesis needs, then submit_trial(...).",
     "inputs": {"trial_dir": row["agent_trial_dir"], "slug": row["slug"], "hypothesis": row["hypothesis"]},
 } for row in trials]
 child_results = await launch_subagents(children)
@@ -205,6 +262,15 @@ class AutoresearchState:
                 return dict(existing)
             if slug != "baseline":
                 self._check_budget(count_created=True)
+                if hypothesis:
+                    for other in self.latest_by_slug().values():
+                        if other.get("hypothesis") == hypothesis and other.get(
+                            "status"
+                        ) in (RUNNING_STATUSES | {"succeeded"}):
+                            raise SubmissionError(
+                                f"duplicate hypothesis already tried as {other['slug']!r}; "
+                                "propose a new idea (see list_runs())"
+                            )
 
             parent_dir, resolved_parent = self._parent_dir(parent_slug)
             n = self.next_n()
@@ -295,6 +361,20 @@ class AutoresearchState:
             if row.get("status") == "succeeded" and row.get("val_bpb") is not None
         ]
         return dict(min(scored, key=lambda row: float(row["val_bpb"]))) if scored else None
+
+    def sample_valid_run(self) -> dict[str, Any] | None:
+        """A random already-succeeded trial (not necessarily the best).
+
+        Use as a diversification seed so the search branches off known-good
+        solutions instead of only creeping off the current leader.
+        """
+        self.reap_timeouts()
+        scored = [
+            row
+            for row in self.latest_by_n().values()
+            if row.get("status") == "succeeded" and row.get("val_bpb") is not None
+        ]
+        return dict(random.choice(scored)) if scored else None
 
     def get_run(self, n: int) -> dict[str, Any] | None:
         self.reap_timeouts()
@@ -449,6 +529,10 @@ def build_autoresearch_tools(state: AutoresearchState) -> list[Callable[..., obj
     def best_run() -> dict[str, Any] | None:
         return state.best_run()
 
+    @tool("Random already-succeeded trial to diversify from (not the best).", proxy=True)
+    def sample_valid_run() -> dict[str, Any] | None:
+        return state.sample_valid_run()
+
     @tool("Full latest ledger row for trial number n.", proxy=True)
     def get_run(n: int) -> dict[str, Any] | None:
         return state.get_run(n)
@@ -465,6 +549,7 @@ def build_autoresearch_tools(state: AutoresearchState) -> list[Callable[..., obj
         submit_trial,
         list_runs,
         best_run,
+        sample_valid_run,
         get_run,
         submission_status,
     ]
@@ -512,11 +597,11 @@ def run(args: argparse.Namespace) -> None:
     runtime.register_tools(build_autoresearch_tools(state))
 
     flow = Flow(
-        build_llm(args.model),
+        build_client(args.model),
         runtime=runtime,
         max_depth=args.max_depth,
         max_iters=args.max_iters,
-        max_concurrency=args.parallel,
+        workers=args.parallel,
         prompt_builder=build_prompt_builder(),
     )
 
@@ -534,27 +619,44 @@ submission_status()["remaining_submissions"] == 0.
     graph_dir = args.out / "graph"
     graph = Graph(query=query)
     inputs = {"task_instructions": (example_dir / "program.md").read_text()}
+    checkpointer = GraphCheckpointer(
+        graph_dir,
+        every_s=args.checkpoint_every_s,
+        metadata={
+            "kind": "autoresearch",
+            "max_submissions": args.max_submissions,
+            "model": args.model,
+            "out": str(args.out),
+        },
+    )
+    consumers = ConsumerGroup(
+        [
+            checkpointer,
+            LiveTreeRenderer(clear=not args.no_live),
+        ]
+    )
+    sync = (
+        WorkspaceSync(args.out, args.sync_dir, every_s=args.sync_every_s)
+        if args.sync_dir is not None
+        else None
+    )
+    if sync is not None:
+        consumers.append(sync)
     try:
-        graph.save(graph_dir)
-        renderer = LiveTreeRenderer(clear=not args.no_live)
+        checkpointer.save(graph)
+        if sync is not None:
+            sync.sync()
 
         async def drive() -> None:
-            async for event in flow.run_streaming(graph, inputs=inputs):
-                graph.save(graph_dir)
-                if args.no_live:
-                    print(render_tree(graph), flush=True)
-                else:
-                    renderer.handle(event, graph)
+            async for event in flow.run_streaming(graph=graph, inputs=inputs):
+                consumers.handle(event, graph)
 
         asyncio.run(drive())
         print(graph.result())
         write_run_report(state, args.out)
     finally:
+        consumers.close()
         flow.close_repls(graph.graph_id)
-
-
-def build_llm(model: str):
-    return AnthropicClient(model) if model.startswith("claude") else OpenAIClient(model)
 
 
 def build_runtime(kind: str, docker_image: str, workdir: Path):
@@ -664,7 +766,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parallel", type=int, default=4)
     parser.add_argument("--max-submissions", type=int, default=16)
     parser.add_argument("--max-iters", type=int, default=40)
-    parser.add_argument("--max-depth", type=int, default=2)
+    parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument("--app-name", default="rlmflow-autoresearch")
     parser.add_argument("--modal-timeout-s", type=int, default=1200)
     parser.add_argument("--created-trial-timeout-s", type=int, default=1800)
@@ -672,6 +774,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--agent-runtime", choices=("subprocess", "local", "docker"), default="subprocess")
     parser.add_argument("--docker-image", default="rlmflow:local")
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--checkpoint-every-s", type=float, default=0.0)
+    parser.add_argument("--sync-dir", type=Path, default=None)
+    parser.add_argument("--sync-every-s", type=float, default=2.0)
     parser.add_argument("--no-live", action="store_true")
     args = parser.parse_args()
     if args.out is None:

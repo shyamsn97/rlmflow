@@ -17,10 +17,15 @@ import asyncio
 import inspect
 import os
 import shutil
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 from pydantic import BaseModel
+
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
 TASK = """Create a runnable browser-based boids simulation in plain HTML, CSS, and JavaScript.
 Requirements:
@@ -48,13 +53,9 @@ def pushd(path: Path) -> Iterator[None]:
 
 
 def build_rflow_llm(model: str):
-    from rflow.clients import AnthropicClient, OpenAIClient
+    from common import build_client
 
-    return (
-        AnthropicClient(model)
-        if model.startswith("claude")
-        else OpenAIClient(model)
-    )
+    return build_client(model)
 
 
 def reset_run_dir(path: Path, *, force: bool) -> None:
@@ -104,7 +105,15 @@ def run_rflow(
     max_concurrency: int,
     no_viz: bool,
 ) -> None:
-    from rflow import FILE_TOOLS, Flow, Graph, LiveTreeRenderer, LocalRuntime
+    from rflow import (
+        FILE_TOOLS,
+        ConsumerGroup,
+        Flow,
+        Graph,
+        GraphCheckpointer,
+        LiveTreeRenderer,
+        LocalRuntime,
+    )
 
     reset_run_dir(run_dir, force=True)
     (run_dir / "task.txt").write_text(TASK)
@@ -117,27 +126,34 @@ def run_rflow(
         runtime=runtime,
         max_depth=max_depth,
         max_iters=max_iters,
-        max_concurrency=max_concurrency,
+        workers=max_concurrency,
     )
 
     print(f"\n=== rflow run ===\nworkdir: {run_dir}\nmodel: {model}\n")
     try:
         graph = Graph(query=TASK)
+        graph_dir = run_dir / "graph"
+        consumers = ConsumerGroup(
+            [
+                LiveTreeRenderer(clear=not no_viz),
+                GraphCheckpointer(graph_dir),
+            ]
+        )
 
         async def drive() -> None:
-            renderer = LiveTreeRenderer(clear=not no_viz)
-            async for event in flow.run_streaming(
-                graph,
-                output_schema=BoidsSimulation,
-            ):
-                graph.save(run_dir / "graph")
-                renderer.handle(event, graph)
+            try:
+                async for event in flow.run_streaming(
+                    graph=graph,
+                    output_schema=BoidsSimulation,
+                ):
+                    consumers.handle(event, graph)
+            finally:
+                consumers.close()
 
         asyncio.run(drive())
 
         result = graph.result() or ""
         (run_dir / "response.txt").write_text(str(result))
-        graph_dir = graph.save(run_dir / "graph")
         print("\nrflow response:")
         print(result or "(no result)")
         print(f"\nrflow graph: {graph_dir}")

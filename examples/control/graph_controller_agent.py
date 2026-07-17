@@ -13,12 +13,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-from rflow.clients import AnthropicClient, OpenAIClient
 from rflow import (
     DEFAULT_BUILDER,
     DoneOutput,
@@ -33,6 +33,12 @@ from rflow import (
     render_tree,
     tool,
 )
+
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
+
+from common import build_client  # noqa: E402
 
 LIVE_DELAY_SECONDS = 0.35
 
@@ -93,7 +99,7 @@ class WorkerPoolControl:
         if self.worker_factory is None:
             raise RuntimeError("this WorkerPoolControl was not configured to create workers")
         worker = self.worker_factory()
-        graph = worker.start(Graph(query=worker_prompt(name, approach)))
+        graph = Graph(query=worker_prompt(name, approach))
         self.runs[name] = WorkerRun(
             name=name,
             approach=approach,
@@ -206,14 +212,8 @@ class WorkerPoolControl:
     @staticmethod
     async def _advance_runs(runs: list[WorkerRun]) -> None:
         async def step(run: WorkerRun) -> None:
-            try:
-                async for _event in run.worker.run_streaming(run.graph, until="next"):
-                    pass
-            except RuntimeError as exc:
-                if "run is already active" not in str(exc):
-                    raise
-                async for _event in run.worker.run_streaming(until="next"):
-                    pass
+            async for _event in run.worker.run_streaming(graph=run.graph, until="next"):
+                pass
 
         await asyncio.gather(*(step(run) for run in runs))
 
@@ -239,19 +239,14 @@ class WorkerPoolControl:
         ]
         if not matches:
             return f"no supervising_output found for {target!r} in worker {worker!r}"
-        old = matches[-1]
-        waiting_on = list(old.waiting_on)
-        run.graph.replace_node(
-            old.id,
+        run.graph.replace(
+            matches[-1],
             ExecOutput(
                 output=f"Controller replacement: {note}",
                 content=f"Controller replacement: {note}",
             ),
-            agent_id=target,
+            truncate="descendants",
         )
-        for child_id in waiting_on:
-            if child_id in run.graph[target].children:
-                run.graph.remove_child(child_id, parent_agent_id=target)
         return self.inspect_worker(worker=worker)
 
     @tool("Request final answers from one worker's agents.", proxy=True)
@@ -393,14 +388,6 @@ structure.
 """
 
 
-def build_llm(model: str):
-    return (
-        AnthropicClient(model)
-        if model.startswith("claude")
-        else OpenAIClient(model)
-    )
-
-
 def make_worker(
     llm, *, max_depth: int = 2, max_iters: int = 12
 ) -> Flow:
@@ -474,6 +461,15 @@ def _print_worker_timeline(snapshots: list[tuple[str, list[WorkerRun]]]) -> None
                 print("result:", run.graph.result())
 
 
+def _checkpoint(
+    control: WorkerPoolControl, controller_graph: Graph, out_dir: Path
+) -> None:
+    """Persist the controller graph and every worker graph in place."""
+    controller_graph.save(out_dir / "controller")
+    for run in control.runs.values():
+        run.graph.save(out_dir / "workers" / run.name)
+
+
 async def _drive_controller(
     controller: Flow,
     controller_graph: Graph,
@@ -481,28 +477,22 @@ async def _drive_controller(
     *,
     show_live: bool,
     delay: float,
+    out_dir: Path,
 ) -> tuple[Graph, list[tuple[str, list[WorkerRun]]]]:
     snapshots: list[tuple[str, list[WorkerRun]]] = []
     _record_snapshot(snapshots, "workers start", control)
     step = 0
 
     async def step_controller() -> None:
-        try:
-            async for _event in controller.run_streaming(
-                controller_graph, until="next"
-            ):
-                pass
-        except RuntimeError as exc:
-            if "run is already active" not in str(exc):
-                raise
-            async for _event in controller.run_streaming(until="next"):
-                pass
+        async for _event in controller.run_streaming(graph=controller_graph, until="next"):
+            pass
 
     if not show_live:
         while not controller_graph.finished:
             await step_controller()
             step += 1
             _record_snapshot(snapshots, f"after controller step {step}", control)
+            _checkpoint(control, controller_graph, out_dir)
             print(_worker_pool_text(control))
         return controller_graph, snapshots
 
@@ -520,6 +510,7 @@ async def _drive_controller(
             await step_controller()
             step += 1
             _record_snapshot(snapshots, f"after controller step {step}", control)
+            _checkpoint(control, controller_graph, out_dir)
             live.update(_render_worker_pool(control), refresh=True)
             await asyncio.sleep(delay)
     return controller_graph, snapshots
@@ -556,17 +547,18 @@ def main() -> None:
 
     control = WorkerPoolControl(
         worker_factory=lambda: make_worker(
-            build_llm(args.worker_model),
+            build_client(args.worker_model),
             max_depth=args.worker_max_depth,
             max_iters=args.worker_max_iters,
         )
     )
     controller = make_controller(
         control,
-        build_llm(args.controller_model),
+        build_client(args.controller_model),
         max_iters=args.controller_max_iters,
     )
     controller_graph = Graph(query=CONTROLLER_TASK)
+    out_dir = Path(args.out_dir)
     controller_graph, snapshots = asyncio.run(
         _drive_controller(
             controller,
@@ -574,6 +566,7 @@ def main() -> None:
             control,
             show_live=not args.no_viz,
             delay=args.delay,
+            out_dir=out_dir,
         )
     )
     controller_answer = controller_graph.result()
@@ -582,7 +575,6 @@ def main() -> None:
     print("controller answer:", controller_answer)
     print("best worker result:", _best_finished_result(control))
 
-    out_dir = Path(args.out_dir)
     _save_worker_graphs(control, out_dir)
     path = controller_graph.save(out_dir / "controller")
     print(f"Graph saved to {path}")

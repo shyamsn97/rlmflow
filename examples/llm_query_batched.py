@@ -10,34 +10,17 @@ Run:
 from __future__ import annotations
 
 import asyncio
+import sys
+import threading
 from pathlib import Path
 
-import threading
+from rflow import Flow, Graph, GraphCheckpointer, LLMUsage, render_tree
 
-from rflow import Flow, Graph, LLMUsage, render_tree
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
-
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
-
-
-def _save_example_graph(
-    graph,
-    source_file: str | Path,
-    name: str,
-    *,
-    out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
-) -> Path:
-    path = graph.save(
-        Path(out_dir) if out_dir is not None else _example_run_dir(source_file, name)
-    )
-    print(f"{label} {path}")
-    return path
+from common import example_run_dir, save_example_graph  # noqa: E402
 
 
 REVIEWS = [
@@ -96,7 +79,7 @@ def main() -> None:
         llm,
         max_depth=0,
         max_iters=3,
-        max_concurrency=3,
+        workers=3,
         use_llm_query=True,
     )
 
@@ -108,9 +91,15 @@ def main() -> None:
         )
     )
 
+    checkpointer = GraphCheckpointer(example_run_dir("llm-query-batched"))
+
     async def drive() -> None:
-        async for _event in flow.run_streaming(graph):
-            print(render_tree(graph))
+        try:
+            async for _event in flow.run_streaming(graph=graph):
+                checkpointer.handle(_event, graph)
+                print(render_tree(graph))
+        finally:
+            checkpointer.close()
 
     asyncio.run(drive())
 
@@ -120,7 +109,7 @@ def main() -> None:
 
     print("\nFinal answer:")
     print(graph.result())
-    _save_example_graph(graph, __file__, "llm-query-batched")
+    save_example_graph(graph, "llm-query-batched")
     flow.close_repls(graph.graph_id)
 
 

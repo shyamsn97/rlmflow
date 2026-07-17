@@ -1,7 +1,8 @@
-"""Per-agent async queues for Flow scheduling.
+"""Async task scheduling for Flow.
 
-``TaskQueue`` is deliberately graph-free: each opaque id has an event queue and
-at most one running task. Scheduling is explicit: callers add the next task for an
+``TaskQueue`` is deliberately graph-free: it tracks at most one running task per
+opaque id, an optional queued follow-up per id, and a single stream mailbox of
+emitted ``StreamItem``s. Scheduling is explicit: callers add the next task for an
 id, or do not add one. That is enough to model ``until`` boundaries without
 parking coroutine frames.
 """
@@ -9,23 +10,38 @@ parking coroutine frames.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 Work = Callable[[], Awaitable[Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class StreamItem:
+    agent_id: str
+    item: Any
 
 
 class TaskQueue:
     def __init__(self) -> None:
         self.tasks: dict[str, asyncio.Task] = {}
         self.queued: dict[str, Work] = {}
-        self.queues: dict[str, asyncio.Queue] = {}
-        self.notify = asyncio.Event()
+        self.stream: deque[StreamItem] = deque()
+        self.notify: asyncio.Event | None = None
+        self.notify_loop: asyncio.AbstractEventLoop | None = None
 
-    def queue(self, agent_id: str) -> asyncio.Queue:
-        if agent_id not in self.queues:
-            self.queues[agent_id] = asyncio.Queue()
-        return self.queues[agent_id]
+    def event(self) -> asyncio.Event:
+        loop = asyncio.get_running_loop()
+        if self.notify is None or self.notify_loop is not loop:
+            self.notify = asyncio.Event()
+            self.notify_loop = loop
+        return self.notify
+
+    def wake(self) -> None:
+        if self.notify is not None:
+            self.notify.set()
 
     def running(self, agent_id: str) -> bool:
         task = self.tasks.get(agent_id)
@@ -33,7 +49,6 @@ class TaskQueue:
 
     def add(self, agent_id: str, work: Work) -> None:
         """Schedule work for an id, or remember it if that id is still running."""
-        self.queue(agent_id)
         if self.running(agent_id):
             self.queued[agent_id] = work
             return
@@ -46,49 +61,50 @@ class TaskQueue:
     def start(self, agent_id: str, work: Work) -> asyncio.Task:
         task = self.tasks[agent_id] = asyncio.create_task(work())
         task.add_done_callback(lambda task, id=agent_id: self.done(id))
-        self.notify.set()
+        self.wake()
         return task
 
     def done(self, agent_id: str) -> None:
         if agent_id in self.queued:
             self.start(agent_id, self.queued.pop(agent_id))
             return
-        self.notify.set()
+        self.wake()
 
     def emit(self, agent_id: str, item: Any) -> None:
-        self.queue(agent_id).put_nowait(item)
-        self.notify.set()
+        self.stream.append(StreamItem(agent_id=agent_id, item=item))
+        self.wake()
 
     def has_events(self) -> bool:
-        return any(not queue.empty() for queue in self.queues.values())
+        return bool(self.stream)
 
     async def changed(self) -> None:
-        await self.notify.wait()
-        self.notify.clear()
+        notify = self.event()
+        await notify.wait()
+        notify.clear()
 
-    async def stream(self):
-        """Yield ``(agent_id, item)`` from all per-id queues as items arrive."""
+    async def next(self) -> StreamItem | None:
+        """Return the next emitted item, or ``None`` when the frontier settles."""
         while True:
-            drained = False
-            for agent_id, queue in list(self.queues.items()):
-                while not queue.empty():
-                    yield agent_id, queue.get_nowait()
-                    drained = True
-            if drained:
-                continue
-            if self.finished:
-                return
-            self.notify.clear()
-            if any(not queue.empty() for queue in self.queues.values()):
-                continue
-            await self.notify.wait()
+            if self.stream:
+                return self.stream.popleft()
+            if self.settled:
+                return None
+            await self.changed()
+
+    async def items(self):
+        """Yield emitted stream items until the current frontier settles."""
+        while True:
+            item = await self.next()
+            if item is None:
+                break
+            yield item
 
     @property
-    def finished(self) -> bool:
+    def settled(self) -> bool:
         return (
             all(task.done() for task in self.tasks.values())
             and not self.queued
-            and all(queue.empty() for queue in self.queues.values())
+            and not self.stream
         )
 
     async def aclose(self) -> None:
@@ -105,4 +121,4 @@ class TaskQueue:
         return None
 
 
-__all__ = ["TaskQueue"]
+__all__ = ["StreamItem", "TaskQueue"]

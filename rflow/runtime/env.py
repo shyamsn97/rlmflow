@@ -1,7 +1,9 @@
-"""Public ``RFLOW_*`` process environment exposed to agent code.
+"""Public ``RFLOW_*`` metadata exposed to agent code.
 
-These are safe, string-valued metadata an agent can read via ``os.environ``.
-Private control state (output schemas, done results) never travels this way.
+These are safe, string-valued metadata an agent can read from its per-REPL
+``ENV`` mapping (e.g. ``ENV["RFLOW_AGENT_ID"]``). Being per-REPL, they stay
+isolated across concurrent local agents. Private control state (output schemas,
+done results) never travels this way.
 """
 
 from __future__ import annotations

@@ -4,7 +4,7 @@ from rflow import (
     Flow,
     Graph,
 )
-from rflow.view.rendering import LiveTreeRenderer, render_tree
+from rflow.consumers.ui import LiveTreeRenderer, render_tree
 
 from helpers import (
     StubLLM,
@@ -26,7 +26,7 @@ def test_minimal_graph_agent_tree_is_high_level():
 
     flow = Flow(StubLLM(reply), max_depth=1)
     graph = Graph(query="root query")
-    flow.run(graph)
+    flow.run(graph=graph)
 
     tree = render_tree(graph)
     assert tree.startswith("root query")
@@ -44,7 +44,7 @@ def test_minimal_live_tree_renderer_consumes_events(capsys):
     renderer = LiveTreeRenderer(clear=False)
 
     async def collect():
-        async for event in flow.run_streaming(graph):
+        async for event in flow.run_streaming(graph=graph):
             renderer.handle(event, graph)
 
     asyncio.run(collect())

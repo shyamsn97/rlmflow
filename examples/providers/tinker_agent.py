@@ -9,36 +9,19 @@ Requires Tinker credentials and optional dependencies:
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import argparse
 import asyncio
+import sys
+from pathlib import Path
 
 from rflow.clients import TinkerClient
-from rflow import Flow, Graph, LiveTreeRenderer
+from rflow import ConsumerGroup, Flow, Graph, GraphCheckpointer, LiveTreeRenderer
 
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
-
-
-def _save_example_graph(
-    graph,
-    source_file: str | Path,
-    name: str,
-    *,
-    out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
-) -> Path:
-    path = graph.save(
-        Path(out_dir) if out_dir is not None else _example_run_dir(source_file, name)
-    )
-    print(f"{label} {path}")
-    return path
+from common import example_run_dir, save_example_graph  # noqa: E402
 
 
 def main() -> None:
@@ -77,15 +60,23 @@ def main() -> None:
     flow = Flow(llm, max_iters=args.max_iters)
     print(f"Query: {args.query}\n")
     graph = Graph(query=args.query)
+    consumers = ConsumerGroup(
+        [
+            LiveTreeRenderer(),
+            GraphCheckpointer(example_run_dir("tinker-agent")),
+        ]
+    )
 
     async def drive() -> None:
-        renderer = LiveTreeRenderer()
-        async for event in flow.run_streaming(graph):
-            renderer.handle(event, graph)
+        try:
+            async for event in flow.run_streaming(graph=graph):
+                consumers.handle(event, graph)
+        finally:
+            consumers.close()
 
     asyncio.run(drive())
     print(graph.result())
-    _save_example_graph(graph, __file__, "tinker-agent")
+    save_example_graph(graph, "tinker-agent")
     flow.close_repls(graph.graph_id)
 
 

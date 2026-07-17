@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib
-import os
 import sys
 from pathlib import Path
 from typing import TextIO
@@ -90,7 +89,12 @@ class ReplServer:
             return ReplResponse(id=msg.id, capabilities=self.capabilities)
         if isinstance(msg, RunRequest):
             output = await self.repl.run(msg.code)
-            return ReplResponse(id=msg.id, output=output, errored=self.repl.errored)
+            return ReplResponse(
+                id=msg.id,
+                output=output,
+                errored=self.repl.errored,
+                env=dict(self.repl.env),
+            )
         if isinstance(msg, InjectRequest):
             self.repl.namespace[msg.name] = msg.value
             return ReplResponse(id=msg.id)
@@ -98,7 +102,7 @@ class ReplServer:
             self.repl.namespace.pop(msg.name, None)
             return ReplResponse(id=msg.id)
         if isinstance(msg, SetEnvRequest):
-            os.environ.update({str(k): str(v) for k, v in msg.values.items()})
+            self.repl.env.update(msg.values)
             return ReplResponse(id=msg.id)
         if isinstance(msg, InjectProxyRequest):
             self.repl.namespace[msg.name] = self.make_proxy(

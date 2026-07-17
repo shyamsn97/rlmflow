@@ -1,9 +1,9 @@
 """Flow as a drop-in LLM.
 
-Because `Flow` implements the `LLMClient` protocol (`chat()` / `completion()`),
-you can swap it in anywhere you'd use a raw LLM. Calling `flow.chat(messages)`
-runs the full recursive agent loop under the hood and returns a plain string —
-same signature as any other LLM client.
+Wrapping a `Flow` in `FlowLLM` exposes the `LLMClient` protocol (`chat()` /
+`completion()`), so you can swap it in anywhere you'd use a raw LLM. Calling
+`FlowLLM(flow).chat(messages)` runs the full recursive agent loop under the hood
+and returns a plain string — same signature as any other LLM client.
 
 This enables two patterns:
 
@@ -21,34 +21,18 @@ Run with:
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from pathlib import Path
 
 from rflow.clients import OpenAIClient
-from rflow import Flow, FlowLLM, Graph
+from rflow import Flow, FlowLLM, Graph, GraphCheckpointer
 
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
-
-
-def _save_example_graph(
-    graph,
-    source_file: str | Path,
-    name: str,
-    *,
-    out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
-) -> Path:
-    path = graph.save(
-        Path(out_dir) if out_dir is not None else _example_run_dir(source_file, name)
-    )
-    print(f"{label} {path}")
-    return path
-
+from common import example_run_dir, save_example_graph  # noqa: E402
 
 
 def ask(llm, question: str) -> str:
@@ -79,11 +63,9 @@ def demo_flow_as_llm():
     answer = ask(agent, "Compute 17 * 23 using a ```repl``` block, then call done().")
     print(answer, "\n")
     if agent.last_graph is not None:
-        _save_example_graph(
-            agent.last_graph,
-            __file__,
-            "drop-in-llm",
-            out_dir=_example_run_dir(__file__, "drop-in-llm") / "flow-as-llm",
+        save_example_graph(
+            agent.last_graph, "drop-in-llm",
+            out_dir=example_run_dir("drop-in-llm") / "flow-as-llm",
         )
     agent.close()
 
@@ -101,13 +83,21 @@ def demo_nested_flow():
         max_iters=3,
     )
     graph = Graph(query="What's the 7th Fibonacci number? Use ```repl``` to compute.")
-    answer = outer.run(graph)
-    print(answer)
-    _save_example_graph(
-        graph,
-        __file__,
-        "drop-in-llm",
-        out_dir=_example_run_dir(__file__, "drop-in-llm") / "nested-flow",
+    run_dir = example_run_dir("drop-in-llm") / "nested-flow"
+    checkpointer = GraphCheckpointer(run_dir)
+
+    async def drive() -> None:
+        try:
+            async for _event in outer.run_streaming(graph=graph):
+                checkpointer.handle(_event, graph)
+        finally:
+            checkpointer.close()
+
+    asyncio.run(drive())
+    print(graph.result())
+    save_example_graph(
+        graph, "drop-in-llm",
+        out_dir=run_dir,
     )
     outer.close_repls(graph.graph_id)
     inner.close()

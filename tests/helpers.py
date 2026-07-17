@@ -1,6 +1,6 @@
 """Shared stubs and fixtures for the rflow test suite."""
 
-from rflow import ExecAction, ExecOutput, Graph, LLMOutput, LLMUsage, UserQuery
+from rflow import ExecAction, ExecOutput, Graph, LLMOutput, LLMUsage
 
 
 class StubLLM:
@@ -38,7 +38,6 @@ def assert_llm_outputs_are_followed_by_exec_actions(graph):
 def seed_exec_graph(*code_blocks):
     """A graph shaped like a real trajectory: (llm_output, exec_action, exec_output)*."""
     graph = Graph(query="q")
-    graph.commit(UserQuery(content="q"))
     for code in code_blocks:
         graph.commit(LLMOutput(content="turn", code=code))
         graph.commit(ExecAction(code=code))

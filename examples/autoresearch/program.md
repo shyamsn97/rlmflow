@@ -27,6 +27,20 @@ val_bpb: <float>
 
 Lower is better. `val_bpb` is the metric used for ranking.
 
+## Where the leverage is
+
+Read a prior run log before proposing anything. The biggest levers are, roughly
+in order:
+
+- Peak `LEARNING_RATE` and whether the LR schedule spans the *real* training
+  horizon. Check `num_steps` in the log against your schedule: if the LR reaches
+  its floor long before training ends, most of the run is wasted at min-LR.
+- `BATCH_SIZE`.
+- Model shape (`n_layer`, `n_embd`, `n_head`).
+
+Optimizer betas, weight decay, and normalization tweaks are low-leverage; do not
+spend most of the budget there.
+
 ## Constraints
 
 Allowed:

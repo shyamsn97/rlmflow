@@ -1,8 +1,8 @@
 """Rendering and interactive viewers for minimal graphs."""
 
-from rflow.view.rendering import LiveTreeRenderer, render_tree
-from rflow.view.tui import tui
-from rflow.view.viewer import open_viewer, replay, save_image, save_steps
+from rflow.consumers import LiveTreeRenderer, render_tree
+from rflow.consumers.tui import tui
+from rflow.utils.viewer import open_viewer, replay, save_image, save_steps
 
 __all__ = [
     "LiveTreeRenderer",

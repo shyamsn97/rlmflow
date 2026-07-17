@@ -3,6 +3,7 @@
 from rflow.utils.code import find_code_blocks
 from rflow.utils.helpers import (
     ReplKey,
+    accepts_kwarg,
     budget_exceeded,
     call_sync_or_async,
     code_block,
@@ -19,6 +20,7 @@ from rflow.utils.helpers import (
 
 __all__ = [
     "ReplKey",
+    "accepts_kwarg",
     "budget_exceeded",
     "call_sync_or_async",
     "code_block",

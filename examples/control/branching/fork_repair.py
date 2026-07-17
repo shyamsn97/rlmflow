@@ -10,11 +10,19 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import shutil
 import subprocess
 from pathlib import Path
 
-from rflow import FILE_TOOLS, Flow, Graph, LLMUsage, LocalRuntime
+from rflow import (
+    FILE_TOOLS,
+    Flow,
+    Graph,
+    GraphCheckpointer,
+    LLMUsage,
+    LocalRuntime,
+)
 
 TASK = "Implement slugify(text) in slugify.py so tests/test_slugify.py passes."
 
@@ -111,9 +119,17 @@ def run_branch(root: Path, name: str, implementation: str, label: str):
         RepairLLM(implementation, label), runtime=runtime, max_depth=0, max_iters=3
     )
     graph = Graph(query=TASK)
-    flow.run(graph)
+    checkpointer = GraphCheckpointer(workdir / "graph")
+
+    async def drive() -> None:
+        try:
+            async for event in flow.run_streaming(graph=graph):
+                checkpointer.handle(event, graph)
+        finally:
+            checkpointer.close()
+
+    asyncio.run(drive())
     passed, output = run_tests(workdir)
-    graph.save(workdir / "graph")
     flow.close_repls(graph.graph_id)
     return workdir, graph, passed, output
 

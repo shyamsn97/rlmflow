@@ -1,8 +1,8 @@
 # Observability
 
-Everything you need to debug a run lives in the `Graph`. `Flow.start(...)` seeds
-it, `run`/`run_streaming` mutate it in place, and `Graph.save`/`Graph.load`
-persist it.
+Everything you need to debug a run lives in the `Graph`. Constructing a
+`Graph(query=...)` seeds it, `run`/`run_streaming` mutate it in place, and
+`Graph.save`/`Graph.load` persist it.
 
 ## Data model
 
@@ -106,10 +106,10 @@ latest = rflow.Graph.load(run_dir)
 For live checkpointing, save inside the stream loop:
 
 ```python
-graph = agent.start(query)
+graph = Graph(query=query)
 
 async def drive():
-    async for _event in agent.run_streaming(graph):
+    async for _event in agent.run_streaming(graph=graph):
         graph.save("runs/deep_research")
 
 asyncio.run(drive())
@@ -124,7 +124,7 @@ each tick, or hand events to `LiveTreeRenderer`:
 from rflow import render_tree
 
 async def drive():
-    async for _event in agent.run_streaming(graph):
+    async for _event in agent.run_streaming(graph=graph):
         print("\033[2J\033[H" + render_tree(graph))
 
 asyncio.run(drive())

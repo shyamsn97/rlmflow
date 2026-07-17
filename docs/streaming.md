@@ -25,13 +25,13 @@ Run to completion and observe every graph mutation:
 flow = Flow(client)
 graph = Graph(query="Audit this repository.")
 
-async for event in flow.run_streaming(graph):
+async for event in flow.run_streaming(graph=graph):
     print(event.type, getattr(event, "node_type", ""))
 
 print(graph.result())
 ```
 
-`flow.run(graph)` is the synchronous convenience wrapper for the same full run.
+`flow.run(graph=graph)` is the synchronous convenience wrapper for the same full run.
 
 ## Boundaries With `until`
 
@@ -41,7 +41,7 @@ print(graph.result())
 finished:
 
 ```python
-async for event in flow.run_streaming(graph, until="done"):
+async for event in flow.run_streaming(graph=graph, until="done"):
     ...
 ```
 
@@ -49,7 +49,7 @@ async for event in flow.run_streaming(graph, until="done"):
 stops:
 
 ```python
-async for event in flow.run_streaming(graph, until="next"):
+async for event in flow.run_streaming(graph=graph, until="next"):
     ...
 ```
 
@@ -60,7 +60,7 @@ heal it.
 `until="idle"` advances each active agent until it reaches a rest point:
 
 ```python
-async for event in flow.run_streaming(graph, until="idle"):
+async for event in flow.run_streaming(graph=graph, until="idle"):
     ...
 ```
 
@@ -70,10 +70,10 @@ keeps scheduling the agent until it recovers to a clean observation or finishes.
 Named event boundaries stop when that event is observed:
 
 ```python
-async for event in flow.run_streaming(graph, until="supervising"):
+async for event in flow.run_streaming(graph=graph, until="supervising"):
     ...
 
-async for event in flow.run_streaming(graph, until="error"):
+async for event in flow.run_streaming(graph=graph, until="error"):
     ...
 ```
 
@@ -87,20 +87,20 @@ def child_finished(event, graph):
         and event.node_type == "done_output"
     )
 
-async for event in flow.run_streaming(graph, until=child_finished):
+async for event in flow.run_streaming(graph=graph, until=child_finished):
     ...
 ```
 
 For non-`done` boundaries, the run is left alive. Continue it by calling
-`run_streaming(...)` again, usually without passing the graph:
+`run_streaming(...)` again with the same graph:
 
 ```python
-async for _event in flow.run_streaming(graph, until="idle"):
+async for _event in flow.run_streaming(graph=graph, until="idle"):
     pass
 
 graph.inject("Use this controller note before finalizing.")
 
-async for _event in flow.run_streaming(until="done"):
+async for _event in flow.run_streaming(graph=graph, until="done"):
     pass
 ```
 
@@ -112,7 +112,7 @@ graph edit is read before any new task is scheduled.
 `n` means "number of boundary passes", not "number of raw events".
 
 ```python
-async for event in flow.run_streaming(graph, until="next", n=3):
+async for event in flow.run_streaming(graph=graph, until="next", n=3):
     ...
 ```
 
@@ -169,9 +169,10 @@ agent. If there is no follow-up, the agent simply has no work.
 Parallelism falls out of per-agent scheduling:
 
 - every ready agent can have one active task;
-- different agents' tasks run concurrently;
-- model/runtime work is still bounded by the configured `Pool`;
-- `SequentialPool` serializes work, while the default async pool can fan out.
+- different agents' tasks run concurrently as unbounded `asyncio` tasks;
+- only *blocking* leaf work (a sync `client.chat`) is bounded — by the flow's
+  `Pool` (`ThreadPool(workers=N)`); an async client bypasses the pool entirely;
+- `SequentialPool` runs blocking calls one at a time (deterministic; debug).
 
 So `until="next"` is a global step: every ready agent can advance once in the
 same streaming call. A parent waiting for children does not consume a step until
@@ -188,26 +189,24 @@ the children finish.
 5. the parent emits `ResumeAction`, then continues and eventually emits its next
    observation.
 
-For full runs (`until="done"`), children are gathered directly through the pool
-to preserve existing eager behavior and sandbox/runtime compatibility. The stream
-still observes their graph events, but the scheduler suppresses duplicate
-follow-up scheduling for those child ids.
-
-For bounded runs (`until="next"`, `"idle"`, `"supervising"`, `"error"`, or a
-callable), children are scheduled through the same per-agent queue system, so
-their events can be observed at boundaries.
+Delegation uses one path regardless of `until`: each child is submitted to a task
+queue and self-drives (`run_agent`), and the parent polls until they finish. When
+a streaming run is driving the graph, children are submitted to *its* queue, so
+the stream observes their events and the queue's one-task-per-agent rule keeps
+anything from double-driving a child. No agent run ever holds a pool slot while
+it waits on its children, so nested delegation cannot starve at any depth.
 
 ## Reactive Control
 
 The safe edit point is between streaming calls:
 
 ```python
-async for _event in flow.run_streaming(graph, until="idle"):
+async for _event in flow.run_streaming(graph=graph, until="idle"):
     pass
 
 graph.inject("Controller instruction: finish now.")
 
-async for _event in flow.run_streaming(until="done"):
+async for _event in flow.run_streaming(graph=graph, until="done"):
     pass
 ```
 

@@ -19,7 +19,7 @@ Pick the doc that matches what you're trying to do.
 - [Skills](skills.md) — workspace `SKILL.md` files, always-on skills,
   query-selected skills, child-only skills, run-memory skills.
 - [Node injection](injections.md) — append typed controller events to a
-  running graph, then continue with `agent.run(graph)` / `agent.run_streaming(graph)`.
+  running graph, then continue with `agent.run(graph=graph)` / `agent.run_streaming(graph=graph)`.
 - [Observability](observability.md) — querying the `Graph`,
   run layout, the live terminal tree, the Gradio viewer, and static
   image/step exports.
@@ -37,9 +37,9 @@ Pick the doc that matches what you're trying to do.
 
 ## Extend rlmflow
 
-- [**Internals**](internals.md) — engine architecture, step lifecycle, REPL await protocol,
-  runtime backends, graph persistence, and extension seams. **This deep dive
-  is being refreshed after the `Flow`/`Graph` rewrite.**
+- [**Internals**](internals.md) — the `Flow`/`Graph`/`Run` split, the two phases
+  of a run, the per-agent scheduler, exec turns, delegation, REPL lifecycle,
+  runtime backends, graph persistence, and extension seams.
 
 ## Research Notes
 

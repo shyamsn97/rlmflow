@@ -12,8 +12,8 @@ from rflow import Flow, Graph
 from helpers import StubLLM, counting_replies, first_user
 
 
-async def collect(flow, *args, **kwargs):
-    return [event async for event in flow.run_streaming(*args, **kwargs)]
+async def collect(flow, **kwargs):
+    return [event async for event in flow.run_streaming(**kwargs)]
 
 
 def test_step_node_boundary_does_not_race_ahead_of_the_graph():
@@ -25,14 +25,14 @@ def test_step_node_boundary_does_not_race_ahead_of_the_graph():
     graph = Graph(query="q")
 
     async def main():
-        return await collect(flow, graph, until="next")
+        return await collect(flow, graph=graph, until="next")
 
     events = asyncio.run(main())
     appended = [e for e in events if e.type == "append_node"]
     assert len(appended) == 1
-    # The run halted exactly at the boundary: the graph holds only the one node
-    # we were handed, not a full turn (or two) beyond it.
-    assert [node.type for node in graph.nodes] == ["user_query"]
+    # The run halted exactly at the boundary: the graph had the seeded query,
+    # then this step added exactly one node.
+    assert [node.type for node in graph.nodes] == ["user_query", "llm_output"]
 
 
 def test_step_next_advances_frontier_one_node_per_step():
@@ -44,10 +44,10 @@ def test_step_next_advances_frontier_one_node_per_step():
     graph = Graph(query="q")
 
     async def main():
-        prev = 0
+        prev = len(graph.nodes)
         steps = 0
         while not graph.finished and steps < 20:
-            events = await collect(flow, graph, until="next")
+            events = await collect(flow, graph=graph, until="next")
             appended = [e for e in events if e.type == "append_node"]
             # Graph grew by exactly the nodes handed back — no runaway driver.
             assert len(graph.nodes) == prev + len(appended)
@@ -68,7 +68,7 @@ def test_step_idle_heals_error_and_settles_at_clean_output():
     graph = Graph(query="q")
 
     async def main():
-        return await collect(flow, graph, until="idle")
+        return await collect(flow, graph=graph, until="idle")
 
     events = asyncio.run(main())
     types = [e.node_type for e in events if e.type == "append_node"]
@@ -90,7 +90,7 @@ def test_step_next_surfaces_error_without_healing():
         halted_on_error = False
         steps = 0
         while not graph.finished and steps < 20:
-            await collect(flow, graph, until="next")
+            await collect(flow, graph=graph, until="next")
             if graph.nodes and graph.nodes[-1].type == "error_output":
                 halted_on_error = True
             steps += 1
@@ -119,7 +119,7 @@ def test_step_idle_advances_parent_and_children_to_completion():
     async def main():
         steps = 0
         while not graph.finished and steps < 30:
-            await collect(flow, graph, until="idle")
+            await collect(flow, graph=graph, until="idle")
             steps += 1
 
     asyncio.run(main())
@@ -141,7 +141,7 @@ def test_step_delegation_supervising_and_child_boundaries_under_concurrency():
             )
         return "```repl\ndone('c')\n```"
 
-    flow = Flow(StubLLM(reply), max_depth=1, max_iters=8, max_concurrency=2)
+    flow = Flow(StubLLM(reply), max_depth=1, max_iters=8, workers=2)
     graph = Graph(query="parent")
 
     def first_child_done(event, _graph):
@@ -152,8 +152,8 @@ def test_step_delegation_supervising_and_child_boundaries_under_concurrency():
         )
 
     async def main():
-        await collect(flow, graph, until="next")
-        supervising = await collect(flow, until="supervising")
+        await collect(flow, graph=graph, until="next")
+        supervising = await collect(flow, graph=graph, until="supervising")
         assert any(
             event.type == "append_node" and event.node_type == "supervising_output"
             for event in supervising
@@ -178,12 +178,12 @@ def test_step_then_inject_is_seen_by_the_resumed_run():
     graph = Graph(query="work")
 
     async def main():
-        await collect(flow, graph, until="next")  # user_query
-        await collect(flow, until="idle")         # settle at a clean exec_output
+        await collect(flow, graph=graph, until="next")  # llm_output
+        await collect(flow, graph=graph, until="idle")  # settle at a clean exec_output
         assert not graph.finished
         # Inject a control instruction between steps; the paused run must see it.
         graph.inject("STOP NOW")
-        await collect(flow, until="done")
+        await collect(flow, graph=graph, until="done")
         return graph.result()
 
     assert asyncio.run(main()) == "stopped"

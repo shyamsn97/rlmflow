@@ -76,7 +76,7 @@ def run_branch(root: Path, idx: int) -> tuple[str, int, dict[str, str], int]:
     llm = MockLLM(seed=idx)
     flow = Flow(llm, max_depth=1, max_iters=10)
     graph = Graph(query=QUERY)
-    flow.run(graph)
+    flow.run(graph=graph)
     # Each branch persists to its own directory (graph.json).
     graph.save(root / f"branch_{idx}")
     flow.close_repls(graph.graph_id)

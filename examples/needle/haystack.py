@@ -18,10 +18,23 @@ import argparse
 import asyncio
 import random
 import string
+import sys
 from pathlib import Path
 
-from rflow.clients import AnthropicClient, OpenAIClient
-from rflow import DockerRuntime, Flow, Graph, LiveTreeRenderer
+from rflow import (
+    ConsumerGroup,
+    DockerRuntime,
+    Flow,
+    Graph,
+    GraphCheckpointer,
+    LiveTreeRenderer,
+)
+
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
+
+from common import build_client  # noqa: E402
 
 
 def generate_massive_context(
@@ -83,19 +96,10 @@ def main():
 
     runtime = DockerRuntime(args.docker_image) if args.docker_image else None
 
-    llm = (
-        AnthropicClient(args.model)
-        if args.model.startswith("claude")
-        else OpenAIClient(args.model)
-    )
+    llm = build_client(args.model)
     llm_clients = None
     if args.fast_model:
-        fast = (
-            AnthropicClient(args.fast_model)
-            if args.fast_model.startswith("claude")
-            else OpenAIClient(args.fast_model)
-        )
-        llm_clients = {"fast": fast}
+        llm_clients = {"fast": build_client(args.fast_model)}
 
     flow = Flow(
         llm,
@@ -113,10 +117,18 @@ def main():
         )
     )
 
+    consumers = ConsumerGroup([LiveTreeRenderer(clear=not args.no_viz)])
+    if args.out_dir:
+        consumers.append(GraphCheckpointer(Path(args.out_dir)))
+
     async def drive() -> None:
-        renderer = LiveTreeRenderer(clear=not args.no_viz)
-        async for event in flow.run_streaming(graph, inputs={"haystack": haystack}):
-            renderer.handle(event, graph)
+        try:
+            async for event in flow.run_streaming(
+                graph=graph, inputs={"haystack": haystack}
+            ):
+                consumers.handle(event, graph)
+        finally:
+            consumers.close()
 
     asyncio.run(drive())
 
@@ -126,8 +138,7 @@ def main():
     print(f"Correct:        {answer in graph.result()}")
 
     if args.out_dir:
-        path = graph.save(Path(args.out_dir))
-        print(f"Graph saved to {path}")
+        print(f"Graph checkpointed to {Path(args.out_dir)}")
 
     if args.viewer:
         print("Viewer support is not part of the minimal example path.")

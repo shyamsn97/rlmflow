@@ -1,9 +1,10 @@
 """Show minimal ``Flow.run_streaming(..., until=...)`` boundaries during delegation.
 
 Minimal Flow does not expose the old ``eager_children`` toggle. Delegation fans
-out child agents by default through the shared async pool. This example focuses
-on the caller-facing control surface instead: choosing how much of the event
-stream to consume with ``until=...``.
+out child agents as independent scheduler tasks; blocking LLM calls are bounded
+by the flow's worker pool. This example focuses on the caller-facing control
+surface instead: choosing how much of the event stream to consume with
+``until=...``.
 
 Run:
     export OPENAI_API_KEY=...
@@ -14,33 +15,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 from pathlib import Path
 
-from rflow.clients import AnthropicClient, OpenAIClient
-from rflow import Event, Flow, Graph, render_tree
+from rflow import Event, Flow, Graph, GraphCheckpointer, render_tree
 
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
-
-
-def _save_example_graph(
-    graph: Graph,
-    source_file: str | Path,
-    name: str,
-    *,
-    out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
-) -> Path:
-    path = graph.save(
-        Path(out_dir) if out_dir is not None else _example_run_dir(source_file, name)
-    )
-    print(f"{label} {path}")
-    return path
+from common import build_client, save_example_graph  # noqa: E402
 
 
 QUERY = """\
@@ -55,14 +39,6 @@ call, then call done with their joined results. Use exactly these child names:
 
 This example script is observing the graph event stream, so keep the work small.
 """
-
-
-def build_llm(model: str):
-    return (
-        AnthropicClient(model)
-        if model.startswith("claude")
-        else OpenAIClient(model)
-    )
 
 
 def event_label(event: Event) -> str:
@@ -90,22 +66,27 @@ def print_events(title: str, events: list[Event], graph: Graph) -> None:
 
 async def run_example(args: argparse.Namespace) -> Graph:
     flow = Flow(
-        build_llm(args.model),
+        build_client(args.model),
         max_depth=args.max_depth,
         max_iters=args.max_iters,
-        max_concurrency=args.max_concurrency,
+        workers=args.max_concurrency,
     )
     graph = Graph(query=QUERY)
     observed: list[Event] = []
+    checkpointer = GraphCheckpointer(Path(args.out_dir))
 
-    async def collect(*flow_args, **flow_kwargs) -> list[Event]:
-        return [event async for event in flow.run_streaming(*flow_args, **flow_kwargs)]
+    async def collect(graph: Graph, **flow_kwargs) -> list[Event]:
+        events: list[Event] = []
+        async for event in flow.run_streaming(graph=graph, **flow_kwargs):
+            checkpointer.handle(event, graph)
+            events.append(event)
+        return events
 
     events = await collect(graph, until="next")
     observed.extend(events)
     print_events("until='next': first appended node", events, graph)
 
-    events = await collect(until="supervising")
+    events = await collect(graph, until="supervising")
     observed.extend(events)
     print_events("until='supervising': parent has fanned out children", events, graph)
 
@@ -116,22 +97,23 @@ async def run_example(args: argparse.Namespace) -> Graph:
             and event.node_type == "done_output"
         )
 
-    events = await collect(until=first_child_done)
+    events = await collect(graph, until=first_child_done)
     observed.extend(events)
     print_events("until=<callable>: stop when any child is done", events, graph)
 
-    events = await collect(until="next", n=2)
+    events = await collect(graph, until="next", n=2)
     observed.extend(events)
     print_events("until='next', n=2: consume two more global steps", events, graph)
 
     while not graph.finished:
-        events = await collect(until=lambda event, current: current.finished)
+        events = await collect(graph, until=lambda event, current: current.finished)
         observed.extend(events)
         print_events("until=<callable>: run is finished", events, graph)
 
     if observed:
         print(f"\nObserved {len(observed)} graph events.")
 
+    checkpointer.close()
     flow.close_repls(graph.graph_id)
     return graph
 
@@ -153,10 +135,10 @@ def main() -> None:
 
     graph = asyncio.run(run_example(args))
     print("\n=== verdict ===")
-    print("Delegated children fan out under the shared pool.")
+    print("Delegated children fan out as independent scheduler tasks.")
     print("The caller chooses observation boundaries with run_streaming(..., until=...).")
     print(f"Result: {graph.result()}")
-    _save_example_graph(graph, __file__, "step-until", out_dir=args.out_dir)
+    save_example_graph(graph, "step-until", out_dir=args.out_dir)
 
 
 if __name__ == "__main__":

@@ -274,10 +274,11 @@ class RAORolloutCollector:
 
 For each task:
 
-1. Create `G` isolated workspaces.
-2. Create `G` `RecursiveFlow` engines using the same policy.
-3. Run `engine.start(task.query, context=task.context)`.
-4. Step each graph until done, max iterations, or error.
+1. Create `G` isolated graphs (one trajectory each).
+2. Drive them on one `Flow` with the shared policy (e.g. via `parallel_run`).
+3. Run each with `flow.run(query=task.query, inputs=task.inputs)`, or step with
+   `flow.run_streaming(graph=graph, until=...)`.
+4. Drive each graph until done, max iterations, or error.
 5. Score each rollout tree.
 6. Compute leave-one-out root advantages.
 7. Export one training example per agent trajectory.

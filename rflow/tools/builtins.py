@@ -15,11 +15,11 @@ from rflow.graph import (
     Graph,
     ResumeAction,
     SupervisingOutput,
-    UserQuery,
 )
 from rflow.graph.events import AddChild
 from rflow.runtime.repl import DoneSignal
 from rflow.structured import json_schema_for
+from rflow.tasks import TaskQueue
 from rflow.tools.tools import tool
 
 if TYPE_CHECKING:
@@ -87,30 +87,25 @@ def make_launch_subagents(flow: Flow, parent: Graph, repl: ReplLike):
                     type="add_child", parent_agent_id=parent.agent_id, child=child
                 ),
             )
-            flow.append_node(child, UserQuery(content=query))
             child_ids.append(child.agent_id)
             results.append("")
 
-        await flow.commit(
+        flow.append_node(
             parent, SupervisingOutput(output=repl.drain(), waiting_on=child_ids)
         )
-        if flow.tasks is None or flow.until in {"done", "finished"}:
-            # Tool called directly or full run: gather children directly. During an
-            # active stream, suppress scheduler follow-ups for these child ids so
-            # the stream observes their events but does not drive them a second time.
-            flow.suppressed_agents.update(child_ids)
-            try:
-                await flow.pool.gather(
-                    *(flow.run_agent(parent[cid]) for cid in child_ids)
-                )
-            finally:
-                flow.suppressed_agents.difference_update(child_ids)
-        else:
-            for cid in child_ids:
-                flow.schedule_agent(parent[cid])
-            while not all(parent[cid].finished for cid in child_ids):
-                await flow.tasks.changed()
-        await flow.commit(parent, ResumeAction(resumed_from=child_ids))
+        # One path: submit each child to a task queue, then poll until they finish.
+        # Each child self-drives (``run_agent``), so this works whether or not an
+        # outer ``run_streaming`` loop is driving the queue. When a run exists we
+        # submit to its queue so the stream observes child events and never
+        # double-drives a child (the queue keeps one task per agent id); otherwise
+        # a throwaway queue is enough to run the children and await them.
+        run = flow.runs.get(parent.graph_id)
+        tasks = run.tasks if run is not None else TaskQueue()
+        for cid in child_ids:
+            tasks.add(cid, lambda child=parent[cid]: flow.run_agent(child))
+        while not all(parent[cid].finished for cid in child_ids):
+            await tasks.changed()
+        flow.append_node(parent, ResumeAction(resumed_from=child_ids))
         for i, child_id in enumerate(child_ids):
             child = parent[child_id]
             result, schema = child.result(), child.output_schema
