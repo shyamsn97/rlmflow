@@ -82,16 +82,12 @@ sub-`Graph`, and every turn inside an agent is a typed `Node`:
 The graph is the run itself:
 
 ```python
-import asyncio
 from rlmflow import Graph, render_tree
 
 graph = Graph(query=query)
 
-async def drive():
-    async for _event in agent.run_streaming(graph=graph):
-        print(render_tree(graph))
-
-asyncio.run(drive())
+async for event in agent.run_streaming(graph=graph):
+    print(render_tree(graph))
 ```
 
 `run_streaming` mutates `graph` in place and yields one typed `Event` per commit, so
@@ -146,8 +142,6 @@ full interactive version.
 ```python
 from pathlib import Path
 
-import asyncio
-
 from rlmflow.clients import OpenAIClient
 from rlmflow import FILE_TOOLS, Flow, Graph, LocalRuntime, open_viewer, render_tree
 
@@ -166,11 +160,8 @@ flow = Flow(
 query = "Build a Python text-based adventure game with combat and inventory."
 graph = Graph(query=query)
 
-async def drive() -> None:
-    async for _event in flow.run_streaming(graph=graph):
-        print(render_tree(graph))
-
-asyncio.run(drive())
+async for event in flow.run_streaming(graph=graph):
+    print(render_tree(graph))
 
 print(graph.result())
 graph.save(workdir / "graph")
@@ -216,19 +207,15 @@ Nest agents by passing one `FlowLLM(inner_flow)` as another flow's `llm`. See
 - `async for event in flow.run_streaming(graph=graph)` — stream every commit as it happens.
 
 ```python
-import asyncio
 from rlmflow import Graph, render_tree
 
 graph = Graph(query=query)
 
-async def drive():
-    async for _ in agent.run_streaming(graph=graph, until="next", n=2):
-        pass                                      # advance two global steps
-    print(render_tree(graph))                     # ...inspect...
-    async for _ in agent.run_streaming(graph=graph, until="done"):
-        pass                                      # ...then run to completion
-
-asyncio.run(drive())
+async for event in agent.run_streaming(graph=graph, until="next", n=2):
+    pass                              # advance two global steps
+print(render_tree(graph))             # ...inspect...
+async for event in agent.run_streaming(graph=graph, until="done"):
+    pass                              # ...then run to completion
 print(render_tree(graph))
 ```
 
@@ -327,14 +314,10 @@ directory, a single `Graph`, or a list of step snapshots.
 any snapshot — reprint it each tick to watch a run unfold:
 
 ```python
-import asyncio
 from rlmflow import render_tree
 
-async def drive():
-    async for _event in agent.run_streaming(graph=graph):
-        print("\033[2J\033[H" + render_tree(graph))  # clear + redraw
-
-asyncio.run(drive())
+async for event in agent.run_streaming(graph=graph):
+    print("\033[2J\033[H" + render_tree(graph))  # clear + redraw
 ```
 
 `LiveTreeRenderer` packages the same event-consuming pattern if you'd rather hand
@@ -517,6 +500,10 @@ in [`docs/internals.md`](docs/internals.md). Research notes live under
   paper and implementation that inspired this project.
 - [rlm-minimal](https://github.com/alexzhang13/rlm-minimal): the
   single-file reference rlmflow grew from.
+- [Tau](https://github.com/huggingface/tau): Hugging Face's minimalist
+  coding-agent harness. Much of rlmflow's event-driven loop — typed
+  events as the contract between engine, consumers, and frontends —
+  follows Tau's clean separation of harness, session, and rendering.
 - [Scaling Managed Agents: Decoupling the brain from the hands](https://www.anthropic.com/engineering/managed-agents):
   Anthropic's writeup on separating harness, session, and sandbox
   interfaces for long-horizon agents.
