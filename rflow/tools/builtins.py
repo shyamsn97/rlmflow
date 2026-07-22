@@ -24,7 +24,7 @@ from rflow.tools.tools import tool
 
 if TYPE_CHECKING:
     from rflow.flow import Flow
-    from rflow.runtime.repl import ReplLike
+    from rflow.runtime.repl import Repl
 
 
 def refuse_max_depth(max_depth: int) -> str:
@@ -38,7 +38,7 @@ def refuse_query_too_long(length: int, cap: int) -> str:
     )
 
 
-def make_done(flow: Flow, graph: Graph, repl: ReplLike):
+def make_done(flow: Flow, graph: Graph, repl: Repl):
     @tool("Submit this agent's final answer and end its run.", proxy=True)
     def done(answer: object) -> None:
         if graph.output_schema is not None:
@@ -53,7 +53,7 @@ def make_done(flow: Flow, graph: Graph, repl: ReplLike):
     return done
 
 
-def make_launch_subagents(flow: Flow, parent: Graph, repl: ReplLike):
+def make_launch_subagents(flow: Flow, parent: Graph, repl: Repl):
     @tool(
         "Spawn child agents from a list of specs and await their results.",
         proxy=True,
@@ -65,11 +65,26 @@ def make_launch_subagents(flow: Flow, parent: Graph, repl: ReplLike):
             if parent.depth >= flow.max_depth:
                 results.append(refuse_max_depth(flow.max_depth))
                 continue
+            name = spec.get("name", f"child{index}")
+
+            # Warm start: a spec may carry a prepared child ``graph`` (a fork/rewind
+            # result) instead of a ``query``. Attach it via ``adopt`` and, if given,
+            # append the kickoff ``query`` as the next user turn on its trajectory.
+            # It then supervises/awaits on the same loop as a cold child.
+            prepared = spec.get("graph")
+            if prepared is not None:
+                child = flow.adopt(parent, prepared, name=name)
+                query = spec.get("query")
+                if query:
+                    child.append_query(query)
+                child_ids.append(child.agent_id)
+                results.append("")
+                continue
+
             query = spec["query"]
             if len(query) > flow.max_query_chars:
                 results.append(refuse_query_too_long(len(query), flow.max_query_chars))
                 continue
-            name = spec.get("name", f"child{index}")
             schema = spec.get("output_schema")
             child = Graph(
                 agent_id=f"{parent.agent_id}.{name}",
@@ -77,6 +92,9 @@ def make_launch_subagents(flow: Flow, parent: Graph, repl: ReplLike):
                 query=query,
                 inputs=dict(spec.get("inputs") or {}),
                 model=spec.get("model", "default"),
+                prompt_profile=spec.get(
+                    "prompt_profile", spec.get("prompt", "default")
+                ),
                 output_schema=json_schema_for(schema) if schema is not None else None,
                 depth=parent.depth + 1,
                 parent_agent_id=parent.agent_id,

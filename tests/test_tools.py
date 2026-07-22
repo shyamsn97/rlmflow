@@ -8,7 +8,7 @@ from rflow import (
 )
 from rflow.runtime import PopenConnection
 from rflow.runtime.repl import DoneSignal
-from rflow.runtime.repl_client import ReplClient
+from rflow.runtime.repl_client import RemoteRepl
 
 from helpers import (
     StubLLM,
@@ -82,6 +82,73 @@ def test_minimal_injected_tools_are_available_to_subagents():
     assert asyncio.run(flow.arun(graph=Graph(query="parent"))) == "HI|box:7"
 
 
+def test_minimal_flow_inject_binds_global_everywhere_without_advertising():
+    """``flow.inject`` puts an object in every REPL (now and later, including
+    subagents) as an ambient global — usable in code but never advertised as a
+    tool in the system prompt."""
+
+    class Sokoban:
+        def __init__(self, tag: str) -> None:
+            self.tag = tag
+
+        def render(self) -> str:
+            return f"board:{self.tag}"
+
+    def reply(messages):
+        if first_user(messages) == "parent":
+            return (
+                "```repl\n"
+                "results = await launch_subagents("
+                "[{'name': 'a', 'query': 'child'}])\n"
+                "done(results[0])\n"
+                "```"
+            )
+        return '```repl\ndone(Sokoban("x").render())\n```'
+
+    flow = Flow(StubLLM(reply), max_depth=1)
+    flow.inject("Sokoban", Sokoban)
+
+    graph = Graph(query="parent")
+    # Tracked as a binding, present in the namespace, but NOT advertised in the
+    # prompt: advertising is gated on @tool metadata, not on being a binding.
+    assert flow.tools["Sokoban"] is Sokoban
+    assert flow.repl_for(graph).namespace["Sokoban"] is Sokoban
+    assert "Sokoban" not in flow.build_system_prompt(graph)
+    # Reaches a subagent spawned later, and is usable in code.
+    assert asyncio.run(flow.arun(graph=graph)) == "board:x"
+
+
+def test_minimal_flow_inject_reaches_forked_repl():
+    """An injected global is seeded into a fork's rebuilt REPL, so construction
+    code that references it works on the branch (not just the original)."""
+
+    class Widget:
+        def __init__(self, n: int) -> None:
+            self.n = n
+
+    flow = Flow(StubLLM(lambda _messages: "```repl\npass\n```"))
+    flow.inject("Widget", Widget)
+    graph = Graph(query="q")
+
+    async def scenario():
+        flow.repl_for(graph)  # open the original REPL
+        fork = await flow.fork(graph)  # fork rebuilds a fresh REPL from tools/globals
+        return await flow.repl_for(fork).run("print(Widget(9).n)")
+
+    assert "9" in asyncio.run(scenario())
+
+
+def test_minimal_flow_inject_rejects_reserved_names():
+    flow = Flow(StubLLM(lambda _messages: "```repl\npass\n```"))
+    for name in ("done", "launch_subagents", "INPUTS"):
+        try:
+            flow.inject(name, object())
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"inject should reject reserved name {name!r}")
+
+
 def test_minimal_add_tool_reaches_subagents_spawned_later():
     """A tool injected at runtime via ``add_tool`` reaches a child spawned after
     it was registered (build_tools re-seeds ``flow.tools`` for every new REPL)."""
@@ -143,7 +210,7 @@ def test_minimal_add_remove_tool_reject_reserved_names():
 
 
 def test_minimal_repl_client_inject_and_remove_tool():
-    repl = ReplClient(
+    repl = RemoteRepl(
         PopenConnection(
             [sys.executable, "-u", "-m", "rflow.runtime.repl_server"],
             label="test minimal remote REPL",
@@ -198,7 +265,7 @@ def test_minimal_tool_metadata_marks_async_and_renders_await():
 
 
 def test_minimal_repl_client_async_proxy_tool_is_awaitable():
-    repl = ReplClient(
+    repl = RemoteRepl(
         PopenConnection(
             [sys.executable, "-u", "-m", "rflow.runtime.repl_server"],
             label="test minimal remote REPL",

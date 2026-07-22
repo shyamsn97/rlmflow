@@ -35,7 +35,7 @@ Load project conventions into every agent:
 from pathlib import Path
 
 import rflow
-from rflow.prompts import DEFAULT_BUILDER
+from rflow import SystemPromptBuilder
 
 
 def project_skill(flow: rflow.Flow, graph: rflow.Graph) -> str:
@@ -43,12 +43,9 @@ def project_skill(flow: rflow.Flow, graph: rflow.Graph) -> str:
 
 
 flow = rflow.Flow(rflow.OpenAIClient(model="gpt-4o-mini"))
-flow.prompt_builder = DEFAULT_BUILDER.section(
-    "project_skill",
-    project_skill,
-    title="Project Skill",
-    before="tools",
-)
+prompt = SystemPromptBuilder()
+prompt.sections.add("project_skill", project_skill, title="Project Skill", before="tools")
+flow.system_prompt = prompt
 ```
 
 ## Query-Selected Skills
@@ -59,7 +56,7 @@ Choose domain skills from the current task:
 from pathlib import Path
 
 import rflow
-from rflow.prompts import DEFAULT_BUILDER
+from rflow import SystemPromptBuilder
 
 SKILL_DIR = Path("skills")
 
@@ -85,12 +82,11 @@ def workspace_skills(flow: rflow.Flow, graph: rflow.Graph) -> str:
 
 
 flow = rflow.Flow(rflow.OpenAIClient(model="gpt-4o-mini"))
-flow.prompt_builder = DEFAULT_BUILDER.section(
-    "workspace_skills",
-    workspace_skills,
-    title="Workspace Skills",
-    before="tools",
+prompt = SystemPromptBuilder()
+prompt.sections.add(
+    "workspace_skills", workspace_skills, title="Workspace Skills", before="tools"
 )
+flow.system_prompt = prompt
 ```
 
 ## Child-Only Skills
@@ -101,7 +97,7 @@ Give spawned agents a tighter contract than the root planner:
 from pathlib import Path
 
 import rflow
-from rflow.prompts import DEFAULT_BUILDER
+from rflow import SystemPromptBuilder
 
 
 def child_contract(flow: rflow.Flow, graph: rflow.Graph) -> str:
@@ -111,12 +107,11 @@ def child_contract(flow: rflow.Flow, graph: rflow.Graph) -> str:
 
 
 flow = rflow.Flow(rflow.OpenAIClient(model="gpt-4o-mini"))
-flow.prompt_builder = DEFAULT_BUILDER.section(
-    "child_contract",
-    child_contract,
-    title="Child Agent Contract",
-    after="strategy",
+prompt = SystemPromptBuilder()
+prompt.sections.add(
+    "child_contract", child_contract, title="Child Agent Contract", after="strategy"
 )
+flow.system_prompt = prompt
 ```
 
 ## Run-Memory Skills
@@ -127,7 +122,7 @@ Turn lessons from previous runs into reusable guidance:
 from pathlib import Path
 
 import rflow
-from rflow.prompts import DEFAULT_BUILDER
+from rflow import SystemPromptBuilder
 
 MEMORY_DIR = Path("skills/run-memory")
 
@@ -142,29 +137,23 @@ def run_memory(flow: rflow.Flow, graph: rflow.Graph) -> str:
 
 
 flow = rflow.Flow(rflow.OpenAIClient(model="gpt-4o-mini"))
-flow.prompt_builder = DEFAULT_BUILDER.section(
-    "run_memory",
-    run_memory,
-    title="Run Memory",
-    before="examples",
-)
+prompt = SystemPromptBuilder()
+prompt.sections.add("run_memory", run_memory, title="Run Memory", before="examples")
+flow.system_prompt = prompt
 ```
 
 ## Combining Skills With Other Prompt Changes
 
-Skills are prompt sections, so they compose with the rest of the prompt builder:
+Skills are prompt sections, so they compose with the rest of the prompt builder —
+just keep editing `.sections`:
 
 ```python
-flow.prompt_builder = (
-    DEFAULT_BUILDER
-    .section(
-        "workspace_skills",
-        workspace_skills,
-        title="Workspace Skills",
-        before="tools",
-    )
-    .section("run_memory", run_memory, title="Run Memory", before="examples")
+prompt = SystemPromptBuilder()
+prompt.sections.add(
+    "workspace_skills", workspace_skills, title="Workspace Skills", before="tools"
 )
+prompt.sections.add("run_memory", run_memory, title="Run Memory", before="examples")
+flow.system_prompt = prompt
 ```
 
 For lower-level prompt mechanics, see

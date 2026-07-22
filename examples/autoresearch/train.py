@@ -217,7 +217,7 @@ def main() -> None:
 
     print("--- eval ---", flush=True)
     with autocast:
-        val_bpb = evaluate_bpb(model, BATCH_SIZE, MAX_SEQ_LEN)
+        val_bpb = evaluate_bpb(model)
     total_tokens = step * BATCH_SIZE * MAX_SEQ_LEN
     peak_vram = torch.cuda.max_memory_allocated() / 1024 / 1024 if device == "cuda" else 0.0
 

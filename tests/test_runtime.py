@@ -19,7 +19,7 @@ from rflow.runtime.protocol import (
     parse_request,
 )
 from rflow.runtime.repl import DoneSignal
-from rflow.runtime.repl_client import ReplClient
+from rflow.runtime.repl_client import RemoteRepl
 
 from helpers import (
     StubLLM,
@@ -70,7 +70,7 @@ def test_minimal_local_runtime_uses_working_directory(tmp_path):
 
 
 def test_minimal_repl_client_uses_minimal_repl_server():
-    repl = ReplClient(
+    repl = RemoteRepl(
         PopenConnection(
             [sys.executable, "-u", "-m", "rflow.runtime.repl_server"],
             label="test minimal remote REPL",
@@ -135,7 +135,7 @@ def test_minimal_subprocess_runtime_exposes_env_metadata():
 
 
 def test_minimal_repl_client_reads_back_published_env():
-    repl = ReplClient(
+    repl = RemoteRepl(
         PopenConnection(
             [sys.executable, "-u", "-m", "rflow.runtime.repl_server"],
             label="test minimal remote REPL",
@@ -159,6 +159,82 @@ def test_minimal_repl_client_reads_back_published_env():
 
 
 
+def test_minimal_flow_get_var_reads_local_repl_variable():
+    # flow.get_var pulls a var the agent created out of its (in-process) REPL.
+    def reply(_messages):
+        return '```repl\nresult = {"n": 42}\ndone("ok")\n```'
+
+    flow = Flow(StubLLM(reply))
+    graph = Graph(query="q")
+
+    assert flow.run(graph=graph) == "ok"
+    assert flow.get_var(graph, "result") == {"n": 42}
+
+
+def test_minimal_subprocess_injects_and_retrieves_live_object_by_value():
+    import pytest
+
+    pytest.importorskip("cloudpickle")
+
+    # Defined locally so cloudpickle ships the CLASS by value too (the sandbox
+    # process can't import this test module).
+    class Counter:
+        def __init__(self):
+            self.n = 0
+
+        def bump(self, k=1):
+            self.n += k
+            return self.n
+
+    repl = RemoteRepl(
+        PopenConnection(
+            [sys.executable, "-u", "-m", "rflow.runtime.repl_server"],
+            label="test minimal remote REPL",
+            repl_timeout=5,
+        )
+    )
+
+    async def run():
+        try:
+            repl.seed({}, {})
+            assert repl.capabilities().cloudpickle is True
+            repl.inject("counter", Counter())
+            await repl.run("counter.bump(5)\ncounter.bump()")
+            return repl.get_var("counter")
+        finally:
+            repl.close()
+
+    got = asyncio.run(run())
+
+    assert got.n == 6  # sandbox mutations round-tripped back by value
+    # By value: the host's original object is untouched (a copy was shipped).
+
+
+def test_minimal_repl_client_inject_rejects_unpicklable_without_capability():
+    # A JSON-unsafe value + a sandbox that can't cloudpickle -> a clear error,
+    # not a silent JSON coercion failure.
+    from rflow.runtime.protocol import CapabilityMap
+    from rflow.runtime.repl_client import RemoteRepl
+
+    class Dummy(RemoteRepl):
+        def __init__(self):
+            self.namespace = {}
+            self._request_id = 0
+            self._capabilities = CapabilityMap(cloudpickle=False)
+
+    client = Dummy()
+
+    class Obj:
+        pass
+
+    try:
+        client.inject("x", Obj())
+    except RuntimeError as exc:
+        assert "cloudpickle" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected a RuntimeError for unpicklable inject")
+
+
 def test_minimal_remote_protocol_models_round_trip():
     run = parse_request(RunRequest(id="r1", code="print(1)").model_dump())
     response = parse_client_message(ReplResponse(id="r1", output="1").model_dump())
@@ -176,7 +252,7 @@ def test_minimal_remote_protocol_models_round_trip():
 
 
 def test_minimal_repl_server_supports_ping_and_capabilities():
-    repl = ReplClient(
+    repl = RemoteRepl(
         PopenConnection(
             [sys.executable, "-u", "-m", "rflow.runtime.repl_server"],
             label="test minimal remote REPL",

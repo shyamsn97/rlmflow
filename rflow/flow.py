@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 from rflow.graph import (
     DoneOutput,
@@ -23,8 +23,10 @@ from rflow.graph import (
     ResumeAction,
     SupervisingOutput,
     apply_graph_action,
+    system_prompt_id,
 )
 from rflow.graph.events import (
+    AddChild,
     Event,
     GraphAction,
     GraphCreated,
@@ -32,11 +34,26 @@ from rflow.graph.events import (
     is_idle,
 )
 from rflow.pool import Pool, ThreadPool
-from rflow.prompts import DEFAULT_BUILDER, PromptBuilder
-from rflow.prompts.messages import build_messages, merge_summary
+from rflow.prompts import (
+    DEFAULT_BUILDER,
+    PromptProfile,
+    SystemPromptSource,
+    as_prompt_profile,
+    as_system_prompt_fn,
+)
+from rflow.prompts.messages import (
+    CONTINUE_NUDGE,
+    FINAL_ANSWER_ACTION,
+    TRUNCATION_SUMMARY,
+    UserPromptBuilder,
+    UserPromptSource,
+    as_user_prompt,
+    coalesce_roles,
+    merge_summary,
+)
 from rflow.runtime import LocalRuntime, Runtime
 from rflow.runtime.env import agent_process_env
-from rflow.runtime.repl import ReplLike
+from rflow.runtime.repl import Repl
 from rflow.structured import Schema, StructuredOutputParser, json_schema_for
 from rflow.tasks import TaskQueue
 from rflow.tools import tool
@@ -47,7 +64,6 @@ from rflow.utils import (
     budget_exceeded,
     code_block,
     common_prefix_len,
-    graph_from_input,
     iter_budget,
     llm_output_metadata,
     repl_key,
@@ -63,6 +79,15 @@ DEFAULT_MAX_QUERY_CHARS = 2_000
 
 #: Names owned by the harness/graph; ``add_tool``/``remove_tool`` won't touch them.
 _RESERVED_TOOL_NAMES = frozenset({"done", "launch_subagents", "INPUTS"})
+
+#: Trajectory note appended to a ``fork(mode="lazy")`` branch: its REPL was not
+#: rebuilt, so runtime-created state from earlier turns is unavailable.
+LAZY_FORK_NOTE = (
+    "This branch was forked from the parent trajectory WITHOUT restoring the "
+    "parent's live REPL. Variables, functions, and tools you created at runtime "
+    "in earlier turns are NOT available here (registered tools and INPUTS are "
+    "still seeded). Re-create anything you need before relying on it."
+)
 
 #: Sentinel results recorded when a run ends without an agent-produced answer.
 TERMINATED = "[terminated]"
@@ -96,6 +121,13 @@ class Flow:
     actions to caller-owned graphs.
     """
 
+    #: Chat-message wording owned by ``messages`` (override on a subclass to
+    #: change it): the forced-final action, the continue nudge, and the marker
+    #: inserted when the trajectory is truncated to fit ``max_messages``.
+    final_action: str = FINAL_ANSWER_ACTION
+    continue_nudge: str = CONTINUE_NUDGE
+    truncation_summary: str = TRUNCATION_SUMMARY
+
     def __init__(
         self,
         llm,
@@ -108,8 +140,10 @@ class Flow:
         max_query_chars: int = DEFAULT_MAX_QUERY_CHARS,
         max_budget: int | None = None,
         llm_request_timeout: float | None = None,
-        system_prompt: str | None = None,
-        prompt_builder: PromptBuilder | None = None,
+        system_prompt: SystemPromptSource | None = None,
+        user_prompt: UserPromptSource | None = None,
+        prompts: dict[str, Any] | None = None,
+        prompt_router: Literal["llm", "graph"] | Callable[[Flow, Graph], str] = "llm",
         tools: list[Any] | None = None,
         runtime: Runtime | None = None,
         llm_clients: dict[str, Any] | None = None,
@@ -127,8 +161,44 @@ class Flow:
         self.max_query_chars = max_query_chars
         self.max_budget = max_budget
         self.llm_request_timeout = llm_request_timeout
-        self.system_prompt = system_prompt
-        self.prompt_builder = prompt_builder or DEFAULT_BUILDER
+        # A system prompt is any source resolvable by ``as_system_prompt_fn`` — a
+        # string, a ``(flow, graph) -> str`` function, or a ``SystemPromptBuilder``.
+        # The user side is a ``UserPromptBuilder`` or a ``(flow, graph) -> turns``
+        # function. Both are public/settable and resolved fresh each turn.
+        self.system_prompt: SystemPromptSource = (
+            system_prompt if system_prompt is not None else DEFAULT_BUILDER
+        )
+        self.user_prompt: UserPromptBuilder = (
+            as_user_prompt(user_prompt)
+            if user_prompt is not None
+            else UserPromptBuilder()
+        )
+        # Named alternate prompt profiles for children, parallel to ``llm_clients``.
+        # ``"default"`` is implicit (the flow's own ``system_prompt``/``user_prompt``)
+        # and reserved; only alternates live here, normalized to ``PromptProfile``.
+        if prompts and "default" in prompts:
+            raise ValueError(
+                "'default' is reserved; it maps to the flow's system_prompt/"
+                "user_prompt. Register alternate profiles under other names."
+            )
+        self._prompts: dict[str, PromptProfile] = {
+            name: as_prompt_profile(src) for name, src in (prompts or {}).items()
+        }
+        #: How profile names are chosen. ``"llm"`` (default): advertise registered
+        #: profiles and honor ``graph.prompt_profile`` (set by a spawn spec or the
+        #: host). ``"graph"``: honor ``graph.prompt_profile`` but do not advertise
+        #: (host stamped the name). A ``(flow, graph) -> str`` callable is host
+        #: policy that overrides ``graph.prompt_profile`` and suppresses advertising.
+        if prompt_router not in ("llm", "graph") and not callable(prompt_router):
+            raise TypeError(
+                "prompt_router must be 'llm', 'graph', or a "
+                f"(flow, graph) -> str callable; got {prompt_router!r}"
+            )
+        self.prompt_router = prompt_router
+        # One flat map of REPL bindings (see ``inject``/``add_tool``). Whether an
+        # entry is advertised in the system prompt is a property of the object —
+        # only ``@tool``-decorated callables render a doc line — not of any
+        # separate store, so tools and plain injected globals live together here.
         self.tools = {tool_name(fn): fn for fn in tools or []}
         self.runtime = runtime or LocalRuntime()
         # The one pool: caps how many *blocking* leaf calls (sync ``client.chat``)
@@ -139,11 +209,19 @@ class Flow:
         self.enable_structured_output = enable_structured_output
         self.output_parser = StructuredOutputParser()
         self._llm_clients = {"default": llm, **(llm_clients or {})}
-        self.repls: dict[ReplKey, ReplLike] = {}
+        self.repls: dict[ReplKey, Repl] = {}
         self._terminate_requested: set[str] = set()
         #: Active runs keyed by ``graph_id`` (one per trajectory). Created by
         #: ``run_for`` and cleared by ``finish_run``; mirrors how ``repls`` keys.
         self.runs: dict[str, Run] = {}
+        #: Generic extension seams other layers build on without subclassing.
+        #: ``halts`` maps a name to a ``(event, graph) -> bool`` predicate that
+        #: ``run_streaming(until=...)`` can resolve (see ``tools.graph_ops``).
+        #: ``tool_factories`` are ``(flow, graph, repl) -> {name: obj}`` callables
+        #: run per agent in ``build_tools`` so injected tools can close over the
+        #: agent's own graph/REPL (the general case of a plain ``tools`` entry).
+        self.halts: dict[str, Callable[..., bool]] = {}
+        self.tool_factories: list[Callable[[Flow, Graph, Repl], dict[str, Any]]] = []
 
     def run(
         self,
@@ -180,75 +258,9 @@ class Flow:
             output_schema=output_schema,
             merge_inputs=merge_inputs,
         )
-        async for _event in self._drive(run, until="done"):
+        async for _event in self.drive(run, until="done"):
             pass
         return run.graph.result()
-
-    async def parallel_stream(
-        self,
-        *graphs: Graph | str,
-        until: StepUntil = "done",
-        n: int | None = None,
-        close_repls: bool = False,
-    ) -> AsyncIterator[Event]:
-        """Drive several graphs on this one flow, merging their events into one
-        stream. Each graph gets its own run (keyed by ``graph_id``) with its own
-        scheduler and ``until`` boundary; every event carries ``graph_id`` so the
-        merged stream is self-describing. Graphs must be distinct — two entries
-        for the same ``graph_id`` would drive one run twice (``run_streaming``
-        rejects the second).
-        """
-        streams = [
-            aiter(
-                self.run_streaming(
-                    graph=graph_from_input(g),
-                    until=until,
-                    n=n,
-                    close_repls=close_repls,
-                )
-            )
-            for g in graphs
-        ]
-        # One in-flight "next event" task per live stream; whichever resolves
-        # first is yielded, then re-armed. No sentinels, no queue, no bound.
-        pending = {asyncio.ensure_future(anext(it)): it for it in streams}
-        try:
-            while pending:
-                done, _ = await asyncio.wait(
-                    pending, return_when=asyncio.FIRST_COMPLETED
-                )
-                for task in done:
-                    it = pending.pop(task)
-                    try:
-                        yield task.result()
-                    except StopAsyncIteration:
-                        continue
-                    pending[asyncio.ensure_future(anext(it))] = it
-        finally:
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
-            for it in streams:
-                await it.aclose()
-
-    async def parallel_run(
-        self,
-        *graphs: Graph | str,
-        until: StepUntil = "done",
-        n: int | None = None,
-        close_repls: bool = False,
-    ) -> list[Graph]:
-        """Drive several graphs to completion, returning them in argument order.
-
-        String queries are coerced to graphs first so the caller gets back the
-        live graphs (and their ``result()``) without holding them beforehand.
-        """
-        coerced = [graph_from_input(g) for g in graphs]
-        async for _event in self.parallel_stream(
-            *coerced, until=until, n=n, close_repls=close_repls
-        ):
-            pass
-        return coerced
 
     async def run_streaming(
         self,
@@ -278,7 +290,7 @@ class Flow:
         down this graph's REPLs when the run finishes (default keeps them for
         pause/resume, fork, and post-run inspection).
         """
-        # Phase 1: resolve/register the run. Phase 2: drive it (see :meth:`_drive`).
+        # Phase 1: resolve/register the run. Phase 2: drive it (see :meth:`drive`).
         run = self.resolve_run(
             graph=graph,
             query=query,
@@ -286,10 +298,10 @@ class Flow:
             output_schema=output_schema,
             merge_inputs=merge_inputs,
         )
-        async for event in self._drive(run, until=until, n=n, close_repls=close_repls):
+        async for event in self.drive(run, until=until, n=n, close_repls=close_repls):
             yield event
 
-    async def _drive(
+    async def drive(
         self,
         run: Run,
         *,
@@ -401,11 +413,10 @@ class Flow:
 
         if inputs:
             graph.inputs = {**graph.inputs, **inputs} if merge_inputs else dict(inputs)
+            self._sync_repl_inputs(graph)
         if output_schema is not None:
             graph.output_schema = json_schema_for(output_schema)
         run = self.run_for(graph)
-        if inputs:
-            self._sync_repl_inputs(graph)
         if query is not None:
             self.append_node(graph, query)
         return run
@@ -448,6 +459,11 @@ class Flow:
             return not isinstance(event.node, SupervisingOutput)
         if callable(until):
             return not bool(until(event, run.graph))
+        # A named halt registered on the flow (see ``tools.graph_ops.register_halt``)
+        # resolves to its predicate here, so callers can pass the name as ``until``.
+        predicate = self.halts.get(until)
+        if predicate is not None:
+            return not bool(predicate(event, run.graph))
         raise ValueError(f"unknown until boundary: {until!r}")
 
     async def run_agent_task(self, graph: Graph) -> None:
@@ -472,15 +488,29 @@ class Flow:
             return
 
         llm_turns = sum(isinstance(node, LLMOutput) for node in graph.nodes)
-        max_iters = iter_budget(graph.depth, self.max_iters, self.child_max_iters)
-        if llm_turns >= max_iters:
+        if llm_turns >= self.max_iters_for(graph):
             self.append_node(graph, DoneOutput(result=MAX_ITERS_EXCEEDED))
             return
 
-        messages = self.messages(graph, force_final=llm_turns == max_iters - 1)
+        # ``messages`` runs the user builder, which prepares the graph for this
+        # turn (commits any per-turn content and the trailing nudge as real
+        # nodes) before projecting, so the transcript stays self-contained.
+        messages = self.messages(graph)
+        # The assembled list always leads with the system message; reuse it for
+        # the metadata snapshot rather than rebuilding the prompt a second time.
+        system_prompt = messages[0]["content"]
         reply, usage = await self._call_chat(messages, graph.model)
         code = code_block(reply)
         metadata = llm_output_metadata(graph.model, usage)
+        # Record everything needed to reconstruct this exact call: a reference to
+        # the system prompt used (stored once in the graph's content-addressed
+        # table) and the context-window budget in force (so the truncated view the
+        # model actually saw is reproducible).
+        sid = system_prompt_id(system_prompt)
+        graph.system_prompts.setdefault(sid, system_prompt)
+        metadata["system_prompt"] = sid
+        if self.max_messages is not None:
+            metadata["max_messages"] = self.max_messages
         self.append_node(graph, LLMOutput(content=reply, code=code, metadata=metadata))
 
     async def run_agent(self, graph: Graph) -> None:
@@ -530,7 +560,7 @@ class Flow:
             self.append_node(graph, node)
         return node
 
-    def repl_for(self, graph: Graph) -> ReplLike:
+    def repl_for(self, graph: Graph) -> Repl:
         key = repl_key(graph)
         repl = self.repls.get(key)
         if repl is None:
@@ -547,6 +577,45 @@ class Flow:
             self.repls[key] = repl
         return repl
 
+    def open_repls(self) -> Iterator[tuple[Graph, Repl]]:
+        """Yield ``(graph, repl)`` for every live-run agent whose REPL is open.
+
+        The pairing ``build_tools`` can't give you after the fact: it walks the
+        active runs (root plus spawned children) and matches each agent to its
+        materialized REPL. Used to backfill tools onto already-open REPLs when a
+        factory is registered mid-flight (see ``tools.graph_ops.inject_tools``).
+        """
+        for run in self.runs.values():
+            for agent in run.graph.walk():
+                repl = self.repls.get(repl_key(agent))
+                if repl is not None:
+                    yield agent, repl
+
+    def get_var(self, graph: Graph, name: str, *, agent_id: str | None = None) -> Any:
+        """Read a variable out of an agent's REPL Python namespace.
+
+        The inverse of injecting an object: pull a (possibly LLM-mutated) value
+        back onto the host. In-process runtimes return the live object itself;
+        process-isolated runtimes return a cloudpickle **copy** of the sandbox's
+        object (host mutations and sandbox mutations do not alias). Raises if the
+        name is unbound. For the per-REPL ``ENV`` metadata channel, use
+        :meth:`get_env_var`.
+        """
+        agent = graph.agent_for(agent_id) if agent_id is not None else graph
+        return self.repl_for(agent).get_var(name)
+
+    def get_env_var(
+        self, graph: Graph, name: str, *, agent_id: str | None = None
+    ) -> Any:
+        """Read a key from an agent's REPL ``env`` metadata channel (``ENV``).
+
+        Distinct from :meth:`get_var`, which reads the Python namespace. The host
+        seeds ``RFLOW_*`` keys here; agent code can also write via ``ENV[...]``.
+        Raises ``KeyError`` if ``name`` is unset.
+        """
+        agent = graph.agent_for(agent_id) if agent_id is not None else graph
+        return self.repl_for(agent).get_env_var(name)
+
     def close_repl(self, graph: Graph) -> None:
         repl = self.repls.pop(repl_key(graph), None)
         if repl is not None:
@@ -560,17 +629,21 @@ class Flow:
             with suppress(Exception):
                 repl.close()
 
-    async def rebuild_repl(
-        self, graph: Graph, *, agent_id: str | None = None
-    ) -> ReplLike:
+    async def _replay_exec_actions(self, graph: Graph, nodes: list[Node]) -> None:
+        """Re-run each ``ExecAction`` in ``nodes`` against ``graph``'s REPL as a
+        replay (no appended nodes, no LLM). Shared by ``rebuild_repl`` (the whole
+        trajectory) and ``_merge_repl_state`` (just the merged delta)."""
+        for node in nodes:
+            if isinstance(node, ExecAction) and node.code:
+                await self.exec_turn(graph, node.code, replay=True)
+
+    async def rebuild_repl(self, graph: Graph, *, agent_id: str | None = None) -> Repl:
         """Reconstruct an agent's REPL by replaying its ``ExecAction`` code blocks
         (no LLM calls, no appended nodes). The correctness floor for forks/reverts.
         """
         agent = graph.agent_for(agent_id)
         self.close_repl(agent)
-        for node in agent.nodes:
-            if isinstance(node, ExecAction) and node.code:
-                await self.exec_turn(agent, node.code, replay=True)
+        await self._replay_exec_actions(agent, agent.nodes)
         return self.repl_for(agent)
 
     async def fork(
@@ -580,19 +653,81 @@ class Flow:
         from_node_id: str | None = None,
         agent_id: str | None = None,
         keep_anchor: bool = False,
+        mode: Literal["replay", "lazy"] = "replay",
     ) -> Graph:
-        """Independent branch of ``graph`` (deepcopy, fresh ``graph_id``) with its
-        REPL rebuilt to match the optionally-rewound trajectory. Never mutates parent.
+        """Independent branch of ``graph`` (deepcopy, fresh ``graph_id``). Never
+        mutates the parent.
 
         By default ``from_node_id`` is dropped (branch ends before it, to
         re-decide); pass ``keep_anchor=True`` to retain it and continue from
         after it.
+
+        ``mode`` controls how the branch's REPL is materialized:
+
+        - ``"replay"`` (default) — rebuild the REPL by re-running the prefix's
+          ``ExecAction`` code (deterministic, no LLM calls), so variables/tools
+          created at runtime are present and the branch continues exactly where
+          the trajectory left off. The correctness floor; works on any runtime.
+        - ``"lazy"`` — skip the replay: copy the trajectory only and append a
+          note that prior REPL state was NOT restored. The branch gets a fresh
+          REPL on its next turn (registered tools + ``INPUTS`` are seeded, but
+          runtime-created variables/tools are gone). Cheap — use when you only
+          need the branch's history, or when replaying the prefix is expensive
+          or not reproducible.
         """
+        if mode not in ("replay", "lazy"):
+            raise ValueError("mode must be 'replay' or 'lazy'")
         child = graph.fork(
             from_node_id=from_node_id, agent_id=agent_id, keep_anchor=keep_anchor
         )
-        await self.rebuild_repl(child, agent_id=agent_id)
+        if mode == "replay":
+            await self.rebuild_repl(child, agent_id=agent_id)
+        else:
+            # Lazy: no REPL reconstruction. Annotate the branch so its next turn
+            # knows the prior warm state is gone (a fresh REPL is opened on first
+            # use by ``repl_for``, seeded only with tools + INPUTS).
+            child.inject(
+                ExecOutput(content=LAZY_FORK_NOTE, output=LAZY_FORK_NOTE),
+                agent_id=agent_id,
+            )
         return child
+
+    async def rewind(
+        self,
+        graph: Graph,
+        *,
+        n: int = 1,
+        where: Callable[[LLMOutput], bool] | None = None,
+        agent_id: str | None = None,
+        mode: Literal["replay", "lazy"] = "replay",
+    ) -> Graph:
+        """Fork ``graph`` rewound by ``n`` decision turns, returning the new branch.
+
+        Sugar over :meth:`fork` that counts decision turns (each ``LLMOutput`` is
+        one) from the end instead of taking a ``from_node_id``: the branch drops
+        the last ``n`` turns and re-decides from there. Non-destructive — the
+        original is untouched and the branch REPL is rebuilt by replay.
+
+        Pass ``where`` to count only the turns that matter — the branch anchors on
+        the ``n``-th-from-last turn matching it, skipping setup/no-op turns that
+        would otherwise be miscounted (e.g. a scripted construct turn or a final
+        ``done`` turn that isn't a real move).
+        """
+        agent = graph.agent_for(agent_id)
+        turns = [
+            node
+            for node in agent.nodes
+            if isinstance(node, LLMOutput) and (where is None or where(node))
+        ]
+        if n < 1:
+            raise ValueError("n must be >= 1 (how many decision turns to undo)")
+        if n > len(turns):
+            raise ValueError(
+                f"cannot rewind {n} turns: graph has only {len(turns)} to undo"
+            )
+        return await self.fork(
+            graph, from_node_id=turns[-n].id, agent_id=agent_id, mode=mode
+        )
 
     async def merge(
         self,
@@ -644,9 +779,7 @@ class Flow:
                 await self.rebuild_repl(parent, agent_id=agent_id)
             return
 
-        for node in delta:
-            if isinstance(node, ExecAction) and node.code:
-                await self.exec_turn(p, node.code, replay=True)
+        await self._replay_exec_actions(p, delta)
 
     def discard(self, *children: Graph) -> None:
         """Eagerly close rejected branches' REPLs. Optional (parent was never
@@ -655,9 +788,77 @@ class Flow:
         for child in children:
             self.close_repls(child.graph_id)
 
-    def launch_subagents(self, parent: Graph, repl: ReplLike):
+    def adopt(self, parent: Graph, child: Graph, *, name: str) -> Graph:
+        """Reparent a prepared graph (a ``fork``/``rewind`` result) as a child agent
+        of ``parent``, returning the attached child.
+
+        Structural only: it remaps the child's ids, moves its already-built REPL to
+        the new key, and emits ``AddChild``. It does **not** append a
+        ``SupervisingOutput`` and does **not** run/await the child — the launcher
+        (``launch_subagents``) owns the supervising node and the await loop. This is
+        the warm counterpart to a cold ``Graph(query=...)`` child: the peer of
+        ``fork``/``rewind`` that lets a launched child continue an existing
+        trajectory instead of cold-starting.
+
+        The child must be a single-agent graph (a plain fork/rewind). Reparenting a
+        child that itself carries sub-children is out of scope.
+        """
+        old_key = repl_key(child)  # capture before mutating identity
+        new_id = f"{parent.agent_id}.{name}"
+        child.set_graph_id(parent.graph_id)
+        child.agent_id = new_id
+        child.parent_agent_id = parent.agent_id
+        child.depth = parent.depth + 1
+        for node in child.nodes:
+            node.agent_id = new_id
+        # ``fork``/``rewind`` already replayed the REPL under the old key; move it to
+        # the new key rather than replaying again (rebuild only if it's gone).
+        repl = self.repls.pop(old_key, None)
+        if repl is not None:
+            self.repls[repl_key(child)] = repl
+        self.apply_action(
+            parent,
+            AddChild(type="add_child", parent_agent_id=parent.agent_id, child=child),
+        )
+        return child
+
+    def launch_subagents(self, parent: Graph, repl: Repl):
         """Public factory for the recursive spawn tool (see ``tools.builtins``)."""
         return make_launch_subagents(self, parent, repl)
+
+    def launch_subgraphs(
+        self,
+        parent: Graph,
+        children: list[Graph],
+        *,
+        queries: list[str] | None = None,
+        names: list[str] | None = None,
+    ):
+        """Warm counterpart to ``launch_subagents``: run prepared ``Graph``s
+        (``fork``/``rewind`` results) as children of ``parent``, in parallel, and
+        await their results.
+
+        A thin host-side wrapper over ``launch_subagents``' warm ``graph`` path:
+        where ``launch_subagents`` builds children from ``query`` strings (cold),
+        this attaches ready graphs (warm). Each child continues its own
+        trajectory; pass ``queries`` (one per child) to append a kickoff user
+        turn to each, and ``names`` to control the child agent ids (default
+        ``c0``, ``c1``, ...). This exists only so host code has a named,
+        graph-first entry point — the warm ``graph`` spec key stays an internal
+        detail and never has to appear in model-facing tools or example code.
+        Returns the awaitable ``launch_subagents`` result (one entry per child).
+        """
+        launch = self.launch_subagents(parent, self.repl_for(parent))
+        specs: list[dict[str, Any]] = []
+        for i, child in enumerate(children):
+            spec: dict[str, Any] = {
+                "graph": child,
+                "name": names[i] if names is not None else f"c{i}",
+            }
+            if queries is not None:
+                spec["query"] = queries[i]
+            specs.append(spec)
+        return launch(specs)
 
     def append_node(self, graph: Graph, node: Node | str) -> Event:
         """Append via :meth:`Graph.inject_action` and emit into the active run."""
@@ -682,20 +883,78 @@ class Flow:
             run.tasks.emit(agent_id, event)
         return action
 
-    def messages(
-        self, graph: Graph, *, force_final: bool = False
-    ) -> list[dict[str, str]]:
-        return build_messages(
-            graph,
-            self.build_system_prompt(graph),
-            max_messages=self.max_messages,
-            force_final=force_final,
-        )
+    def messages(self, graph: Graph) -> list[dict[str, str]]:
+        """Assemble the full chat message list for one LLM call.
 
-    def build_system_prompt(self, graph: Graph) -> str:
-        if self.system_prompt is not None:
-            return self.system_prompt
-        return self.prompt_builder.build(self, graph)
+        The agent's prompt profile supplies the system + user builders. The user
+        builder both *prepares* the graph for this turn (committing any per-turn
+        content and the trailing nudge as real ``UserQuery`` nodes) and projects
+        it to turns; Flow then prepends the system message, truncates the turns to
+        ``max_messages``, and coalesces adjacent same-role turns (required last,
+        since injected turns and the truncation marker can introduce consecutive
+        user turns). Because it mutates, this must run exactly once per turn (it
+        does: the sole call site is ``run_agent_task``). Subclass to own the whole
+        list or change truncation.
+        """
+        profile = self._profile_for(graph)
+        system = self.build_system_prompt(graph, profile)
+        user = profile.user if profile.user is not None else self.user_prompt
+        turns = self._truncate_turns(user(self, graph))
+        return coalesce_roles([{"role": "system", "content": system}, *turns])
+
+    def _truncate_turns(self, turns: list[dict[str, str]]) -> list[dict[str, str]]:
+        if self.max_messages is None or len(turns) + 1 <= self.max_messages:
+            return turns
+        keep = max(1, self.max_messages - 2)
+        return [{"role": "user", "content": self.truncation_summary}, *turns[-keep:]]
+
+    def max_iters_for(self, graph: Graph) -> int:
+        """Effective iteration budget for ``graph`` at its recursion depth."""
+        return iter_budget(graph.depth, self.max_iters, self.child_max_iters)
+
+    def build_system_prompt(
+        self, graph: Graph, profile: PromptProfile | None = None
+    ) -> str:
+        profile = profile if profile is not None else self._profile_for(graph)
+        system = profile.system if profile.system is not None else self.system_prompt
+        return as_system_prompt_fn(system)(self, graph)
+
+    def prompt_name_for(self, graph: Graph) -> str:
+        """Which profile name this agent uses.
+
+        ``"llm"`` / ``"graph"`` both honor ``graph.prompt_profile`` (stamp from a
+        spawn spec or host construction). A callable ``prompt_router`` is host
+        policy and overrides that stamp. Override this method for custom routing.
+        """
+        router = self.prompt_router
+        if callable(router):
+            return router(self, graph)
+        return graph.prompt_profile
+
+    def prompt_profile(self, name: str = "default") -> PromptProfile:
+        """Look up a registered profile by name. ``"default"`` is the implicit
+        profile built from the flow's own ``system_prompt``/``user_prompt``."""
+        if name == "default":
+            return PromptProfile(self.system_prompt, self.user_prompt)
+        try:
+            return self._prompts[name]
+        except KeyError as exc:
+            keys = ", ".join(["default", *sorted(self._prompts)])
+            raise ValueError(f"unknown prompt {name!r}. available: {keys}") from exc
+
+    def _profile_for(self, graph: Graph) -> PromptProfile:
+        # Resolve the profile for this agent with a self-contained-continuation
+        # fallback: an unknown name (e.g. a graph loaded into a flow that lacks the
+        # profile) yields the last system prompt actually recorded on the graph, so
+        # resume keeps the prompt the agent ran under instead of drifting.
+        name = self.prompt_name_for(graph)
+        try:
+            return self.prompt_profile(name)
+        except ValueError:
+            last = graph.latest_system_prompt()
+            if last is not None:
+                return PromptProfile(system=last)
+            raise
 
     async def _call_chat(
         self,
@@ -775,23 +1034,40 @@ class Flow:
             return [self.output_parser(text, schema) for text in texts]
         return texts
 
-    def add_tool(self, fn: Any, *, name: str | None = None) -> None:
-        """Register a tool after construction and push it into every live REPL.
+    def inject(self, name: str, obj: Any) -> None:
+        """Bind ``obj`` into every agent's REPL namespace under ``name``.
 
-        The tool is callable on the next turn of already-running agents and is
-        included when new agents seed their REPLs. The per-turn system prompt
-        reflects it automatically (``@tool``-decorated tools render a doc line).
-        This is the hook that lets a tool create more tools at runtime.
+        The flow-wide, fork-durable version of ``repl.inject``: ``obj`` is pushed
+        into every live REPL now and seeded into every REPL opened later —
+        including each fork's rebuilt REPL — so replayed code that references it
+        (e.g. ``game = Sokoban(...)``) works on every branch. This is the single
+        entry point for everything the agent code touches: tools, classes, data,
+        libraries. Whether the entry is *advertised* in the system prompt is a
+        property of the object, not of this call — only ``@tool``-decorated
+        callables render a doc line, so injecting a plain class or value is
+        silently non-advertised. Use :meth:`add_tool` when you want the name
+        derived from a function automatically.
         """
-        key = name or tool_name(fn)
-        if key in _RESERVED_TOOL_NAMES:
-            raise ValueError(f"{key!r} is reserved and cannot be overridden")
-        self.tools[key] = fn
+        if name in _RESERVED_TOOL_NAMES:
+            raise ValueError(f"{name!r} is reserved and cannot be overridden")
+        self.tools[name] = obj
         for repl in self.repls.values():
-            repl.inject(key, fn)
+            repl.inject(name, obj)
+
+    def add_tool(self, fn: Any, *, name: str | None = None) -> None:
+        """Register a tool after construction, keyed by its own name.
+
+        Thin convenience over :meth:`inject`: derives the binding name from ``fn``
+        (``@tool`` name, or ``name=`` override) and injects it. The tool is
+        callable on the next turn of already-running agents, seeded into new
+        agents' REPLs, and — being ``@tool``-decorated — rendered in the per-turn
+        system prompt automatically. This is the hook that lets a tool create
+        more tools at runtime.
+        """
+        self.inject(name or tool_name(fn), fn)
 
     def remove_tool(self, name: str) -> Any:
-        """Unregister a tool and drop it from every live REPL. Returns it (or None)."""
+        """Unregister a binding and drop it from every live REPL. Returns it (or None)."""
         if name in _RESERVED_TOOL_NAMES:
             raise ValueError(f"{name!r} is reserved and cannot be removed")
         fn = self.tools.pop(name, None)
@@ -803,7 +1079,7 @@ class Flow:
         repl = self.repls.get(repl_key(graph))
         return repl.namespace if repl is not None else self.build_tools(graph)
 
-    def build_tools(self, graph: Graph, repl: ReplLike | None = None) -> dict[str, Any]:
+    def build_tools(self, graph: Graph, repl: Repl | None = None) -> dict[str, Any]:
         repl = repl or SimpleNamespace(done_result=None, drain=lambda: "")
         tools = {
             "done": make_done(self, graph, repl),
@@ -814,6 +1090,11 @@ class Flow:
             tools["llm_query_batched"] = self.llm_query_batched
         for namespace in (self.runtime.tools, self.tools):
             for name, fn in namespace.items():
+                tools.setdefault(name, fn)
+        # Per-agent factories run last and via ``setdefault``, so reserved names
+        # (``done``/``launch_subagents``/``INPUTS``) and static tools always win.
+        for factory in self.tool_factories:
+            for name, fn in factory(self, graph, repl).items():
                 tools.setdefault(name, fn)
         return tools
 

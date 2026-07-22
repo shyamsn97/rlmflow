@@ -29,6 +29,7 @@ from rflow.graph.graph import (
     apply_graph_action,
     load_run,
     node_from_dict,
+    system_prompt_id,
 )
 
 __all__ = [
@@ -58,4 +59,5 @@ __all__ = [
     "apply_graph_action",
     "load_run",
     "node_from_dict",
+    "system_prompt_id",
 ]

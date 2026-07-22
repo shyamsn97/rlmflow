@@ -15,8 +15,8 @@ from rflow.runtime.protocol import (
     dump_message,
     parse_client_message,
 )
-from rflow.runtime.repl import ReplLike
-from rflow.runtime.repl_client import ReplClient, ReplConnection
+from rflow.runtime.repl import Repl
+from rflow.runtime.repl_client import RemoteRepl, ReplConnection
 from rflow.runtime.runtime import Runtime
 
 if TYPE_CHECKING:
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 
 class ModalConnection(ReplConnection):
-    """Connect ReplClient to a repl_server process in a Modal Sandbox."""
+    """Connect RemoteRepl to a repl_server process in a Modal Sandbox."""
 
     def __init__(
         self,
@@ -58,7 +58,9 @@ class ModalConnection(ReplConnection):
                 "Modal remote REPL requires the optional `modal` dependency."
             ) from exc
         app = modal.App.lookup(self.app_name, create_if_missing=True)
-        image = self.image or modal.Image.debian_slim().pip_install("rlmflow")
+        image = self.image or modal.Image.debian_slim().pip_install(
+            "rlmflow", "cloudpickle>=2.2"
+        )
         self.container = modal.Sandbox.create(
             "python",
             "-u",
@@ -153,8 +155,8 @@ class ModalRuntime(Runtime):
         self.repl_timeout = repl_timeout
         self.container_kwargs = dict(container_kwargs)
 
-    def deploy_repl_server(self, graph: Graph) -> ReplClient:
-        return ReplClient(
+    def deploy_repl_server(self, graph: Graph) -> RemoteRepl:
+        return RemoteRepl(
             ModalConnection(
                 self.app_name,
                 remote_workdir=self.remote_workdir,
@@ -165,7 +167,7 @@ class ModalRuntime(Runtime):
             )
         )
 
-    def open(self, graph: Graph) -> ReplLike:
+    def open(self, graph: Graph) -> Repl:
         return self.deploy_repl_server(graph)
 
 

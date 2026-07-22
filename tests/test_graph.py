@@ -18,6 +18,7 @@ from rflow import (
     SupervisingOutput,
     UserQuery,
     apply_graph_action,
+    load_run,
 )
 from rflow.utils import repl_key
 
@@ -380,8 +381,32 @@ def test_minimal_graph_saves_run_layout(tmp_path):
 
     root_dir = run_dir / "agents" / "root"
     child_dir = root_dir / "auth"
-    assert json.loads((root_dir / "agent.json").read_text())["query"] == "root query"
+    root_meta = json.loads((root_dir / "agent.json").read_text())
+    assert root_meta["query"] == "root query"
     assert json.loads((child_dir / "agent.json").read_text())["query"] == "child task"
+
+    # System prompts live once in a content-addressed table in agent.json; each
+    # llm_output in session.jsonl references its prompt by id, so a saved trace
+    # reconstructs every turn's prompt from disk alone.
+    prompt_table = root_meta["system_prompts"]
+    assert any(text.startswith("You are a Recursive") for text in prompt_table.values())
+    root_llm = next(
+        json.loads(line)
+        for line in (root_dir / "session.jsonl").read_text().splitlines()
+        if json.loads(line)["type"] == "llm_output"
+    )
+    sys_id = root_llm["metadata"]["system_prompt"]
+    assert sys_id.startswith("sys_")
+    assert prompt_table[sys_id].startswith("You are a Recursive")
+
+    # Loading restores the table onto the graph; nodes keep their id and resolve
+    # to full text via system_prompt_for.
+    reloaded = load_run(run_dir)
+    reloaded_llm = next(n for n in reloaded.nodes if isinstance(n, LLMOutput))
+    assert reloaded_llm.metadata["system_prompt"] == sys_id
+    assert reloaded.system_prompt_for(reloaded_llm).startswith("You are a Recursive")
+
+
     assert '"type": "done_output"' in (child_dir / "session.jsonl").read_text()
     assert json.loads((child_dir / "latest.json").read_text())["result"] == "child result"
 
@@ -395,6 +420,37 @@ def test_minimal_graph_saves_run_layout(tmp_path):
     assert loaded.result() == "root saw child result"
     assert loaded["root.auth"].result() == "child result"
 
+
+def test_prompt_name_and_fallback_survive_save_load(tmp_path):
+    # graph.prompt_profile (profile name) and the recorded system prompt round-trip,
+    # and a flow that lacks the profile resolves to the recorded prompt (no drift).
+    flow = Flow(StubLLM(lambda _m: '```repl\ndone("ok")\n```'))
+    graph = Graph(query="q", prompt_profile="ghost")
+    graph.system_prompts["sys_x"] = "RECORDED SYSTEM PROMPT"
+    graph.commit(LLMOutput(content="hi", metadata={"system_prompt": "sys_x"}))
+
+    run_dir = graph.save(tmp_path / "run")
+    reloaded = load_run(run_dir)
+
+    assert reloaded.prompt_profile == "ghost"
+    assert reloaded.system_prompts["sys_x"] == "RECORDED SYSTEM PROMPT"
+    assert flow.build_system_prompt(reloaded) == "RECORDED SYSTEM PROMPT"
+
+
+def test_legacy_prompt_key_loads_into_prompt_profile(tmp_path):
+    # Graphs saved before the ``prompt`` -> ``prompt_profile`` rename carry the old
+    # key in agent.json; load accepts either so old runs still deserialize.
+    import json
+
+    graph = Graph(query="q", prompt_profile="coder")
+    run_dir = graph.save(tmp_path / "run")
+    # single root agent, no children -> the one agent dir under agents/
+    meta_path = next((run_dir / "agents").iterdir()) / "agent.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["prompt"] = meta.pop("prompt_profile")  # simulate a pre-rename save
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    assert load_run(run_dir).prompt_profile == "coder"
 
 
 def test_minimal_graph_id_is_auto_created_and_persisted(tmp_path):
@@ -479,6 +535,25 @@ def test_minimal_fork_is_isolated_from_parent():
     assert "y" not in parent_ns  # parent REPL untouched
     assert child_ns.get("x") == 1  # inherited via fork replay
     assert child_ns.get("y") == 2  # child's own work
+
+
+def test_minimal_lazy_fork_skips_replay_and_annotates():
+    async def run():
+        flow = Flow(StubLLM(lambda _messages: "unused"))
+        parent = seed_exec_graph("x = 1")
+        await flow.rebuild_repl(parent)
+
+        child = await flow.fork(parent, mode="lazy")
+        # Fresh REPL on first use: no replay, so parent's runtime var is gone.
+        child_ns = dict(flow.repl_for(child).namespace)
+        note = child.nodes[-1]
+        return child.graph_id, parent.graph_id, child_ns, note
+
+    child_id, parent_id, child_ns, note = asyncio.run(run())
+    assert child_id != parent_id
+    assert "x" not in child_ns  # lazy: prefix ExecActions were NOT replayed
+    assert note.type == "exec_output"
+    assert "forked" in (note.content or "").lower()  # branch is annotated
 
 
 

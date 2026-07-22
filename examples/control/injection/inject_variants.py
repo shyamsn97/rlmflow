@@ -30,7 +30,14 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rflow import ExecOutput, Flow, Graph, GraphCheckpointer, SupervisingOutput
+from rflow import (
+    ExecOutput,
+    Flow,
+    Graph,
+    GraphCheckpointer,
+    SupervisingOutput,
+    parallel_stream,
+)
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -211,7 +218,7 @@ def main() -> None:
 
     async def run_variants() -> None:
         try:
-            async for event in flow.parallel_stream(cols_graph, root_graph):
+            async for event in parallel_stream(flow, cols_graph, root_graph):
                 gid = event.graph_id
                 checkpointers[gid].handle(event, graphs[gid])
                 node_type = getattr(event, "node_type", event.type)

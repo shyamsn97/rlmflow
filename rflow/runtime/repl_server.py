@@ -24,12 +24,20 @@ from rflow.runtime.protocol import (
     RemoveRequest,
     ReplRequest,
     ReplResponse,
+    RetrieveRequest,
     RunRequest,
     SetEnvRequest,
     dump_message,
     parse_request,
 )
-from rflow.runtime.repl import DoneSignal, Repl
+from rflow.runtime.repl import DoneSignal, LocalRepl
+from rflow.runtime.serial import (
+    CLOUDPICKLE,
+    cloudpickle_available,
+    decode_object,
+    encode_object,
+    is_json_safe,
+)
 from rflow.tools import tool
 
 
@@ -45,8 +53,8 @@ class ReplServer:
     ) -> None:
         self._in = protocol_in or sys.stdin
         self._out = protocol_out or sys.stdout
-        self.repl = Repl(working_directory=workdir)
-        self.capabilities = CapabilityMap()
+        self.repl = LocalRepl(working_directory=workdir)
+        self.capabilities = CapabilityMap(cloudpickle=cloudpickle_available())
         self._next_proxy_id = 0
 
     def write(self, msg: ReplResponse | ProxyCall) -> None:
@@ -96,8 +104,23 @@ class ReplServer:
                 env=dict(self.repl.env),
             )
         if isinstance(msg, InjectRequest):
-            self.repl.namespace[msg.name] = msg.value
+            value = (
+                decode_object(msg.value) if msg.encoding == CLOUDPICKLE else msg.value
+            )
+            self.repl.namespace[msg.name] = value
             return ReplResponse(id=msg.id)
+        if isinstance(msg, RetrieveRequest):
+            if msg.name not in self.repl.namespace:
+                return ReplResponse(
+                    id=msg.id, ok=False, error=f"no variable named {msg.name!r}"
+                )
+            value = self.repl.namespace[msg.name]
+            # Send plain data as JSON; wrap anything else as a cloudpickle blob.
+            if is_json_safe(value):
+                return ReplResponse(id=msg.id, value=value)
+            return ReplResponse(
+                id=msg.id, value=encode_object(value), value_encoding=CLOUDPICKLE
+            )
         if isinstance(msg, RemoveRequest):
             self.repl.namespace.pop(msg.name, None)
             return ReplResponse(id=msg.id)

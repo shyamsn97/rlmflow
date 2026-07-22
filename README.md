@@ -447,6 +447,7 @@ Add `--include-optional`, `--include-live`, `--include-sandbox`, or
 | [`fork_repair.py`](examples/control/branching/fork_repair.py) | Fork graph/workdir snapshots into independent repair branches and compare results. |
 | [`best_of_n.py`](examples/control/branching/best_of_n.py) | Run N independent branches and pick the best result. |
 | [`autoresearch/`](examples/autoresearch/) | TinyStories autoresearch loop with custom `@tool`s, delegation, and Modal GPU trials. |
+| [`shepherd/`](examples/shepherd/) | Meta-agent recovers a jammed Sokoban worker: rewind + warm `launch_subgraphs` children, `LiveGraphTree` + board panels, play-by-play GIF/JSON traces. |
 | [`graph/`](examples/graph/) | Offline tour of the `Graph` API: query, navigate, mutate, save/load, rewind, fork, render. |
 | [`run_examples.py`](examples/run_examples.py) | Manifest-driven smoke runner for offline, optional, live, sandbox, and manual examples. |
 | [`view_demo.py`](examples/view_demo.py) | Build synthetic minimal `Graph` snapshots and launch the lightweight viewer. |
@@ -503,7 +504,7 @@ in [`docs/internals.md`](docs/internals.md). Research notes live under
   image/step exports.
 - [Runtimes](docs/runtimes.md): `Runtime` protocol, shipped runtimes
   (Local / Docker / Modal / E2B / Daytona), writing your own.
-- [Prompt customization](docs/prompt_customization.md): `PromptBuilder`
+- [Prompt customization](docs/prompt_customization.md): `SystemPromptBuilder`
   sections, callable dynamic sections, deriving from the default prompt,
   full replacement.
 - [Security](docs/security.md): trust model, Docker isolation knobs,

@@ -28,6 +28,7 @@ python examples/summarizer.py --sections 10 --no-viz
 | [`needle/`](needle/) | Needle-in-haystack (in-memory + filesystem variants) |
 | [`coding/`](coding/) | Interactive file-editing agent |
 | [`autoresearch/`](autoresearch/) | TinyStories autoresearch loop with Modal GPU trials |
+| [`shepherd/`](shepherd/) | Meta-agent recovers a jammed Sokoban worker via rewind + `launch_subgraphs` (warm children), with `LiveGraphTree` + board panels |
 
 ## Tours & integrations
 

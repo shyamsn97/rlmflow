@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import abc
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
@@ -91,17 +91,22 @@ class OpenAIClient(LLMClient):
     thread_safe = True
 
     def __init__(self, model: str = "gpt-4o", **client_kwargs) -> None:
-        from openai import OpenAI
+        from openai import AsyncOpenAI
 
-        self.client = OpenAI(**client_kwargs)
+        # Async SDK on purpose: the request runs on the event loop, so Flow's
+        # ``asyncio.wait_for`` can actually cancel it (closing the socket) when
+        # the per-request timeout elapses. A sync client runs on a pool thread
+        # that cancellation cannot preempt, so a wedged call would hang past the
+        # timeout — the async client is what makes the timeout real.
+        self.client = AsyncOpenAI(**client_kwargs)
         self.model = model
 
-    def chat(self, messages: list[dict[str, str]], *args, **kwargs) -> str:
-        text, _usage = self.completion(messages, *args, **kwargs)
+    async def chat(self, messages: list[dict[str, str]], *args, **kwargs) -> str:
+        text, _usage = await self.completion(messages, *args, **kwargs)
         return text
 
     @retry_transient
-    def completion(
+    async def completion(
         self, messages: list[dict[str, str]], *args, **kwargs
     ) -> tuple[str, LLMUsage]:
         request_kwargs = {}
@@ -110,7 +115,7 @@ class OpenAIClient(LLMClient):
         for key in ("temperature", "top_p", "max_tokens", "stop"):
             if kwargs.get(key) is not None:
                 request_kwargs[key] = kwargs[key]
-        resp = self.client.chat.completions.create(
+        resp = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             **request_kwargs,
@@ -124,23 +129,26 @@ class OpenAIClient(LLMClient):
             self.last_usage = usage
         return resp.choices[0].message.content or "", usage
 
-    def stream(self, messages: list[dict[str, str]], *args, **kwargs) -> Iterator[str]:
+    async def stream(
+        self, messages: list[dict[str, str]], *args, **kwargs
+    ) -> AsyncIterator[str]:
         # Buffer until the stream is fully consumed before yielding any
         # tokens, so tenacity can safely retry transient mid-stream
         # drops without double-emitting partial output. Real-time
         # streaming is sacrificed for correctness on retry.
-        yield from self.collect_stream(messages)
+        for chunk in await self.collect_stream(messages):
+            yield chunk
 
     @retry_transient
-    def collect_stream(self, messages: list[dict[str, str]]) -> list[str]:
-        resp = self.client.chat.completions.create(
+    async def collect_stream(self, messages: list[dict[str, str]]) -> list[str]:
+        resp = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
             stream=True,
             stream_options={"include_usage": True},
         )
         chunks: list[str] = []
-        for chunk in resp:
+        async for chunk in resp:
             if chunk.choices and chunk.choices[0].delta.content:
                 chunks.append(chunk.choices[0].delta.content)
             if getattr(chunk, "usage", None):
@@ -164,7 +172,9 @@ class AnthropicClient(LLMClient):
     ) -> None:
         import anthropic
 
-        self.client = anthropic.Anthropic(**client_kwargs)
+        # Async SDK: see OpenAIClient — running on the event loop is what lets
+        # Flow's ``asyncio.wait_for`` truly cancel a stuck call at the timeout.
+        self.client = anthropic.AsyncAnthropic(**client_kwargs)
         self.model = model
         self.max_tokens = max_tokens
 
@@ -178,12 +188,12 @@ class AnthropicClient(LLMClient):
                 chat_msgs.append(m)
         return system, chat_msgs
 
-    def chat(self, messages: list[dict[str, str]], *args, **kwargs) -> str:
-        text, _usage = self.completion(messages, *args, **kwargs)
+    async def chat(self, messages: list[dict[str, str]], *args, **kwargs) -> str:
+        text, _usage = await self.completion(messages, *args, **kwargs)
         return text
 
     @retry_transient
-    def completion(
+    async def completion(
         self, messages: list[dict[str, str]], *args, **kwargs
     ) -> tuple[str, LLMUsage]:
         system, chat_msgs = self.split_messages(messages)
@@ -196,7 +206,7 @@ class AnthropicClient(LLMClient):
                 request_kwargs[key] = kwargs[key]
         if kwargs.get("stop") is not None:
             request_kwargs["stop_sequences"] = kwargs["stop"]
-        resp = self.client.messages.create(
+        resp = await self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
             system=system,
@@ -210,20 +220,23 @@ class AnthropicClient(LLMClient):
         self.last_usage = usage
         return resp.content[0].text, usage
 
-    def stream(self, messages: list[dict[str, str]], *args, **kwargs) -> Iterator[str]:
-        yield from self.collect_stream(messages)
+    async def stream(
+        self, messages: list[dict[str, str]], *args, **kwargs
+    ) -> AsyncIterator[str]:
+        for chunk in await self.collect_stream(messages):
+            yield chunk
 
     @retry_transient
-    def collect_stream(self, messages: list[dict[str, str]]) -> list[str]:
+    async def collect_stream(self, messages: list[dict[str, str]]) -> list[str]:
         system, chat_msgs = self.split_messages(messages)
-        with self.client.messages.stream(
+        async with self.client.messages.stream(
             model=self.model,
             max_tokens=self.max_tokens,
             system=system,
             messages=chat_msgs,
         ) as s:
-            chunks = list(s.text_stream)
-            msg = s.get_final_message()
+            chunks = [text async for text in s.text_stream]
+            msg = await s.get_final_message()
             self.last_usage = LLMUsage(
                 input_tokens=msg.usage.input_tokens,
                 output_tokens=msg.usage.output_tokens,

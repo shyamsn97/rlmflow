@@ -20,7 +20,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rflow import (
-    DEFAULT_BUILDER,
     DoneOutput,
     ErrorOutput,
     ExecOutput,
@@ -29,6 +28,7 @@ from rflow import (
     LLMOutput,
     LocalRuntime,
     SupervisingOutput,
+    SystemPromptBuilder,
     UserQuery,
     render_tree,
     tool,
@@ -361,7 +361,8 @@ Example moves:
 """
 
 
-CONTROLLER_PROMPT_BUILDER = DEFAULT_BUILDER.section(
+CONTROLLER_PROMPT_BUILDER = SystemPromptBuilder()
+CONTROLLER_PROMPT_BUILDER.sections.add(
     "graph_controller",
     CONTROLLER_POLICY_TEXT,
     title="Graph Controller",
@@ -407,7 +408,7 @@ def make_controller(
         runtime=runtime,
         max_depth=0,
         max_iters=max_iters,
-        prompt_builder=CONTROLLER_PROMPT_BUILDER,
+        system_prompt=CONTROLLER_PROMPT_BUILDER,
     )
 
 

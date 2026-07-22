@@ -1,5 +1,11 @@
 # DeLM vs. RecursiveFlow: Research and Adoption Plan
 
+> **API note (current codebase):** this research note uses older names —
+> read `Flow` for `RecursiveFlow`, `Graph.inputs` / `INPUTS` for
+> `context` / `CONTEXT` spawn payloads, and `prompt_profile` for per-agent
+> prompt selection. See `docs/control.md` / `docs/internals.md` for the
+> current surface.
+
 This note compares DeLM, "Decentralized Language Models with shared context",
 against the current `rlmflow` architecture and sketches what it would take to
 make DeLM-style coordination a first-class approach in this repo.

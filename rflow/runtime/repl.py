@@ -10,10 +10,11 @@ import io
 import os
 import sys
 import threading
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 
 class MissingReplError(Exception):
@@ -24,27 +25,53 @@ class DoneSignal(BaseException):
     """Raised by ``done(...)`` to end a block immediately."""
 
 
-@runtime_checkable
-class ReplLike(Protocol):
+class Repl(ABC):
+    """Abstract REPL contract the ``Flow`` drives, regardless of where code runs.
+
+    Two concrete subclasses implement it: :class:`LocalRepl` (in this process)
+    and :class:`~rflow.runtime.repl_client.RemoteRepl` (a stub that speaks the
+    wire protocol to a sandbox). Being an ABC (not a ``Protocol``) makes the
+    relationship explicit — you can see both subclasses inherit from it, and
+    Python enforces that each implements every abstract method.
+
+    Implementations expose four state attributes: ``namespace`` (the Python
+    globals code runs against), ``env`` (the host<->REPL metadata channel),
+    ``done_result`` (the final answer once ``done(...)`` fires), and ``errored``
+    (whether the last run raised).
+    """
+
     namespace: dict[str, Any]
     env: dict[str, Any]
     done_result: str | None
     errored: bool
 
+    @abstractmethod
     def seed(
         self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]
     ) -> None: ...
 
+    @abstractmethod
     def inject(self, name: str, fn: Any) -> None: ...
 
+    @abstractmethod
+    def get_var(self, name: str) -> Any: ...
+
+    @abstractmethod
+    def get_env_var(self, name: str) -> Any: ...
+
+    @abstractmethod
     def remove_tool(self, name: str) -> None: ...
 
+    @abstractmethod
     def update_env(self, values: dict[str, Any]) -> None: ...
 
+    @abstractmethod
     async def run(self, code: str) -> str: ...
 
+    @abstractmethod
     def drain(self) -> str: ...
 
+    @abstractmethod
     def close(self) -> None: ...
 
 
@@ -93,8 +120,13 @@ def has_top_level_await(tree: ast.AST) -> bool:
     return False
 
 
-class Repl:
-    """Stateful namespace with top-level await support."""
+class LocalRepl(Repl):
+    """Stateful in-process REPL: a namespace with top-level await support.
+
+    Runs agent code in *this* Python process, so injected objects are the real
+    live objects (by reference, zero-copy) and ``get_var`` returns them as-is.
+    Returned by :class:`~rflow.runtime.runtime.LocalRuntime`.
+    """
 
     def __init__(self, working_directory: str | Path | None = None) -> None:
         self.namespace: dict[str, Any] = {"__builtins__": __builtins__}
@@ -137,6 +169,23 @@ class Repl:
         namespace under ``name``. The general injection primitive; dynamic tools
         are just one use of it."""
         self.namespace[name] = fn
+
+    def get_var(self, name: str) -> Any:
+        """Return the live object bound to ``name`` in the Python namespace
+        (in-process: the real object, not a copy). Raises ``KeyError`` if unbound."""
+        if name not in self.namespace:
+            raise KeyError(name)
+        return self.namespace[name]
+
+    def get_env_var(self, name: str) -> Any:
+        """Return a value from this REPL's ``env`` metadata channel (``ENV``).
+
+        Distinct from :meth:`get_var`, which reads the Python namespace. Raises
+        ``KeyError`` if ``name`` is unset.
+        """
+        if name not in self.env:
+            raise KeyError(name)
+        return self.env[name]
 
     def remove_tool(self, name: str) -> None:
         self.namespace.pop(name, None)
@@ -202,8 +251,8 @@ class Repl:
 
 __all__ = [
     "DoneSignal",
+    "LocalRepl",
     "MissingReplError",
     "Repl",
-    "ReplLike",
     "has_top_level_await",
 ]

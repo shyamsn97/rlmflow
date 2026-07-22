@@ -11,6 +11,13 @@ from rflow.tools.filesystem import (
     read_lines,
     write_file,
 )
+from rflow.tools.graph_ops import (
+    HaltFn,
+    ToolFactory,
+    enable_graph_ops,
+    inject_tools,
+    register_halt,
+)
 from rflow.tools.tools import (
     ToolMetadata,
     format_tool_line,
@@ -21,17 +28,22 @@ from rflow.tools.tools import (
 
 __all__ = [
     "FILE_TOOLS",
+    "HaltFn",
+    "ToolFactory",
     "ToolMetadata",
     "append_file",
     "edit_file",
+    "enable_graph_ops",
     "format_tool_line",
     "get_tool_metadata",
     "grep",
+    "inject_tools",
     "line_count",
     "ls",
     "partition_repl_namespace",
     "read_file",
     "read_lines",
+    "register_halt",
     "tool",
     "write_file",
 ]

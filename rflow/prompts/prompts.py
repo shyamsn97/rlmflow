@@ -5,9 +5,15 @@ from __future__ import annotations
 import re
 import textwrap
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
-from rflow.prompts.messages import build_inputs_manifest
+from rflow.prompts.messages import (
+    PromptBuilder,
+    UserPromptSource,
+    as_user_prompt,
+    build_inputs_manifest,
+)
 from rflow.tools import format_tool_line, partition_repl_namespace
 
 SectionBody = str | Callable[[Any, Any], str]
@@ -48,16 +54,21 @@ class Section:
         return text
 
 
-class PromptBuilder:
-    def __init__(self) -> None:
-        self._sections: list[Section] = []
+class Sections(list):
+    """An ordered, name-addressable list of ``Section``.
 
-    def _copy(self) -> PromptBuilder:
-        out = PromptBuilder()
-        out._sections = list(self._sections)
-        return out
+    Editing methods mutate in place and return ``self``, so a section set reads
+    top-to-bottom without copy-on-write. This is the natural home for the
+    add/update/drop helpers: you are editing the list you are about to render.
+    """
 
-    def section(
+    def _index(self, name: str) -> int | None:
+        for index, section in enumerate(self):
+            if section.name == name:
+                return index
+        return None
+
+    def add(
         self,
         name: str,
         body: SectionBody = "",
@@ -66,54 +77,165 @@ class PromptBuilder:
         level: int = 2,
         before: str | None = None,
         after: str | None = None,
-    ) -> PromptBuilder:
-        out = self._copy()
+    ) -> Sections:
+        """Add a section (or replace the same-named one), inserting ``before`` or
+        ``after`` a named section when given, else appending."""
         new = Section(name, body, title=title, level=level)
-        for index, section in enumerate(out._sections):
-            if section.name == name:
-                out._sections[index] = new
-                return out
-        if before:
-            for index, section in enumerate(out._sections):
-                if section.name == before:
-                    out._sections.insert(index, new)
-                    return out
-        if after:
-            for index, section in enumerate(out._sections):
-                if section.name == after:
-                    out._sections.insert(index + 1, new)
-                    return out
-        out._sections.append(new)
-        return out
+        existing = self._index(name)
+        if existing is not None:
+            self[existing] = new
+        elif before is not None and (i := self._index(before)) is not None:
+            self.insert(i, new)
+        elif after is not None and (i := self._index(after)) is not None:
+            self.insert(i + 1, new)
+        else:
+            self.append(new)
+        return self
 
-    def update(self, name: str, body: SectionBody) -> PromptBuilder:
-        out = self._copy()
-        for index, section in enumerate(out._sections):
-            if section.name == name:
-                out._sections[index] = Section(
-                    name, body, title=section.title, level=section.level
-                )
-                return out
-        raise KeyError(f"no section named {name!r}; use .section() to add it")
+    def update(self, name: str, body: SectionBody) -> Sections:
+        """Swap a section's body, keeping its position/title/level."""
+        i = self._index(name)
+        if i is None:
+            raise KeyError(f"no section named {name!r}; use .add() to add it")
+        old = self[i]
+        self[i] = Section(name, body, title=old.title, level=old.level)
+        return self
 
-    def remove(self, name: str) -> PromptBuilder:
-        out = self._copy()
-        out._sections = [section for section in out._sections if section.name != name]
-        return out
+    def drop(self, name: str) -> Sections:
+        """Remove a section by name (no error if absent)."""
+        self[:] = [section for section in self if section.name != name]
+        return self
 
     @property
     def names(self) -> list[str]:
-        """Section names in render order (for inspection and custom builders)."""
-        return [section.name for section in self._sections]
+        """Section names in render order (for inspection)."""
+        return [section.name for section in self]
 
-    def build(self, flow: Any = None, graph: Any = None, **overrides: str) -> str:
+
+class SystemPromptBuilder(PromptBuilder):
+    """The system-prompt side, symmetric to ``UserPromptBuilder``.
+
+    As a ``PromptBuilder``, calling it with ``(flow, graph)`` returns the system
+    message (``[{"role": "system", "content": …}]``) so ``Flow.messages`` can
+    concatenate it with the user turns uniformly. ``render(flow, graph)`` gives
+    the bare string when that's what's wanted (``build_system_prompt``, snapshots,
+    the static ``SYSTEM_PROMPT``). ``self.sections`` is a mutable ``Sections``
+    seeded from ``default_sections()`` — tweak it in place for small changes,
+    override ``default_sections`` to ship a different baseline, or override
+    ``render``/``__call__`` for fully dynamic per-turn assembly.
+    """
+
+    def __init__(self) -> None:
+        self.sections: Sections = self.default_sections()
+
+    def default_sections(self) -> Sections:
+        return (
+            Sections()
+            .add("role", ROLE_TEXT)
+            .add("strategy", STRATEGY_TEXT)
+            .add("format", FORMAT_TEXT)
+            .add("examples", examples_section, title="Examples")
+            .add("final", FINAL_TEXT)
+            .add(
+                "structured-output",
+                structured_output_section,
+                title="Structured Output",
+            )
+            .add(
+                "structured-output-option",
+                structured_output_option_section,
+                title="Structured Subagent Output",
+            )
+            .add("tools", tools_section, title="Tools")
+            .add(
+                "prompt-profiles",
+                prompt_profiles_section,
+                title="Prompt Profiles",
+            )
+            .add("inputs", inputs_section, title="Inputs")
+            .add("status", status_section, title="Status")
+            .add("first-turn", first_turn_section, title="First Turn")
+        )
+
+    def render(self, flow: Any = None, graph: Any = None) -> str:
+        """Render the sections into the bare system-prompt string."""
+        return self.build(self.sections, flow, graph)
+
+    def __call__(self, flow: Any = None, graph: Any = None) -> list[dict[str, str]]:
+        return [{"role": "system", "content": self.render(flow, graph)}]
+
+    def build(
+        self,
+        sections: list[Section],
+        flow: Any = None,
+        graph: Any = None,
+        **overrides: str,
+    ) -> str:
+        """Render a section list into the prompt string."""
         parts = []
-        for section in self._sections:
+        for section in sections:
             rendered = section.render(flow, graph, overrides.get(section.name))
             if rendered.strip():
                 parts.append(rendered)
         text = re.sub(r"\n{3,}", "\n\n", "\n\n".join(parts)).strip()
         return text + "\n" if text else ""
+
+    @property
+    def names(self) -> list[str]:
+        return self.sections.names
+
+
+#: A system prompt is, at bottom, a function of the flow + graph. A plain string
+#: is a constant one and a ``SystemPromptBuilder`` is a callable one, so all three
+#: are accepted anywhere a system prompt source is expected.
+SystemPromptFn = Callable[[Any, Any], str]
+SystemPromptSource = str | SystemPromptFn | SystemPromptBuilder
+
+
+def as_system_prompt_fn(source: Any) -> SystemPromptFn:
+    """Normalize any system-prompt source to a ``(flow, graph) -> str`` function.
+
+    A ``SystemPromptBuilder`` now returns a chat message from ``__call__``, so its
+    string is produced via ``render`` here; a bare function is assumed to already
+    return the string; a plain ``str`` is a constant.
+    """
+    if isinstance(source, str):
+        return lambda _flow=None, _graph=None: source
+    if isinstance(source, SystemPromptBuilder):
+        return source.render
+    if callable(source):  # a bare (flow, graph) -> str function
+        return source
+    raise TypeError(f"unsupported system prompt source: {type(source)!r}")
+
+
+@dataclass
+class PromptProfile:
+    """A named ``(system, user)`` prompt pair for a child agent.
+
+    ``None`` on either side means *inherit the flow's default* for that side, so a
+    profile can override just the system prompt. ``description`` is a short summary
+    of when to use the profile; it is what gets advertised to the orchestrator so
+    it can select one (see ``prompt_profiles_section``).
+    """
+
+    system: SystemPromptSource | None = None
+    user: UserPromptSource | None = None
+    description: str = ""
+
+
+def as_prompt_profile(source: Any) -> PromptProfile:
+    """Normalize registry sugar into a ``PromptProfile``.
+
+    A bare string / function / ``SystemPromptBuilder`` is treated as a system-only
+    profile (user side inherits the flow default). A profile's ``user`` callable
+    is wrapped as ``UserPromptBuilder(build_fn=…)`` via ``as_user_prompt``.
+    """
+    if isinstance(source, PromptProfile):
+        user = as_user_prompt(source.user) if source.user is not None else None
+        return PromptProfile(
+            system=source.system, user=user, description=source.description
+        )
+    return PromptProfile(system=source)
 
 
 ROLE_TEXT = """
@@ -152,7 +274,10 @@ candidate answer before calling `done(...)`.
 
 FORMAT_TEXT = """
 Execute Python in fenced `repl` blocks. Use exactly one block per assistant
-message, with the opening and closing triple backticks.
+message, with the opening and closing triple backticks. Top-level `await` is
+supported — use it for async tools (e.g. `await launch_subagents([...])`). Never
+call `asyncio.run`, `run_until_complete`, or `get_event_loop()`: the REPL already
+runs inside an event loop, and nesting one raises RuntimeError.
 """
 
 EXAMPLES_TEXT = """
@@ -221,14 +346,20 @@ total = results[0]["total"]  # already parsed, not a string
 
 
 FIRST_TURN_TEXT_INPUTS = """
-You have not run any code or seen your inputs yet. Make this an inspection turn:
+You have not run any code or seen your inputs yet. Start with an inspection turn:
 `print(list(INPUTS))` with each value's size, read the windows you need, and wait
-for the output before planning, delegating, or calling `done(...)`.
+for the output before planning, delegating, or answering. Call `done(...)` only
+once you have the real, verified final answer — never to end an exploration turn,
+and never with a placeholder or status value.
 """
 
 FIRST_TURN_TEXT_BARE = """
-You have not run any code yet. Explore and verify with the REPL before calling
-`done(...)`; don't answer from assumption on the first turn.
+You have not run any code yet. If reaching a good answer needs exploration,
+computation, or verification, do that first in a ```repl``` block and read the
+output rather than answering from assumption; if it is pure reasoning you may
+answer directly. Either way, call `done(...)` only when you have the real,
+verified final answer — never to end an exploration turn, and never with a
+placeholder or status value.
 """
 
 
@@ -301,6 +432,29 @@ def structured_output_option_section(flow: Any = None, graph: Any = None) -> str
     return STRUCTURED_OUTPUT_OPTION_TEXT.strip()
 
 
+def prompt_profiles_section(flow: Any = None, graph: Any = None) -> str:
+    """Advertise selectable prompt profiles so the orchestrator can choose one
+    per child (via a ``launch_subagents`` spec's ``prompt`` key).
+
+    Shown when the flow has a non-empty profile registry, the agent can still
+    spawn children, and ``prompt_router`` is ``"llm"`` (the default). ``"graph"``
+    and callable routers mean the host chooses, so listing names would be noise.
+    """
+    if flow is None or graph is None:
+        return ""
+    profiles = getattr(flow, "_prompts", {})
+    if not profiles or getattr(flow, "prompt_router", "llm") != "llm":
+        return ""
+    max_depth = getattr(flow, "max_depth", 0)
+    if max_depth == 0 or graph.depth >= max_depth:
+        return ""
+    lines = ["Available prompt profiles (pass `prompt` in a launch_subagents spec):"]
+    for name in sorted(profiles):
+        desc = getattr(profiles[name], "description", "")
+        lines.append(f"- `{name}`" + (f" — {desc}" if desc else ""))
+    return "\n".join(lines)
+
+
 def status_section(flow: Any = None, graph: Any = None) -> str:
     if flow is None or graph is None:
         return ""
@@ -313,33 +467,25 @@ def status_section(flow: Any = None, graph: Any = None) -> str:
     return note
 
 
-DEFAULT_BUILDER = (
-    PromptBuilder()
-    .section("role", ROLE_TEXT)
-    .section("strategy", STRATEGY_TEXT)
-    .section("format", FORMAT_TEXT)
-    .section("examples", examples_section, title="Examples")
-    .section("final", FINAL_TEXT)
-    .section("structured-output", structured_output_section, title="Structured Output")
-    .section(
-        "structured-output-option",
-        structured_output_option_section,
-        title="Structured Subagent Output",
-    )
-    .section("tools", tools_section, title="Tools")
-    .section("inputs", inputs_section, title="Inputs")
-    .section("status", status_section, title="Status")
-    .section("first-turn", first_turn_section, title="First Turn")
-)
+#: The default system-prompt builder instance. Shared and mutable — to customize,
+#: construct your own ``SystemPromptBuilder()`` and edit its ``.sections`` rather
+#: than mutating this one.
+DEFAULT_BUILDER = SystemPromptBuilder()
 
-SYSTEM_PROMPT = DEFAULT_BUILDER.build()
+SYSTEM_PROMPT = DEFAULT_BUILDER.render()
 
 
 __all__ = [
     "DEFAULT_BUILDER",
     "MAX_STATIC_PROMPT_CHARS",
-    "PromptBuilder",
     "SYSTEM_PROMPT",
+    "PromptProfile",
     "Section",
     "SectionBody",
+    "Sections",
+    "SystemPromptBuilder",
+    "SystemPromptFn",
+    "SystemPromptSource",
+    "as_prompt_profile",
+    "as_system_prompt_fn",
 ]

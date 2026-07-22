@@ -34,6 +34,14 @@ class InjectRequest(BaseRequest):
     cmd: Literal["inject"] = "inject"
     name: str
     value: Any
+    # "json" (default): ``value`` is plain JSON data. "cloudpickle": ``value`` is
+    # a base64 cloudpickle blob of a live object, rebuilt by value in the sandbox.
+    encoding: Literal["json", "cloudpickle"] = "json"
+
+
+class RetrieveRequest(BaseRequest):
+    cmd: Literal["retrieve"] = "retrieve"
+    name: str
 
 
 class RemoveRequest(BaseRequest):
@@ -71,6 +79,7 @@ ReplRequest = Annotated[
     | CapabilitiesRequest
     | RunRequest
     | InjectRequest
+    | RetrieveRequest
     | RemoveRequest
     | SetEnvRequest
     | InjectProxyRequest
@@ -85,6 +94,8 @@ class CapabilityMap(WireModel):
     filesystem_snapshot: bool = False
     process_checkpoint: bool = False
     fork: Literal["none", "replay", "snapshot", "process"] = "none"
+    # Whether the sandbox can (de)serialize live objects by value (cloudpickle).
+    cloudpickle: bool = False
 
 
 class ReplResponse(WireModel):
@@ -94,6 +105,8 @@ class ReplResponse(WireModel):
     errored: bool = False
     error: str | None = None
     value: Any = None
+    # Encoding of ``value`` (e.g. a retrieved object): "json" or "cloudpickle".
+    value_encoding: Literal["json", "cloudpickle"] = "json"
     done: bool = False
     env: dict[str, Any] | None = None
     capabilities: CapabilityMap | None = None
@@ -151,6 +164,7 @@ __all__ = [
     "RemoveRequest",
     "ReplRequest",
     "ReplResponse",
+    "RetrieveRequest",
     "RunRequest",
     "SetEnvRequest",
     "WireModel",

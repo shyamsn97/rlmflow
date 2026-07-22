@@ -48,10 +48,17 @@ class TaskQueue:
         return task is not None and not task.done()
 
     def add(self, agent_id: str, work: Work) -> None:
-        """Schedule work for an id, or remember it if that id is still running."""
+        """Schedule work for an id, or remember it if that id is still running.
+
+        When the id is idle, any stale queued follow-up is dropped before starting
+        — otherwise a just-finished task's ``done`` callback can ``start`` the
+        leftover queue entry *and* this call ``start``s fresh work, running two
+        tasks for one id (duplicate LLM turns / per-turn prep).
+        """
         if self.running(agent_id):
             self.queued[agent_id] = work
             return
+        self.queued.pop(agent_id, None)
         self.start(agent_id, work)
 
     def stop(self, agent_id: str) -> None:
@@ -65,7 +72,7 @@ class TaskQueue:
         return task
 
     def done(self, agent_id: str) -> None:
-        if agent_id in self.queued:
+        if agent_id in self.queued and not self.running(agent_id):
             self.start(agent_id, self.queued.pop(agent_id))
             return
         self.wake()

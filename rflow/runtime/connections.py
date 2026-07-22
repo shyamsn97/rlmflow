@@ -21,7 +21,7 @@ from rflow.runtime.repl_client import ReplConnection
 
 
 class PopenConnection(ReplConnection):
-    """Connect ReplClient to a repl_server subprocess/container."""
+    """Connect RemoteRepl to a repl_server subprocess/container."""
 
     def __init__(
         self,

@@ -3,11 +3,13 @@
 from rflow.consumers.base import ConsumerGroup, StreamConsumer
 from rflow.consumers.checkpoint import GraphCheckpointer
 from rflow.consumers.sync import WorkspaceSync
-from rflow.consumers.ui import LiveTreeRenderer, render_tree
+from rflow.consumers.ui import LiveGraphTree, LiveTreeRenderer, render_tree
 
 __all__ = [
     "ConsumerGroup",
+    "FlowTUI",
     "GraphCheckpointer",
+    "LiveGraphTree",
     "LiveTreeRenderer",
     "StreamConsumer",
     "WorkspaceSync",
@@ -17,8 +19,8 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    if name == "tui":
-        from rflow.consumers.tui import tui
+    if name in ("FlowTUI", "tui"):
+        from rflow.consumers import tui as _tui
 
-        return tui
+        return getattr(_tui, name)
     raise AttributeError(name)

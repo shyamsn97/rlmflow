@@ -180,6 +180,35 @@ results = await launch_subagents([
   schedules them concurrently.
 - **Child data:** put payloads in each spec's `inputs` dict. The child sees only
   its query and its own `INPUTS`.
+- **Child prompt profile:** optional `prompt_profile` per spec selects a named
+  `PromptProfile` on the flow (see [`prompt_customization.md`](prompt_customization.md)).
+
+### Warm launch (host-side)
+
+`launch_subagents` is the model-facing tool (cold children from `query` strings).
+Host code that already has prepared graphs — typically `fork` / `flow.rewind`
+results — should use the warm counterpart:
+
+```python
+# Structural only: reparent a prepared graph under `parent` (remap ids, move its
+# REPL, emit AddChild). Does not run or await the child.
+child = flow.adopt(parent, fork, name="b0")
+
+# Run prepared graphs as children of `parent`, in parallel, and await results.
+# Thin wrapper over launch_subagents' warm path — the `graph` spec key stays
+# internal so example / model-facing code never has to write it.
+await flow.launch_subgraphs(
+    parent,
+    [fork_a, fork_b],
+    queries=["recover with plan A", "recover with plan B"],
+    names=["b0", "b1"],
+)
+```
+
+Use this for best-of-N / rewind-and-branch patterns (see
+[`examples/shepherd/`](../examples/shepherd/)): prepare forks on the host, then
+one `launch_subgraphs` call attaches and runs them as real children under the
+orchestrator.
 
 ## Custom Runtime
 
@@ -214,23 +243,23 @@ agent = rflow.Flow(rflow.OpenAIClient(model="gpt-5"), runtime=runtime)
 For a fuller guide, see [`prompt_customization.md`](prompt_customization.md).
 
 ```python
-from rflow.prompts import DEFAULT_BUILDER
+from rflow import SystemPromptBuilder
 
 GUARDRAILS = """
 - Verify before `done()`. Empty/zero/surprising results -> one sanity check first.
 - Ask children for structured output when shape matters.
 """
 
-agent = rflow.Flow(rflow.OpenAIClient(model="gpt-5"))
-agent.prompt_builder = (
-    DEFAULT_BUILDER
-    .section("role", "You are a security auditor.", title="Role")
-    .section("guardrails", GUARDRAILS, title="Guardrails", after="strategy")
-)
+prompt = SystemPromptBuilder()
+prompt.sections.update("role", "You are a security auditor.")
+prompt.sections.add("guardrails", GUARDRAILS, title="Guardrails", after="strategy")
+
+agent = rflow.Flow(rflow.OpenAIClient(model="gpt-5"), system_prompt=prompt)
 ```
 
-You can also subclass `Flow` and override `build_system_prompt` (or set
-`agent.prompt_builder` directly) to fully control the prompt.
+`agent.system_prompt` accepts a `SystemPromptBuilder`, a string, or a
+`(flow, graph) -> str` function; subclass `SystemPromptBuilder` (override
+`default_sections` or `__call__`) for reusable customization.
 
 ## Walkthroughs
 

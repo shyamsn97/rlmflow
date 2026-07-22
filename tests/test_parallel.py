@@ -8,6 +8,8 @@ from rflow import (
     Flow,
     Graph,
     SequentialPool,
+    parallel_run,
+    parallel_stream,
 )
 
 from helpers import (
@@ -53,7 +55,7 @@ def test_parallel_stream_merges_tagged_events_from_one_flow():
     b = Graph(query="b")
 
     async def collect():
-        return [event async for event in flow.parallel_stream(a, b)]
+        return [event async for event in parallel_stream(flow, a, b)]
 
     events = asyncio.run(collect())
     graph_ids = {event.graph_id for event in events}
@@ -78,7 +80,7 @@ def test_parallel_stream_advances_graphs_concurrently():
 
     async def main():
         graphs = [Graph(query=f"q{i}") for i in range(3)]
-        async for _event in flow.parallel_stream(*graphs):
+        async for _event in parallel_stream(flow, *graphs):
             pass
         return graphs
 
@@ -94,7 +96,7 @@ def test_parallel_run_returns_graphs_in_argument_order():
 
     flow = Flow(StubLLM(reply))
 
-    graphs = asyncio.run(flow.parallel_run("qa", "qb", "qc"))
+    graphs = asyncio.run(parallel_run(flow, "qa", "qb", "qc"))
 
     assert [graph.result() for graph in graphs] == ["qa", "qb", "qc"]
     assert flow.runs == {}
@@ -105,7 +107,7 @@ def test_parallel_stream_rejects_duplicate_graph():
     graph = Graph(query="q")
 
     async def collect():
-        return [event async for event in flow.parallel_stream(graph, graph)]
+        return [event async for event in parallel_stream(flow, graph, graph)]
 
     with pytest.raises(RuntimeError, match="already being streamed"):
         asyncio.run(collect())

@@ -12,8 +12,8 @@ Pick the doc that matches what you're trying to do.
 ## Use rlmflow
 
 - [Control](control.md) — streaming loop, save/load resume, rewind,
-  forks, `INPUTS`, delegation via `launch_subagents`,
-  inline-first strategy, custom tools.
+  forks, `INPUTS`, cold `launch_subagents` and warm `launch_subgraphs` /
+  `adopt`, custom tools.
 - [Streaming and scheduling](streaming.md) — detailed guide to
   `run_streaming(..., until=...)`, per-agent queues, boundaries, and delegation.
 - [Skills](skills.md) — workspace `SKILL.md` files, always-on skills,
@@ -21,15 +21,14 @@ Pick the doc that matches what you're trying to do.
 - [Node injection](injections.md) — append typed controller events to a
   running graph, then continue with `agent.run(graph=graph)` / `agent.run_streaming(graph=graph)`.
 - [Observability](observability.md) — querying the `Graph`,
-  run layout, the live terminal tree, the Gradio viewer, and static
+  run layout, `LiveGraphTree` / `LiveTreeRenderer`, the Gradio viewer, and static
   image/step exports.
 - [Node model](node_model.md) — typed graph state taxonomy, action /
   observation alternation, delegation wait/resume flow.
 - [Runtimes](runtimes.md) — `Runtime` protocol, shipped runtimes
   (Local / Docker / Modal / E2B / Daytona), writing your own.
-- [Prompt customization](prompt_customization.md) — `PromptBuilder`
-  sections, callable dynamic sections, deriving from the default prompt,
-  full replacement.
+- [Prompt customization](prompt_customization.md) — `SystemPromptBuilder`
+  sections, `PromptProfile` / `prompt_profile` / `prompt_router`, full replacement.
 - [Security](security.md) — trust model, Docker isolation knobs,
   engine-level caps, proxied tools, approval gates.
 - [Example smoke runner](../examples/run_examples.py) — run the offline

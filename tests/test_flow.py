@@ -17,7 +17,93 @@ from helpers import (
     assert_llm_outputs_are_followed_by_exec_actions,
     counting_replies,
     first_user,
+    seed_exec_graph,
 )
+
+
+def test_adopt_reparents_fork_and_moves_its_repl():
+    """``flow.adopt`` attaches a prepared fork under a parent: it shares the
+    parent's ``graph_id``, gets a nested ``agent_id``, keeps its replayed REPL
+    state under the new key, and is registered as a child."""
+    flow = Flow(StubLLM(lambda _m: '```repl\ndone("x")\n```'), max_depth=1)
+    parent = Graph(query="parent")
+
+    async def prepare_and_adopt():
+        base = seed_exec_graph("x = 41")
+        fork = await flow.fork(base)  # replay rebuilds the fork's REPL (x == 41)
+        assert flow.get_var(fork, "x") == 41
+        return flow.adopt(parent, fork, name="b0")
+
+    child = asyncio.run(prepare_and_adopt())
+
+    assert child.graph_id == parent.graph_id
+    assert child.agent_id == "root.b0"
+    assert child.parent_agent_id == parent.agent_id
+    assert child.depth == parent.depth + 1
+    assert "root.b0" in parent.children
+    assert parent["root.b0"] is child
+    assert all(node.agent_id == "root.b0" for node in child.nodes)
+    # the fork's live REPL moved with it — rewound state survives the reparent
+    assert flow.get_var(child, "x") == 41
+
+
+def test_launch_subagents_warm_start_from_prepared_graph():
+    """A ``launch_subagents`` spec may carry a prepared ``graph`` (a fork) instead
+    of a ``query``: it's adopted, its ``query`` is appended as the next turn, and
+    it self-drives to ``done`` on the same supervise/await loop as a cold child."""
+    flow = Flow(StubLLM(lambda _m: '```repl\ndone("child done")\n```'), max_depth=1)
+    parent = Graph(query="parent")
+
+    async def drive():
+        base = seed_exec_graph("y = 7")
+        fork = await flow.fork(base)
+        launch = flow.launch_subagents(parent, flow.repl_for(parent))
+        return await launch(
+            [{"graph": fork, "name": "b0", "query": "recover now"}]
+        )
+
+    results = asyncio.run(drive())
+
+    assert results == ["child done"]
+    child = parent["root.b0"]
+    assert child.result() == "child done"
+    # warm start: kept its prior trajectory AND got the kickoff query appended
+    assert flow.get_var(child, "y") == 7
+    assert any(
+        node.type == "user_query" and "recover now" in (node.content or "")
+        for node in child.nodes
+    )
+    assert parent.nodes[-2].type == "supervising_output"
+    assert parent.nodes[-1].type == "resume_action"
+
+
+def test_launch_subgraphs_runs_prepared_forks_as_children():
+    """``flow.launch_subgraphs`` is the warm, graph-first wrapper over
+    ``launch_subagents``: hand it prepared forks (+ optional per-child kickoff
+    queries and names) and they adopt, self-drive, and are awaited together."""
+    flow = Flow(StubLLM(lambda _m: '```repl\ndone("done")\n```'), max_depth=1)
+    parent = Graph(query="parent")
+
+    async def drive():
+        forks = [await flow.fork(seed_exec_graph(f"v = {i}")) for i in range(2)]
+        return await flow.launch_subgraphs(
+            parent,
+            forks,
+            queries=["go a", "go b"],
+            names=["b0", "b1"],
+        )
+
+    results = asyncio.run(drive())
+
+    assert results == ["done", "done"]
+    # both prepared graphs attached under the parent with the given names, kept
+    # their rewound state, and got their kickoff queries appended
+    assert flow.get_var(parent["root.b0"], "v") == 0
+    assert flow.get_var(parent["root.b1"], "v") == 1
+    assert any(
+        node.type == "user_query" and "go b" in (node.content or "")
+        for node in parent["root.b1"].nodes
+    )
 
 
 def test_minimal_flow_launch_subagents_is_public():
@@ -150,6 +236,99 @@ def test_minimal_child_specs_can_route_to_named_model():
     assert graph["root.fast"].model == "fast"
 
 
+def _spawn_then_branch_on_system(marker: str, child_prompt: str):
+    # One client whose behavior branches on the system prompt it receives: the
+    # root spawns a child under ``child_prompt``; the child recognizes the injected
+    # profile text and finishes. Proves the profile actually reached the child.
+    def reply(messages):
+        if marker in messages[0]["content"]:
+            return '```repl\ndone("used-profile")\n```'
+        return (
+            "```repl\n"
+            'r = await launch_subagents([{"name": "c", "query": "child", '
+            f'"prompt_profile": "{child_prompt}"}}])\n'
+            "done(r[0])\n"
+            "```"
+        )
+
+    return StubLLM(reply)
+
+
+def test_child_prompt_profile_reaches_child_llm():
+    flow = Flow(
+        _spawn_then_branch_on_system("CODER-9000", "coder"),
+        prompts={"coder": "You are CODER-9000."},
+        max_depth=1,
+    )
+    graph = Graph(query="parent")
+
+    assert flow.run(graph=graph) == "used-profile"
+    assert graph["root.c"].prompt_profile == "coder"
+
+
+def test_prompt_router_overrides_spec_selection():
+    # The spec asks for "coder" but the router forces "reviewer" on any child.
+    flow = Flow(
+        _spawn_then_branch_on_system("REVIEWER-7", "coder"),
+        prompts={"coder": "You are CODER-9000.", "reviewer": "You are REVIEWER-7."},
+        prompt_router=lambda _flow, graph: "reviewer" if graph.depth > 0 else "default",
+        max_depth=1,
+    )
+    graph = Graph(query="parent")
+
+    # Child finished only because the REVIEWER prompt (router's choice) reached it,
+    # even though the spawn spec named "coder" (still recorded on the graph).
+    assert flow.run(graph=graph) == "used-profile"
+    assert graph["root.c"].prompt_profile == "coder"
+
+
+def test_prompt_router_graph_honors_stamped_prompt():
+    flow = Flow(
+        StubLLM(lambda _m: '```repl\ndone("ok")\n```'),
+        prompts={"coder": "You are CODER-9000."},
+        prompt_router="graph",
+    )
+    graph = Graph(query="q", prompt_profile="coder")
+    assert flow.prompt_name_for(graph) == "coder"
+    assert flow.build_system_prompt(graph) == "You are CODER-9000."
+
+
+def test_prompt_router_rejects_unknown_mode():
+    import pytest
+
+    with pytest.raises(TypeError, match="prompt_router"):
+        Flow(StubLLM(lambda _m: ""), prompt_router="auto")  # type: ignore[arg-type]
+
+
+def test_default_reserved_in_prompts_registry():
+    import pytest
+
+    with pytest.raises(ValueError, match="reserved"):
+        Flow(StubLLM(lambda _m: ""), prompts={"default": "nope"})
+
+
+def test_unknown_profile_falls_back_to_recorded_prompt():
+    # A graph pointed at a profile the flow doesn't have resolves to the last
+    # system prompt actually recorded on it (self-contained continuation), instead
+    # of raising or silently using the flow default.
+    flow = Flow(StubLLM(lambda _m: '```repl\ndone("ok")\n```'))
+    graph = Graph(query="q", prompt_profile="ghost")
+    graph.system_prompts["sys_x"] = "RECORDED SYSTEM PROMPT"
+    graph.commit(LLMOutput(content="hi", metadata={"system_prompt": "sys_x"}))
+
+    assert flow.build_system_prompt(graph) == "RECORDED SYSTEM PROMPT"
+
+
+def test_unknown_profile_with_no_history_raises():
+    flow = Flow(StubLLM(lambda _m: ""))
+    graph = Graph(query="q", prompt_profile="ghost")
+
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown prompt"):
+        flow.build_system_prompt(graph)
+
+
 
 def test_minimal_usage_accounting_is_stored_in_llm_output_metadata():
     flow = Flow(UsageLLM('```repl\ndone("ok")\n```', input_tokens=3, output_tokens=2))
@@ -157,10 +336,12 @@ def test_minimal_usage_accounting_is_stored_in_llm_output_metadata():
 
     assert flow.run(graph=graph) == "ok"
     llm_output = next(node for node in graph.nodes if isinstance(node, LLMOutput))
-    assert llm_output.metadata == {
-        "model": "default",
-        "usage": {"input_tokens": 3, "output_tokens": 2},
-    }
+    assert llm_output.metadata["model"] == "default"
+    assert llm_output.metadata["usage"] == {"input_tokens": 3, "output_tokens": 2}
+    # The node references its system prompt by id; the text lives in the graph's
+    # content-addressed table and resolves back via system_prompt_for.
+    assert llm_output.metadata["system_prompt"].startswith("sys_")
+    assert graph.system_prompt_for(llm_output).startswith("You are a Recursive")
     assert graph.usage() == LLMUsage(input_tokens=3, output_tokens=2)
     assert graph.tokens() == (3, 2)
     assert graph.total_tokens() == 5
@@ -409,9 +590,12 @@ def test_minimal_rflow_env_vars_visible_to_agent():
         "```"
     )
     flow = Flow(StubLLM(lambda _messages: reply), max_depth=3)
+    graph = Graph(query="q")
 
-    assert flow.run(graph=Graph(query="q")) == "root|1|3"
+    assert flow.run(graph=graph) == "root|1|3"
     assert "RFLOW_AGENT_ID" not in os.environ
+    assert flow.get_env_var(graph, "RFLOW_AGENT_ID") == "root"
+    assert flow.get_env_var(graph, "RFLOW_MAX_DEPTH") == "3"
 
 
 

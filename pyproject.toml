@@ -37,6 +37,9 @@ dspy = ["dspy"]
 mcp = ["mcp"]
 modal = ["modal"]
 e2b = ["e2b"]
+# By-value injection/retrieval of live Python objects across a process-isolated
+# runtime (SubprocessRuntime / Docker / Modal). Not needed for LocalRuntime.
+cloudpickle = ["cloudpickle>=2.2"]
 daytona = ["daytona-sdk"]
 eval = [
     "tqdm>=4.66",
@@ -54,10 +57,10 @@ sandbox = ["modal", "e2b", "daytona-sdk"]
 # `rich` powers the live terminal tree (`LiveView`) and `rlmflow view` output.
 viewer = ["gradio>=4.29", "plotly>=5.0", "rich>=13.0"]
 tui = ["textual>=0.70", "rich>=13.0"]
-# Static image export of `node.plot()` (PNG/SVG/PDF). Used by
-# `save_image` / `save_steps` and `node.save_image()`. Kaleido is its
-# own optional dep because it ships native binaries.
-image = ["plotly>=5.0", "kaleido>=0.2.1"]
+# Static image export of `node.plot()` (PNG/SVG/PDF) and GIFs. Used by
+# `save_image` / `save_steps` / `save_gif` and `node.save_image()`. Kaleido
+# ships native binaries; Pillow stitches step frames into a GIF.
+image = ["plotly>=5.0", "kaleido>=0.2.1", "pillow>=10.0"]
 all = [
     "openai>=1.0",
     "anthropic>=0.20",
@@ -68,6 +71,7 @@ all = [
     "modal",
     "e2b",
     "daytona-sdk",
+    "cloudpickle>=2.2",
     "tqdm>=4.66",
     "wandb>=0.16",
     "datasets>=2.19",

@@ -20,7 +20,10 @@ It keeps the rflow hierarchy/ledger/Modal wrapper, but the ML task is just:
 - `train.py` — the only file agents edit.
 - `program.md` — task-only instructions given to agents.
 - `run.py` — rflow coordinator that creates trial directories and launches the
-  hierarchy.
+  hierarchy. The tree is flat (`--max-depth 1`): root is the planner and each
+  turn fans out a parallel wave of implementer children (one per trial), reads
+  their results, then plans the next wave. Exploration is wide rather than a long
+  serial chain of single batches.
 - `modal_runner.py` — Modal execution for each trial directory.
 - `pyproject.toml` — dependencies.
 
@@ -59,7 +62,15 @@ examples/_runs/autoresearch/<timestamp>/
 ```
 
 Each run contains `upstream_base/`, copied `trials/`, `ledger.jsonl`, `graph/`,
-and `report.json`.
+and a live report:
+
+- `report.json` — only `name`, `hypothesis`, `time_elapsed`, `n`, and `score`
+  for each solution, plus the current `best`.
+- `summary.md` — the current best solution, a table of all solutions, and plots.
+- `scores.svg` and `elapsed.svg` — plots embedded by the Markdown summary.
+
+These report files refresh after every ledger update, so they remain useful
+while a run is still in progress or if the coordinator exits early.
 
 ## Metric
 

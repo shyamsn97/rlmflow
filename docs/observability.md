@@ -18,6 +18,7 @@ graph.depth              # int — recursion depth
 graph.query              # str — original task
 graph.inputs             # dict[str, str] — the agent's INPUTS
 graph.model              # str — model label for this agent
+graph.prompt_profile     # str — PromptProfile selector (not prompt text)
 graph.parent_agent_id    # str | None — id of the spawning agent
 graph.output_schema      # required output schema, if any
 
@@ -118,17 +119,32 @@ asyncio.run(drive())
 ## Live terminal tree
 
 `render_tree(graph)` renders the whole agent tree from any snapshot. Reprint it
-each tick, or hand events to `LiveTreeRenderer`:
+each tick, or hand events to a stream consumer:
 
 ```python
-from rflow import render_tree
+from rflow import render_tree, LiveGraphTree, LiveTreeRenderer, ConsumerGroup
+
+# One-shot render from any snapshot
+print(render_tree(graph))
+
+# Live consumer: Rich Live + active/waiting status (spinners on working agents)
+live = LiveGraphTree(title="run", every_s=0.1)
 
 async def drive():
-    async for _event in agent.run_streaming(graph=graph):
-        print("\033[2J\033[H" + render_tree(graph))
+    async for event in agent.run_streaming(graph=graph):
+        live.handle(event, graph)
+    live.close()
 
 asyncio.run(drive())
 ```
+
+`LiveTreeRenderer` is the lower-level renderer if you want to own the paint loop
+yourself. Fan events to several consumers with `ConsumerGroup([live, other])` —
+`handle`/`close` fan out; per-consumer methods like `label(...)` stay on the
+individual members.
+
+See [`examples/shepherd/`](../examples/shepherd/) for a `ConsumerGroup` of
+`LiveGraphTree` plus a custom board `PanelViewer`.
 
 ## Gradio viewer
 

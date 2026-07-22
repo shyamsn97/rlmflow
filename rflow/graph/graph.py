@@ -153,11 +153,24 @@ class Graph:
     query: str = ""
     inputs: dict[str, str] = field(default_factory=dict)
     model: str = "default"
+    #: Name of the ``PromptProfile`` this agent runs under (a key in the flow's
+    #: ``prompts`` registry, or ``"default"``). Carried per-agent and serialized,
+    #: parallel to ``model``; resolved to actual prompt sources by the flow. Named
+    #: ``prompt_profile`` (not ``prompt``) so it doesn't read as literal prompt
+    #: text — that's ``query`` — this is a profile *selector*.
+    prompt_profile: str = "default"
     depth: int = 0
     parent_agent_id: str | None = None
     output_schema: object | None = None
     nodes: list[Node] = field(default_factory=list)
     children: dict[str, Graph] = field(default_factory=dict)
+    #: Content-addressed table of system prompts used by this agent's nodes:
+    #: ``system_prompt_id(text) -> text``. Each ``LLMOutput`` records only the id
+    #: in ``metadata['system_prompt']``; this holds the text once so a saved trace
+    #: reconstructs every turn's prompt from the ``Graph`` alone (see
+    #: ``system_prompt_for``). Rewound branches may leave unreferenced entries —
+    #: harmless.
+    system_prompts: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.output_schema is not None:
@@ -406,6 +419,28 @@ class Graph:
         apply_graph_action(self, action)
         return action
 
+    def system_prompt_for(self, node: Node) -> str | None:
+        """Full system prompt text in force for ``node`` (an ``LLMOutput``).
+
+        Nodes reference their prompt by id; the text lives once in
+        ``self.system_prompts``. Returns ``None`` for nodes without a recorded
+        prompt (everything but ``llm_output``)."""
+        meta = getattr(node, "metadata", None)
+        sid = meta.get("system_prompt") if meta else None
+        return self.system_prompts.get(sid) if sid else None
+
+    def latest_system_prompt(self) -> str | None:
+        """Most recent system prompt actually used, resolved to full text.
+
+        Used as the self-contained-continuation fallback: if a resuming flow
+        can't resolve this agent's profile, keep the prompt it last ran under
+        rather than silently drifting."""
+        for node in reversed(self.nodes):
+            text = self.system_prompt_for(node)
+            if text:
+                return text
+        return None
+
     def checkpoint(self, *, agent_id: str | None = None) -> GraphCheckpoint:
         agent = self.agent_for(agent_id)
         return GraphCheckpoint(
@@ -468,6 +503,57 @@ class Graph:
         yield self
         for child in self.children.values():
             yield from child.walk()
+
+    def execution_order(self) -> list[Node]:
+        """Nodes across this agent and its children in execution order.
+
+        Preorder walk: emit an agent's nodes in sequence, descending into a
+        child's subtree at the ``SupervisingOutput`` that launched it. This is
+        the single global ordering that :meth:`get_timeline` steps through.
+        """
+        order: list[Node] = []
+
+        def visit(agent: Graph) -> None:
+            by_id = {child.agent_id: child for child in agent.children.values()}
+            for node in agent.nodes:
+                order.append(node)
+                if isinstance(node, SupervisingOutput):
+                    for child_id in node.waiting_on:
+                        if child_id in by_id:
+                            visit(by_id[child_id])
+
+        visit(self)
+        return order
+
+    def get_timeline(self) -> list[Graph]:
+        """Progressive snapshots of this graph, one per execution step.
+
+        Each snapshot is a deepcopy truncated to the first ``k`` nodes in
+        :meth:`execution_order`, so iterating the list replays the run growing
+        one node at a time (child subtrees appear as their launching step is
+        reached). Useful for viewers, GIF frames, and step-through debugging.
+        An empty graph yields a single snapshot.
+        """
+        order = self.execution_order()
+        timeline: list[Graph] = []
+        for step in range(1, len(order) + 1):
+            keep = {node.id for node in order[:step]}
+            timeline.append(self._truncated(keep))
+        return timeline or [deepcopy(self)]
+
+    def _truncated(self, keep: set[str]) -> Graph:
+        """Deepcopy retaining only nodes in ``keep`` (empty children pruned)."""
+        clone = deepcopy(self)
+
+        def prune(agent: Graph) -> None:
+            agent.nodes = [node for node in agent.nodes if node.id in keep]
+            for child_id, child in list(agent.children.items()):
+                prune(child)
+                if not child.nodes:
+                    del agent.children[child_id]
+
+        prune(clone)
+        return clone
 
     @property
     def agents(self) -> dict[str, Graph]:
@@ -691,11 +777,13 @@ def _load_agent_dir(dir_path: Path) -> Graph:
         query=data.get("query", ""),
         inputs=dict(data.get("inputs") or {}),
         model=data.get("model", "default"),
+        prompt_profile=data.get("prompt_profile", data.get("prompt", "default")),
         depth=data.get("depth", 0),
         parent_agent_id=data.get("parent_agent_id"),
         output_schema=data.get("output_schema"),
         nodes=nodes,
         children=children,
+        system_prompts=dict(data.get("system_prompts") or {}),
     )
 
 
@@ -746,6 +834,15 @@ def _write_agent_dir(graph: Graph, dir_path: Path) -> None:
             shutil.rmtree(entry)
 
 
+def system_prompt_id(text: str) -> str:
+    """Stable, content-addressed id for a system prompt (the on-disk table key).
+
+    Identical prompts collapse to one id, so the id is a natural dedup key and is
+    stable across runs (nice for diffing whether the prompt changed)."""
+    digest = hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
+    return "sys_" + digest[:12]
+
+
 def agent_meta_dict(graph: Graph) -> dict[str, Any]:
     return {
         "agent_id": graph.agent_id,
@@ -754,8 +851,10 @@ def agent_meta_dict(graph: Graph) -> dict[str, Any]:
         "query": graph.query,
         "inputs": dict(graph.inputs),
         "model": graph.model,
+        "prompt_profile": graph.prompt_profile,
         "output_schema": graph.output_schema,
         "parent_agent_id": graph.parent_agent_id,
+        "system_prompts": dict(graph.system_prompts),
     }
 
 

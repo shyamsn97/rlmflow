@@ -3,6 +3,6 @@
 Use :mod:`rflow.consumers.tui` for new imports.
 """
 
-from rflow.consumers.tui import tui
+from rflow.consumers.tui import FlowTUI, tui
 
-__all__ = ["tui"]
+__all__ = ["FlowTUI", "tui"]

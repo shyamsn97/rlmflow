@@ -81,3 +81,25 @@ def test_taskqueue_aclose_cancels_running_tasks():
         assert tq.tasks["a"].done()
 
     asyncio.run(main())
+
+
+def test_taskqueue_add_while_idle_drops_stale_queue():
+    """Idle ``add`` must clear a leftover queue entry before starting.
+
+    Otherwise a finishing task's ``done`` callback can start the stale entry
+    while ``add`` also starts fresh work — two tasks for one agent id.
+    """
+
+    async def main():
+        tq = TaskQueue()
+        started = []
+
+        async def work(name):
+            started.append(name)
+
+        tq.queued["a"] = lambda: work("stale")
+        tq.add("a", lambda: work("fresh"))
+        await collect(tq)
+        assert started == ["fresh"]
+
+    asyncio.run(main())

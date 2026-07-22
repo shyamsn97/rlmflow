@@ -18,6 +18,7 @@ from transformers import AutoTokenizer
 MAX_SEQ_LEN = 256
 TIME_BUDGET = 180
 EVAL_BATCHES = 32
+EVAL_BATCH_SIZE = 64
 VOCAB_SIZE = 50257
 
 CACHE_DIR = Path(os.path.expanduser("~")) / ".cache" / "autoresearch"
@@ -106,11 +107,20 @@ EVAL_SEED = 1234
 
 
 @torch.no_grad()
-def evaluate_bpb(model, batch_size: int, seq_len: int) -> float:
+def evaluate_bpb(model, *_ignored) -> float:
+    """Score ``model`` on the fixed validation set.
+
+    Every eval setting is FIXED here and NOT taken from ``train.py`` so all
+    trials are scored identically and the leaderboard is comparable: the same
+    val batches (``EVAL_SEED``), the same coverage (``EVAL_BATCHES`` ×
+    ``EVAL_BATCH_SIZE``), and the benchmark sequence length (``MAX_SEQ_LEN``).
+    Any positional args a trial passes (e.g. its own batch size / seq len) are
+    accepted for backward compatibility but IGNORED, so a trial cannot change
+    how it is scored. A model must therefore accept a ``MAX_SEQ_LEN``-length
+    context.
+    """
     model.eval()
-    # Fixed seed so every trial is scored on the *same* val batches -> the
-    # leaderboard measures real improvements, not val-sampling noise.
-    loader = make_dataloader(batch_size, seq_len, "val", seed=EVAL_SEED)
+    loader = make_dataloader(EVAL_BATCH_SIZE, MAX_SEQ_LEN, "val", seed=EVAL_SEED)
     tokenizer = Tokenizer.from_directory()
     token_bytes = torch.tensor(
         [

@@ -20,7 +20,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /opt/rlmflow
 COPY pyproject.toml README.md ./
 COPY rflow ./rflow
-RUN pip install ".[openai,anthropic]"
+RUN pip install ".[openai,anthropic,cloudpickle]"
 
 # DockerRuntime bind-mounts the host workspace at /workspace.
 WORKDIR /workspace

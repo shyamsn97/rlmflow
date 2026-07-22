@@ -1,5 +1,12 @@
 # Recursive Agent Optimization: Implementation Plan
 
+> **API note (current codebase):** read `Graph.inputs` / REPL `INPUTS` wherever
+> this note says `Graph.context` / `CONTEXT`; `Flow` (not `RecursiveFlow` /
+> `FlowConfig`) for the engine; `Graph.prompt_profile` for per-agent prompt
+> selection. Cold spawn still uses `launch_subagents`; warm host fan-out uses
+> `flow.launch_subgraphs` / `flow.adopt`. See `docs/control.md` and
+> `docs/internals.md`.
+
 This note sketches how to implement Recursive Agent Optimization (RAO) on top of
 `rlmflow`.
 

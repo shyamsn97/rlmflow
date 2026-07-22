@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rflow.runtime.connections import PopenConnection
-from rflow.runtime.repl import Repl, ReplLike
-from rflow.runtime.repl_client import ReplClient
+from rflow.runtime.repl import LocalRepl, Repl
+from rflow.runtime.repl_client import RemoteRepl
 from rflow.tools import get_tool_metadata
 
 if TYPE_CHECKING:
@@ -35,10 +35,10 @@ class Runtime:
         for fn in tools:
             self.register_tool(fn)
 
-    def open(self, graph: Graph) -> ReplLike:
+    def open(self, graph: Graph) -> Repl:
         raise NotImplementedError
 
-    def deploy_repl_server(self, graph: Graph) -> ReplClient:
+    def deploy_repl_server(self, graph: Graph) -> RemoteRepl:
         """Launch/connect to a remote REPL server and return its client."""
         raise NotImplementedError
 
@@ -46,8 +46,8 @@ class Runtime:
 class LocalRuntime(Runtime):
     """Run code in the current Python process."""
 
-    def open(self, graph: Graph) -> ReplLike:
-        return Repl(working_directory=self.working_directory)
+    def open(self, graph: Graph) -> Repl:
+        return LocalRepl(working_directory=self.working_directory)
 
 
 class SubprocessRuntime(Runtime):
@@ -66,11 +66,11 @@ class SubprocessRuntime(Runtime):
         self.env = env
         self.repl_timeout = repl_timeout
 
-    def deploy_repl_server(self, graph: Graph) -> ReplClient:
+    def deploy_repl_server(self, graph: Graph) -> RemoteRepl:
         argv = [self.python, "-u", "-m", "rflow.runtime.repl_server"]
         if self.working_directory is not None:
             argv += ["--workdir", str(self.working_directory)]
-        return ReplClient(
+        return RemoteRepl(
             PopenConnection(
                 argv,
                 env=self.env,
@@ -79,8 +79,8 @@ class SubprocessRuntime(Runtime):
             )
         )
 
-    def open(self, graph: Graph) -> ReplLike:
+    def open(self, graph: Graph) -> Repl:
         return self.deploy_repl_server(graph)
 
 
-__all__ = ["LocalRuntime", "ReplLike", "Runtime", "SubprocessRuntime"]
+__all__ = ["LocalRuntime", "Repl", "Runtime", "SubprocessRuntime"]

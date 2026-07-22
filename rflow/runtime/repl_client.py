@@ -9,6 +9,8 @@ from collections.abc import Callable
 from typing import Any, Protocol
 
 from rflow.runtime.protocol import (
+    CapabilitiesRequest,
+    CapabilityMap,
     InjectImportRequest,
     InjectProxyRequest,
     InjectRequest,
@@ -17,16 +19,23 @@ from rflow.runtime.protocol import (
     ProxyResponse,
     RemoveRequest,
     ReplResponse,
+    RetrieveRequest,
     RunRequest,
     SetEnvRequest,
     WireModel,
 )
-from rflow.runtime.repl import DoneSignal, MissingReplError
+from rflow.runtime.repl import DoneSignal, MissingReplError, Repl
+from rflow.runtime.serial import (
+    CLOUDPICKLE,
+    decode_object,
+    encode_object,
+    is_json_safe,
+)
 from rflow.tools import get_tool_metadata
 
 
 class ReplConnection(Protocol):
-    """Minimal send/recv boundary used by ReplClient."""
+    """Minimal send/recv boundary used by RemoteRepl."""
 
     def send(self, msg: WireModel) -> None: ...
 
@@ -35,8 +44,15 @@ class ReplConnection(Protocol):
     def close(self) -> None: ...
 
 
-class ReplClient:
-    """ReplLike host client for a deployed minimal REPL server."""
+class RemoteRepl(Repl):
+    """A :class:`~rflow.runtime.repl.Repl` that runs code in a sandbox.
+
+    Not a REPL itself — a host-side stub that speaks the wire protocol over a
+    :class:`ReplConnection` to a ``ReplServer`` (which wraps a ``LocalRepl`` in
+    another process/container). Objects cross the boundary by value; see
+    :meth:`inject`/:meth:`get_var`. Returned by the process-isolated runtimes
+    (``SubprocessRuntime``/``DockerRuntime``/``ModalRuntime``).
+    """
 
     def __init__(self, connection: ReplConnection) -> None:
         self.connection = connection
@@ -50,6 +66,7 @@ class ReplClient:
         self._done: Callable[[object], object] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._request_id = 0
+        self._capabilities: CapabilityMap | None = None
 
     def _next_id(self, cmd: str) -> str:
         self._request_id += 1
@@ -92,17 +109,68 @@ class ReplClient:
         """Ship any Python object into the remote namespace.
 
         Proxy tools run back on the host; other callables are imported or
-        source-shipped into the sandbox; plain values are injected directly.
+        source-shipped into the sandbox. Plain (JSON) values are injected as-is;
+        arbitrary live objects are shipped **by value** as a cloudpickle blob and
+        rebuilt as an independent copy in the sandbox.
         """
         self.namespace[name] = fn
         if not callable(fn):
-            self.call(InjectRequest(id=self._next_id("inject"), name=name, value=fn))
+            self._inject_value(name, fn)
             return
         meta = get_tool_metadata(fn)
         if meta is not None and meta.proxy:
             self._inject_proxy(name, self._sync_callable(fn), is_async=meta.is_async)
         else:
             self._inject_local_tool(name, fn)
+
+    def get_var(self, name: str) -> Any:
+        """Read a variable back out of the remote Python namespace (by value).
+
+        JSON-safe data comes back as-is; anything else is returned as a
+        cloudpickle copy of the sandbox object. Raises if ``name`` is unbound.
+        """
+        resp = self.call(RetrieveRequest(id=self._next_id("retrieve"), name=name))
+        if resp.value_encoding == CLOUDPICKLE:
+            return decode_object(resp.value)
+        return resp.value
+
+    def get_env_var(self, name: str) -> Any:
+        """Return a value from the mirrored REPL ``env`` metadata channel.
+
+        Reflects the last sync from the sandbox (after ``run`` / ``update_env``).
+        Raises ``KeyError`` if ``name`` is unset.
+        """
+        if name not in self.env:
+            raise KeyError(name)
+        return self.env[name]
+
+    def capabilities(self) -> CapabilityMap:
+        """Fetch (and cache) the sandbox's advertised capabilities."""
+        if self._capabilities is None:
+            resp = self.call(CapabilitiesRequest(id=self._next_id("capabilities")))
+            self._capabilities = resp.capabilities or CapabilityMap()
+        return self._capabilities
+
+    def _inject_value(self, name: str, value: Any) -> None:
+        # Plain JSON data goes over verbatim (readable, no dependency); a live
+        # object is shipped by value via cloudpickle when the sandbox supports it.
+        if is_json_safe(value):
+            self.call(InjectRequest(id=self._next_id("inject"), name=name, value=value))
+            return
+        if not self.capabilities().cloudpickle:
+            raise RuntimeError(
+                f"cannot inject {name!r}: the value is not JSON-serializable and "
+                "this sandbox does not support cloudpickle object injection "
+                "(install cloudpickle in the sandbox, or inject JSON-safe data)."
+            )
+        self.call(
+            InjectRequest(
+                id=self._next_id("inject"),
+                name=name,
+                value=encode_object(value),
+                encoding=CLOUDPICKLE,
+            )
+        )
 
     def remove_tool(self, name: str) -> None:
         self.namespace.pop(name, None)
@@ -216,4 +284,4 @@ class ReplClient:
         return asyncio.run_coroutine_threadsafe(wait(), self._loop).result()
 
 
-__all__ = ["ReplClient", "ReplConnection"]
+__all__ = ["RemoteRepl", "ReplConnection"]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from benchmarks.eval import model
 from benchmarks.eval.types import Model
 from rflow.clients.llm import AnthropicClient
@@ -17,7 +19,8 @@ class AnthropicModel(Model):
         self._usage = {"input_tokens": 0, "output_tokens": 0}
 
     def complete(self, messages: list[dict[str, str]], **kwargs) -> str:
-        text, usage = self.client.completion(messages, **kwargs)
+        # AnthropicClient is async now; bridge the sync harness onto one call.
+        text, usage = asyncio.run(self.client.completion(messages, **kwargs))
         self._usage = {
             "input_tokens": usage.input_tokens,
             "output_tokens": usage.output_tokens,

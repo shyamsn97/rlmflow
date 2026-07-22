@@ -3,6 +3,20 @@
 Use :mod:`rflow.utils.viewer` for new imports.
 """
 
-from rflow.utils.viewer import ViewSource, open_viewer, replay, save_image, save_steps
+from rflow.utils.viewer import (
+    ViewSource,
+    open_viewer,
+    replay,
+    save_gif,
+    save_image,
+    save_steps,
+)
 
-__all__ = ["ViewSource", "open_viewer", "replay", "save_image", "save_steps"]
+__all__ = [
+    "ViewSource",
+    "open_viewer",
+    "replay",
+    "save_gif",
+    "save_image",
+    "save_steps",
+]

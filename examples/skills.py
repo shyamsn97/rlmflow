@@ -21,7 +21,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from rflow import DEFAULT_BUILDER, Flow, Graph, GraphCheckpointer
+from rflow import Flow, Graph, GraphCheckpointer, SystemPromptBuilder
 from rflow.clients import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -109,12 +109,11 @@ def build_flow(skills_dir: Path, *, model: str) -> Flow:
     """Create a flow whose prompt includes the installed skill."""
     skill_path = install_example_skill(skills_dir)
     flow = Flow(OpenAIClient(model=model), max_iters=5)
-    flow.prompt_builder = DEFAULT_BUILDER.section(
-        "skills",
-        skills_section([skill_path]),
-        title="Skills",
-        before="tools",
+    prompt = SystemPromptBuilder()
+    prompt.sections.add(
+        "skills", skills_section([skill_path]), title="Skills", before="tools"
     )
+    flow.system_prompt = prompt
     return flow
 
 

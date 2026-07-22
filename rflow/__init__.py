@@ -7,12 +7,13 @@ choice: the recursive graph is the source of truth.
 from rflow.consumers import (
     ConsumerGroup,
     GraphCheckpointer,
+    LiveGraphTree,
     LiveTreeRenderer,
     StreamConsumer,
     WorkspaceSync,
     render_tree,
 )
-from rflow.consumers.tui import tui
+from rflow.consumers.tui import FlowTUI, tui
 from rflow.flow import Flow, code_block
 from rflow.graph import (
     ActionNode,
@@ -43,16 +44,25 @@ from rflow.graph import (
     node_from_dict,
 )
 from rflow.integrations import DSPyFlow, FlowLLM, messages_to_query
+from rflow.parallel import parallel_run, parallel_stream
 from rflow.pool import Pool, SequentialPool, ThreadPool
-from rflow.prompts import DEFAULT_BUILDER, SYSTEM_PROMPT, PromptBuilder
+from rflow.prompts import (
+    DEFAULT_BUILDER,
+    SYSTEM_PROMPT,
+    PromptBuilder,
+    PromptProfile,
+    SystemPromptBuilder,
+    UserPromptBuilder,
+)
 from rflow.runtime import (
     DockerRuntime,
     DoneSignal,
+    LocalRepl,
     LocalRuntime,
     MissingReplError,
     ModalRuntime,
+    RemoteRepl,
     Repl,
-    ReplLike,
     Runtime,
     SubprocessRuntime,
 )
@@ -65,12 +75,15 @@ from rflow.structured import (
 from rflow.tools import (
     FILE_TOOLS,
     ToolMetadata,
+    enable_graph_ops,
     format_tool_line,
     get_tool_metadata,
+    inject_tools,
+    register_halt,
     tool,
 )
 from rflow.utils import find_code_blocks
-from rflow.utils.viewer import open_viewer, replay, save_image, save_steps
+from rflow.utils.viewer import open_viewer, replay, save_gif, save_image, save_steps
 
 __all__ = [
     "ActionNode",
@@ -89,6 +102,7 @@ __all__ = [
     "find_code_blocks",
     "Flow",
     "FlowLLM",
+    "FlowTUI",
     "Graph",
     "GraphAction",
     "GraphCheckpoint",
@@ -97,7 +111,9 @@ __all__ = [
     "InsertNode",
     "LLMOutput",
     "LLMUsage",
+    "LiveGraphTree",
     "LiveTreeRenderer",
+    "LocalRepl",
     "LocalRuntime",
     "MissingReplError",
     "ModalRuntime",
@@ -107,11 +123,15 @@ __all__ = [
     "open_viewer",
     "Pool",
     "PromptBuilder",
+    "PromptProfile",
+    "SystemPromptBuilder",
+    "UserPromptBuilder",
     "replay",
+    "save_gif",
     "save_image",
     "save_steps",
+    "RemoteRepl",
     "Repl",
-    "ReplLike",
     "RemoveChild",
     "RemoveNode",
     "ReplaceNode",
@@ -131,12 +151,17 @@ __all__ = [
     "WorkspaceSync",
     "apply_graph_action",
     "code_block",
+    "enable_graph_ops",
     "format_tool_line",
     "get_tool_metadata",
+    "inject_tools",
     "json_schema_for",
     "load_run",
     "messages_to_query",
     "node_from_dict",
+    "parallel_run",
+    "parallel_stream",
+    "register_halt",
     "render_tree",
     "tool",
     "tui",

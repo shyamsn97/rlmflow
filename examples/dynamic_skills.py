@@ -3,8 +3,8 @@
 Two pieces work together here:
 
 1. A **callable prompt section**. ``Flow`` re-renders the system prompt every
-   turn (``build_system_prompt`` -> ``prompt_builder.build``), so a section whose
-   body is a function reflects whatever it reads *right now*. Point it at a
+   turn (``build_system_prompt`` resolves ``flow.system_prompt``), so a section
+   whose body is a function reflects whatever it reads *right now*. Point it at a
    mutable ``SkillLibrary`` and the rendered "Skills" section is always live.
 2. An **``add_skill`` tool**. A plain ``@tool``-decorated function passed via
    ``tools=[...]`` lands in the REPL namespace and auto-documents itself in the
@@ -29,7 +29,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from rflow import DEFAULT_BUILDER, Flow, Graph, LLMUsage
+from rflow import Flow, Graph, LLMUsage, SystemPromptBuilder
 from rflow.tools import tool
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -151,12 +151,11 @@ class ScriptedLLM:
 
 def build_flow(library: SkillLibrary, llm, *, max_iters: int) -> Flow:
     flow = Flow(llm, max_iters=max_iters, tools=[make_add_skill(library)])
-    flow.prompt_builder = DEFAULT_BUILDER.section(
-        "skills",
-        lambda flow, graph: library.render(),
-        title="Skills",
-        before="tools",
+    prompt = SystemPromptBuilder()
+    prompt.sections.add(
+        "skills", lambda flow, graph: library.render(), title="Skills", before="tools"
     )
+    flow.system_prompt = prompt
     return flow
 
 

@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rflow.runtime.connections import PopenConnection
-from rflow.runtime.repl import ReplLike
-from rflow.runtime.repl_client import ReplClient
+from rflow.runtime.repl import Repl
+from rflow.runtime.repl_client import RemoteRepl
 from rflow.runtime.runtime import Runtime
 
 if TYPE_CHECKING:
@@ -91,12 +91,12 @@ class DockerRuntime(Runtime):
             **options,
         )
 
-    def deploy_repl_server(self, graph: Graph) -> ReplClient:
+    def deploy_repl_server(self, graph: Graph) -> RemoteRepl:
         cwd = str(self.working_directory) if self.working_directory else None
         options = dict(self.options)
         repl_timeout = options.pop("repl_timeout", None)
         argv = build_docker_argv(self.image, **options)
-        return ReplClient(
+        return RemoteRepl(
             PopenConnection(
                 argv,
                 cwd=cwd,
@@ -105,7 +105,7 @@ class DockerRuntime(Runtime):
             )
         )
 
-    def open(self, graph: Graph) -> ReplLike:
+    def open(self, graph: Graph) -> Repl:
         return self.deploy_repl_server(graph)
 
 

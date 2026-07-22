@@ -91,3 +91,14 @@ benchmarks/runs/<run_id>/
   report.md
   artifacts/<dataset>/<example_id>/<runner>/
 ```
+
+## Current API notes
+
+The harness tracks the library's async LLM clients and graph-first runner:
+
+- **Models** (`benchmarks/eval/models/openai.py`, `anthropic.py`) wrap
+  `OpenAIClient` / `AnthropicClient`, whose `completion` is async. The sync
+  `Model.complete` bridge uses `asyncio.run(...)`.
+- **`rflow-local` runner** builds `Graph(query=example.prompt, inputs=...)` and
+  drives with `flow.run_streaming(graph=graph)` — `Example.prompt` is task text,
+  not `Graph.prompt_profile`.

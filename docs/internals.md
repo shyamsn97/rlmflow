@@ -34,8 +34,9 @@ Supporting pieces:
 - **`Runtime` / `ReplBackend`** (`rflow/runtime/`) — the code sandbox. `Flow`
   opens one REPL per agent and drives `start(code)` / `resume(value)` on it. See
   [`runtimes.md`](runtimes.md).
-- **`PromptBuilder`** (`rflow/prompts/`) — named sections that render the system
-  prompt from the current `flow` and `graph`. See
+- **`SystemPromptBuilder`** (`rflow/prompts/`) — named sections that render the
+  system prompt from the current `flow` and `graph`; `UserPromptBuilder` projects
+  the trajectory into user/assistant turns. See
   [`prompt_customization.md`](prompt_customization.md).
 
 The principle: **`Graph` holds state; `Flow` holds policy.** Anything that is a
@@ -58,6 +59,7 @@ graph.depth             # int
 graph.query             # str
 graph.inputs            # dict[str, str] — this agent's INPUTS
 graph.model             # str  — model label for this agent
+graph.prompt_profile    # str  — PromptProfile selector (not prompt text)
 graph.output_schema     # required done() schema, if any
 graph.parent_agent_id   # str | None
 
@@ -168,7 +170,8 @@ async def run_agent_task(self, graph):
 
     if llm_turns >= max_iters:                 # cap reached
         self.append_node(graph, DoneOutput(result=MAX_ITERS_EXCEEDED)); return
-    messages = self.messages(graph, force_final=...)   # otherwise call the model
+    self._ensure_nudge(graph, force_final=...)         # nudge as a real node
+    messages = self.messages(graph)                    # then call the model
     reply, usage = await self._call_chat(messages, graph.model)
     self.append_node(graph, LLMOutput(content=reply, code=code_block(reply), ...))
 ```
@@ -200,9 +203,11 @@ Delegation is a single async REPL tool, `launch_subagents`, built per agent by
 `make_launch_subagents` (`rflow/tools/builtins.py`). When agent code runs
 `results = await launch_subagents([...])` inside an exec turn, the tool:
 
-1. creates one child `Graph` per spec (sharing the parent's `graph_id`, depth+1),
-   each announced with an `AddChild` event — refusing specs past `max_depth` or
-   over `max_query_chars` with a placeholder result string;
+1. for each **cold** spec, creates a child `Graph` from `query` (sharing the
+   parent's `graph_id`, depth+1); for each **warm** spec that already carries a
+   prepared `graph`, calls `flow.adopt(parent, child, name=...)` to reparent it
+   — each child is announced with an `AddChild` event. Specs past `max_depth` or
+   over `max_query_chars` become placeholder result strings;
 2. appends a `SupervisingOutput(waiting_on=child_ids)` to the parent;
 3. submits each child to the **run's** `TaskQueue` (children self-drive with
    `run_agent`), then awaits `tasks.changed()` until all children are finished;
@@ -217,7 +222,16 @@ run exists (a bare `run_agent` with no stream), a throwaway `TaskQueue` runs the
 children. See the delegation/resume flow in [`node_model.md`](node_model.md).
 
 Payloads go in each spec's `inputs` (the child's `INPUTS`); `query` stays a short
-instruction. `output_schema` per spec makes the child's `done(value)` validated.
+instruction. `prompt_profile` (legacy key `prompt` still accepted) stamps the
+child's `Graph.prompt_profile`. `output_schema` per spec makes the child's
+`done(value)` validated.
+
+**Host warm path.** `flow.adopt(parent, child, *, name)` is the structural
+primitive (remap ids, move the REPL, emit `AddChild` — does not run). 
+`flow.launch_subgraphs(parent, children, *, queries=None, names=None)` is the
+graph-first wrapper that builds warm specs and calls `launch_subagents`, so
+host/example code never has to write the internal `graph` key. Use it for
+fork/rewind → fan-out → compare patterns (see `examples/shepherd/`).
 
 ---
 
@@ -266,6 +280,10 @@ isolated and survive across turns.
 - `fork` / `merge` / `discard` — branch a graph (deep copy, fresh `graph_id`) with
   its REPL rebuilt; fold a child branch's delta (`ExecAction`s + one summary node)
   and its variables back into a parent REPL; or eagerly free rejected branches.
+- `adopt(parent, child, *, name)` — reparent a prepared single-agent graph under
+  `parent` (warm attach; see Delegation above).
+- `get_var(graph, name)` / `get_env_var(graph, name)` — read the REPL Python
+  namespace or the `ENV` metadata channel back onto the host.
 - `_sync_repl_inputs(graph)` — re-inject `INPUTS` into a warm REPL after
   `resolve_run` updates a resumed graph's inputs.
 
@@ -273,10 +291,17 @@ isolated and survive across turns.
 
 ## Prompts, LLM calls, and tools
 
-**Prompt.** `messages(graph)` projects the trajectory to chat messages under
-`build_system_prompt(graph)`, which returns `self.system_prompt` if set, else
-`self.prompt_builder.build(self, graph)`. Adjacent observations coalesce into one
-user-role message. Customize with `PromptBuilder` sections or a subclass — see
+**Prompt.** `messages(graph)` assembles the chat list: `build_system_prompt(graph)`
+resolves `self.system_prompt` (a `SystemPromptBuilder`, string, or
+`(flow, graph) -> str` function via `as_system_prompt_fn`), and the user side
+comes from `self.user_prompt` (a `UserPromptBuilder` or `(flow, graph) -> turns`
+function, both already callable) which projects the trajectory into
+`user`/`assistant` turns. `messages` then prepends the system message, truncates
+to `max_messages`, and coalesces adjacent same-role turns into one. The trailing
+nudge ("Continue." / "Give your final answer.") is not synthesized here — it is
+materialized as a real `UserQuery` node by `_ensure_nudge` before the call, so it
+persists in the trajectory. Customize with `SystemPromptBuilder` sections, a
+`UserPromptBuilder` subclass, or a `Flow` subclass — see
 [`prompt_customization.md`](prompt_customization.md).
 
 **LLM calls.** `_call_chat(messages, model)` is the single leaf call. Blocking
@@ -316,9 +341,10 @@ Every method on `Flow` is an extension seam; the engine dispatches through
 |---|---|
 | Drive lifecycle | `run`, `arun`, `run_streaming`, `resolve_run`, `run_for`, `_drive`, `finish_run`, `terminate` |
 | Scheduling | `schedule_agent`, `should_continue`, `run_agent_task`, `run_agent` |
-| Exec / REPL | `exec_turn`, `repl_for`, `close_repl(s)`, `rebuild_repl`, `fork`, `merge`, `discard` |
+| Exec / REPL | `exec_turn`, `repl_for`, `close_repl(s)`, `rebuild_repl`, `fork`, `merge`, `discard`, `adopt`, `get_var`, `get_env_var` |
+| Delegation | `launch_subagents`, `launch_subgraphs` |
 | Graph mutation | `append_node`, `apply_action` |
-| Prompt / messages | `messages`, `build_system_prompt`, `build_tools` |
+| Prompt / messages | `messages`, `build_system_prompt`, `build_tools`, `prompt_profile`, `prompt_name_for` |
 | LLM half | `_call_chat`, `llm_client`, `llm_query_batched` |
 | Tools | `add_tool`, `remove_tool` |
 
@@ -339,8 +365,9 @@ class RoutedFlow(rflow.Flow):
         return super().llm_client(model)
 ```
 
-For prompt-only customization (the common case), don't subclass — use
-`PromptBuilder` sections. See [`prompt_customization.md`](prompt_customization.md).
+For prompt-only customization (the common case), don't subclass `Flow` — edit a
+`SystemPromptBuilder`'s sections. See
+[`prompt_customization.md`](prompt_customization.md).
 
 ---
 
