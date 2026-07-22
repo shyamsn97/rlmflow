@@ -666,6 +666,9 @@ def apply_graph_action(graph: Graph | None, action: Any) -> Graph:
         else:
             del agent.nodes[index]
         _resequence(agent)
+        # Match ``inject(..., truncate="descendants")``: dropping a supervising
+        # / resume edge must drop the child agents that edge owned.
+        _prune_orphaned_children(agent)
     elif isinstance(action, AddChild):
         parent = graph[action.parent_agent_id]
         action.child.graph_id = parent.graph_id

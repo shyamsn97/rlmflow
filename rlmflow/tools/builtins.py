@@ -59,6 +59,28 @@ def make_launch_subagents(flow: Flow, parent: Graph, repl: Repl):
         proxy=True,
     )
     async def launch_subagents(specs: list[dict[str, Any]]) -> list[Any]:
+        # REPL rebuild / fork replay re-runs the parent's ExecAction, which may
+        # call us again. If every named child already exists and has finished,
+        # return their results without appending another SupervisingOutput or
+        # re-spawning (the deepcopy already carries the child subtrees).
+        replay_ids: list[str] = []
+        for index, spec in enumerate(specs):
+            name = spec.get("name", f"child{index}")
+            child_id = f"{parent.agent_id}.{name}"
+            child = parent.children.get(child_id)
+            if child is None or not child.finished:
+                break
+            replay_ids.append(child_id)
+        else:
+            return [
+                (
+                    flow.output_parser(parent[cid].result(), parent[cid].output_schema)
+                    if parent[cid].output_schema is not None
+                    else parent[cid].result()
+                )
+                for cid in replay_ids
+            ]
+
         results: list[Any] = []
         child_ids: list[str] = []
         for index, spec in enumerate(specs):

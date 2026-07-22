@@ -803,6 +803,11 @@ class Flow:
         The child must be a single-agent graph (a plain fork/rewind). Reparenting a
         child that itself carries sub-children is out of scope.
         """
+        if child.children:
+            raise ValueError(
+                "adopt only accepts a single-agent graph (a plain fork/rewind); "
+                "reparenting a graph that carries sub-children is out of scope"
+            )
         old_key = repl_key(child)  # capture before mutating identity
         new_id = f"{parent.agent_id}.{name}"
         child.set_graph_id(parent.graph_id)
