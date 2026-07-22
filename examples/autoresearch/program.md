@@ -27,6 +27,16 @@ val_bpb: <float>
 
 Lower is better. `val_bpb` is the metric used for ranking.
 
+## How to make progress
+
+Read a prior run log before proposing anything, and let the numbers drive each
+hypothesis instead of guessing. A log reports, among other fields, the
+smooth-loss trend, the final `lr`, `num_steps`, `total_tokens_M`,
+`peak_vram_mb`, `num_params_M`, and `depth`. Form a hypothesis about what is
+limiting a given run, change the smallest set of constants that tests it, and
+compare the result against the parent's `val_bpb`. Any knob listed under
+Constraints is fair game — it is up to you to figure out which ones matter.
+
 ## Constraints
 
 Allowed:

@@ -4,7 +4,7 @@ This example uses live LLM clients:
 
     python examples/control/graph_controller_agent.py --worker-model gpt-5-mini --controller-model gpt-5
 
-The controller is a normal :class:`rflow.Flow`. Its only special power is the
+The controller is a normal minimal :class:`Flow`. Its only special power is the
 example-local ``WorkerPoolControl`` class below, whose host-side tools close
 over a list of worker flows and graphs.
 """
@@ -12,13 +12,33 @@ over a list of worker flows and graphs.
 from __future__ import annotations
 
 import argparse
-import time
+import asyncio
+import sys
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 
-import rflow
-from rflow.prompts.default import DEFAULT_BUILDER
+from rlmflow import (
+    DoneOutput,
+    ErrorOutput,
+    ExecOutput,
+    Flow,
+    Graph,
+    LLMOutput,
+    LocalRuntime,
+    SupervisingOutput,
+    SystemPromptBuilder,
+    UserQuery,
+    render_tree,
+    tool,
+)
+
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
+
+from common import build_client  # noqa: E402
 
 LIVE_DELAY_SECONDS = 0.35
 
@@ -27,8 +47,8 @@ LIVE_DELAY_SECONDS = 0.35
 class WorkerRun:
     name: str
     approach: str
-    worker: rflow.Flow
-    graph: rflow.Graph
+    worker: Flow
+    graph: Graph
 
 
 class WorkerPoolControl:
@@ -38,7 +58,7 @@ class WorkerPoolControl:
         self,
         runs: list[WorkerRun] | None = None,
         *,
-        worker_factory: Callable[[], rflow.Flow] | None = None,
+        worker_factory: Callable[[], Flow] | None = None,
         snippet_chars: int = 500,
     ) -> None:
         self.runs = {run.name: run for run in (runs or [])}
@@ -62,7 +82,7 @@ class WorkerPoolControl:
             self.worker_results,
         ]
 
-    def graphs(self) -> list[rflow.Graph]:
+    def graphs(self) -> list[Graph]:
         return [run.graph for run in self.runs.values()]
 
     def _run(self, name: str) -> WorkerRun:
@@ -72,14 +92,14 @@ class WorkerPoolControl:
             available = ", ".join(self.runs)
             raise KeyError(f"unknown worker {name!r}; available: {available}") from exc
 
-    @rflow.tool("Create and start a named worker graph with the requested approach.", proxy=True)
+    @tool("Create and start a named worker graph with the requested approach.", proxy=True)
     def create_worker(self, *, name: str, approach: str) -> str:
         if name in self.runs:
             raise ValueError(f"worker {name!r} already exists")
         if self.worker_factory is None:
             raise RuntimeError("this WorkerPoolControl was not configured to create workers")
         worker = self.worker_factory()
-        graph = worker.start(worker_prompt(name, approach))
+        graph = Graph(query=worker_prompt(name, approach))
         self.runs[name] = WorkerRun(
             name=name,
             approach=approach,
@@ -88,7 +108,7 @@ class WorkerPoolControl:
         )
         return self.inspect_worker_specs()
 
-    @rflow.tool("Return a bounded summary of every worker graph.", proxy=True)
+    @tool("Return a bounded summary of every worker graph.", proxy=True)
     def inspect_workers(self) -> str:
         if not self.runs:
             return "<no workers created>"
@@ -97,7 +117,7 @@ class WorkerPoolControl:
             for run in self.runs.values()
         )
 
-    @rflow.tool("Return worker names, assigned approaches, and root query previews.", proxy=True)
+    @tool("Return worker names, assigned approaches, and root query previews.", proxy=True)
     def inspect_worker_specs(self) -> str:
         if not self.runs:
             return "<no workers created>"
@@ -108,14 +128,14 @@ class WorkerPoolControl:
             self._append_snippet(lines, "query", run.graph.query)
         return "\n".join(lines)
 
-    @rflow.tool("Return compact graph-shape summaries for diversity checks.", proxy=True)
+    @tool("Return compact graph-shape summaries for diversity checks.", proxy=True)
     def inspect_graph_shapes(self) -> str:
         if not self.runs:
             return "<no workers created>"
         lines = []
         for run in self.runs.values():
             graph = run.graph
-            node_types = [node.type for node in graph.all_nodes]
+            node_types = [node.type for agent in graph.walk() for node in agent.nodes]
             child_edges = [
                 f"{child.parent_agent_id}->{child.agent_id}"
                 for child in graph.walk()
@@ -125,11 +145,13 @@ class WorkerPoolControl:
             lines.append(f"  agents={list(graph.agents)}")
             lines.append(f"  node_types={node_types}")
             lines.append(f"  child_edges={child_edges}")
-            lines.append(f"  runnable={graph.get_runnable_nodes()}")
+            lines.append(
+                f"  unfinished={[agent.agent_id for agent in graph.walk() if not agent.finished]}"
+            )
             lines.append(f"  finished={graph.finished}")
         return "\n".join(lines)
 
-    @rflow.tool("Return a bounded summary of one worker graph.", proxy=True)
+    @tool("Return a bounded summary of one worker graph.", proxy=True)
     def inspect_worker(self, *, worker: str) -> str:
         return self._summary(self._run(worker), title=f"worker={worker!r}")
 
@@ -139,7 +161,7 @@ class WorkerPoolControl:
             title,
             f"finished={graph.finished}",
             f"agents={list(graph.agents)}",
-            f"runnable={graph.get_runnable_nodes()}",
+            f"unfinished={[agent.agent_id for agent in graph.walk() if not agent.finished]}",
             f"tokens={graph.tokens()}",
             f"root_result={graph.result()!r}",
         ]
@@ -152,30 +174,30 @@ class WorkerPoolControl:
             )
             if current is None:
                 continue
-            if isinstance(current, rflow.SupervisingOutput):
+            if isinstance(current, SupervisingOutput):
                 lines.append(f"  waiting_on={current.waiting_on}")
                 self._append_snippet(lines, "output", current.output)
-            elif isinstance(current, rflow.ErrorOutput):
+            elif isinstance(current, ErrorOutput):
                 self._append_snippet(lines, "error", current.error)
                 self._append_snippet(lines, "output", current.output)
-            elif isinstance(current, rflow.DoneOutput):
+            elif isinstance(current, DoneOutput):
                 self._append_snippet(lines, "result", current.result)
-            elif isinstance(current, rflow.ExecOutput):
+            elif isinstance(current, ExecOutput):
                 self._append_snippet(lines, "output", current.output)
-            elif isinstance(current, rflow.LLMOutput):
+            elif isinstance(current, LLMOutput):
                 self._append_snippet(lines, "code", current.code)
         return "\n".join(lines)
 
-    @rflow.tool("Advance one worker graph by one scheduler tick.", proxy=True)
-    def advance_worker(self, *, worker: str) -> str:
-        self._advance_runs([self._run(worker)])
+    @tool("Advance one worker graph by one scheduler tick.", proxy=True)
+    async def advance_worker(self, *, worker: str) -> str:
+        await self._advance_runs([self._run(worker)])
         return self.inspect_worker(worker=worker)
 
-    @rflow.tool(
+    @tool(
         "Advance multiple unfinished worker graphs by one shared parallel scheduler tick.",
         proxy=True,
     )
-    def advance_workers(self, *, workers: list[str] | None = None) -> str:
+    async def advance_workers(self, *, workers: list[str] | None = None) -> str:
         selected = (
             [self._run(worker) for worker in workers]
             if workers is not None
@@ -184,39 +206,42 @@ class WorkerPoolControl:
         active = [run for run in selected if not run.graph.finished]
         if not active:
             return "no selected workers need advancement"
-        self._advance_runs(active)
+        await self._advance_runs(active)
         return self.inspect_workers()
 
     @staticmethod
-    def _advance_runs(runs: list[WorkerRun]) -> None:
-        next_graphs = rflow.parallel_step(
-            [(run.worker, run.graph) for run in runs]
-        )
-        for run, graph in zip(runs, next_graphs):
-            run.graph = graph
+    async def _advance_runs(runs: list[WorkerRun]) -> None:
+        async def step(run: WorkerRun) -> None:
+            async for _event in run.worker.run_streaming(graph=run.graph, until="next"):
+                pass
 
-    @rflow.tool("Inject controller feedback into one worker agent.", proxy=True)
+        await asyncio.gather(*(step(run) for run in runs))
+
+    @tool("Inject controller feedback into one worker agent.", proxy=True)
     def inject_worker_note(self, *, worker: str, target: str, note: str) -> str:
         run = self._run(worker)
-        run.graph = run.graph.inject_output(
-            target=target,
-            output=f"Controller note: {note}",
-            content=f"Controller note: {note}",
+        run.worker.append_node(
+            run.graph[target],
+            ExecOutput(
+                output=f"Controller note: {note}",
+                content=f"Controller note: {note}",
+            ),
         )
         return self.inspect_worker(worker=worker)
 
-    @rflow.tool("Replace the latest supervisor node for one worker agent.", proxy=True)
+    @tool("Replace the latest supervisor node for one worker agent.", proxy=True)
     def replace_worker_supervisor(self, *, worker: str, target: str, note: str) -> str:
         run = self._run(worker)
-        matches = run.graph.all_nodes.where(
-            lambda node: node.agent_id == target
-            and isinstance(node, rflow.SupervisingOutput)
-        )
+        matches = [
+            node
+            for node in run.graph[target].nodes
+            if isinstance(node, SupervisingOutput)
+        ]
         if not matches:
             return f"no supervising_output found for {target!r} in worker {worker!r}"
-        run.graph = run.graph.replace_node(
+        run.graph.replace(
             matches[-1],
-            rflow.ExecOutput(
+            ExecOutput(
                 output=f"Controller replacement: {note}",
                 content=f"Controller replacement: {note}",
             ),
@@ -224,24 +249,31 @@ class WorkerPoolControl:
         )
         return self.inspect_worker(worker=worker)
 
-    @rflow.tool("Request forced final answers from one worker's agents.", proxy=True)
+    @tool("Request final answers from one worker's agents.", proxy=True)
     def terminate_worker(
         self, *, worker: str, agent_ids: list[str] | None = None
     ) -> str:
         run = self._run(worker)
-        run.worker.terminate(agent_ids)
+        targets = agent_ids or [
+            agent.agent_id for agent in run.graph.walk() if not agent.finished
+        ]
+        for agent_id in targets:
+            run.worker.append_node(
+                run.graph[agent_id],
+                UserQuery(content="Controller stop request: finalize now."),
+            )
         targets = "all unfinished agents" if agent_ids is None else ", ".join(agent_ids)
         return (
             f"termination requested for {targets} in worker {worker!r}; "
             "call advance_workers(workers=[...]) to commit it"
         )
 
-    @rflow.tool("Return one worker's final result if it is finished.", proxy=True)
+    @tool("Return one worker's final result if it is finished.", proxy=True)
     def worker_result(self, *, worker: str) -> str:
         graph = self._run(worker).graph
         return graph.result() if graph.finished else "<worker not finished>"
 
-    @rflow.tool("Return final results for all finished workers.", proxy=True)
+    @tool("Return final results for all finished workers.", proxy=True)
     def worker_results(self) -> dict[str, str]:
         return {
             name: run.graph.result()
@@ -290,16 +322,16 @@ Available control loop:
 3. Use inspect_graph_shapes() while running to verify the graphs actually diverge
    (different child edges, node types, or finished states), not just the labels.
 4. Use inspect_workers() before decisions that need current outputs/errors.
-5. Advance diversified workers together with advance_workers(workers=[...]) or
-   advance_workers() for all unfinished workers.
+5. Advance diversified workers together with await advance_workers(workers=[...])
+   or await advance_workers() for all unfinished workers.
 6. If an agent is stuck, looping, or missing a key instruction, call
    inject_worker_note(worker=..., target=..., note=...) with a concise,
    evidence-based note.
 7. If a supervisor delegated down a bad route, call replace_worker_supervisor(
-   worker=..., target=..., note=...) and then use advance_workers(workers=[...]) on
-   the next tick.
+   worker=..., target=..., note=...) and then use await advance_workers(workers=[...])
+   on the next tick.
 8. If the worker has done enough and should stop, call terminate_worker() and
-   then advance_workers(workers=[...]) until the forced final answer lands.
+   then await advance_workers(workers=[...]) until the final answer lands.
 9. When enough independent workers agree on all roots, call done(...) with the
    selected result and short evidence.
 
@@ -317,19 +349,20 @@ Example moves:
 - If inspect_worker_specs() shows duplicate approaches, inject notes or prioritize
   workers so the pool covers genuinely different methods.
 - If inspect_graph_shapes() shows every worker has only root and the same current
-  type, call advance_workers() before deciding.
+  type, call await advance_workers() before deciding.
 - If worker="one-root" is waiting on a child asked for only one root, keep
   advancing until the child result is visible.
 - If worker="one-root" would resume with one root only, call
   replace_worker_supervisor(worker="one-root", target="root", note="...") to
   turn the bad wait into a controller observation, then call
-  advance_workers(workers=["one-root"]).
+  await advance_workers(workers=["one-root"]).
 - Once two approaches agree on x = 2 and x = 3, call done(...) with the answer
   and name the agreeing workers.
 """
 
 
-CONTROLLER_PROMPT_BUILDER = DEFAULT_BUILDER.section(
+CONTROLLER_PROMPT_BUILDER = SystemPromptBuilder()
+CONTROLLER_PROMPT_BUILDER.sections.add(
     "graph_controller",
     CONTROLLER_POLICY_TEXT,
     title="Graph Controller",
@@ -356,34 +389,26 @@ structure.
 """
 
 
-def build_llm(model: str) -> rflow.LLMClient:
-    return (
-        rflow.AnthropicClient(model)
-        if model.startswith("claude")
-        else rflow.OpenAIClient(model)
-    )
-
-
 def make_worker(
-    llm: rflow.LLMClient, *, max_depth: int = 2, max_iters: int = 12
-) -> rflow.Flow:
-    return rflow.Flow(llm, max_depth=max_depth, max_iters=max_iters)
+    llm, *, max_depth: int = 2, max_iters: int = 12
+) -> Flow:
+    return Flow(llm, max_depth=max_depth, max_iters=max_iters)
 
 
 def make_controller(
     control: WorkerPoolControl,
-    llm: rflow.LLMClient,
+    llm,
     *,
     max_iters: int = 30,
-) -> rflow.Flow:
-    runtime = rflow.LocalRuntime()
+) -> Flow:
+    runtime = LocalRuntime()
     runtime.register_tools(control.tools())
-    return rflow.Flow(
+    return Flow(
         llm,
         runtime=runtime,
         max_depth=0,
         max_iters=max_iters,
-        prompt_builder=CONTROLLER_PROMPT_BUILDER,
+        system_prompt=CONTROLLER_PROMPT_BUILDER,
     )
 
 
@@ -392,9 +417,9 @@ def _record_snapshot(
     label: str,
     control: WorkerPoolControl,
 ) -> None:
-    signature = tuple((run.name, run.graph.tree()) for run in control.runs.values())
+    signature = tuple((run.name, render_tree(run.graph)) for run in control.runs.values())
     if snapshots:
-        previous = tuple((run.name, run.graph.tree()) for run in snapshots[-1][1])
+        previous = tuple((run.name, render_tree(run.graph)) for run in snapshots[-1][1])
         if previous == signature:
             return
     snapshots.append(
@@ -405,7 +430,7 @@ def _record_snapshot(
                     name=run.name,
                     approach=run.approach,
                     worker=run.worker,
-                    graph=run.graph.copy(),
+                    graph=deepcopy(run.graph),
                 )
                 for run in control.runs.values()
             ],
@@ -415,7 +440,7 @@ def _record_snapshot(
 
 def _worker_pool_text(control: WorkerPoolControl) -> str:
     return "\n\n".join(
-        f"[{run.name}] {run.approach}\n{run.graph.tree()}"
+        f"[{run.name}] {run.approach}\n{render_tree(run.graph)}"
         for run in control.runs.values()
     )
 
@@ -432,27 +457,43 @@ def _print_worker_timeline(snapshots: list[tuple[str, list[WorkerRun]]]) -> None
         print(f"\n--- {label} ---")
         for run in runs:
             print(f"\n[{run.name}] {run.approach}")
-            print(run.graph.tree())
+            print(render_tree(run.graph))
             if run.graph.result():
                 print("result:", run.graph.result())
 
 
-def _drive_controller(
-    controller: rflow.Flow,
-    controller_graph: rflow.Graph,
+def _checkpoint(
+    control: WorkerPoolControl, controller_graph: Graph, out_dir: Path
+) -> None:
+    """Persist the controller graph and every worker graph in place."""
+    controller_graph.save(out_dir / "controller")
+    for run in control.runs.values():
+        run.graph.save(out_dir / "workers" / run.name)
+
+
+async def _drive_controller(
+    controller: Flow,
+    controller_graph: Graph,
     control: WorkerPoolControl,
     *,
     show_live: bool,
     delay: float,
-) -> tuple[rflow.Graph, list[tuple[str, list[WorkerRun]]]]:
+    out_dir: Path,
+) -> tuple[Graph, list[tuple[str, list[WorkerRun]]]]:
     snapshots: list[tuple[str, list[WorkerRun]]] = []
     _record_snapshot(snapshots, "workers start", control)
     step = 0
+
+    async def step_controller() -> None:
+        async for _event in controller.run_streaming(graph=controller_graph, until="next"):
+            pass
+
     if not show_live:
         while not controller_graph.finished:
-            controller_graph = controller.step()
+            await step_controller()
             step += 1
             _record_snapshot(snapshots, f"after controller step {step}", control)
+            _checkpoint(control, controller_graph, out_dir)
             print(_worker_pool_text(control))
         return controller_graph, snapshots
 
@@ -465,13 +506,14 @@ def _drive_controller(
         redirect_stdout=False,
         redirect_stderr=False,
     ) as live:
-        time.sleep(delay)
+        await asyncio.sleep(delay)
         while not controller_graph.finished:
-            controller_graph = controller.step()
+            await step_controller()
             step += 1
             _record_snapshot(snapshots, f"after controller step {step}", control)
+            _checkpoint(control, controller_graph, out_dir)
             live.update(_render_worker_pool(control), refresh=True)
-            time.sleep(delay)
+            await asyncio.sleep(delay)
     return controller_graph, snapshots
 
 
@@ -506,23 +548,27 @@ def main() -> None:
 
     control = WorkerPoolControl(
         worker_factory=lambda: make_worker(
-            build_llm(args.worker_model),
+            build_client(args.worker_model),
             max_depth=args.worker_max_depth,
             max_iters=args.worker_max_iters,
         )
     )
     controller = make_controller(
         control,
-        build_llm(args.controller_model),
+        build_client(args.controller_model),
         max_iters=args.controller_max_iters,
     )
-    controller_graph = controller.start(CONTROLLER_TASK)
-    controller_graph, snapshots = _drive_controller(
-        controller,
-        controller_graph,
-        control,
-        show_live=not args.no_viz,
-        delay=args.delay,
+    controller_graph = Graph(query=CONTROLLER_TASK)
+    out_dir = Path(args.out_dir)
+    controller_graph, snapshots = asyncio.run(
+        _drive_controller(
+            controller,
+            controller_graph,
+            control,
+            show_live=not args.no_viz,
+            delay=args.delay,
+            out_dir=out_dir,
+        )
     )
     controller_answer = controller_graph.result()
 
@@ -530,7 +576,6 @@ def main() -> None:
     print("controller answer:", controller_answer)
     print("best worker result:", _best_finished_result(control))
 
-    out_dir = Path(args.out_dir)
     _save_worker_graphs(control, out_dir)
     path = controller_graph.save(out_dir / "controller")
     print(f"Graph saved to {path}")

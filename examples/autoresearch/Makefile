@@ -6,13 +6,17 @@ GPU ?= L4
 PARALLEL ?= 8
 MAX_SUBMISSIONS ?= 32
 MAX_ITERS ?= 40
+MAX_DEPTH ?= 1
 CHILD_ITERS ?= 8
 CREATED_TRIAL_TIMEOUT_S ?= 1800
 SUBMITTED_TRIAL_TIMEOUT_S ?=
+CHECKPOINT_EVERY_S ?= 0
 EAGER_CHILDREN ?= 1
 AGENT_RUNTIME ?= docker
 DOCKER_IMAGE ?= rlmflow:local
 OUT ?=
+SYNC_DIR ?=
+SYNC_EVERY_S ?= 2.0
 NO_LIVE ?=
 
 .PHONY: help sync prepare train run smoke lint
@@ -22,14 +26,14 @@ help:
 	@echo "  make sync        Install task deps with uv"
 	@echo "  make prepare     Download/tokenize TinyStories"
 	@echo "  make train       Run one local train.py experiment"
-	@echo "  make run         Run rflow coordinator with Modal trials"
+	@echo "  make run         Run rlmflow coordinator with Modal trials"
 	@echo "  make smoke       Run with MAX_SUBMISSIONS=1 and --no-live"
 	@echo "  make lint        Lint runner files"
 	@echo ""
 	@echo "Common overrides:"
-	@echo "  MODEL=$(MODEL) GPU=$(GPU) PARALLEL=$(PARALLEL) MAX_SUBMISSIONS=$(MAX_SUBMISSIONS)"
+	@echo "  MODEL=$(MODEL) GPU=$(GPU) PARALLEL=$(PARALLEL) MAX_SUBMISSIONS=$(MAX_SUBMISSIONS) MAX_DEPTH=$(MAX_DEPTH)"
 	@echo "  CREATED_TRIAL_TIMEOUT_S=$(CREATED_TRIAL_TIMEOUT_S) SUBMITTED_TRIAL_TIMEOUT_S=$(SUBMITTED_TRIAL_TIMEOUT_S)"
-	@echo "  OUT=/path/to/run NO_LIVE=1"
+	@echo "  OUT=/path/to/run CHECKPOINT_EVERY_S=0 SYNC_DIR=/path/to/local-copy NO_LIVE=1"
 	@echo "  AGENT_RUNTIME=docker DOCKER_IMAGE=rlmflow:local"
 
 sync:
@@ -48,13 +52,14 @@ run:
 		--parallel "$(PARALLEL)" \
 		--max-submissions "$(MAX_SUBMISSIONS)" \
 		--max-iters "$(MAX_ITERS)" \
-		--child-iters "$(CHILD_ITERS)" \
+		--max-depth "$(MAX_DEPTH)" \
 		--created-trial-timeout-s "$(CREATED_TRIAL_TIMEOUT_S)" \
+		--checkpoint-every-s "$(CHECKPOINT_EVERY_S)" \
 		--agent-runtime "$(AGENT_RUNTIME)" \
 		--docker-image "$(DOCKER_IMAGE)" \
 		$(if $(SUBMITTED_TRIAL_TIMEOUT_S),--submitted-trial-timeout-s "$(SUBMITTED_TRIAL_TIMEOUT_S)",) \
-		$(if $(EAGER_CHILDREN),--eager-children,) \
 		$(if $(OUT),--out "$(OUT)",) \
+		$(if $(SYNC_DIR),--sync-dir "$(SYNC_DIR)" --sync-every-s "$(SYNC_EVERY_S)",) \
 		$(if $(NO_LIVE),--no-live,)
 
 smoke:

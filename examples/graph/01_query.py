@@ -1,185 +1,63 @@
-"""Querying a Graph: flat views, filters, find(), tokens.
-
-Builds a small recursive Graph by hand and walks every read-side surface:
-
-- ``graph.all_nodes`` — flat NodesView over every state in the subtree
-- ``graph.agents`` — Mapping[agent_id, sub-Graph] over the subtree
-- ``graph.edges`` — derived flow + spawn edges
-- ``.where(...)`` / ``.queries()`` / ``.actions()`` / ``.errors()`` filters
-- ``graph.find(node_id)`` — by-id lookup
-- ``graph.tokens()`` / ``graph.total_tokens()`` — recursive rollups
-- ``graph.result()`` / ``graph.current()``
-
-Run:
-    python examples/graph/01_query.py
-"""
+"""Querying a minimal Graph."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import rflow
+from rlmflow import DoneOutput, ErrorOutput, Graph, LLMOutput, UserQuery
 
 
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
-
-
-def _save_example_graph(
-    graph,
-    source_file: str | Path,
-    name: str,
-    *,
-    out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
-) -> Path:
-    path = graph.save(
-        Path(out_dir) if out_dir is not None else _example_run_dir(source_file, name)
+def build_graph() -> Graph:
+    graph = Graph(query="ship a tiny package")
+    graph.commit(UserQuery(content=graph.query))
+    graph.commit(
+        LLMOutput(
+            content="splitting into two children",
+            metadata={"usage": {"input_tokens": 120, "output_tokens": 40}},
+        )
     )
-    print(f"{label} {path}")
-    return path
+    graph.commit(DoneOutput(result="package shipped"))
 
+    write = Graph(
+        agent_id="root.write",
+        query="write module",
+        depth=1,
+        parent_agent_id="root",
+    )
+    write.commit(UserQuery(content=write.query))
+    write.commit(DoneOutput(result="wrote pkg/__init__.py"))
 
-
-def build_graph() -> rflow.Graph:
-    """A root with two children, one of which errors before succeeding."""
-    root_q = rflow.UserQuery(agent_id="root", seq=0, content="ship a tiny package")
-    root_call = rflow.LLMAction(agent_id="root", seq=1, model="demo")
-    root_reply = rflow.LLMOutput(
-        agent_id="root",
-        seq=2,
-        reply="splitting into two children",
-        code='await launch_subagents([{"name": "write", "query": "..."}, {"name": "test", "query": "..."}])',
-        input_tokens=120,
-        output_tokens=40,
-    )
-    root_exec = rflow.ExecAction(agent_id="root", seq=3, code=root_reply.code)
-    root_sup = rflow.SupervisingOutput(
-        agent_id="root",
-        seq=4,
-        waiting_on=["root.write", "root.test"],
-    )
-    root_resume = rflow.ResumeAction(
-        agent_id="root",
-        seq=5,
-        resumed_from=["root.write", "root.test"],
-    )
-    root_done = rflow.DoneOutput(
-        agent_id="root",
-        seq=6,
-        result="package shipped",
-    )
-
-    write_q = rflow.UserQuery(agent_id="root.write", seq=0, content="write the module")
-    write_done = rflow.DoneOutput(
-        agent_id="root.write", seq=1, result="wrote pkg/__init__.py"
-    )
-
-    test_q = rflow.UserQuery(agent_id="root.test", seq=0, content="run pytest")
-    test_err = rflow.ErrorOutput(
+    test = Graph(
         agent_id="root.test",
-        seq=1,
-        error="exec_error",
-        content="ModuleNotFoundError: pkg",
+        query="run pytest",
+        depth=1,
+        parent_agent_id="root",
     )
-    test_call = rflow.LLMAction(agent_id="root.test", seq=2, model="demo")
-    test_reply = rflow.LLMOutput(
-        agent_id="root.test",
-        seq=3,
-        reply="retrying after install",
-        code="install_and_run()",
-        input_tokens=80,
-        output_tokens=20,
-    )
-    test_exec = rflow.ExecAction(agent_id="root.test", seq=4, code=test_reply.code)
-    test_done = rflow.DoneOutput(agent_id="root.test", seq=5, result="3 passed")
+    test.commit(UserQuery(content=test.query))
+    test.commit(ErrorOutput(error="exec_error", output="ModuleNotFoundError: pkg"))
+    test.commit(DoneOutput(result="3 passed"))
 
-    write = rflow.Graph.from_meta_dict(
-        {
-            "agent_id": "root.write",
-            "depth": 1,
-            "parent_agent_id": "root",
-            "parent_node_id": root_reply.id,
-        },
-        nodes=[write_q, write_done],
-    )
-    test = rflow.Graph.from_meta_dict(
-        {
-            "agent_id": "root.test",
-            "depth": 1,
-            "parent_agent_id": "root",
-            "parent_node_id": root_reply.id,
-        },
-        nodes=[test_q, test_err, test_call, test_reply, test_exec, test_done],
-    )
-    return rflow.Graph.from_meta_dict(
-        {"agent_id": "root", "depth": 0, "query": "ship a tiny package"},
-        nodes=[
-            root_q,
-            root_call,
-            root_reply,
-            root_exec,
-            root_sup,
-            root_resume,
-            root_done,
-        ],
-        children={"root.write": write, "root.test": test},
-    )
+    graph.children = {write.agent_id: write, test.agent_id: test}
+    return graph
 
 
 def banner(title: str) -> None:
-    print("\n" + "─" * 60)
+    print("\n" + "-" * 60)
     print(title)
-    print("─" * 60)
+    print("-" * 60)
 
 
 def main() -> None:
-    g = build_graph()
+    graph = build_graph()
+    nodes = [node for agent in graph.walk() for node in agent.nodes]
 
-    banner("flat views over the whole subtree")
-    print(f"agents : {list(g.agents)}")
-    print(f"nodes  : {len(g.all_nodes)} states")
-    print(
-        f"edges  : {len(g.edges)}  ({len(g.edges.flows_to())} flows_to, "
-        f"{len(g.edges.spawns())} spawns)"
-    )
+    banner("agents / nodes")
+    print("agents:", list(graph.agents))
+    print("node types:", [node.type for node in nodes])
+    print("errors:", [(node.agent_id, node.error) for node in nodes if isinstance(node, ErrorOutput)])
 
-    banner("filters on graph.all_nodes")
-    print(f"queries     : {len(g.all_nodes.queries())}")
-    action_count = (
-        len(g.all_nodes.llm_actions())
-        + len(g.all_nodes.exec_actions())
-        + len(g.all_nodes.resume_actions())
-    )
-    print(f"actions     : {action_count}")
-    print(f"errors      : {[n.error for n in g.all_nodes.errors()]}")
-    print(f"results     : {[n.result for n in g.all_nodes.results()]}")
-
-    long_replies = g.all_nodes.where(
-        lambda n: getattr(n, "reply", "") and len(n.reply) > 20
-    )
-    print(f"long replies: {len(long_replies)}")
-
-    banner("graph.find by id")
-    sup = g.all_nodes.where(type="supervising_output")[0]
-    found = g.find(sup.id)
-    print(f"find({sup.id[:10]}…) -> {type(found).__name__} agent={found.agent_id}")
-
-    banner("token rollups")
-    inp, out = g.tokens()
-    print(f"input tokens : {inp}")
-    print(f"output tokens: {out}")
-    print(f"total        : {g.total_tokens()}")
-
-    banner("terminal helpers")
-    print(f"finished : {g.finished}")
-    print(f"current  : {g.current().type}")
-    print(f"result   : {g.result()!r}")
-    _save_example_graph(g, __file__, "graph-query")
+    banner("current / result / tokens")
+    print("root current:", graph.current().type if graph.current() else None)
+    print("result:", graph.result())
+    print("tokens:", graph.tokens())
 
 
 if __name__ == "__main__":

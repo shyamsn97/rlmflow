@@ -1,53 +1,88 @@
 # Control
 
-`Graph` is the control surface. `Flow.start(...)` creates a graph, and every
-`Flow.step(graph)` returns a fresh advanced snapshot. Save/load, rewind, branch,
-inject, and resume are all graph operations.
+`Graph` is the control surface. `Flow.run_streaming(graph=graph, until=...)` advances
+it in place and yields the `Event`s it emitted. Save/load, rewind, fork, inject,
+and resume are all graph operations.
 
 ## Step Loop
 
 ```python
-agent = rflow.Flow(rflow.OpenAIClient(model="gpt-5"), max_depth=2)
-graph = agent.start(query)
-while not graph.finished:
-    graph = agent.step(graph)
+import asyncio
+from rlmflow import render_tree
+
+agent = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-5"), max_depth=2)
+graph = rlmflow.Graph(query=query)
+
+async def drive():
+    async for _event in agent.run_streaming(graph=graph):
+        print(render_tree(graph))
+
+asyncio.run(drive())
 ```
 
-`agent.run(query)` drives the same loop and returns `graph.result()`.
-`agent.chat(messages)` is the `LLMClient` interface; the latest user message
-becomes the query and the recursive loop runs under the hood.
+`agent.run(query=query)` drives the same loop synchronously and returns
+`graph.result()`; `await agent.arun(query=query)` is the async form. To use a
+flow anywhere an `LLMClient` is expected, wrap it in `FlowLLM(agent)` — its
+`chat(messages)` projects the messages to a query and runs the recursive loop
+under the hood (see the drop-in section in the README).
 
-Each `step(graph)` advances one observation-to-observation transition for every
-agent that is ready to move. A model turn is usually two steps: LLM call
-(`obs -> LLMAction -> LLMOutput`) and code execution
-(`LLMOutput -> ExecAction -> CodeObservation`). See [`node_model.md`](node_model.md)
-for the typed node flow.
+`run`, `arun`, and `run_streaming` are keyword-only. Pass `query=` to start a
+fresh graph, or `graph=` to resume an existing one; passing both appends `query`
+as a new turn on that graph (see [Multi-turn runs](#multi-turn-runs)). `inputs=`
+and `output_schema=` are applied to the graph before driving (`inputs` merges by
+default; pass `merge_inputs=False` to replace).
 
-## Eager Children
+`run_streaming` yields one typed `Event` per commit and mutates `graph` in place.
+Every model turn is an `LLMOutput` (the model's code) followed by exactly one
+observation: `ExecOutput`, `DoneOutput`, `ErrorOutput`, or `SupervisingOutput`.
+See [`node_model.md`](node_model.md) for the typed node flow.
 
-By default, children advance in synchronized batches. If child A's current step
-takes 10 seconds and child B's current step takes 2 seconds, child B waits for
-that batch before starting its next step.
+## Stream Boundaries
 
-Set `eager_children=True` for a work-conserving drain after a parent awaits a
-launcher:
+`Flow.run_streaming(graph=graph, until=...)` streams until a boundary and **halts there**
+— the driver does not enqueue more work past what you observe, so edits you make
+between streaming calls are seen when the run resumes. Pass the graph on the first
+call; omit it on later calls to continue the active run.
+
+Two boundary families:
+
+**Global steps** advance every active agent in parallel, then halt the whole
+frontier:
 
 ```python
-agent = rflow.Flow(
-    rflow.OpenAIClient(model="gpt-5"),
-    max_depth=2,
-    child_max_iters=20,
-    max_concurrency=8,
-    eager_children=True,
-)
+async for event in flow.run_streaming(graph=graph, until="next"):
+    ...
+async for event in flow.run_streaming(graph=graph, until="idle"):
+    ...
 ```
 
-Children still do not run before the parent reaches
-`await launch_subagents([...])`. Once the parent is supervising, runnable
-children refill the worker pool until all waited-on descendants finish.
+- `next` surfaces everything, including errors — it stops *on* an `error_output`.
+- `idle` runs each agent to a clean rest (`exec_output`/`done_output`), healing
+  errors on the way (an `error_output` is not a rest point, so the agent keeps
+  going and fixes it). A supervising parent with live children just no-ops.
 
-See [`examples/control/delegation/eager_children.py`](../examples/control/delegation/eager_children.py)
-for a deterministic offline demo.
+Other boundaries stop when that event is observed:
+
+```python
+async for event in flow.run_streaming(graph=graph, until="supervising"):
+    ...
+async for event in flow.run_streaming(graph=graph, until=lambda event, graph: graph.finished):
+    ...
+```
+
+Because the run halts at the boundary, reactive control is deterministic:
+
+```python
+async for _event in flow.run_streaming(graph=graph, until="idle"):
+    pass
+graph.inject("Finalize now with the best current evidence.")
+async for _event in flow.run_streaming(graph=graph, until="done"):
+    pass
+```
+
+See [`examples/control/controller_injection.py`](../examples/control/controller_injection.py)
+and [`examples/control/delegation/step_until.py`](../examples/control/delegation/step_until.py).
+For the full scheduler model, see [`streaming.md`](streaming.md).
 
 ## Save And Resume
 
@@ -56,61 +91,70 @@ A saved graph directory is the durable run:
 ```python
 graph.save("runs/deep_research")
 
-resumed = rflow.Graph.load("runs/deep_research")
-while not resumed.finished:
-    resumed = agent.step(resumed)
+resumed = rlmflow.Graph.load("runs/deep_research")
+agent.run(graph=resumed)   # or: async for _ in agent.run_streaming(graph=resumed): ...
 ```
 
-For live checkpointing, save after every step. The same path is overwritten with
-the latest complete graph/run layout.
+For live checkpointing, call `graph.save(...)` inside the stream loop. The same
+path is overwritten with the latest complete graph/run layout.
+
+## Multi-turn Runs
+
+One graph can serve a long-running, multi-turn agent. When a run finishes,
+`graph.finished` is true; appending a new `UserQuery` flips it back to unfinished,
+so the next `run`/`run_streaming` re-drives the *same* agent with its full history
+and warm REPL (variables from earlier turns are still in scope).
+
+The ergonomic path is to pass `query=` alongside `graph=`:
+
+```python
+agent.run(query="Audit the repo.")                 # turn 1 (fresh graph)
+graph = ...  # keep a handle to the graph you drove
+
+agent.run(graph=graph, query="Now write the fixes.")   # turn 2, same graph
+agent.run(graph=graph, query="Summarize what changed.", # turn 3, new inputs/schema
+          inputs={"format": "markdown"}, output_schema=Report)
+```
+
+`inputs` merges into the graph's existing `INPUTS` (and is re-synced into the warm
+REPL) unless `merge_inputs=False` replaces it; a truthy `output_schema` becomes the
+contract for that turn's `done(...)`. The bare graph op is `graph.append_query(...)`
+(same keywords), for when you want to stage the next turn without driving yet.
 
 ## Rewind And Branch
 
-Keep every `Graph` snapshot in a list and resume any one of them:
+`Graph` mutates in place, so keep restore points with `checkpoint()` /
+`revert(...)`, or drop everything after a node with `rewind(node_id)`:
 
 ```python
-history = [agent.start(query)]
-while not history[-1].finished:
-    history.append(agent.step(history[-1]))
-
-graph = history[-5]
-while not graph.finished:
-    graph = agent.step(graph)
+cp = graph.checkpoint()
+agent.run(graph=graph)
+graph.revert(cp)        # back to the checkpoint
+graph.rewind(node_id)   # or truncate history after a specific node
 ```
 
-Branch by copying or loading a graph and saving the result somewhere else:
+Fork an independent branch (deep copy with a fresh `graph_id`) and continue it
+somewhere else:
 
 ```python
-branch = history[-5].copy(deep=True)
-while not branch.finished:
-    branch = agent.step(branch)
+branch = graph.fork(session="isolated")
+agent.run(branch)
 branch.save("runs/repair-branch")
 ```
 
 ## Node Injection
 
-Controllers can append typed nodes to a graph and commit them through the normal
-step loop. This is useful for budget nudges, human feedback, and forced
-finalization:
+Controllers can append a user-turn observation to any agent and continue the
+run. This is useful for budget nudges, human feedback, and forced finalization:
 
 ```python
-graph = graph.inject(
-    target="root.worker",
-    node=rflow.ExecOutput(
-        output="Injected controller observation: answer now.",
-        content="Injected controller observation: answer now.",
-    ),
-)
-graph = agent.step(graph)
-
-graph = graph.inject(
-    target="root.worker",
-    node=rflow.ExecAction(code='done("best available answer")'),
-)
-graph = agent.step(graph)
+graph.inject("Answer now with the best current evidence.", agent_id="root.worker")
+agent.run(graph=graph)   # or: async for _ in agent.run_streaming(graph=graph): ...
 ```
 
-See [`injections.md`](injections.md) and
+`inject`'s `mode`/`truncate` options (and the `append`/`prepend`/`replace`
+helpers), plus `rewind` and `remove_child`, rewrite existing history the same
+way. See [`injections.md`](injections.md) and
 [`examples/control/controller_injection.py`](../examples/control/controller_injection.py).
 
 ## Delegation
@@ -136,14 +180,43 @@ results = await launch_subagents([
   schedules them concurrently.
 - **Child data:** put payloads in each spec's `inputs` dict. The child sees only
   its query and its own `INPUTS`.
+- **Child prompt profile:** optional `prompt_profile` per spec selects a named
+  `PromptProfile` on the flow (see [`prompt_customization.md`](prompt_customization.md)).
+
+### Warm launch (host-side)
+
+`launch_subagents` is the model-facing tool (cold children from `query` strings).
+Host code that already has prepared graphs — typically `fork` / `flow.rewind`
+results — should use the warm counterpart:
+
+```python
+# Structural only: reparent a prepared graph under `parent` (remap ids, move its
+# REPL, emit AddChild). Does not run or await the child.
+child = flow.adopt(parent, fork, name="b0")
+
+# Run prepared graphs as children of `parent`, in parallel, and await results.
+# Thin wrapper over launch_subagents' warm path — the `graph` spec key stays
+# internal so example / model-facing code never has to write it.
+await flow.launch_subgraphs(
+    parent,
+    [fork_a, fork_b],
+    queries=["recover with plan A", "recover with plan B"],
+    names=["b0", "b1"],
+)
+```
+
+Use this for best-of-N / rewind-and-branch patterns (see
+[`examples/shepherd/`](../examples/shepherd/)): prepare forks on the host, then
+one `launch_subgraphs` call attaches and runs them as real children under the
+orchestrator.
 
 ## Custom Runtime
 
 Subclass `Runtime` and implement `open(agent)` to mint a backend:
 
 ```python
-class MyRuntime(rflow.Runtime):
-    def open(self, agent: rflow.Graph) -> rflow.ReplBackend:
+class MyRuntime(rlmflow.Runtime):
+    def open(self, agent: rlmflow.Graph) -> rlmflow.ReplBackend:
         return MyBackend(...)
 ```
 
@@ -155,14 +228,14 @@ See [`runtimes.md`](runtimes.md).
 Register tools on the runtime before constructing or stepping the flow:
 
 ```python
-@rflow.tool("Search files for a regex.")
+@rlmflow.tool("Search files for a regex.")
 def search(pattern: str, path: str = ".") -> str:
     ...
 
-runtime = rflow.LocalRuntime(working_directory=".")
+runtime = rlmflow.LocalRuntime(working_directory=".")
 runtime.register_tool(search)
-runtime.register_tools(rflow.FILE_TOOLS)
-agent = rflow.Flow(rflow.OpenAIClient(model="gpt-5"), runtime=runtime)
+runtime.register_tools(rlmflow.FILE_TOOLS)
+agent = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-5"), runtime=runtime)
 ```
 
 ## Custom Prompt
@@ -170,31 +243,27 @@ agent = rflow.Flow(rflow.OpenAIClient(model="gpt-5"), runtime=runtime)
 For a fuller guide, see [`prompt_customization.md`](prompt_customization.md).
 
 ```python
-from rflow.prompts import DEFAULT_BUILDER
+from rlmflow import SystemPromptBuilder
 
 GUARDRAILS = """
 - Verify before `done()`. Empty/zero/surprising results -> one sanity check first.
 - Ask children for structured output when shape matters.
 """
 
-agent = rflow.Flow(rflow.OpenAIClient(model="gpt-5"))
-agent.prompt_builder = (
-    DEFAULT_BUILDER
-    .section("role", "You are a security auditor.", title="Role")
-    .section("guardrails", GUARDRAILS, title="Guardrails", after="strategy")
-)
+prompt = SystemPromptBuilder()
+prompt.sections.update("role", "You are a security auditor.")
+prompt.sections.add("guardrails", GUARDRAILS, title="Guardrails", after="strategy")
+
+agent = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-5"), system_prompt=prompt)
 ```
 
-You can also subclass `Flow` and override `build_system_prompt`,
-`build_messages`, `format_exec_output`, `first_prompt`, or `step`.
+`agent.system_prompt` accepts a `SystemPromptBuilder`, a string, or a
+`(flow, graph) -> str` function; subclass `SystemPromptBuilder` (override
+`default_sections` or `__call__`) for reusable customization.
 
 ## Walkthroughs
 
 - [`examples/showcase.py`](../examples/showcase.py) — stepping, snapshots,
   save/load, and live terminal visualization.
-- [`examples/notebooks/coding_agent.ipynb`](../examples/notebooks/coding_agent.ipynb)
-  — live LLM run that writes files and saves the run.
-- [`examples/notebooks/node_basics.ipynb`](../examples/notebooks/node_basics.ipynb)
-  — querying the `Graph` API.
-- [`examples/notebooks/viz_walkthrough.ipynb`](../examples/notebooks/viz_walkthrough.ipynb)
-  — visualization helpers against a saved fixture.
+- [`examples/graph/`](../examples/graph/) — querying, mutating, saving, forking,
+  and rendering minimal graphs.

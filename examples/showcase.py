@@ -2,11 +2,11 @@
 
 This walks through the pieces that matter in the engine:
 
-1. Step-by-step execution that advances a single live ``Graph``.
-2. Persisting a run with ``graph.save()`` / ``rflow.Graph.load()``.
+1. Event-by-event execution that advances a caller-owned ``Graph``.
+2. Persisting a run with ``graph.save()`` / minimal ``Graph.load()``.
 3. Latest-state inspection across agents.
 4. In-process history by keeping graph snapshots.
-5. Graph summary helpers (``graph.tree()``, ``graph.tokens()``).
+5. Graph summary helpers (``render_tree(graph)``, ``graph.tokens()``).
 6. Gym-style stepping with a scalar reward.
 
 Usage:
@@ -17,11 +17,29 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import shutil
+import sys
+from copy import deepcopy
 from pathlib import Path
 
-import rflow
-from rflow.tools import FILE_TOOLS
+from rlmflow import (
+    ConsumerGroup,
+    FILE_TOOLS,
+    Flow,
+    Graph,
+    GraphCheckpointer,
+    LLMUsage,
+    LiveTreeRenderer,
+    LocalRuntime,
+    render_tree,
+)
+
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
+
+from common import example_run_dir  # noqa: E402
 
 BOLD = "\033[1m"
 DIM = "\033[2m"
@@ -31,11 +49,11 @@ YELLOW = "\033[33m"
 RESET = "\033[0m"
 
 
-class DemoLLM(rflow.LLMClient):
+class DemoLLM:
     """Deterministic LLM for an offline showcase."""
 
     def chat(self, messages, *args, **kwargs) -> str:
-        self.last_usage = rflow.LLMUsage(input_tokens=80, output_tokens=20)
+        self.last_usage = LLMUsage(input_tokens=80, output_tokens=20)
         prompt = messages[-1]["content"].lower()
         if "hello.py" in prompt and "goodbye.py" in prompt:
             return (
@@ -56,11 +74,11 @@ class DemoLLM(rflow.LLMClient):
         return '```repl\ndone("ok")\n```'
 
 
-def file_flow(workdir: Path, **kwargs) -> rflow.Flow:
+def file_flow(workdir: Path, **kwargs) -> Flow:
     """A Flow whose agents get the filesystem tools, running inside ``workdir``."""
-    runtime = rflow.LocalRuntime(working_directory=workdir)
+    runtime = LocalRuntime(working_directory=workdir)
     runtime.register_tools(FILE_TOOLS)
-    return rflow.Flow(DemoLLM(), runtime=runtime, **kwargs)
+    return Flow(DemoLLM(), runtime=runtime, **kwargs)
 
 
 def banner(msg: str) -> None:
@@ -69,20 +87,47 @@ def banner(msg: str) -> None:
     print(f"{'=' * 60}{RESET}\n")
 
 
-def run(flow: rflow.Flow, graph: rflow.Graph, no_viz: bool) -> list[rflow.Graph]:
-    if no_viz:
-        history = [graph]
-        step = 0
-        while not graph.finished:
-            graph = flow.step(graph)
-            step += 1
-            history.append(graph)
-            print(f"-- step {step} --")
-            print(graph.tree())
-        return history
-    from rflow.utils.viz import live
+def node_count(graph: Graph) -> int:
+    return sum(len(agent.nodes) for agent in graph.walk())
 
-    return live(flow, graph)
+
+async def run(flow: Flow, graph: Graph, no_viz: bool, out_dir: Path) -> list[Graph]:
+    history = [deepcopy(graph)]
+    consumers = ConsumerGroup(
+        [
+            LiveTreeRenderer(clear=not no_viz),
+            GraphCheckpointer(out_dir),
+        ]
+    )
+    step = 0
+    try:
+        async for event in flow.run_streaming(graph=graph):
+            step += 1
+            history.append(deepcopy(graph))
+            if no_viz:
+                print(f"-- event {step}: {event.type} --")
+            consumers.handle(event, graph)
+    finally:
+        consumers.close()
+    return history
+
+
+async def gym_loop(flow: Flow, graph: Graph, out_dir: Path) -> list[float]:
+    rewards: list[float] = []
+    checkpointer = GraphCheckpointer(out_dir)
+    step = 0
+    while not graph.finished:
+        async for _event in flow.run_streaming(graph=graph, until="next"):
+            pass
+        checkpointer.save(graph)
+        step += 1
+        current = graph.current()
+        reward = 1.0 if graph.finished else 0.0
+        rewards.append(reward)
+        kind = current.type if current else "empty"
+        print(f"step {step}: state={kind} reward={reward}")
+    return rewards
+
 
 
 def main() -> None:
@@ -92,7 +137,7 @@ def main() -> None:
     parser.add_argument("--no-viz", action="store_true")
     parser.add_argument(
         "--out-dir",
-        default=str(Path(__file__).resolve().parents[1] / "_runs" / "showcase"),
+        default=str(example_run_dir("showcase")),
         help="working dir + saved run (default: examples/_runs/showcase/)",
     )
     args = parser.parse_args()
@@ -105,19 +150,19 @@ def main() -> None:
     flow = file_flow(workdir, max_depth=args.max_depth, max_iters=args.max_iters)
 
     banner("1. Step-by-step execution")
-    graph = flow.start("Create hello.py and goodbye.py. Delegate each file.")
-    history = run(flow, graph, args.no_viz)
+    graph = Graph(query="Create hello.py and goodbye.py. Delegate each file.")
+    history = asyncio.run(run(flow, graph, args.no_viz, workdir / "run"))
     final = history[-1]
     print(f"\n{GREEN}Result:{RESET} {final.result()}")
 
     banner("2. Persistence — graph.save() / Graph.load()")
     path = final.save(workdir / "run")
-    loaded = rflow.Graph.load(path)
+    loaded = Graph.load(path)
     print(
         f"Saved + reloaded {len(loaded.agents)} agents and "
-        f"{len(loaded.all_nodes)} states from {path}"
+        f"{node_count(loaded)} states from {path}"
     )
-    print(loaded.tree())
+    print(render_tree(loaded))
 
     banner("3. Latest state per agent")
     for aid, sub in loaded.agents.items():
@@ -137,27 +182,21 @@ def main() -> None:
     banner("5. Graph summary")
     inp, out = final.tokens()
     print(f"Agents:  {len(final.agents)}")
-    print(f"States:  {len(final.all_nodes)}")
+    print(f"States:  {node_count(final)}")
     print(f"Tokens:  {inp + out:,} ({inp:,} in / {out:,} out)")
     print(f"Final:   {final.current().type if final.current() else '(empty)'}")
 
     banner("6. Gym-style loop")
     flow3 = file_flow(workdir, max_depth=0, max_iters=args.max_iters)
-    graph3 = flow3.start("Write a haiku about recursion to haiku.txt")
-    rewards: list[float] = []
-    step = 0
-    while not graph3.finished:
-        graph3 = flow3.step(graph3)
-        step += 1
-        current = graph3.current()
-        reward = 1.0 if graph3.finished else 0.0
-        rewards.append(reward)
-        kind = current.type if current else "empty"
-        print(f"step {step}: state={kind} reward={reward}")
+    graph3 = Graph(query="Write a haiku about recursion to haiku.txt")
+    rewards = asyncio.run(gym_loop(flow3, graph3, workdir / "gym-run"))
     print(f"{GREEN}Result:{RESET} {graph3.result()}")
     print(f"Total reward: {sum(rewards):.1f}")
     gym_path = graph3.save(workdir / "gym-run")
     print(f"Gym run saved to {gym_path}")
+
+    flow.close_repls(final.graph_id)
+    flow3.close_repls(graph3.graph_id)
 
     banner("Done")
 

@@ -115,7 +115,7 @@ def _build_jobs(config: SuiteConfig, *, seen: set[tuple]) -> list[dict[str, Any]
 
 def _job_root(config: SuiteConfig) -> Path:
     if config.executor == "modal":
-        return Path("/tmp/rflow-benchmarks") / config.run_id
+        return Path("/tmp/rlmflow-benchmarks") / config.run_id
     return config.root
 
 
@@ -463,7 +463,7 @@ def build_logger(config: SuiteConfig) -> MultiLogger:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run rlmflow benchmarks.")
     parser.add_argument("--dataset", "--datasets", nargs="+", default=["oolong"])
-    parser.add_argument("--runner", "--runners", nargs="+", default=["rflow-local"])
+    parser.add_argument("--runner", "--runners", nargs="+", default=["rlmflow-local"])
     parser.add_argument("--model", default="openai:gpt-5-mini")
     parser.add_argument("--logger", "--loggers", nargs="+", default=["jsonl", "console", "report"])
     parser.add_argument("--seeds", default="0:5")
@@ -482,7 +482,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-param", action="append", default=[])
     parser.add_argument("--logger-param", action="append", default=[])
     parser.add_argument("--wandb", action="store_true", help="Add the W&B logger.")
-    parser.add_argument("--wandb-project", default="rflow-eval")
+    parser.add_argument("--wandb-project", default="rlmflow-eval")
     parser.add_argument("--wandb-entity")
     parser.add_argument(
         "--executor",
@@ -509,7 +509,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=900,
         help="Hard timeout in seconds for one runner attempt before recording an error row.",
     )
-    parser.add_argument("--modal-app-name", default="rflow-benchmarks")
+    parser.add_argument("--modal-app-name", default="rlmflow-benchmarks")
     parser.add_argument("--modal-cpu", type=float, default=1.0)
     parser.add_argument("--modal-timeout", type=int, default=3600)
     return parser

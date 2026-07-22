@@ -23,14 +23,14 @@ class Runtime(ABC):
 A `ReplBackend` supports `start(code)`, `resume(value)`, `close()`, and exposes
 its `namespace` / `env`. `LocalRuntime` returns an in-process `REPL`.
 `DockerRuntime` and sandbox runtimes return `RemoteRepl` backends that speak JSON
-with `python -m rflow.runtime.repl_server`.
+with `python -m rlmflow.runtime.repl_server`.
 
 ## Shipped runtimes
 
 | Runtime | What it does |
 |---|---|
 | `LocalRuntime(working_directory=...)` | In-process Python REPL. Defaults to the current process cwd. |
-| `DockerRuntime(image, ...)` | Runs `python -m rflow.runtime.repl_server` in `docker run -i --rm` and talks over stdio. |
+| `DockerRuntime(image, ...)` | Runs `python -m rlmflow.runtime.repl_server` in `docker run -i --rm` and talks over stdio. |
 | `ModalRuntime` | Runs the REPL inside a Modal sandbox. |
 | `E2BRuntime` | Runs the REPL inside an E2B sandbox. |
 | `DaytonaRuntime` | Runs the REPL inside a Daytona sandbox. |
@@ -38,11 +38,11 @@ with `python -m rflow.runtime.repl_server`.
 ## Working directory and tools
 
 ```python
-runtime = rflow.LocalRuntime(working_directory="./project")
-runtime.register_tools(rflow.FILE_TOOLS)
+runtime = rlmflow.LocalRuntime(working_directory="./project")
+runtime.register_tools(rlmflow.FILE_TOOLS)
 
-agent = rflow.Flow(
-    rflow.OpenAIClient(model="gpt-5"),
+agent = rlmflow.Flow(
+    rlmflow.OpenAIClient(model="gpt-5"),
     runtime=runtime,
 )
 ```
@@ -63,10 +63,10 @@ Then pass a Docker runtime:
 ```python
 from pathlib import Path
 
-import rflow
+import rlmflow
 
 host_project = Path("./project").resolve()
-runtime = rflow.DockerRuntime(
+runtime = rlmflow.DockerRuntime(
     "rlmflow:local",
     mounts={host_project: "/workspace"},
     workdir="/workspace",
@@ -74,9 +74,9 @@ runtime = rflow.DockerRuntime(
     cpus=1.0,
     memory="512m",
 )
-runtime.register_tools(rflow.FILE_TOOLS)
+runtime.register_tools(rlmflow.FILE_TOOLS)
 
-agent = rflow.Flow(rflow.OpenAIClient(model="gpt-5"), runtime=runtime)
+agent = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-5"), runtime=runtime)
 ```
 
 ## Remote sandboxes
@@ -91,12 +91,12 @@ pip install rlmflow[sandbox]   # all three
 ```
 
 ```python
-import rflow
-from rflow.runtime.sandbox.e2b import E2BRuntime
+import rlmflow
+from rlmflow.runtime.sandbox.e2b import E2BRuntime
 
 runtime = E2BRuntime(remote_workdir="/workspace")
-runtime.register_tools(rflow.FILE_TOOLS)
-agent = rflow.Flow(rflow.OpenAIClient(model="gpt-5"), runtime=runtime)
+runtime.register_tools(rlmflow.FILE_TOOLS)
+agent = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-5"), runtime=runtime)
 ```
 
 See [`examples/sandboxes/`](../examples/sandboxes/) for real-agent examples on
@@ -109,7 +109,7 @@ For remote transports, subclass `RemoteRepl` and implement `send(msg)` /
 `recv()`; then wrap it in a `Runtime.open(agent)` method.
 
 ```python
-class MyRuntime(rflow.Runtime):
-    def open(self, agent: rflow.Graph) -> rflow.ReplBackend:
+class MyRuntime(rlmflow.Runtime):
+    def open(self, agent: rlmflow.Graph) -> rlmflow.ReplBackend:
         return MyRepl(...)
 ```

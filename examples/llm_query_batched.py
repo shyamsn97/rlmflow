@@ -9,34 +9,18 @@ Run:
 
 from __future__ import annotations
 
+import asyncio
+import sys
+import threading
 from pathlib import Path
 
-import threading
+from rlmflow import Flow, Graph, GraphCheckpointer, LLMUsage, render_tree
 
-import rflow
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
-
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
-
-
-def _save_example_graph(
-    graph,
-    source_file: str | Path,
-    name: str,
-    *,
-    out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
-) -> Path:
-    path = graph.save(
-        Path(out_dir) if out_dir is not None else _example_run_dir(source_file, name)
-    )
-    print(f"{label} {path}")
-    return path
+from common import example_run_dir, save_example_graph  # noqa: E402
 
 
 REVIEWS = [
@@ -46,7 +30,7 @@ REVIEWS = [
 ]
 
 
-class GuidedLLM(rflow.LLMClient):
+class GuidedLLM:
     """Fake model that lets us verify root -> llm_query_batched -> done."""
 
     def __init__(self) -> None:
@@ -54,7 +38,7 @@ class GuidedLLM(rflow.LLMClient):
         self._lock = threading.Lock()
 
     def chat(self, messages, *args, **kwargs) -> str:
-        self.last_usage = rflow.LLMUsage(input_tokens=25, output_tokens=10)
+        self.last_usage = LLMUsage(input_tokens=25, output_tokens=10)
         text = messages[-1]["content"]
 
         if "Classify this review" in text:
@@ -82,7 +66,7 @@ def root_repl_block() -> str:
         "    'Classify this review as positive, negative, or neutral: ' + review\n"
         "    for review in reviews\n"
         "]\n"
-        "labels = llm_query_batched(prompts)\n"
+        "labels = await llm_query_batched(prompts)\n"
         "print('llm_query_batched returned:', labels)\n"
         "done('\\n'.join(f'{label}: {review}' for label, review in zip(labels, reviews)))\n"
         "```"
@@ -91,21 +75,33 @@ def root_repl_block() -> str:
 
 def main() -> None:
     llm = GuidedLLM()
-    flow = rflow.Flow(
+    flow = Flow(
         llm,
         max_depth=0,
         max_iters=3,
-        max_concurrency=3,
-        include_llm_query=True,
+        workers=3,
+        use_llm_query=True,
     )
 
-    graph = flow.start(
-        "Classify the reviews. You must use `llm_query_batched(prompts)` for "
-        "the per-review classifications, then call done(...) with one line per review."
+    graph = Graph(
+        query=(
+            "Classify the reviews. You must use `await "
+            "llm_query_batched(prompts)` for the per-review classifications, "
+            "then call done(...) with one line per review."
+        )
     )
-    while not graph.finished:
-        graph = flow.step(graph)
-        print(graph.tree())
+
+    checkpointer = GraphCheckpointer(example_run_dir("llm-query-batched"))
+
+    async def drive() -> None:
+        try:
+            async for _event in flow.run_streaming(graph=graph):
+                checkpointer.handle(_event, graph)
+                print(render_tree(graph))
+        finally:
+            checkpointer.close()
+
+    asyncio.run(drive())
 
     print("\nBatched prompts sent:")
     for prompt in llm.batch_prompts:
@@ -113,7 +109,8 @@ def main() -> None:
 
     print("\nFinal answer:")
     print(graph.result())
-    _save_example_graph(graph, __file__, "llm-query-batched")
+    save_example_graph(graph, "llm-query-batched")
+    flow.close_repls(graph.graph_id)
 
 
 if __name__ == "__main__":

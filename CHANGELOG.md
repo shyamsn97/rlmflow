@@ -8,6 +8,74 @@ each one is called out under **Breaking** below.
 
 ## [Unreleased]
 
+### Breaking
+
+- **Import package is `rlmflow` only.** Use `from rlmflow import Flow, Graph, ...`.
+  The old short import name is gone (no compatibility shim). Public REPL env
+  keys are `RLMFLOW_*`. The local benchmark runner is `rlmflow-local`
+  (alias: `rlmflow`).
+
+- **`Flow.run` / `arun` / `run_streaming` are keyword-only.** The old
+  `graph_or_query` positional is gone; pass `query="..."` to start a fresh graph
+  or `graph=g` to resume one (`flow.run(query="q")`, `flow.run(graph=g)`,
+  `async for event in flow.run_streaming(graph=g, until=...)`). `parallel_run` /
+  `parallel_stream` keep their `*graphs` varargs. `Flow.run_for(graph)` is now a
+  pure run registry; graph resolution/emission moved to `Flow.resolve_run(...)`.
+
+### Added
+
+- **Long-running / multi-turn agents on one graph.** `graph.append_query(text,
+  *, inputs=None, output_schema=None, merge_inputs=True)` appends a new
+  `UserQuery` turn (flipping `finished` back to false) so the next run re-drives
+  the same trajectory with its full history and warm REPL. Equivalently, pass
+  `query=` to `run`/`run_streaming` alongside `graph=` to append and drive in one
+  call — the new turn is emitted as an `AppendNode` event, and updated `inputs`
+  are synced into the live REPL's `INPUTS`. `inputs` merges by default;
+  `merge_inputs=False` replaces.
+- **Warm child launch.** `flow.adopt(parent, child, *, name)` reparents a
+  prepared (fork/rewind) graph under `parent`. `flow.launch_subgraphs(parent,
+  children, *, queries=None, names=None)` is the host-side wrapper that runs
+  those graphs as children via `launch_subagents`' warm path.
+- **`LiveGraphTree` stream consumer** — Rich live agent tree with
+  active/waiting status; compose with other consumers via `ConsumerGroup`.
+- **`flow.get_env_var(graph, name)`** — read a key from an agent's REPL `ENV`
+  metadata channel (distinct from `get_var`, which reads the Python namespace).
+- **Named `PromptProfile`s** — `Flow(prompts=..., prompt_router=...)` plus
+  per-agent `Graph.prompt_profile` / spawn-spec `prompt_profile`.
+
+### Changed
+
+- **`Graph.prompt` → `Graph.prompt_profile`.** The field is a profile *selector*
+  (not prompt text). Deserialization still accepts the legacy `"prompt"` key.
+  Spawn specs use `prompt_profile` (legacy `"prompt"` still accepted as a
+  fallback). There is no `default_child_profile` / `default_child_prompt` on
+  `Flow` — omit the key and the child stamps `"default"`.
+- **Minimal graph-first stack is the core `rlmflow` package.** Everything
+  outside it was retired. Imports are
+  `from rlmflow import Flow, Graph, LocalRuntime, FILE_TOOLS`, and LLM clients
+  live under `from rlmflow.clients import OpenAIClient, AnthropicClient`.
+- **Async, in-place streaming API.** `Flow` drives runs with
+  `flow.run(query=...)` (sync), `await flow.arun(...)`, and
+  `async for event in flow.run_streaming(graph=..., until=..., n=...)`.
+  `run_streaming` yields the `Event`s it emits and mutates the `Graph` in place.
+- **Visualization consolidated in `rlmflow.view`.** `render_tree`,
+  `LiveTreeRenderer`, `LiveGraphTree`, `open_viewer`, `replay`, `save_image`, and
+  `save_steps` are re-exported from `rlmflow`. Static exports take a run directory,
+  a `Graph`, or a list of snapshots.
+- **DSPy adapter renamed** from `RecursiveFlowLM` to `DSPyFlow`; wrap a `Flow`
+  in `FlowLLM` first: `DSPyFlow(FlowLLM(flow), model=...)`.
+- **`group_flows(...)`** replaces `parallel_step` for running multiple flows
+  concurrently and merging their event streams over the shared `Pool`.
+- **Benchmark model wrappers** bridge the sync harness onto async
+  `OpenAIClient` / `AnthropicClient` via `asyncio.run(...)`.
+
+### Removed
+
+- The `rlmflow` CLI (`view` / `render` / `version`) and the `rlmflow.utils`
+  observability/export surface (`save_trace`/`load_trace`, mermaid/dot/d2/gantt
+  exports, `save_html`/`save_gif`, `Node.plot`). Use `rlmflow.view` and
+  `graph.save(...)` / `Graph.load(...)` instead.
+
 ## [0.4.0] — 2026-06-12
 
 ### Added
@@ -135,7 +203,7 @@ each one is called out under **Breaking** below.
 - **LLM clients retry transient failures via `tenacity`.** The
   `chat` and `stream` methods on `OpenAIClient` and
   `AnthropicClient` retry on transient HTTP / protocol errors. The
-  module-level `_`-prefixed helpers and constants in `rflow/llm.py`
+  module-level `_`-prefixed helpers and constants in `rlmflow/llm.py`
   are now public.
 - **Workspace step retracing.** `Workspace.load_steps()` returns the
   full history as a list of progressive `Graph` snapshots. The
@@ -232,21 +300,21 @@ each one is called out under **Breaking** below.
   CI, `[tool.coverage.*]` config in `pyproject.toml`.
 - Early OOLONG benchmark harness for flat-vs-RLM comparison. This has since
   been superseded by the shared `benchmarks/eval/` harness.
-- `rflow.utils.save_image(node, path, ...)` — render a node's
+- `rlmflow.utils.save_image(node, path, ...)` — render a node's
   graph to PNG/SVG/PDF. Markers, edges, and fonts auto-scale via
   `element_mult` so the tree stays visually balanced on the larger
   export canvas. Promoted from a one-off notebook helper.
-- `rflow.utils.save_steps(states, dir, ...)` — multi-snapshot
+- `rlmflow.utils.save_steps(states, dir, ...)` — multi-snapshot
   variant: writes one image per state under `dir`.
-- `rflow.utils.render_html(states, ...)` /
-  `rflow.utils.save_html(states, path, ...)` — single-file
+- `rlmflow.utils.render_html(states, ...)` /
+  `rlmflow.utils.save_html(states, path, ...)` — single-file
   standalone stepper. Each slide pairs the Plotly graph for one
   snapshot with that snapshot's transcript and a node table; bottom
   nav has arrows + dots, plus keyboard left/right. Drop the file in
   a PR comment, attach to a CI artifact, or commit it next to the
   trace it came from. Promoted from
   `examples/blog_needle_graph.py:render_html_viewer`.
-- `rflow.utils.save_gif(states, path, ...)` — animate a trace as
+- `rlmflow.utils.save_gif(states, path, ...)` — animate a trace as
   an autoplay GIF. Renders each state to PNG with kaleido, then
   stitches frames with Pillow. Lazy-imports Pillow (raises a clear
   ImportError otherwise) so `[image]` stays focused on still

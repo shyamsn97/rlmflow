@@ -1,263 +1,641 @@
-"""Phase 0 graph enablers: serialization, predicates, flat views, copy, step counters.
+import asyncio
+import json
 
-These exercise the pure data-model surface added in Phase 0 — independent of the
-engine, but also checked against a real (delegated) run so the round-trip and views
-hold on a non-trivial subtree.
-"""
-
-from __future__ import annotations
-
-from rflow import (
-    DoneOutput,
-    Edge,
-    ErrorOutput,
+from rlmflow import (
+    AddChild,
+    AppendNode,
     ExecAction,
+    ExecOutput,
+    Flow,
     Graph,
-    LLMAction,
+    GraphCheckpoint,
+    GraphCreated,
+    InsertNode,
     LLMOutput,
+    RemoveChild,
+    RemoveNode,
+    ReplaceNode,
     SupervisingOutput,
     UserQuery,
-    is_action,
-    is_done,
-    is_errored,
-    is_observation,
-    is_resumed,
-    is_supervising,
-    parse_node_obj,
+    apply_graph_action,
+    load_run,
 )
-from rflow.graph import EdgesView, NodesView
-from tests.helpers import ScriptedLLM, run_to_completion
+from rlmflow.utils import repl_key
+
+from helpers import (
+    StubLLM,
+    first_user,
+    seed_exec_graph,
+    worker_step,
+)
 
 
-def _tight_parent_child(messages):
-    task = next((m["content"] for m in messages if m["role"] == "user"), "")
-    if "depth 1" in task:
-        return '```repl\ndone("c")\n```'
-    return (
-        "```repl\n"
-        'results = await launch_subagents([{"name": "child", "query": "child task"}])\n'
-        'done("p:" + results[0])\n'
-        "```"
+def test_minimal_graph_actions_append_replace_and_remove_nodes():
+    graph = apply_graph_action(
+        None,
+        GraphCreated(type="graph_created", graph=Graph()),
+    )
+    graph = apply_graph_action(
+        graph,
+        AppendNode(
+            type="append_node",
+            agent_id="root",
+            node=UserQuery(content="q"),
+        ),
+    )
+    first = graph.nodes[0]
+    graph = apply_graph_action(
+        graph,
+        ReplaceNode(
+            type="replace_node",
+            agent_id="root",
+            node=LLMOutput(content="replacement"),
+            replaced_node=first,
+        ),
+    )
+    assert [node.type for node in graph.nodes] == ["llm_output"]
+    assert graph.nodes[0].seq == 0
+
+    graph = apply_graph_action(
+        graph,
+        RemoveNode(
+            type="remove_node",
+            agent_id="root",
+            node=graph.nodes[0],
+        ),
+    )
+    assert graph.nodes == []
+
+
+
+def test_minimal_event_node_view_is_consistent_across_types():
+    root = UserQuery(content="q")
+    root.id = "n-root"
+    new = LLMOutput(content="new")
+    new.id = "n-new"
+    old = UserQuery(content="old")
+    old.id = "n-old"
+
+    append = AppendNode(type="append_node", agent_id="root", node=root)
+    assert append.node is root
+    assert append.node_id == "n-root"
+    assert append.node_type == "user_query"
+
+    insert = InsertNode(type="insert_node", agent_id="root", node=root, index=0)
+    assert insert.node is root
+    assert insert.node_id == "n-root"
+
+    replace = ReplaceNode(
+        type="replace_node", agent_id="root", node=new, replaced_node=old
+    )
+    # `.node` is the NEW node; the replaced one is tracked separately.
+    assert replace.node is new
+    assert replace.node_id == "n-new"
+    assert replace.node_type == "llm_output"
+    assert replace.replaced_node is old
+    assert replace.replaced_node_id == "n-old"
+
+    remove = RemoveNode(type="remove_node", agent_id="root", node=old)
+    assert remove.node is old
+    assert remove.node_id == "n-old"
+
+    graph = Graph(query="q")
+    created = GraphCreated(type="graph_created", graph=graph)
+    assert created.node is graph.nodes[0]
+    assert created.node_type == "user_query"
+
+    child = Graph(agent_id="root.child", query="c", parent_agent_id="root", depth=1)
+    add = AddChild(type="add_child", parent_agent_id="root", child=child)
+    assert add.node is child.nodes[0]
+
+    rm_child = RemoveChild(type="remove_child", parent_agent_id="root", child=child)
+    assert rm_child.child_agent_id == "root.child"
+    assert rm_child.node is child.nodes[0]
+    assert rm_child.node_id == child.nodes[0].id
+    assert rm_child.node_type == "user_query"
+
+
+def test_minimal_inject_action_builds_events_with_node_view():
+    graph = Graph(query="q")
+    first = graph.nodes[0]
+
+    appended = graph.inject_action(UserQuery(content="two"))
+    assert isinstance(appended, AppendNode)
+    assert appended.node.content == "two"
+    assert appended.node_type == "user_query"
+
+    inserted = graph.inject_action(UserQuery(content="mid"), at=first, mode="before")
+    assert isinstance(inserted, InsertNode)
+    assert inserted.node.content == "mid"
+
+    replaced = graph.inject_action(
+        LLMOutput(content="repl"), at=first, mode="replace"
+    )
+    assert isinstance(replaced, ReplaceNode)
+    assert replaced.node.content == "repl"
+    assert replaced.replaced_node is first
+    assert replaced.replaced_node_id == first.id
+
+    removed = graph.rewind_action(first.id)
+    assert isinstance(removed, RemoveNode)
+    assert removed.node is first
+    assert removed.node_id == first.id
+    assert removed.subtree is True
+
+
+def test_minimal_graph_actions_add_and_remove_child_graph():
+    graph = apply_graph_action(
+        None,
+        GraphCreated(type="graph_created", graph=Graph(query="q")),
+    )
+    child = Graph(agent_id="root.child", query="child", parent_agent_id="root", depth=1)
+
+    graph = apply_graph_action(
+        graph,
+        AddChild(type="add_child", parent_agent_id="root", child=child),
+    )
+    assert "root.child" in graph
+
+    graph = apply_graph_action(
+        graph,
+        RemoveChild(
+            type="remove_child",
+            parent_agent_id="root",
+            child=child,
+        ),
+    )
+    assert "root.child" not in graph
+
+
+
+def test_minimal_graph_operation_helpers_edit_transcripts():
+    graph = Graph(query="q")
+    injected = graph.inject("please verify")
+
+    assert isinstance(injected, AppendNode)
+    assert [node.content for node in graph.nodes] == ["q", "please verify"]
+
+    first_id = graph.nodes[0].id
+    graph.replace(first_id, UserQuery(content="replacement"))
+
+    assert [node.content for node in graph.nodes] == ["replacement", "please verify"]
+    assert [node.seq for node in graph.nodes] == [0, 1]
+
+    graph.rewind(graph.nodes[1].id)
+
+    assert [node.content for node in graph.nodes] == ["replacement"]
+
+
+
+def test_minimal_inject_modes_and_helpers_build_off_one_primitive():
+    graph = Graph(query="q")  # seeds UserQuery "q"
+
+    # append (mode="after", at=None) -> AppendNode at the end
+    appended = graph.append("after")
+    assert isinstance(appended, AppendNode)
+
+    # prepend (mode="before", at=None) -> InsertNode at the start
+    prepended = graph.prepend(UserQuery(content="before"))
+    assert isinstance(prepended, InsertNode)
+
+    # anchored insert (mode="after" a specific node) -> InsertNode mid-stream
+    graph.inject(UserQuery(content="between"), at=graph.nodes[1], mode="after")
+
+    assert [node.content for node in graph.nodes] == [
+        "before",
+        "q",
+        "between",
+        "after",
+    ]
+    assert [node.seq for node in graph.nodes] == [0, 1, 2, 3]
+
+
+
+def test_minimal_replace_node_truncate_descendants_reroutes_branch():
+    """Replacing a delegating node with truncate drops downstream turns and the
+    child agents that node spawned, re-routing the branch in one call."""
+    flow = Flow(StubLLM(lambda _messages: '```repl\ndone("ok")\n```'))
+    graph = Graph(query="q")
+    graph.commit(LLMOutput(content="delegate", code="launch..."))
+    supervising = graph.commit(
+        SupervisingOutput(output="spawned", waiting_on=["root.worker"])
+    )
+    graph.commit(ExecOutput(output="downstream turn", content="downstream turn"))
+    child = Graph(
+        agent_id="root.worker",
+        graph_id=graph.graph_id,
+        depth=1,
+        parent_agent_id="root",
+    )
+    flow.apply_action(
+        graph,
+        AddChild(type="add_child", parent_agent_id="root", child=child),
+    )
+    assert "root.worker" in graph.children
+
+    graph.replace(
+        supervising,
+        ExecOutput(output="new route", content="new route"),
+        truncate="descendants",
     )
 
-
-def _delegated_graph() -> Graph:
-    from rflow import Flow
-
-    flow = Flow(ScriptedLLM(_tight_parent_child), max_depth=1, max_iters=5)
-    return run_to_completion(flow, "parent")
-
-
-# ── serialization round-trip ──────────────────────────────────────────
-
-
-def test_to_dict_includes_system_prompt():
-    g = Graph(agent_id="root", query="q", system_prompt="SYS")
-    assert g.to_dict()["system_prompt"] == "SYS"
+    assert [node.type for node in graph.nodes] == [
+        "user_query",
+        "llm_output",
+        "exec_output",
+    ]
+    assert graph.nodes[-1].content == "new route"
+    assert [node.seq for node in graph.nodes] == [0, 1, 2]
+    assert "root.worker" not in graph.children  # orphaned child pruned
 
 
-def test_repl_inputs_excludes_query():
-    g = Graph(agent_id="root", query="q", inputs={"doc": "text"})
-    # The query is delivered as the first user message, not mirrored into INPUTS.
-    assert g.repl_inputs() == {"doc": "text"}
+
+def test_minimal_replace_node_default_keeps_descendants_and_children():
+    graph = Graph(query="q")
+    graph.commit(LLMOutput(content="a"))
+    graph.commit(ExecOutput(output="b", content="b"))
+
+    graph.replace(graph.nodes[1], LLMOutput(content="edited", code="x = 1"))
+
+    assert [node.type for node in graph.nodes] == [
+        "user_query",
+        "llm_output",
+        "exec_output",
+    ]
+    assert graph.nodes[1].content == "edited"
 
 
-def test_from_dict_round_trips_a_delegated_run():
-    g = _delegated_graph()
-    restored = Graph.from_dict(g.to_dict())
 
-    assert isinstance(restored, Graph)
-    assert restored.agent_id == g.agent_id
-    assert restored.system_prompt == g.system_prompt
-    assert list(restored.children) == list(g.children)
-    assert [n.type for n in restored.nodes] == [n.type for n in g.nodes]
-    assert restored["root.child"].result() == g["root.child"].result()
-    assert restored.result() == g.result() == "p:c"
-    # full structural equality of the serialized form
-    assert restored.to_dict() == g.to_dict()
-
-
-def test_from_dict_rebuilds_concrete_node_types():
-    g = _delegated_graph()
-    restored = Graph.from_dict(g.to_dict())
-    by_type = {n.type: type(n) for n in restored.nodes}
-    assert by_type["user_query"] is UserQuery
-    assert by_type["llm_output"] is LLMOutput
-    assert by_type["supervising_output"] is SupervisingOutput
-    assert by_type["done_output"] is DoneOutput
-
-
-def test_from_dict_accepts_legacy_states_alias_and_ignores_unknown_fields():
-    data = {
-        "agent_id": "root",
-        "query": "q",
-        "states": [UserQuery(content="hi").to_dict()],  # legacy key
-        "totally_unknown": 123,
-    }
-    g = Graph.from_dict(data)
-    assert len(g.nodes) == 1
-    assert isinstance(g.nodes[0], UserQuery)
-
-
-def test_parse_node_obj_discriminates_on_type():
-    node = parse_node_obj({"type": "done_output", "result": "answer"})
-    assert isinstance(node, DoneOutput)
-    assert node.result == "answer"
-    assert is_done(node)
-
-
-# ── predicates ────────────────────────────────────────────────────────
-
-
-def test_predicates_classify_nodes():
-    assert is_observation(UserQuery())
-    assert not is_action(UserQuery())
-    assert is_action(LLMAction())
-    assert is_action(ExecAction())
-    assert is_done(DoneOutput(result="x"))
-    assert is_errored(ErrorOutput(error="boom"))
-    assert is_supervising(SupervisingOutput(waiting_on=["root.child"]))
-
-
-def test_is_resumed_only_true_for_resumed_observations():
-    assert not is_resumed(DoneOutput(result="x"))
-    assert is_resumed(DoneOutput(result="x", resumed_from=["root.child"]))
-
-
-# ── flat views ────────────────────────────────────────────────────────
-
-
-def test_all_nodes_flattens_subtree_and_filters():
-    g = _delegated_graph()
-    view = g.all_nodes
-    assert isinstance(view, NodesView)
-
-    # parent (7) + child (5) nodes
-    assert len(view) == 12
-    assert all(a.type == "llm_action" for a in view.llm_actions())
-    assert view.results() and all(is_done(r) for r in view.results())
-    assert {n.agent_id for n in view.where(lambda n: n.agent_id == "root.child")} == {
-        "root.child"
-    }
-    assert view.where(type="supervising_output")  # only the parent has one
-
-
-def test_all_nodes_find_locates_by_id():
-    g = _delegated_graph()
-    target = g.nodes[0]
-    assert g.all_nodes.find(target.id) is target
-    assert g.all_nodes.find("does-not-exist") is None
-    assert target.id in g.all_nodes
-
-
-def test_edges_derives_flow_and_spawn_edges():
-    g = _delegated_graph()
-    edges = g.edges
-    assert isinstance(edges, EdgesView)
-
-    spawns = edges.spawns()
-    assert len(spawns) == 1
-    spawn = spawns[0]
-    assert isinstance(spawn, Edge) and spawn.kind == "spawns"
-    # spawn goes from the parent's running action node to the child's first node
-    assert spawn.to == g["root.child"].nodes[0].id
-    assert spawn.from_ in {n.id for n in g.nodes}
-
-    flows = edges.flows_to()
-    assert all(e.kind == "flows_to" for e in flows)
-    # within an agent, consecutive nodes are linked: (#nodes - 1) per agent
-    assert len(flows) == (len(g.nodes) - 1) + (len(g["root.child"].nodes) - 1)
-
-
-# ── copy + step counters ──────────────────────────────────────────────
-
-
-def test_copy_is_deep_and_independent():
-    g = _delegated_graph()
-    clone = g.copy()  # deep by default
-    assert clone is not g
-    assert clone.to_dict() == g.to_dict()
-
-    clone.nodes.append(UserQuery(content="mutated"))
-    clone.children["root.child"].nodes.clear()
-    assert len(g.nodes) != len(clone.nodes)
-    assert g["root.child"].nodes  # original child untouched
-
-
-def test_shallow_copy_shares_node_list():
-    g = _delegated_graph()
-    shallow = g.copy(deep=False)
-    assert shallow is not g
-    assert shallow.nodes is g.nodes  # dataclasses.replace copies fields by reference
-
-
-def test_global_step_counters_on_empty_and_populated_graphs():
-    empty = Graph(agent_id="root")
-    assert empty.max_global_step() is None
-    assert empty.next_global_step() == 0
-
-    g = _delegated_graph()
-    top = g.max_global_step()
-    assert top is not None
-    assert g.next_global_step() == top + 1
-
-
-# ── finished + scheduling invariants (ported from legacy graph_surgery) ─
-
-
-def _supervising_root_with_child(child_finished: bool) -> Graph:
-    """A root paused at ``await`` on one child, optionally still running."""
-    child_nodes = [UserQuery(content="c")]
-    if child_finished:
-        child_nodes.append(DoneOutput(result="c-done"))
-    child = Graph(agent_id="root.child", depth=1, nodes=child_nodes)
-    root = Graph(
-        agent_id="root",
-        nodes=[
-            UserQuery(content="p"),
-            LLMAction(),
-            LLMOutput(reply="r"),
-            ExecAction(code="..."),
-            SupervisingOutput(waiting_on=["root.child"]),
-        ],
-        children={"root.child": child},
+def test_minimal_graph_fork_creates_independent_graph_branch():
+    flow = Flow(StubLLM(lambda _messages: '```repl\ndone("ok")\n```'))
+    graph = Graph(query="q")
+    graph.inject("branch point")
+    child = Graph(
+        agent_id="root.child",
+        graph_id=graph.graph_id,
+        query="child",
+        depth=1,
+        parent_agent_id="root",
     )
-    return root
-
-
-def test_finished_requires_all_descendants_finished():
-    # Terminal parent but an unfinished child → the whole subtree isn't done.
-    child = Graph(agent_id="root.child", depth=1, nodes=[UserQuery(content="c")])
-    root = Graph(
-        agent_id="root",
-        nodes=[UserQuery(content="p"), DoneOutput(result="x")],
-        children={"root.child": child},
+    flow.apply_action(
+        graph,
+        AddChild(type="add_child", parent_agent_id="root", child=child),
     )
-    assert child.finished is False
-    assert root.finished is False
-    child.nodes.append(DoneOutput(result="c"))
-    assert root.finished is True
 
-
-def test_runnable_is_child_not_paused_supervisor():
-    root = _supervising_root_with_child(child_finished=False)
-    # the paused supervisor must not be runnable while its child still runs.
-    assert root.get_runnable_nodes() == ["root.child"]
-
-
-def test_runnable_is_supervisor_once_child_finished():
-    root = _supervising_root_with_child(child_finished=True)
-    assert root.get_runnable_nodes() == ["root"]
-
-
-def test_runnable_empty_when_waited_child_missing():
-    # supervisor waits on an agent id that isn't in the tree → nothing runnable
-    # (the engine can't resume it, and there's no descendant to advance).
-    root = Graph(
-        agent_id="root",
-        nodes=[
-            UserQuery(content="p"),
-            SupervisingOutput(waiting_on=["root.ghost"]),
-        ],
+    branch = graph.fork(
+        from_node_id=graph.nodes[1].id,
+        keep_children=False,
     )
-    assert root.get_runnable_nodes() == []
+
+    assert branch is not graph
+    assert branch.graph_id != graph.graph_id
+    assert all(agent.graph_id == branch.graph_id for agent in branch.walk())
+    assert [node.content for node in branch.nodes] == ["q"]
+    assert branch.children == {}
+    assert "root.child" in graph
+    assert [node.content for node in graph.nodes] == ["q", "branch point"]
+
+
+
+def test_minimal_graph_fork_keep_anchor_retains_the_cut_node():
+    graph = Graph(query="q")
+    graph.inject("branch point")
+    graph.inject("after point")
+
+    # Default drops the anchor (branch ends before it); keep_anchor retains it.
+    dropped = graph.fork(from_node_id=graph.nodes[1].id)
+    kept = graph.fork(from_node_id=graph.nodes[1].id, keep_anchor=True)
+
+    assert [node.content for node in dropped.nodes] == ["q"]
+    assert [node.content for node in kept.nodes] == ["q", "branch point"]
+    # Parent is untouched by either fork.
+    assert [node.content for node in graph.nodes] == ["q", "branch point", "after point"]
+
+
+
+def test_minimal_graph_fork_can_share_session_graph_id_for_repl_reuse():
+    flow = Flow(StubLLM(lambda _messages: '```repl\ndone("ok")\n```'))
+    graph = Graph(query="q")
+    flow.repl_for(graph)
+
+    branch = graph.fork(session="shared")
+
+    assert branch is not graph
+    assert branch.graph_id == graph.graph_id
+    assert all(agent.graph_id == graph.graph_id for agent in branch.walk())
+    assert flow.repl_for(branch) is flow.repl_for(graph)
+
+
+
+def test_minimal_graph_remove_child_keeps_repl_cleanup_explicit():
+    flow = Flow(StubLLM(lambda _messages: '```repl\ndone("ok")\n```'))
+    graph = Graph(query="q")
+    child = Graph(
+        agent_id="root.child",
+        graph_id=graph.graph_id,
+        query="child",
+        depth=1,
+        parent_agent_id="root",
+    )
+    flow.apply_action(
+        graph,
+        AddChild(type="add_child", parent_agent_id="root", child=child),
+    )
+    flow.repl_for(child)
+
+    assert (graph.graph_id, "root.child") in flow.repls
+
+    removed = graph.remove_child("root.child")
+
+    assert isinstance(removed, RemoveChild)
+    assert "root.child" not in graph
+    assert (graph.graph_id, "root.child") in flow.repls
+
+    flow.close_repl(child)
+
+    assert (graph.graph_id, "root.child") not in flow.repls
+
+
+
+def test_minimal_graph_saves_run_layout(tmp_path):
+    def reply(messages):
+        task = first_user(messages)
+        if task == "child task":
+            return '```repl\ndone("child result")\n```'
+        return (
+            "```repl\n"
+            'results = await launch_subagents([{"name": "auth", "query": "child task"}])\n'
+            'done("root saw " + results[0])\n'
+            "```"
+        )
+
+    flow = Flow(StubLLM(reply), max_depth=1)
+    graph = Graph(query="root query")
+    flow.run(graph=graph)
+    run_dir = graph.save(tmp_path / "run", metadata={"example": "test"})
+
+    manifest = json.loads((run_dir / "graph.json").read_text())
+    assert manifest["root_agent_id"] == "root"
+    assert manifest["metadata"]["example"] == "test"
+    assert "root.auth" in manifest["agents"]
+
+    root_dir = run_dir / "agents" / "root"
+    child_dir = root_dir / "auth"
+    root_meta = json.loads((root_dir / "agent.json").read_text())
+    assert root_meta["query"] == "root query"
+    assert json.loads((child_dir / "agent.json").read_text())["query"] == "child task"
+
+    # System prompts live once in a content-addressed table in agent.json; each
+    # llm_output in session.jsonl references its prompt by id, so a saved trace
+    # reconstructs every turn's prompt from disk alone.
+    prompt_table = root_meta["system_prompts"]
+    assert any(text.startswith("You are a Recursive") for text in prompt_table.values())
+    root_llm = next(
+        json.loads(line)
+        for line in (root_dir / "session.jsonl").read_text().splitlines()
+        if json.loads(line)["type"] == "llm_output"
+    )
+    sys_id = root_llm["metadata"]["system_prompt"]
+    assert sys_id.startswith("sys_")
+    assert prompt_table[sys_id].startswith("You are a Recursive")
+
+    # Loading restores the table onto the graph; nodes keep their id and resolve
+    # to full text via system_prompt_for.
+    reloaded = load_run(run_dir)
+    reloaded_llm = next(n for n in reloaded.nodes if isinstance(n, LLMOutput))
+    assert reloaded_llm.metadata["system_prompt"] == sys_id
+    assert reloaded.system_prompt_for(reloaded_llm).startswith("You are a Recursive")
+
+
+    assert '"type": "done_output"' in (child_dir / "session.jsonl").read_text()
+    assert json.loads((child_dir / "latest.json").read_text())["result"] == "child result"
+
+    child_events = [
+        json.loads(line)["type"]
+        for line in (child_dir / "session.jsonl").read_text().splitlines()
+    ]
+    assert child_events == ["user_query", "llm_output", "exec_action", "done_output"]
+
+    loaded = Graph.load(run_dir)
+    assert loaded.result() == "root saw child result"
+    assert loaded["root.auth"].result() == "child result"
+
+
+def test_prompt_name_and_fallback_survive_save_load(tmp_path):
+    # graph.prompt_profile (profile name) and the recorded system prompt round-trip,
+    # and a flow that lacks the profile resolves to the recorded prompt (no drift).
+    flow = Flow(StubLLM(lambda _m: '```repl\ndone("ok")\n```'))
+    graph = Graph(query="q", prompt_profile="ghost")
+    graph.system_prompts["sys_x"] = "RECORDED SYSTEM PROMPT"
+    graph.commit(LLMOutput(content="hi", metadata={"system_prompt": "sys_x"}))
+
+    run_dir = graph.save(tmp_path / "run")
+    reloaded = load_run(run_dir)
+
+    assert reloaded.prompt_profile == "ghost"
+    assert reloaded.system_prompts["sys_x"] == "RECORDED SYSTEM PROMPT"
+    assert flow.build_system_prompt(reloaded) == "RECORDED SYSTEM PROMPT"
+
+
+def test_legacy_prompt_key_loads_into_prompt_profile(tmp_path):
+    # Graphs saved before the ``prompt`` -> ``prompt_profile`` rename carry the old
+    # key in agent.json; load accepts either so old runs still deserialize.
+    import json
+
+    graph = Graph(query="q", prompt_profile="coder")
+    run_dir = graph.save(tmp_path / "run")
+    # single root agent, no children -> the one agent dir under agents/
+    meta_path = next((run_dir / "agents").iterdir()) / "agent.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["prompt"] = meta.pop("prompt_profile")  # simulate a pre-rename save
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    assert load_run(run_dir).prompt_profile == "coder"
+
+
+def test_minimal_graph_id_is_auto_created_and_persisted(tmp_path):
+    graph = Graph(query="loaded")
+    graph.commit(UserQuery(content="loaded"))
+    graph_id = graph.graph_id
+
+    loaded = Graph.load(graph.save(tmp_path / "run"))
+
+    assert graph_id.startswith("g_")
+    assert loaded.graph_id == graph_id
+    assert loaded.query == "loaded"
+
+
+
+def test_minimal_checkpoint_revert_restores_nodes():
+    graph = seed_exec_graph("x = 1")
+    checkpoint = graph.checkpoint()
+    assert isinstance(checkpoint, GraphCheckpoint)
+
+    graph.commit(LLMOutput(content="more", code="y = 2"))
+    graph.commit(ExecAction(code="y = 2"))
+    graph.commit(ExecOutput(content="", output=""))
+    assert len(graph.nodes) == 7
+
+    graph.revert(checkpoint)
+
+    assert len(graph.nodes) == 4
+    assert graph.checkpoint().digest == checkpoint.digest
+
+
+
+def test_minimal_revert_refuses_after_history_rewrite():
+    graph = seed_exec_graph("x = 1")
+    checkpoint = graph.checkpoint()
+
+    # Rewrite a node BELOW the checkpoint -> digest no longer matches.
+    graph.replace(graph.nodes[1].id, LLMOutput(content="changed", code="x = 999"))
+
+    refused = False
+    try:
+        graph.revert(checkpoint)
+    except ValueError:
+        refused = True
+    assert refused
+
+
+
+def test_minimal_rebuild_repl_reconstructs_variables_without_appending():
+    async def run():
+        flow = Flow(StubLLM(lambda _messages: "unused"))
+        graph = seed_exec_graph("x = 21 * 2", "y = x + 1")
+        repl = await flow.rebuild_repl(graph)
+        return repl.namespace.get("x"), repl.namespace.get("y"), len(graph.nodes)
+
+    x, y, node_count = asyncio.run(run())
+    assert (x, y) == (42, 43)
+    assert node_count == 7  # replay must not append result nodes
+
+
+
+def test_minimal_fork_is_isolated_from_parent():
+    async def run():
+        flow = Flow(StubLLM(lambda _messages: "unused"))
+        parent = seed_exec_graph("x = 1")
+        await flow.rebuild_repl(parent)
+
+        child = await flow.fork(parent)
+        await worker_step(flow, child, "y = x + 1")
+
+        return (
+            parent.graph_id,
+            child.graph_id,
+            len(parent.nodes),
+            flow.repl_for(parent).namespace,
+            flow.repl_for(child).namespace,
+        )
+
+    parent_id, child_id, parent_nodes, parent_ns, child_ns = asyncio.run(run())
+    assert child_id != parent_id
+    assert parent_nodes == 4  # parent trajectory untouched
+    assert "y" not in parent_ns  # parent REPL untouched
+    assert child_ns.get("x") == 1  # inherited via fork replay
+    assert child_ns.get("y") == 2  # child's own work
+
+
+def test_minimal_lazy_fork_skips_replay_and_annotates():
+    async def run():
+        flow = Flow(StubLLM(lambda _messages: "unused"))
+        parent = seed_exec_graph("x = 1")
+        await flow.rebuild_repl(parent)
+
+        child = await flow.fork(parent, mode="lazy")
+        # Fresh REPL on first use: no replay, so parent's runtime var is gone.
+        child_ns = dict(flow.repl_for(child).namespace)
+        note = child.nodes[-1]
+        return child.graph_id, parent.graph_id, child_ns, note
+
+    child_id, parent_id, child_ns, note = asyncio.run(run())
+    assert child_id != parent_id
+    assert "x" not in child_ns  # lazy: prefix ExecActions were NOT replayed
+    assert note.type == "exec_output"
+    assert "forked" in (note.content or "").lower()  # branch is annotated
+
+
+
+def test_minimal_merge_folds_disjoint_children():
+    async def run():
+        flow = Flow(StubLLM(lambda _messages: "unused"))
+        parent = seed_exec_graph("report = {}")
+        await flow.rebuild_repl(parent)  # parent has a live REPL -> delta-run rung
+
+        child_a = await flow.fork(parent)
+        child_b = await flow.fork(parent)
+        await worker_step(flow, child_a, "stats_a = 12")
+        await worker_step(flow, child_b, "stats_b = 34")
+
+        await flow.merge(parent, child_a)
+        await flow.merge(parent, child_b)
+        return parent, flow.repl_for(parent).namespace
+
+    parent, namespace = asyncio.run(run())
+    assert namespace.get("report") == {}
+    assert namespace.get("stats_a") == 12
+    assert namespace.get("stats_b") == 34
+
+    summaries = [
+        node.content
+        for node in parent.nodes
+        if node.type == "exec_output" and "merged branch" in (node.content or "")
+    ]
+    assert len(summaries) == 2  # exactly one summary node per merge
+
+
+
+def test_minimal_merge_adopts_first_child_repl():
+    async def run():
+        flow = Flow(StubLLM(lambda _messages: "unused"))
+        parent = seed_exec_graph("report = {}")  # NOTE: no live parent REPL
+
+        child = await flow.fork(parent)
+        await worker_step(flow, child, "stats_a = 12")
+
+        await flow.merge(parent, child)  # rung 1: adopt child's REPL, zero re-exec
+        return flow.repl_for(parent).namespace
+
+    namespace = asyncio.run(run())
+    assert namespace.get("report") == {}
+    assert namespace.get("stats_a") == 12
+
+
+
+def test_minimal_merge_conflict_is_last_write_wins():
+    async def run():
+        flow = Flow(StubLLM(lambda _messages: "unused"))
+        parent = seed_exec_graph("v = 0")
+        await flow.rebuild_repl(parent)
+
+        child_a = await flow.fork(parent)
+        child_b = await flow.fork(parent)
+        await worker_step(flow, child_a, "v = 1")
+        await worker_step(flow, child_b, "v = 2")
+
+        await flow.merge(parent, child_a)
+        await flow.merge(parent, child_b)  # merged last -> wins
+        return flow.repl_for(parent).namespace.get("v")
+
+    assert asyncio.run(run()) == 2
+
+
+
+def test_minimal_discard_closes_branch_repls():
+    async def run():
+        flow = Flow(StubLLM(lambda _messages: "unused"))
+        parent = seed_exec_graph("x = 1")
+        await flow.rebuild_repl(parent)
+
+        child = await flow.fork(parent)
+        child_key = repl_key(child)
+        present_before = child_key in flow.repls
+
+        flow.discard(child)
+        return present_before, child_key in flow.repls
+
+    present_before, present_after = asyncio.run(run())
+    assert present_before
+    assert not present_after
+

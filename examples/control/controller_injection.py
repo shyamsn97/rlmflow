@@ -1,11 +1,11 @@
-"""Inject typed nodes into a running graph from a controller.
+"""Inject controller-authored graph actions into a minimal Flow run.
 
-The controller workflow with the stateful engine:
+The minimal controller workflow:
 
-1. Build a new graph value with ``graph.inject(...)`` (pure: returns a copy).
-2. Adopt it by passing it to ``flow.step(injected)`` to react (no ``flow.graph =``).
-3. To stop a run early, call ``flow.terminate()`` — the agent is forced to
-   ``done(...)`` on its next turn (the supported "finalize now" mechanism).
+1. The caller owns the ``Graph``.
+2. The controller applies graph actions with ``flow.append_node(...)`` or
+   ``flow.apply_action(...)``.
+3. "Finalize now" is just another controller instruction in the graph.
 
 Run:
     python examples/control/controller_injection.py
@@ -13,46 +13,31 @@ Run:
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from pathlib import Path
 
-import rflow
+from rlmflow import ExecOutput, Flow, Graph, GraphCheckpointer, LLMUsage
 
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
-
-
-def _save_example_graph(
-    graph,
-    source_file: str | Path,
-    name: str,
-    *,
-    out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
-) -> Path:
-    path = graph.save(
-        Path(out_dir) if out_dir is not None else _example_run_dir(source_file, name)
-    )
-    print(f"{label} {path}")
-    return path
+from common import example_run_dir, save_example_graph  # noqa: E402
 
 
 OBSERVATION = "Injected controller observation: finalize using this note."
 
 
-class DemoLLM(rflow.LLMClient):
+class DemoLLM:
     """Deterministic model so the example runs offline."""
 
     def chat(self, messages, *args, **kwargs) -> str:
-        self.last_usage = rflow.LLMUsage(input_tokens=80, output_tokens=20)
+        self.last_usage = LLMUsage(input_tokens=80, output_tokens=20)
         convo = "\n".join(m["content"] for m in messages)
         if "Injected controller observation" in convo:
             return '```repl\ndone("used the injected controller observation")\n```'
-        if "full iteration budget" in convo:  # FINAL nudge from terminate()
+        if "Controller stop request" in convo:
             return '```repl\ndone("controller stopped the run")\n```'
         return '```repl\nprint("waiting for controller input")\n```'
 
@@ -80,69 +65,80 @@ def print_states(label: str, graph) -> None:
 def observation_injection() -> None:
     banner("1. Inject an observation and let the LLM react")
 
-    flow = rflow.Flow(DemoLLM(), max_depth=0, max_iters=4)
-    graph = flow.start("Wait for a controller note, then finish.")
+    flow = Flow(DemoLLM(), max_depth=0, max_iters=4)
+    graph = Graph(query="Wait for a controller note, then finish.")
     assert_types(graph, ["user_query"])
 
-    # inject() is pure — it returns a NEW graph, leaving the live one untouched.
-    injected = graph.inject(
-        target="root",
-        node=rflow.ExecOutput(output=OBSERVATION, content=OBSERVATION),
-    )
-    assert injected is not graph
-    assert_types(graph, ["user_query"])
-    assert_types(injected, ["user_query", "exec_output"])
+    flow.append_node(graph, ExecOutput(output=OBSERVATION, content=OBSERVATION))
+    assert_types(graph, ["user_query", "exec_output"])
 
-    extra = injected.nodes[-1]
-    assert isinstance(extra, rflow.ExecOutput)
-    assert "injected" not in set(extra.to_dict())
+    extra = graph.nodes[-1]
+    assert isinstance(extra, ExecOutput)
+    assert "injected" not in set(extra.metadata)
 
-    print_states("start(): original graph", graph)
-    print_states("graph.inject(...): returned a copy with one plain ExecOutput", injected)
+    print_states("after controller append_node(...)", graph)
 
-    projected = flow.build_messages(injected, force_final=False)[-1]["content"]
+    projected = flow.messages(graph)[-1]["content"]
     assert OBSERVATION in projected
     print("message projection contains the controller observation.")
 
-    # Adopt the edited graph by passing it to step() — no more flow.graph = ...
-    graph = flow.step(injected)  # reacts to the observation -> LLM call
-    graph = flow.step(graph)  # executes the LLM's done(...) block
+    run_dir = example_run_dir("controller-injection") / "observation-injection"
+    checkpointer = GraphCheckpointer(run_dir)
+
+    async def drive() -> None:
+        try:
+            async for event in flow.run_streaming(graph=graph):
+                checkpointer.handle(event, graph)
+        finally:
+            checkpointer.close()
+
+    asyncio.run(drive())
     assert graph.result() == "used the injected controller observation"
-    print_states("after set_graph + stepping: run reacted and finished", graph)
+    print_states("after stepping: run reacted and finished", graph)
     print(f"result={graph.result()!r}")
-    _save_example_graph(
+    save_example_graph(
         graph,
-        __file__,
         "controller-injection",
-        out_dir=_example_run_dir(__file__, "controller-injection")
-        / "observation-injection",
+        out_dir=run_dir,
     )
 
 
-def terminate_to_finalize() -> None:
-    banner("2. terminate() to finalize a run immediately")
+def controller_stop_instruction() -> None:
+    banner("2. Inject a controller stop instruction")
 
-    flow = rflow.Flow(DemoLLM(), max_depth=0, max_iters=4)
-    graph = flow.start("This run will be stopped by the controller.")
-    graph = flow.step(graph)  # one normal turn (print)
-    flow.terminate()  # force the agent to wrap up on its next LLM turn
-    while not graph.finished:
-        graph = flow.step(graph)
+    flow = Flow(DemoLLM(), max_depth=0, max_iters=4)
+    graph = Graph(query="This run will be stopped by the controller.")
+    run_dir = example_run_dir("controller-injection") / "controller-stop-instruction"
+    checkpointer = GraphCheckpointer(run_dir)
+
+    async def run_with_controller_stop() -> None:
+        # Stream the run to its first resting observation, then react. Because
+        # ``until`` halts the run at the boundary (the driver does not run ahead),
+        # the instruction we inject is guaranteed to be the next thing the agent
+        # reads when we resume it.
+        try:
+            async for event in flow.run_streaming(graph=graph, until="idle"):
+                checkpointer.handle(event, graph)
+            graph.inject("Controller stop request: finalize now with current state.")
+            async for event in flow.run_streaming(graph=graph, until="done"):
+                checkpointer.handle(event, graph)
+        finally:
+            checkpointer.close()
+
+    asyncio.run(run_with_controller_stop())
     assert graph.result() == "controller stopped the run"
-    print_states("after terminate(): forced a clean done(...)", graph)
+    print_states("after controller stop instruction: clean done(...)", graph)
     print(f"result={graph.result()!r}")
-    _save_example_graph(
+    save_example_graph(
         graph,
-        __file__,
         "controller-injection",
-        out_dir=_example_run_dir(__file__, "controller-injection")
-        / "terminate-to-finalize",
+        out_dir=run_dir,
     )
 
 
 def main() -> None:
     observation_injection()
-    terminate_to_finalize()
+    controller_stop_instruction()
 
 
 if __name__ == "__main__":

@@ -12,18 +12,26 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
+import sys
 from pathlib import Path
 
-import rflow
-from rflow.tools import FILE_TOOLS
+from rlmflow import (
+    ConsumerGroup,
+    DockerRuntime,
+    FILE_TOOLS,
+    Flow,
+    Graph,
+    GraphCheckpointer,
+    LiveTreeRenderer,
+    LocalRuntime,
+)
 
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
-def build_llm(model: str):
-    return (
-        rflow.AnthropicClient(model)
-        if model.startswith("claude")
-        else rflow.OpenAIClient(model)
-    )
+from common import build_client  # noqa: E402
 
 
 def main():
@@ -66,18 +74,18 @@ def main():
     # in-process with the cwd switched into `workdir`; Docker runs each agent in a
     # container with `workdir` bind-mounted to /workspace. Same interface.
     if args.docker_image:
-        runtime = rflow.DockerRuntime(args.docker_image, working_directory=workdir)
+        runtime = DockerRuntime(args.docker_image, working_directory=workdir)
     else:
-        runtime = rflow.LocalRuntime(working_directory=workdir)
+        runtime = LocalRuntime(working_directory=workdir)
     runtime.register_tools(FILE_TOOLS)
 
-    flow = rflow.Flow(
-        build_llm(args.model),
-        llm_clients={"fast": build_llm(args.fast_model)},
+    flow = Flow(
+        build_client(args.model),
+        llm_clients={"fast": build_client(args.fast_model)},
         runtime=runtime,
         max_depth=args.max_depth,
         max_iters=args.max_iters,
-        max_concurrency=args.max_concurrency,
+        workers=args.max_concurrency,
     )
 
     print("Agent ready. Type a query, or 'quit' to exit.\n")
@@ -91,25 +99,31 @@ def main():
             if not query or query.lower() in ("quit", "exit", "q"):
                 break
 
-            graph = flow.start(query)
-            if args.no_viz:
-                while not graph.finished:
-                    graph = flow.step(graph)
-            else:
-                from rflow.utils.viz import live_view
+            graph = Graph(query=query)
+            graph_dir = workdir / "graph"
+            # Checkpoint the graph on every event (and a final flush on close),
+            # so a crash mid-run still leaves the latest graph on disk.
+            consumers = ConsumerGroup(
+                [
+                    LiveTreeRenderer(clear=not args.no_viz),
+                    GraphCheckpointer(graph_dir),
+                ]
+            )
 
-                with live_view() as view:
-                    view(graph)
-                    while not graph.finished:
-                        graph = flow.step(graph)
-                        view(graph)
+            async def drive() -> None:
+                try:
+                    async for event in flow.run_streaming(graph=graph):
+                        consumers.handle(event, graph)
+                finally:
+                    consumers.close()
+
+            asyncio.run(drive())
 
             print(f"\n{graph.result() or '(no result)'}\n")
-            path = graph.save(workdir / "graph")
-            print(f"Graph saved to {path}")
+            print(f"Graph checkpointed to {graph_dir}")
             print(f"Files written under {workdir}")
     finally:
-        flow.close()
+        flow.close_repls()
 
 
 if __name__ == "__main__":

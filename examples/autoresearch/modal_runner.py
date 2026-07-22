@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import atexit
 import os
 import re
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# ``modal.enable_output()`` drives a single *process-global* output manager.
+# Concurrent trials each run ``submit()`` on their own thread, so entering the
+# context from several threads at once races on that global and can raise
+# ``AttributeError: 'NoneType' object has no attribute 'label'``. Enter it once
+# for the whole process (under a lock) and leave it open, so concurrent
+# ``app.run()`` calls share the already-initialized manager.
+_OUTPUT_LOCK = threading.Lock()
+_OUTPUT_ENABLED = False
 
 
 SUMMARY_KEYS = (
@@ -264,24 +275,42 @@ def submit(
         "run_id": run_id,
         "timeout_s": config.timeout_s,
     }
-    # Keep the ephemeral app alive until the remote call finishes. Each rflow
-    # child blocks here, and eager child scheduling lets several children block
-    # on independent Modal calls at the same time.
-    with modal.enable_output():
-        with app.run():
-            call = run_trial.spawn(payload)
-            job_id = (
-                getattr(call, "object_id", None)
-                or getattr(call, "function_call_id", None)
-                or f"{run_id}:{n}:{slug}"
-            )
-            result = call.get(timeout=config.timeout_s)
+    # Enable Modal's output once for the process (thread-safe), then keep the
+    # ephemeral app alive until the remote call finishes. Each rlmflow child blocks
+    # here, so several children block on independent Modal calls concurrently.
+    _enable_output_once(modal)
+    with app.run():
+        call = run_trial.spawn(payload)
+        job_id = (
+            getattr(call, "object_id", None)
+            or getattr(call, "function_call_id", None)
+            or f"{run_id}:{n}:{slug}"
+        )
+        result = call.get(timeout=config.timeout_s)
 
     return {
         **(result or {}),
         "job_id": job_id,
         "gpu": config.gpu,
     }
+
+
+def _enable_output_once(modal) -> None:
+    """Enter Modal's process-global output manager exactly once, thread-safely.
+
+    Entering ``modal.enable_output()`` concurrently from multiple trial threads
+    races on a shared global; do it once and leave it open for the process so
+    every ``app.run()`` shares the initialized manager. Closed at interpreter
+    exit.
+    """
+    global _OUTPUT_ENABLED
+    with _OUTPUT_LOCK:
+        if _OUTPUT_ENABLED:
+            return
+        cm = modal.enable_output()
+        cm.__enter__()
+        atexit.register(lambda: cm.__exit__(None, None, None))
+        _OUTPUT_ENABLED = True
 
 
 def _pack_trial_dir(path: Path) -> dict[str, str]:

@@ -15,13 +15,30 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import random
 import string
+import sys
 import tempfile
 from pathlib import Path
 
-import rflow
-from rflow.tools import FILE_TOOLS
+from rlmflow import (
+    ConsumerGroup,
+    DockerRuntime,
+    FILE_TOOLS,
+    Flow,
+    Graph,
+    GraphCheckpointer,
+    LiveTreeRenderer,
+    LocalRuntime,
+    SubprocessRuntime,
+)
+
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
+
+from common import build_client  # noqa: E402
 
 
 def generate_haystack(
@@ -44,14 +61,6 @@ def generate_haystack(
 
     print(f"Needle in file_{needle_file:04d}.txt line {needle_line}")
     return answer
-
-
-def build_llm(model: str):
-    return (
-        rflow.AnthropicClient(model)
-        if model.startswith("claude")
-        else rflow.OpenAIClient(model)
-    )
 
 
 def main():
@@ -83,7 +92,7 @@ def main():
         default=None,
         help="Directory to hold haystack/ and run in (default: a temp dir).",
     )
-    parser.add_argument("--max-depth", type=int, default=2)
+    parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument("--max-iters", type=int, default=15)
     parser.add_argument("--no-viz", action="store_true")
     parser.add_argument(
@@ -117,40 +126,47 @@ def main():
         print(f"Generated {args.num_files} files in {haystack_path}")
 
         if args.docker_image:
-            runtime = rflow.DockerRuntime(args.docker_image, working_directory=workdir)
+            runtime = DockerRuntime(args.docker_image, working_directory=workdir)
         elif args.in_process_local:
-            runtime = rflow.LocalRuntime(working_directory=workdir)
+            runtime = LocalRuntime(working_directory=workdir)
         else:
-            runtime = rflow.SubprocessRuntime(working_directory=workdir)
+            runtime = SubprocessRuntime(working_directory=workdir)
         runtime.register_tools(FILE_TOOLS)
 
         llm_clients = None
         if args.fast_model:
-            llm_clients = {"fast": build_llm(args.fast_model)}
+            llm_clients = {"fast": build_client(args.fast_model)}
 
-        flow = rflow.Flow(
-            build_llm(args.model),
+        flow = Flow(
+            build_client(args.model),
             llm_clients=llm_clients,
             runtime=runtime,
             max_depth=args.max_depth,
             max_iters=args.max_iters,
         )
 
-        graph = flow.start(
-            f"There are {args.num_files} text files in haystack/. "
-            "Exactly one line in one file matches the pattern "
-            "`The magic number is <number>`. Find and return the number. "
-            "There are too many files to search manually, so split the work into batches and delegate the search to subagents."
+        graph = Graph(
+            query=(
+                f"There are {args.num_files} text files in haystack/. "
+                "Exactly one line in one file matches the pattern "
+                "`The magic number is <number>`. Find and return the number. "
+                "There are too many files to search manually, so split the work "
+                "into batches and delegate the search to subagents."
+            )
         )
 
-        if args.no_viz:
-            while not graph.finished:
-                graph = flow.step(graph)
-                print(graph.tree())
-        else:
-            from rflow.utils.viz import live
+        consumers = ConsumerGroup([LiveTreeRenderer(clear=not args.no_viz)])
+        if args.out_dir:
+            consumers.append(GraphCheckpointer(Path(args.out_dir)))
 
-            graph = live(flow, graph)[-1]
+        async def drive() -> None:
+            try:
+                async for event in flow.run_streaming(graph=graph):
+                    consumers.handle(event, graph)
+            finally:
+                consumers.close()
+
+        asyncio.run(drive())
 
         print(f"\n{'=' * 40}")
         print(f"Result:         {graph.result()}")
@@ -158,15 +174,12 @@ def main():
         print(f"Correct:        {answer in graph.result()}")
 
         if args.out_dir:
-            path = graph.save(Path(args.out_dir))
-            print(f"Graph saved to {path}")
+            print(f"Graph checkpointed to {Path(args.out_dir)}")
 
         if args.viewer:
-            from rflow.utils.viewer import open_viewer
+            print("Viewer support is not part of the minimal example path.")
 
-            open_viewer([graph])
-
-        flow.close()
+        flow.close_repls(graph.graph_id)
     finally:
         if tmp is not None:
             tmp.cleanup()

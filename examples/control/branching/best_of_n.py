@@ -1,6 +1,6 @@
 """Best-of-N with independent Flow branches.
 
-Each branch is a fresh ``flow.start(...)`` run saved to its own ``graph.json``,
+Each branch is a fresh ``Graph(...)`` run saved to its own ``graph.json``,
 demonstrating the Graph-centric surface.
 
 Usage:
@@ -14,7 +14,7 @@ import argparse
 import shutil
 from pathlib import Path
 
-import rflow
+from rlmflow import Flow, Graph, LLMUsage
 
 FRUITS = [
     ("lemon", "citrus"),
@@ -40,7 +40,7 @@ ROOT_REPLY = (
 )
 
 
-class MockLLM(rflow.LLMClient):
+class MockLLM:
     APPLE_CANDIDATES = ["citrus", "not_citrus", "citrus", "not_citrus"]
 
     def __init__(self, seed: int) -> None:
@@ -49,7 +49,7 @@ class MockLLM(rflow.LLMClient):
 
     def chat(self, messages, *args, **kwargs):
         self.call_count += 1
-        self.last_usage = rflow.LLMUsage(input_tokens=80, output_tokens=20)
+        self.last_usage = LLMUsage(input_tokens=80, output_tokens=20)
         text = messages[-1]["content"]
         if "as 'citrus' or 'not_citrus'" not in text:
             return ROOT_REPLY
@@ -74,12 +74,12 @@ def score(result: str) -> tuple[int, dict[str, str]]:
 
 def run_branch(root: Path, idx: int) -> tuple[str, int, dict[str, str], int]:
     llm = MockLLM(seed=idx)
-    flow = rflow.Flow(llm, max_depth=1, max_iters=10)
-    graph = flow.start(QUERY)
-    while not graph.finished:
-        graph = flow.step(graph)
+    flow = Flow(llm, max_depth=1, max_iters=10)
+    graph = Graph(query=QUERY)
+    flow.run(graph=graph)
     # Each branch persists to its own directory (graph.json).
     graph.save(root / f"branch_{idx}")
+    flow.close_repls(graph.graph_id)
     result = graph.result()
     correct, preds = score(result)
     return result, correct, preds, llm.call_count

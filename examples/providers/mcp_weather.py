@@ -19,9 +19,22 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
-import rflow
-from rflow.tools import get_tool_metadata, tool
-from rflow.utils.viz import live_view
+from rlmflow import (
+    Flow,
+    Graph,
+    GraphCheckpointer,
+    LiveTreeRenderer,
+    LocalRuntime,
+    get_tool_metadata,
+    tool,
+    render_tree,
+)
+
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
+
+from common import build_client  # noqa: E402
 
 DEFAULT_QUERY = """I will be in Seattle today, Austin 3 days after that, and San Francisco 5 days after that. Check the weather and tell me what to pack for each city.
 """
@@ -249,27 +262,22 @@ def mcp_tools(client: MCPStdioClient) -> dict[str, Any]:
     return tools
 
 
-def build_llm(model: str):
-    return (
-        rflow.AnthropicClient(model)
-        if model.startswith("claude")
-        else rflow.OpenAIClient(model)
-    )
-
-
-def run_until_done(flow: rflow.Flow, graph, *, show_live: bool):
-    if show_live:
-        with live_view() as view:
-            view(graph)
-            while not graph.finished:
-                graph = flow.step(graph)
-                view(graph)
-        return graph
-
-    while not graph.finished:
-        graph = flow.step(graph)
-        print(graph.tree())
+async def run_until_done(
+    flow: Flow, graph: Graph, *, show_live: bool, out_dir: Path
+) -> Graph:
+    renderer = LiveTreeRenderer(clear=show_live)
+    checkpointer = GraphCheckpointer(out_dir)
+    try:
+        async for event in flow.run_streaming(graph=graph):
+            checkpointer.handle(event, graph)
+            if show_live:
+                renderer.handle(event, graph)
+            else:
+                print(render_tree(graph))
+    finally:
+        checkpointer.close()
     return graph
+
 
 
 def main() -> None:
@@ -292,27 +300,30 @@ def main() -> None:
     try:
         # Expose the MCP-backed tools to every agent by registering them on the
         # runtime (each is already named by its MCP spec).
-        runtime = rflow.LocalRuntime()
+        runtime = LocalRuntime()
         for name, fn in mcp_tools(mcp_client).items():
             runtime.register_tool(fn, name=name)
 
-        flow = rflow.Flow(
-            build_llm(args.model),
+        flow = Flow(
+            build_client(args.model),
             runtime=runtime,
             max_depth=args.max_depth,
             max_iters=args.max_iters,
         )
-        graph = flow.start(args.query)
-        graph = run_until_done(flow, graph, show_live=not args.no_viz)
+        graph = Graph(query=args.query)
+        graph = asyncio.run(
+            run_until_done(
+                flow, graph, show_live=not args.no_viz, out_dir=Path(args.out_dir)
+            )
+        )
 
         print(f"\n{'=' * 60}\nWEATHER PACKING RECOMMENDATION\n{'=' * 60}")
         print(graph.result())
 
         if args.out_dir:
-            path = graph.save(Path(args.out_dir))
-            print(f"\nGraph saved to {path}")
+            print(f"\nGraph checkpointed to {Path(args.out_dir)}")
 
-        flow.close()
+        flow.close_repls(graph.graph_id)
     finally:
         mcp_client.close()
 

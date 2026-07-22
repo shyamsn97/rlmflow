@@ -110,7 +110,7 @@ class SuiteConfig:
     parallelism: int = 1
     best_of_n: int = 1
     attempt_timeout: int = 900
-    modal_app_name: str = "rflow-benchmarks"
+    modal_app_name: str = "rlmflow-benchmarks"
     modal_cpu: float = 1.0
     modal_timeout: int = 3600
 

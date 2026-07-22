@@ -141,10 +141,16 @@ MIN_LR_FRAC = 0.1
 COMPILE_MODEL = True
 
 
-def lr_multiplier(step: int, max_steps: int) -> float:
+def lr_multiplier(step: int, progress: float) -> float:
+    """Warmup by step, then cosine decay over `progress` in [0, 1].
+
+    `progress` is the fraction of the wall-clock training budget elapsed, so the
+    schedule reaches MIN_LR_FRAC exactly at TIME_BUDGET no matter how many steps
+    actually run. Do not tie the horizon to a hardcoded step estimate.
+    """
     if step < WARMUP_STEPS:
         return max(1, step) / WARMUP_STEPS
-    progress = min(1.0, step / max(1, max_steps))
+    progress = min(1.0, max(0.0, progress))
     cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
     return MIN_LR_FRAC + (1.0 - MIN_LR_FRAC) * cosine
 
@@ -176,8 +182,6 @@ def main() -> None:
     )
     train_loader = make_dataloader(BATCH_SIZE, MAX_SEQ_LEN, "train")
 
-    estimated_step_s = 0.25
-    max_steps = max(1, int(TIME_BUDGET / estimated_step_s))
     t_start = time.time()
     train_seconds = 0.0
     step = 0
@@ -191,7 +195,7 @@ def main() -> None:
             loss = model(x, y)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        mult = lr_multiplier(step, max_steps)
+        mult = lr_multiplier(step, (time.time() - t_start) / TIME_BUDGET)
         for group in optimizer.param_groups:
             group["lr"] = LEARNING_RATE * mult
         optimizer.step()
@@ -213,7 +217,7 @@ def main() -> None:
 
     print("--- eval ---", flush=True)
     with autocast:
-        val_bpb = evaluate_bpb(model, BATCH_SIZE, MAX_SEQ_LEN)
+        val_bpb = evaluate_bpb(model)
     total_tokens = step * BATCH_SIZE * MAX_SEQ_LEN
     peak_vram = torch.cuda.max_memory_allocated() / 1024 / 1024 if device == "cuda" else 0.0
 

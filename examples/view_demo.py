@@ -1,347 +1,146 @@
-"""Generate a synthetic Graph trace and open the viewer.
+"""Generate synthetic minimal Graph snapshots and open the minimal viewer.
 
-No LLM or runtime needed. This builds fake Graph snapshots to demonstrate the
-viewer UI.
+No LLM or runtime needed. This builds a small recursive graph timeline using
+``rlmflow.Graph`` and renders it with the lightweight viewer adapter.
 
+Run:
     python examples/view_demo.py
 """
 
 from __future__ import annotations
 
+import argparse
+import sys
+from copy import deepcopy
 from pathlib import Path
 
-import rflow
-from rflow.utils.viewer import open_viewer
+from rlmflow import (
+    DoneOutput,
+    ErrorOutput,
+    ExecOutput,
+    Graph,
+    LLMOutput,
+    SupervisingOutput,
+    UserQuery,
+    open_viewer,
+)
+
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
+
+from common import save_example_graph  # noqa: E402
 
 
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
-
-
-def _save_example_graph(
-    graph,
-    source_file: str | Path,
-    name: str,
-    *,
-    out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
-) -> Path:
-    path = graph.save(
-        Path(out_dir) if out_dir is not None else _example_run_dir(source_file, name)
+def child(agent_id: str, query: str, parent: str) -> Graph:
+    graph = Graph(
+        agent_id=agent_id,
+        query=query,
+        depth=parent.count(".") + 1,
+        parent_agent_id=parent,
     )
-    print(f"{label} {path}")
-    return path
+    graph.commit(UserQuery(content=query))
+    return graph
 
 
-QUERY = "Create a boids simulation in plain HTML + JS"
-MODEL = "gpt-5"
+def snapshots() -> list[Graph]:
+    root = Graph(query="Create a boids simulation in plain HTML + JS")
+    root.commit(UserQuery(content=root.query))
+    out = [deepcopy(root)]
 
-
-# ── agent metadata (immutable, used to assemble Graphs per snapshot) ──
-
-
-META: dict[str, dict] = {
-    "root": dict(agent_id="root", depth=0, query=QUERY, model=MODEL),
-    "root.index_html": dict(
-        agent_id="root.index_html",
-        depth=1,
-        query="Write index.html",
-        model=MODEL,
-        parent_agent_id="root",
-    ),
-    "root.style_css": dict(
-        agent_id="root.style_css",
-        depth=1,
-        query="Write style.css",
-        model=MODEL,
-        parent_agent_id="root",
-    ),
-    "root.script_js": dict(
-        agent_id="root.script_js",
-        depth=1,
-        query="Write script.js",
-        model=MODEL,
-        parent_agent_id="root",
-    ),
-    "root.script_js.boids_core": dict(
-        agent_id="root.script_js.boids_core",
-        depth=2,
-        query="Core boids",
-        model=MODEL,
-        parent_agent_id="root.script_js",
-    ),
-    "root.script_js.renderer": dict(
-        agent_id="root.script_js.renderer",
-        depth=2,
-        query="Canvas renderer",
-        model=MODEL,
-        parent_agent_id="root.script_js",
-    ),
-    "root.script_js.controls": dict(
-        agent_id="root.script_js.controls",
-        depth=2,
-        query="UI controls",
-        model=MODEL,
-        parent_agent_id="root.script_js",
-    ),
-}
-
-
-# ── helpers ──────────────────────────────────────────────────────────
-
-
-def snapshot(
-    agent_states: dict[str, list[rflow.Node]],
-    spawn_nodes: dict[str, str] | None = None,
-) -> rflow.Graph:
-    """Build a recursive :class:`Graph` from per-agent state lists.
-
-    ``spawn_nodes`` maps a child agent id → the parent node id that
-    spawned it (used to render the spawn edge on the parent's timeline).
-    """
-    spawn_nodes = spawn_nodes or {}
-
-    def build(aid: str) -> rflow.Graph:
-        meta = META[aid]
-        states = list(agent_states.get(aid, ()))
-        kids = {
-            cid: build(cid)
-            for cid in agent_states
-            if META[cid].get("parent_agent_id") == aid
-        }
-        return rflow.Graph.from_meta_dict(
-            {**meta, "parent_node_id": spawn_nodes.get(aid)},
-            nodes=states,
-            children=kids,
+    root.commit(
+        LLMOutput(
+            content="I'll split this into files and delegate each part.",
+            code="results = await launch_subagents([...])",
         )
-
-    return build("root")
-
-    # ── snapshot 0: root just got its query ──────────────────────────────
-
-
-root_q = rflow.UserQuery(
-    agent_id="root",
-    seq=0,
-    content="Create a boids simulation in plain HTML + JS.",
-)
-
-g0 = snapshot({"root": [root_q]})
-
-
-# ── snapshot 1: root spawned three children, now waiting ─────────────
-
-
-root_action = rflow.LLMOutput(
-    agent_id="root",
-    seq=1,
-    reply="I'll split this into files and delegate each part.",
-    code=(
-        "results = await launch_subagents([\n"
-        '    {"name": "index_html", "query": "Write index.html"},\n'
-        '    {"name": "style_css", "query": "Write style.css"},\n'
-        '    {"name": "script_js", "query": "Write script.js with boids logic"},\n'
-        "])\n"
-        'done("\\n".join(results))'
-    ),
-)
-root_sup = rflow.SupervisingOutput(
-    agent_id="root",
-    seq=2,
-    waiting_on=[
+    )
+    root.children["root.index_html"] = child(
         "root.index_html",
+        "Write index.html",
+        "root",
+    )
+    root.children["root.style_css"] = child(
         "root.style_css",
+        "Write style.css",
+        "root",
+    )
+    root.children["root.script_js"] = child(
         "root.script_js",
-    ],
-)
-child_index_q = rflow.UserQuery(
-    agent_id="root.index_html", seq=0, content="Write index.html"
-)
-child_style_q = rflow.UserQuery(
-    agent_id="root.style_css", seq=0, content="Write style.css"
-)
-child_script_q = rflow.UserQuery(
-    agent_id="root.script_js", seq=0, content="Write script.js"
-)
+        "Write script.js",
+        "root",
+    )
+    root.commit(
+        SupervisingOutput(
+            output="delegated file work",
+            waiting_on=list(root.children),
+        )
+    )
+    out.append(deepcopy(root))
 
-FIRST_SPAWNS = {
-    "root.index_html": root_action.id,
-    "root.style_css": root_action.id,
-    "root.script_js": root_action.id,
-}
-
-g1 = snapshot(
-    {
-        "root": [root_q, root_action, root_sup],
-        "root.index_html": [child_index_q],
-        "root.style_css": [child_style_q],
-        "root.script_js": [child_script_q],
-    },
-    spawn_nodes=FIRST_SPAWNS,
-)
-
-
-# ── snapshot 2: two simple children done, script.js spawns sub-agents ──
-
-
-child_index_done = rflow.DoneOutput(
-    agent_id="root.index_html",
-    seq=1,
-    result="Created index.html with canvas element",
-)
-child_style_done = rflow.DoneOutput(
-    agent_id="root.style_css",
-    seq=1,
-    result="Created style.css with dark theme",
-)
-script_action = rflow.LLMOutput(
-    agent_id="root.script_js",
-    seq=1,
-    reply="Splitting into core/renderer/controls.",
-    code=(
-        "await launch_subagents([\n"
-        '    {"name": "boids_core", "query": "Core boids"},\n'
-        '    {"name": "renderer", "query": "Canvas renderer"},\n'
-        '    {"name": "controls", "query": "UI controls"},\n'
-        "])"
-    ),
-)
-script_sup = rflow.SupervisingOutput(
-    agent_id="root.script_js",
-    seq=2,
-    waiting_on=[
+    root["root.index_html"].commit(DoneOutput(result="Created index.html"))
+    root["root.style_css"].commit(DoneOutput(result="Created style.css"))
+    script = root["root.script_js"]
+    script.commit(LLMOutput(content="Splitting script.js into smaller pieces."))
+    script.children["root.script_js.boids_core"] = child(
         "root.script_js.boids_core",
+        "Core boids",
+        "root.script_js",
+    )
+    script.children["root.script_js.renderer"] = child(
         "root.script_js.renderer",
+        "Canvas renderer",
+        "root.script_js",
+    )
+    script.children["root.script_js.controls"] = child(
         "root.script_js.controls",
-    ],
-)
-sub_core_q = rflow.UserQuery(
-    agent_id="root.script_js.boids_core", seq=0, content="Core boids"
-)
-sub_render_q = rflow.UserQuery(
-    agent_id="root.script_js.renderer", seq=0, content="Canvas renderer"
-)
-sub_controls_q = rflow.UserQuery(
-    agent_id="root.script_js.controls", seq=0, content="UI controls"
-)
+        "UI controls",
+        "root.script_js",
+    )
+    script.commit(
+        SupervisingOutput(
+            output="delegated script work",
+            waiting_on=list(script.children),
+        )
+    )
+    out.append(deepcopy(root))
 
-SECOND_SPAWNS = {
-    **FIRST_SPAWNS,
-    "root.script_js.boids_core": script_action.id,
-    "root.script_js.renderer": script_action.id,
-    "root.script_js.controls": script_action.id,
-}
+    root["root.script_js.boids_core"].commit(DoneOutput(result="Implemented flocking"))
+    root["root.script_js.renderer"].commit(DoneOutput(result="Implemented renderer"))
+    root["root.script_js.controls"].commit(
+        ErrorOutput(
+            error="missing event handler",
+            output="The first controls attempt forgot keyboard input.",
+        )
+    )
+    out.append(deepcopy(root))
 
-g2 = snapshot(
-    {
-        "root": [root_q, root_action, root_sup],
-        "root.index_html": [child_index_q, child_index_done],
-        "root.style_css": [child_style_q, child_style_done],
-        "root.script_js": [child_script_q, script_action, script_sup],
-        "root.script_js.boids_core": [sub_core_q],
-        "root.script_js.renderer": [sub_render_q],
-        "root.script_js.controls": [sub_controls_q],
-    },
-    spawn_nodes=SECOND_SPAWNS,
-)
+    root["root.script_js.controls"].commit(
+        ExecOutput(output="Retried controls with keydown/keyup listeners.")
+    )
+    root["root.script_js.controls"].commit(DoneOutput(result="Implemented controls"))
+    root["root.script_js"].commit(DoneOutput(result="Created script.js"))
+    out.append(deepcopy(root))
 
-
-# ── snapshot 3: leaf agents finish (one errors mid-stream) ───────────
+    root.commit(DoneOutput(result="Created boids simulation files"))
+    out.append(deepcopy(root))
+    return out
 
 
-sub_core_done = rflow.DoneOutput(
-    agent_id="root.script_js.boids_core",
-    seq=1,
-    result="Implemented separation, alignment, and cohesion",
-)
-sub_render_done = rflow.DoneOutput(
-    agent_id="root.script_js.renderer",
-    seq=1,
-    result="Implemented requestAnimationFrame renderer",
-)
-sub_controls_err = rflow.ErrorOutput(
-    agent_id="root.script_js.controls",
-    seq=1,
-    error="no_code_block",
-    content="Previous reply did not include a repl block.",
-)
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Minimal viewer demo.")
+    parser.add_argument("--no-launch", action="store_true")
+    args = parser.parse_args()
 
-g3 = snapshot(
-    {
-        "root": [root_q, root_action, root_sup],
-        "root.index_html": [child_index_q, child_index_done],
-        "root.style_css": [child_style_q, child_style_done],
-        "root.script_js": [child_script_q, script_action, script_sup],
-        "root.script_js.boids_core": [sub_core_q, sub_core_done],
-        "root.script_js.renderer": [sub_render_q, sub_render_done],
-        "root.script_js.controls": [sub_controls_q, sub_controls_err],
-    },
-    spawn_nodes=SECOND_SPAWNS,
-)
-
-
-# ── snapshot 4: script.js retries, finishes, then root completes ─────
-
-
-sub_controls_done = rflow.DoneOutput(
-    agent_id="root.script_js.controls",
-    seq=2,
-    result="Implemented UI controls",
-)
-script_done = rflow.DoneOutput(
-    agent_id="root.script_js",
-    seq=3,
-    result="Created script.js by combining core, renderer, and controls",
-)
-root_done = rflow.DoneOutput(
-    agent_id="root",
-    seq=3,
-    result="Created boids simulation: index.html, style.css, script.js",
-)
-
-g4 = snapshot(
-    {
-        "root": [root_q, root_action, root_sup],
-        "root.index_html": [child_index_q, child_index_done],
-        "root.style_css": [child_style_q, child_style_done],
-        "root.script_js": [child_script_q, script_action, script_sup, script_done],
-        "root.script_js.boids_core": [sub_core_q, sub_core_done],
-        "root.script_js.renderer": [sub_render_q, sub_render_done],
-        "root.script_js.controls": [
-            sub_controls_q,
-            sub_controls_err,
-            sub_controls_done,
-        ],
-    },
-    spawn_nodes=SECOND_SPAWNS,
-)
-
-g5 = snapshot(
-    {
-        "root": [root_q, root_action, root_sup, root_done],
-        "root.index_html": [child_index_q, child_index_done],
-        "root.style_css": [child_style_q, child_style_done],
-        "root.script_js": [child_script_q, script_action, script_sup, script_done],
-        "root.script_js.boids_core": [sub_core_q, sub_core_done],
-        "root.script_js.renderer": [sub_render_q, sub_render_done],
-        "root.script_js.controls": [
-            sub_controls_q,
-            sub_controls_err,
-            sub_controls_done,
-        ],
-    },
-    spawn_nodes=SECOND_SPAWNS,
-)
-
-
-graphs = [g0, g1, g2, g3, g4, g5]
+    graphs = snapshots()
+    print(f"Generated {len(graphs)} minimal graph snapshots.")
+    save_example_graph(graphs[-1], "view-demo")
+    if args.no_launch:
+        for index, graph in enumerate(graphs):
+            print(f"snapshot {index}: {graph.current().type if graph.current() else 'empty'}")
+        return
+    print("Launching viewer...")
+    open_viewer(graphs)
 
 
 if __name__ == "__main__":
-    print(f"Generated {len(graphs)} graph snapshots. Launching viewer...")
-    _save_example_graph(graphs[-1], __file__, "view-demo")
-    open_viewer(graphs)
+    main()

@@ -7,7 +7,7 @@ from statistics import mean
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from rflow import Graph
+    from rlmflow import Graph
 
 from benchmarks.eval.types import Row
 

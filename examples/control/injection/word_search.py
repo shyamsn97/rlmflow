@@ -11,7 +11,7 @@ That route is intentionally plausible but more complicated than necessary. It
 creates a real root ``SupervisingOutput`` that ``inject_variants.py`` can later
 replace with a direct scanner route. The finished run is saved as a run
 directory (``graph.json`` manifest plus per-agent logs nested under
-``agents/``) that ``inject_variants.py`` loads with ``rflow.Graph.load``.
+``agents/``) that ``inject_variants.py`` loads with minimal ``Graph.load``.
 
 Run:
     export OPENAI_API_KEY=...
@@ -21,36 +21,20 @@ Run:
 from __future__ import annotations
 
 import argparse
+import asyncio
+import sys
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel
 
-import rflow
-from rflow.utils.viz import live_view
+from rlmflow import Flow, Graph, GraphCheckpointer, render_tree
 
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
-
-
-def _save_example_graph(
-    graph,
-    source_file: str | Path,
-    name: str,
-    *,
-    out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
-) -> Path:
-    path = graph.save(
-        Path(out_dir) if out_dir is not None else _example_run_dir(source_file, name)
-    )
-    print(f"{label} {path}")
-    return path
+from common import build_client, save_example_graph  # noqa: E402
 
 TARGET_WORD = "AGENT"
 
@@ -111,12 +95,6 @@ You can aproach this problem with the following strategy:
 """
 
 
-def client_for_model(model: str):
-    return (
-        rflow.AnthropicClient(model)
-        if model.startswith("claude")
-        else rflow.OpenAIClient(model)
-    )
 
 
 def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
@@ -131,19 +109,29 @@ def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
 
 
 def run(model: str, out_dir: Path) -> None:
-    flow = rflow.Flow(
-        client_for_model(model),
+    flow = Flow(
+        build_client(model),
         max_depth=2,
-        child_max_iters=10,
     )
 
-    graph = flow.start(QUERY, {"grid": GRID}, output_schema=WordSearchResult)
-    with live_view() as view:
-        view(graph)
-        while not graph.finished:
-            graph = flow.step(graph)
-            view(graph)
-    flow.close()
+    graph = Graph(query=QUERY)
+    print(render_tree(graph))
+    checkpointer = GraphCheckpointer(out_dir)
+
+    async def run_to_done() -> None:
+        try:
+            async for _event in flow.run_streaming(
+                graph=graph,
+                inputs={"grid": GRID},
+                output_schema=WordSearchResult,
+            ):
+                checkpointer.handle(_event, graph)
+                print(render_tree(graph))
+        finally:
+            checkpointer.close()
+
+    asyncio.run(run_to_done())
+    flow.close_repls(graph.graph_id)
 
     result = WordSearchResult.model_validate_json(graph.result())
     actual = {_hit_key(hit) for hit in result.found}
@@ -159,7 +147,7 @@ def run(model: str, out_dir: Path) -> None:
     print(f"\nwrote baseline run: {path}")
     print(f"  manifest: {path / 'graph.json'}")
     print(f"  agents:   {path / 'agents'} ({len(list(graph.agents))} agents)")
-    _save_example_graph(graph, __file__, "injection-word-search")
+    save_example_graph(graph, "injection-word-search")
 
 
 def main() -> None:

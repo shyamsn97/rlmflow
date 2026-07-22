@@ -8,11 +8,11 @@ named folders. Generated runs go under [`_runs/`](_runs/).
 | Script | What it shows |
 |---|---|
 | [`showcase.py`](showcase.py) | End-to-end `Flow` run + live terminal viz |
-| [`drop_in_llm.py`](drop_in_llm.py) | `Flow` as a drop-in `LLMClient` |
+| [`drop_in_llm.py`](drop_in_llm.py) | Minimal `FlowLLM` as a drop-in LLM |
 | [`llm_query_batched.py`](llm_query_batched.py) | `llm_query_batched` in the REPL |
 | [`skills.py`](skills.py) | On-disk skills + dynamic prompt section |
 | [`structured_output.py`](structured_output.py) | Root + child `output_schema` validation |
-| [`view_demo.py`](view_demo.py) | Gradio viewer on synthetic graphs |
+| [`view_demo.py`](view_demo.py) | Lightweight viewer on synthetic minimal graphs |
 | [`summarizer.py`](summarizer.py) | Recursive map-reduce summarization |
 
 ```bash
@@ -28,6 +28,7 @@ python examples/summarizer.py --sections 10 --no-viz
 | [`needle/`](needle/) | Needle-in-haystack (in-memory + filesystem variants) |
 | [`coding/`](coding/) | Interactive file-editing agent |
 | [`autoresearch/`](autoresearch/) | TinyStories autoresearch loop with Modal GPU trials |
+| [`shepherd/`](shepherd/) | Meta-agent recovers a jammed Sokoban worker via rewind + `launch_subgraphs` (warm children), with `LiveGraphTree` + board panels |
 
 ## Tours & integrations
 
@@ -35,9 +36,8 @@ python examples/summarizer.py --sections 10 --no-viz
 |---|---|
 | [`graph/`](graph/) | Offline Graph API (query, edit, save, fork, render) |
 | [`control/`](control/) | Delegation, branching, injection |
-| [`sandboxes/`](sandboxes/) | Modal, E2B, Daytona remote execution |
+| [`sandboxes/`](sandboxes/) | Docker and Modal remote execution |
 | [`providers/`](providers/) | DSPy, MCP, Tinker adapters |
-| [`notebooks/`](notebooks/) | Jupyter walkthroughs |
 
 ---
 
@@ -75,44 +75,46 @@ Examples that use file tools register them on the runtime
 (`runtime.register_tools(FILE_TOOLS)`) and set `working_directory`, so relative
 paths resolve into that directory the same way in local and Docker modes.
 
-For true parallel local REPL/code execution, prefer `SubprocessRuntime`: it runs
-one local Python process per agent, so cwd and `RFLOW_*` metadata are isolated per
-agent. The in-process `LocalRuntime` is useful for low-overhead debugging, but
-code blocks that need cwd/env isolation are serialized inside the host process.
-Use `DockerRuntime` or a cloud sandbox runtime when you also need container-level
+Each agent reads its `RLMFLOW_*` metadata from its own per-REPL `ENV` mapping
+(e.g. `ENV["RLMFLOW_AGENT_ID"]`), so that metadata is isolated per agent in every
+runtime, including the in-process `LocalRuntime`. For true parallel local
+*code* execution prefer `SubprocessRuntime` (one process per agent, isolated
+cwd); `LocalRuntime` still serializes cwd changes inside the host process. Use
+`DockerRuntime` or a cloud sandbox runtime when you also need container-level
 isolation.
 
 A finished run is saved automatically under `_runs/`; reopen it with:
 
 ```bash
 python examples/summarizer.py        # saves to examples/_runs/summarizer/
-rlmflow view examples/_runs/summarizer
-rlmflow render examples/_runs/summarizer -f html -o viewer.html
 ```
 
-The saved directory holds `graph.json` (and optionally `trace.json` when you
-capture a step sequence with `save_trace`).
+```python
+from rlmflow import open_viewer, save_image
 
-## Modal, E2B, and Daytona
+open_viewer("examples/_runs/summarizer")            # interactive Gradio app
+save_image("examples/_runs/summarizer", "run.png")  # static PNG (rlmflow[image])
+```
+
+The saved directory holds `graph.json` plus per-agent logs under `agents/`.
+
+## Docker And Modal
 
 Remote sandbox examples live under [`sandboxes/`](sandboxes/). They run a small
-platformer-building task, so set `OPENAI_API_KEY` plus the provider's sandbox
-credentials:
+platformer-building task, so set `OPENAI_API_KEY` plus any provider credentials:
 
 ```bash
+python examples/sandboxes/docker_agent.py --docker-image rlmflow:local --no-live
 python examples/sandboxes/modal_agent.py --model gpt-5 --no-live
-python examples/sandboxes/e2b_agent.py --model gpt-5
-python examples/sandboxes/daytona_agent.py --model gpt-5
 ```
 
-Install the matching extra first: `rlmflow[modal]`, `rlmflow[e2b]`,
-`rlmflow[daytona]`, or `rlmflow[sandbox]` for all three.
+Install the matching extra first: `rlmflow[modal]` or `rlmflow[sandbox]`.
 
 For fully locked-down local runs, pass a `DockerRuntime`:
 
 ```python
-from rflow import Flow, DockerRuntime
-from rflow.clients import OpenAIClient
+from rlmflow import DockerRuntime, Flow
+from rlmflow.clients import OpenAIClient
 
 runtime = DockerRuntime("rlmflow:local", working_directory="./proj")
 flow = Flow(OpenAIClient(model="gpt-4o"), runtime=runtime)

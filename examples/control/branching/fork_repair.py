@@ -1,6 +1,6 @@
 """Compare repair branches with the Graph-centric API.
 
-Each repair attempt is a separate ``flow.start(...)`` run in its own working
+Each repair attempt is a separate ``Graph(...)`` run in its own working
 directory; the resulting graphs are directly comparable.
 
 Usage:
@@ -10,12 +10,19 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import shutil
 import subprocess
 from pathlib import Path
 
-import rflow
-from rflow.tools import FILE_TOOLS
+from rlmflow import (
+    FILE_TOOLS,
+    Flow,
+    Graph,
+    GraphCheckpointer,
+    LLMUsage,
+    LocalRuntime,
+)
 
 TASK = "Implement slugify(text) in slugify.py so tests/test_slugify.py passes."
 
@@ -66,13 +73,13 @@ def slugify(text: str) -> str:
 """
 
 
-class RepairLLM(rflow.LLMClient):
+class RepairLLM:
     def __init__(self, implementation: str, label: str) -> None:
         self.implementation = implementation
         self.label = label
 
     def chat(self, messages, *args, **kwargs):
-        self.last_usage = rflow.LLMUsage(input_tokens=100, output_tokens=50)
+        self.last_usage = LLMUsage(input_tokens=100, output_tokens=50)
         return (
             "```repl\n"
             f"write_file('slugify.py', {self.implementation!r})\n"
@@ -106,16 +113,24 @@ def run_branch(root: Path, name: str, implementation: str, label: str):
     workdir = root / name
     setup_project(workdir)
     # File tools run inside this branch's own working directory.
-    runtime = rflow.LocalRuntime(working_directory=workdir)
+    runtime = LocalRuntime(working_directory=workdir)
     runtime.register_tools(FILE_TOOLS)
-    flow = rflow.Flow(
+    flow = Flow(
         RepairLLM(implementation, label), runtime=runtime, max_depth=0, max_iters=3
     )
-    graph = flow.start(TASK)
-    while not graph.finished:
-        graph = flow.step(graph)
+    graph = Graph(query=TASK)
+    checkpointer = GraphCheckpointer(workdir / "graph")
+
+    async def drive() -> None:
+        try:
+            async for event in flow.run_streaming(graph=graph):
+                checkpointer.handle(event, graph)
+        finally:
+            checkpointer.close()
+
+    asyncio.run(drive())
     passed, output = run_tests(workdir)
-    graph.save(workdir / "graph")
+    flow.close_repls(graph.graph_id)
     return workdir, graph, passed, output
 
 

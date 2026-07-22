@@ -1,18 +1,18 @@
 # Graph features
 
-Tiny self-contained scripts that show what a `Graph` can do. No LLM keys
-needed — every example builds its own graph by hand or runs a one-line
-mock LLM, so they finish in milliseconds and can be read top-to-bottom.
+Tiny self-contained scripts that show what a `rlmflow.Graph` can do. No
+LLM keys needed — every example builds its own graph by hand, so they finish in
+milliseconds and can be read top-to-bottom.
 
 | script | what it shows |
 |---|---|
-| `01_query.py` | flat views (`graph.all_nodes`, `.agents`, `.edges`), filters (`.where`, `.queries()`, action views, `.errors()`), `find()`, `tokens()`, `result()` |
-| `02_navigate.py` | `graph[aid]`, dotted paths, `walk()` / `subtree()`, parent ↔ child links, `len(graph)` |
-| `03_mutate.py` | mutating editors (`add_node`, `set_node`, `update_node`, `remove_node`, `add_child`, `remove_child`, `update`) and `graph.copy()` |
-| `04_save_load.py` | `Graph.save()` / `Graph.load()` JSON round-trip + `save_trace()` / `load_trace()` |
-| `05_timeline.py` | `retrace_steps(graph)` — reconstruct visualization snapshots from the final graph |
-| `06_fork.py` | `graph.copy(deep=True)` — branch a run, diverge, compare |
-| `07_render.py` | `graph.tree()`, `graph.session()`, `graph.transcript()`, `graph.save_html(...)` |
+| `01_query.py` | `walk()`, `agents`, node types, errors, token usage, and final result |
+| `02_navigate.py` | child lookup, traversal, and `render_tree()` |
+| `03_mutate.py` | graph edits with `remove_child()` and `replace()` |
+| `04_save_load.py` | `Graph.save()` / `Graph.load()` JSON round-trip |
+| `05_timeline.py` | explicit snapshots as graph state changes |
+| `06_fork.py` | `graph.fork()` for divergent branches |
+| `07_render.py` | `render_tree()` and the lightweight minimal viewer adapter |
 
 Run any of them directly:
 
@@ -22,5 +22,5 @@ python examples/graph/05_timeline.py
 python examples/graph/06_fork.py
 ```
 
-Most scripts just print to stdout. `07_render.py` writes a viewer HTML
-file you can open in your browser.
+Most scripts just print to stdout. `07_render.py` also saves a minimal run
+directory.

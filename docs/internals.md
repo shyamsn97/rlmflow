@@ -1,972 +1,385 @@
-# RecursiveFlow Internals
+# rlmflow Internals
 
-> **Status:** this deep dive predates the current `Flow` / `Graph.save()` /
-> `Runtime(working_directory=...)` API and is being refreshed. Prefer
-> [`control.md`](control.md), [`observability.md`](observability.md),
-> [`runtimes.md`](runtimes.md), and the current source for user-facing behavior.
-
-A deep reference for the engine's mechanics: data model, step
-lifecycle, REPL/await protocol, resume semantics, persistence, and
-the extension seams on `RecursiveFlow`. If you want to subclass the
-engine, debug a weird run, or write something on top of rlmflow,
+A reference for the engine's mechanics: the `Flow`/`Graph`/`Run` split, the two
+phases of a run, the per-agent scheduler, the exec turn, delegation, REPL
+lifecycle, prompts, tools, and the overridable seams on `Flow`. If you want to
+subclass the engine, debug a weird run, or build something on top of rlmflow,
 this is the doc.
 
-User-facing topic guides ([control](control.md), [observability](observability.md),
-[runtimes](runtimes.md), [prompt_customization](prompt_customization.md),
-[security](security.md)) cover the *what*. This doc covers the *how*.
+User-facing topic guides cover the *what*: [`control.md`](control.md),
+[`streaming.md`](streaming.md), [`node_model.md`](node_model.md),
+[`observability.md`](observability.md), [`runtimes.md`](runtimes.md),
+[`prompt_customization.md`](prompt_customization.md), and
+[`security.md`](security.md). This doc covers the *how*.
 
 ---
 
 ## Architecture at a glance
 
-```
-                ┌────────────────────────────────────────────────┐
-                │                    RecursiveFlow                     │  ← state + every overridable method
-                │  (rflow/flow.py — ~1k lines, one class)                │
-                └──┬───────────────┬───────────────────┬────────┘
-   pure helpers ───┼───────────────┼───────────────────┼─────────────────┐
-                   ▼               ▼                   ▼                 ▼
-            engine/actions    engine/replay      engine/scheduler   engine/seq
-            (Action types,    (cold-start        (NodeScheduler:    (append_node,
-            act/act_one)      replay-of-one)     runnable agents)   budget, ...)
-                   │
-                   ▼
-                  Graph (recursive)  ←  Session / Workspace  ←  on disk
-                  Node trajectory       (write_state, load_graph)
-                  RuntimeRef        →   Runtime  (REPL: start_code, resume_code)
+Three objects carry the whole engine:
+
+```text
+Flow      policy + environment: config, LLM clients, pool, prompt builder,
+          tools, live REPLs, and the run registry. Graph-agnostic and shared.
+Graph     the durable state: one recursive node per agent. Caller-owned. The
+          run *is* the graph — Flow only mutates it and emits events.
+Run       per-graph run state: the Graph, its TaskQueue scheduler, and its
+          `until` boundary. One active run per `graph_id`.
 ```
 
-- **`RecursiveFlow`** owns state (sessions, runtimes, config, pool) and the
-  loop. Every overridable seam — `step`, `apply_one`, `step_llm`,
-  `step_exec`, `step_after_supervising`, `reply_to`, `call_llm`,
-  `extract_code`, `build_messages`, `inject_env`, `spawn_child`, etc.
-  — is a method on this class.
-- **`engine/*`** is pure helpers. Anything in there is a free function
-  or pure data with no engine state.
-- **`Graph`** is the recursive data model. Every `start`/`step` returns
-  a fresh snapshot reloaded from the session.
-- **`Runtime`** runs the REPL. Send/receive a small JSON protocol;
-  shipped variants are `LocalRuntime`, `DockerRuntime`, and the
-  sandbox runtimes (`ModalRuntime`, `E2BRuntime`, `DaytonaRuntime`).
+Supporting pieces:
 
-The principle: **if something needs engine state to do its job, it's
-a method on `RecursiveFlow`. If it's a pure function of its arguments, it's
-in `engine/*`. No middle category, no kwarg bags.**
+- **`TaskQueue`** (`rlmflow/tasks.py`) — a small, graph-free async scheduler. One
+  in-flight task per agent id, a follow-up slot, and an event stream.
+- **`Runtime` / `ReplBackend`** (`rlmflow/runtime/`) — the code sandbox. `Flow`
+  opens one REPL per agent and drives `start(code)` / `resume(value)` on it. See
+  [`runtimes.md`](runtimes.md).
+- **`SystemPromptBuilder`** (`rlmflow/prompts/`) — named sections that render the
+  system prompt from the current `flow` and `graph`; `UserPromptBuilder` projects
+  the trajectory into user/assistant turns. See
+  [`prompt_customization.md`](prompt_customization.md).
+
+The principle: **`Graph` holds state; `Flow` holds policy.** Anything that is a
+pure function of a graph is a graph method or a free helper in `rlmflow/utils`;
+anything that needs engine config, clients, or live REPLs is a method on `Flow`.
 
 ---
 
 ## The data model
 
-A `Graph` is a recursive structure. `graph[other_aid]` returns the
-`Graph` rooted at any descendant agent; per-agent invariants live as
-flat fields on `Graph` itself; sub-agents live in `graph.children`;
-the agent's trajectory lives in `graph.nodes`.
+A `Graph` is a recursive structure: it *is* one agent, and `graph[other_aid]`
+returns the `Graph` rooted at any descendant. Per-agent invariants are flat
+fields; sub-agents live in `graph.children`; the trajectory lives in
+`graph.nodes`.
 
 ```python
-graph.agent_id         # str
-graph.depth            # int
-graph.query            # str
-graph.system_prompt    # str — snapshot from the first turn
-graph.config           # dict — engine knobs at spawn
-graph.runtime          # RuntimeRef | None
-graph.parent_agent_id  # str | None
-graph.parent_node_id   # str | None — the ActionNode id that delegated us
+graph.agent_id          # str  — "root", "root.search", ...
+graph.graph_id          # str  — trajectory id (a fork mints a new one)
+graph.depth             # int
+graph.query             # str
+graph.inputs            # dict[str, str] — this agent's INPUTS
+graph.model             # str  — model label for this agent
+graph.prompt_profile    # str  — PromptProfile selector (not prompt text)
+graph.output_schema     # required done() schema, if any
+graph.parent_agent_id   # str | None
 
-graph.nodes           # list[Node]  — this agent's trajectory
-graph.children         # dict[str, Graph]  — direct sub-agents
-
-# subtree views
-graph.agents           # Mapping[agent_id, Graph]
-graph.all_nodes            # every Node in the subtree (queryable)
-graph.edges            # derived flows_to / spawns edges
+graph.nodes             # list[Node] — this agent's trajectory (seq order)
+graph.children          # dict[str, Graph] — direct sub-agents
+graph.agents            # dict[agent_id, Graph] — every agent in the subtree
+graph.walk()            # iterator over this agent, then all descendants
+graph.finished          # root node terminal and all descendants finished
 ```
 
-### Node taxonomy
-
-Trajectories are a strict alternation of **observations** (inputs the
-system received) and **actions** (work the system did). Every
-`ActionNode` is followed by exactly one `ObservationNode`. Nine leaf
-types under four base classes:
-
-| `type`               | Class               | Base                    | Carries                                            |
-|----------------------|---------------------|-------------------------|----------------------------------------------------|
-| `user_query`         | `UserQuery`         | `ObservationNode`       | initial task (root query / spawn prompt)           |
-| `llm_action`         | `LLMAction`         | `ActionNode`            | "called the LLM" + model name                      |
-| `llm_output`         | `LLMOutput`         | `ObservationNode`       | reply, extracted REPL code, token deltas           |
-| `exec_action`        | `ExecAction`        | `ActionNode`            | "ran fresh code"                                   |
-| `exec_output`        | `ExecOutput`        | `CodeObservation` (obs) | runtime stdout                                     |
-| `supervising_output` | `SupervisingOutput` | `CodeObservation` (obs) | code suspended at an awaited launcher; `waiting_on` lists pending children |
-| `error_output`       | `ErrorOutput`       | `CodeObservation` (obs) | failure                                            |
-| `done_output`        | `DoneOutput`        | `CodeObservation` (obs) | terminal answer from `done(...)`                   |
-| `resume_action`      | `ResumeAction`      | `ActionNode`            | "supervisor resumed paused code"                   |
-
-Persisted graphs contain both action and observation nodes; each
-action is immediately followed by the observation it produced. See
-[`node_model.md`](node_model.md) for the full public node taxonomy and
-wait/resume flow.
+Trajectories strictly alternate **observations** and **actions**; every action
+is followed by exactly one observation. There is no `LLMAction` node — the model
+turn is the `LLMOutput` observation itself, and `ExecAction` records the code the
+engine then ran. See [`node_model.md`](node_model.md) for the full taxonomy and
+[`observability.md`](observability.md) for the query surface.
 
 ---
 
-## The step lifecycle
+## A run in two phases
 
-`step(graph) -> graph'` advances **one observation-to-observation
-transition** per ready agent. A logical "reasoning turn" of an agent
-(call the LLM, run the code it emitted) is therefore two `step()`
-rounds:
-
-1. **LLM half:** `obs → LLMAction → LLMOutput`.
-2. **Exec half:** `LLMOutput → ExecAction → <CodeObservation>`.
-
-Concurrency is finer-grained — one agent can be mid-LLM while another
-is mid-exec.
-
-### Two-phase split: `act` then `apply`
-
-`step()` runs two phases each round:
+`run`, `arun`, and `run_streaming` are keyword-only and share one shape. Each
+call is resolved (phase 1) and then driven (phase 2).
 
 ```python
-def step(self, graph):
-    runnable = self.node_scheduler.runnable_agents(graph)
-    plan = act(graph,
-               config=self.config,
-               runnable=runnable,
-               terminate_requested=self.terminate_requested)
-    tasks = [(aid, lambda a=action: self.apply_one(a))
-             for aid, action in plan.items()]
-    self.pool.execute(tasks)
-    return self.session.load_graph()
+async def run_streaming(self, *, graph=None, query=None, inputs=None,
+                        output_schema=None, merge_inputs=True,
+                        until="done", n=None, close_repls=False):
+    run = self.resolve_run(graph=graph, query=query, inputs=inputs,
+                           output_schema=output_schema, merge_inputs=merge_inputs)
+    async for event in self._drive(run, until=until, n=n, close_repls=close_repls):
+        yield event
 ```
 
-- **Plan (pure).** `act(graph, ...) -> ActionPlan` in
-  `engine/actions.py`. Pure projection `Graph -> {agent_id: Action}`.
-  No I/O, no writes. For each runnable agent, it inspects the
-  current observation and returns one of:
-    - `CallLLM(agent_id, force_final=..., model=...)` — agent rests at
-      a `UserQuery` / `ExecOutput` / `ErrorOutput`.
-    - `Exec(agent_id)` — agent rests at an `LLMOutput`.
-    - `Resume(agent_id)` — agent rests at a `SupervisingOutput`
-      whose children have all settled.
-    - `None` — terminal, empty, or stray half-written node.
+### Phase 1 — `resolve_run`
 
-- **Apply (I/O).** `self.apply_one(action)` materializes one
-  `Action` against the persisted graph. Reloads the graph from
-  `self.session`, enforces the global token budget, dispatches to
-  one of three half-step handlers, and writes the resulting
-  `(ActionNode, ObservationNode)` pair through the session.
+Turns the caller's request into a live, **registered** `Run`, emitting the
+structural events observers need. Exactly one of two shapes:
 
-  ```python
-  def apply_one(self, action):
-      graph = self.session.load_graph().agents[action.agent_id]
-      over = budget_exceeded(graph, self.config.max_budget)
-      if over is not None:
-          append_node(self.session, graph,
-                      DoneOutput(result=f"[budget exceeded: {over} tokens]"))
-          return
-      cur = graph.current()
-      if isinstance(action, CallLLM):
-          self.step_llm(graph, cur,
-                        force_final=action.force_final, model=action.model)
-      elif isinstance(action, Exec):
-          self.step_exec(graph, cur)
-      elif isinstance(action, Resume):
-          self.step_after_supervising(graph, cur)
-  ```
+- **`query` alone** builds a fresh `Graph`, registers it, and announces it with a
+  `GraphCreated` event.
+- **`graph`** is resumed. `inputs`/`output_schema` are applied to the graph *in
+  place* first (so they take effect even on a finished graph); `inputs` merges
+  into the existing dict unless `merge_inputs=False` replaces it, and any warm
+  REPL's `INPUTS` is re-synced. If `query` is also given, it is appended as a
+  fresh `UserQuery` turn (an `AppendNode` event), which flips `finished` back to
+  false — this is the multi-turn / long-running path.
 
-`Action` values are intentionally **lite** — just the policy intent
-plus inputs that aren't recoverable from the graph (`force_final`,
-model override). The persisted `ActionNode` written by the handlers
-carries the full record of what happened.
+Registration happens *before* emission because `apply_action` only streams
+events for graphs that already have a run.
 
-### Scheduling
+### `run_for` — the run registry
 
-`NodeScheduler` (in `engine/scheduler.py`) is a pure top-down walk:
+`run_for(graph)` is a pure registry keyed by `graph.graph_id`: resume the
+existing (live or paused) run, or register a fresh one. It never mutates the
+graph or emits — all resolution lives in `resolve_run` ahead of it, so a new turn
+on a finished graph is resolved correctly instead of being skipped by an early
+registry hit.
 
-- Visit `graph.agent_id`.
-- If finished or terminal, skip.
-- If the agent rests at a `SupervisingOutput`:
-    - If every child it's `waiting_on` is finished, the supervisor
-      itself is runnable — return its id.
-    - Otherwise recurse into the still-running children.
-- Otherwise (rests at a normal observation), the agent is runnable.
+### Phase 2 — `_drive`
 
-The scheduler never produces side effects; `apply_one` re-checks
-`can_resume` inside `step_after_supervising` before actually
-resuming.
-
-### The three half-step handlers
-
-#### `step_llm` — LLM half
+Assumes a resolved, registered run. It schedules ready agents and yields events
+until the `until` boundary:
 
 ```python
-def step_llm(self, graph, last, *, force_final, model=None):
-    llm_model = model or graph.config.get("model", "default")
-    llm_action = LLMAction(agent_id=graph.agent_id,
-                           seq=last.seq + 1, model=llm_model)
-    append_node(self.session, graph, llm_action)
-    llm_output, usage = self.reply_to(graph, llm_action,
-                                      force_final=force_final)
-    self.record_usage(usage)
-    append_node(self.session, graph, llm_output)
+while True:
+    if not run.tasks.has_events():
+        for agent in graph.walk():
+            self.schedule_agent(run, agent)          # one task per ready agent
+    async for item in run.tasks.items():
+        yield item.item                              # stream the event
+        agent = graph.agent_for(item.agent_id)
+        if self.should_continue(run, agent, item.item):
+            self.schedule_agent(run, agent)          # enqueue next unit
+        else:
+            run.tasks.stop(agent.agent_id)           # "stop" = no follow-up
+    if graph.finished or until in {"done", "finished"}:
+        break
+    ...                                              # non-full boundary: pause
 ```
 
-Writes `LLMAction` *first*, then calls `reply_to` to talk to the
-model, then writes `LLMOutput`. The action-before-call ordering means
-`build_messages` (called inside `reply_to`) sees the action in
-`graph.nodes` for the in-progress turn — that's why the
-`CONTINUE_ACTION` nudge gates on `LLMOutput` count, not `LLMAction`
-count.
-
-All model requests route through a shared `LLMChannel`. Agent turns call
-`LLMChannel.call(model, messages)`, and `llm_query_batched(...)` submits
-its prompts to `LLMChannel.batch(...)` instead of creating its own nested
-executor. The channel owns the run-wide LLM concurrency cap
-(`FlowConfig.llm_max_concurrency`, falling back to the normal engine
-concurrency when unset), preserves batch result order, and uses
-per-request `LLMClient.completion(...) -> (text, usage)` so usage
-accounting never reads a racy shared `last_usage`. Batched one-shot
-queries forward common sampling kwargs (`temperature`, `top_p`,
-`max_tokens`, `stop`) through the same channel.
-
-#### `step_exec` — exec half
-
-```python
-def step_exec(self, graph, llm_output):
-    exec_action = ExecAction(agent_id=graph.agent_id,
-                             seq=llm_output.seq + 1, code=llm_output.code)
-    append_node(self.session, graph, exec_action)
-    if not llm_output.code:
-        append_node(self.session, graph,
-                    ErrorOutput(content=NO_CODE_BLOCK, error="no_code_block"))
-        return
-    self._run_exec(graph, exec_action, llm_output.code)
-```
-
-`_run_exec` is the long branch that calls into the runtime, handles
-`done(...)`, delegation (`await launch_subagents([...])`), and exceptions. It
-produces exactly one of
-`ExecOutput`, `SupervisingOutput`, `ErrorOutput`, or `DoneOutput`.
-
-#### `step_after_supervising` — resume half
-
-Runs after all `waiting_on` children settle. Writes a `ResumeAction`,
-then either resumes the live coroutine or replays it (cold start; see
-[Cold-start replay](#cold-start-replay)), then produces the next
-observation just like `step_exec`.
+Stopping is just the *absence* of a next task for that agent — there is no pause
+primitive. `should_continue` encodes the `until` policy (`next`, `idle`, `error`,
+`supervising`, a callable, or full-run). `SupervisingOutput` and `ResumeAction`
+events never continue their own agent. A finished (or full-run) drive tears down
+the run via `finish_run`; a paused bounded run keeps its queue so a later call
+resumes from the graph. See [`streaming.md`](streaming.md) for the boundary
+semantics and parallelism model.
 
 ---
 
-## The REPL `await` protocol
+## `run_agent_task` — one graph-producing unit
 
-> Status note: older versions used separate internal delegate/wait primitives.
-> The current agent-facing and runtime contract is `await launch_subagents([...])`,
-> which directly spawns children and yields a `WaitRequest`; cold-start recovery
-> now uses durable graph metadata plus `get_subagent_result(...)`, not coroutine
-> replay.
-
-Agents delegate through one launcher — `await launch_subagents([...])`. This is
-a plain `async def` installed in the REPL namespace. It validates child specs,
-spawns children through the engine's host spawn hook, then awaits a
-`WaitRequest`. That `WaitRequest` propagates up through the launcher's `await`
-chain to the top-level driver, where the engine records a `SupervisingOutput`
-and schedules the children.
-
-The engine **only** intercepts top-level `await` values that resolve to a
-`WaitRequest`.
-
-### The protocol
-
-Each REPL block with top-level await is compiled with Python's
-top-level-await flag so the engine can drive the resulting coroutine via
-`send()`. The engine sends values into the coroutine and decides what to
-do with each awaited value:
-
-| What's awaited                          | Engine reaction                                    |
-|-----------------------------------------|----------------------------------------------------|
-| launcher -> `WaitRequest`               | **Suspend** the agent until those children settle. |
-| Anything else                           | Error; only the launchers may be awaited.          |
-| `StopIteration`                         | Block done; return captured stdout.                |
-
-The `WaitRequest` the launchers ultimately yield carries the child agent IDs
-the engine needs to schedule on. Without it the engine has no
-suspension target.
-
-### What "top level" means
-
-An await is top-level iff the `await` keyword sits in the REPL block
-itself — *not* nested inside a `def` / `async def` / `lambda` / class
-body / comprehension. The implementation walks the AST and stops
-descending at nested boundaries.
+Each scheduled task advances one agent by exactly one node-producing step:
 
 ```python
-# ── TOP-LEVEL awaits ────────────────────────────────────────────────
-# These count. The REPL compiles with top-level await.
-[result] = await launch_subagents([{"name": "scan", "query": "scan the file"}])
-results = await launch_subagents(specs)
+async def run_agent_task(self, graph):
+    if graph.finished: return
+    if graph.agent_id in self._terminate_requested:
+        self.append_node(graph, DoneOutput(result=TERMINATED)); return
+    if budget_exceeded(root, self.max_budget):
+        self.append_node(graph, DoneOutput(result=BUDGET_EXCEEDED)); return
 
-# ── NOT top level ───────────────────────────────────────────────────
-# An `await` nested inside a function / comprehension scope doesn't make
-# the block a coroutine the engine can drive — it belongs to that scope.
-async def helper():
-    return await launch_subagents([...])  # belongs to `helper`, not the block
-# (the block would have to `await helper()` at top level to suspend)
+    current = graph.current()
+    if isinstance(current, LLMOutput):        # model spoke -> run its code
+        self.append_node(graph, ExecAction(code=current.code)); return
+    if isinstance(current, ExecAction):        # code queued -> execute it
+        await self.exec_turn(graph, current.code); return
 
-# Ordinary generators / comprehensions are plain Python — no await:
-def squares(n):
-    for i in range(n):
-        yield i * i
-print(list(squares(5)))
+    if llm_turns >= max_iters:                 # cap reached
+        self.append_node(graph, DoneOutput(result=MAX_ITERS_EXCEEDED)); return
+    self._ensure_nudge(graph, force_final=...)         # nudge as a real node
+    messages = self.messages(graph)                    # then call the model
+    reply, usage = await self._call_chat(messages, graph.model)
+    self.append_node(graph, LLMOutput(content=reply, code=code_block(reply), ...))
 ```
 
-### Allowed shapes
+`max_iters` counts `LLMOutput` nodes; children fall back to `child_max_iters` via
+`iter_budget`. Budget/terminate are checked at the top of every unit.
+`run_agent(graph)` is the self-driving loop (`while not finished: run_agent_task`)
+used by delegated children.
 
-✅ **No suspension:**
+## `exec_turn` — the observation half
 
-```python
-# Helpers, genexps, comprehensions — all plain Python.
-print(sum(x * x for x in range(100)))
+`exec_turn(graph, code)` runs code against the agent's REPL and appends exactly
+one observation node:
 
-```
+- `repl.done_result` set → `DoneOutput` (terminal; never truncated).
+- `repl.errored` or a dead session → `ErrorOutput`.
+- otherwise → `ExecOutput` (stdout, capped at `max_output_length`).
 
-✅ **Suspension:**
-
-```python
-results = await launch_subagents([
-    {"name": "worker", "query": "..."},
-    {"name": "worker", "query": "..."},
-])   # suspends, resumes with results
-```
-
-`results` is a list of strings (the children's `done(...)` payloads).
-
-❌ **Doesn't do what you want:**
-
-```python
-launch_subagents(specs)            # missing await
-await some_other_coroutine()       # only the launchers may be awaited
-```
-
-These are errors. **Use `await launch_subagents([...])`.**
-
-### Why this design
-
-The engine has exactly two decisions to make about a REPL block.
-
-#### Decision 1 — coroutine or straight exec?
-
-If the block has a **top-level `await`**, the REPL compiles it with
-Python's `ast.PyCF_ALLOW_TOP_LEVEL_AWAIT` flag and `eval`s it, which
-yields a *coroutine object* the engine drives via `coro.send(...)`. If
-there's no top-level await, the block is plain `exec`'d straight
-through. **The decision hinges on top-level awaits, not awaits anywhere
-in the block.**
-
-`_has_top_level_await(tree)` walks the AST but stops descending at
-function / async function / lambda / class / comprehension boundaries,
-so an `await` buried inside a nested `async def` helper doesn't make the
-whole block a coroutine. (This mirrors why a `yield` inside a nested
-`def` generator doesn't escape its scope.)
-
-#### Decision 2 — suspend or finish?
-
-Once the block is a coroutine, the engine drives it with `send()`. A suspension
-surfaces the `WaitRequest` yielded by `launch_subagents(...)`:
-
-```python
-request = coro.send(prev_value)        # advance to the next await
-if isinstance(request, WaitRequest):
-    suspend(request.agent_ids)         # the thing we know how to do
-# else: TypeError — only a launcher's WaitRequest can suspend
-```
-
-`WaitRequest` is the only value the engine knows how to suspend on. Awaiting
-anything else is an error. When the coroutine raises `StopIteration`, the block
-is done and the engine records the captured stdout.
-
-### Net effect on the graph
-
-| Block did this                          | `<observation>` is                          | Graph effect                                                                                  |
-|-----------------------------------------|---------------------------------------------|-----------------------------------------------------------------------------------------------|
-| Ran to completion (no await)            | `ExecOutput` (stdout)                       | Single `ExecAction → ExecOutput` pair.                                                        |
-| Top-level `await launch_subagents([...])` | `SupervisingOutput(waiting_on=[...])`     | Agent suspends. Children run. When they finish, a `ResumeAction` resumes.                     |
-| `done(...)` called (any path)           | `DoneOutput`                                | Agent terminates.                                                                             |
-| Exception                               | `ErrorOutput`                               | Surfaces in the next user message as a retry observation.                                     |
-
-**Rule:** only an awaited launcher introduces a `SupervisingOutput`
-and the eventual `ResumeAction`. A block with no top-level await is a
-single `ExecAction → ExecOutput`.
-
-### Implementation
-
-- `rflow/runtime/repl.py::_has_top_level_await(tree)` — AST walk that
-  skips `FunctionDef` / `AsyncFunctionDef` / `Lambda` / `ClassDef` /
-  comprehension bodies.
-- `rflow/runtime/repl.py::REPL.start()` / `REPL.advance()` — compile
-  with top-level-await, then `coro.send(...)` until the coroutine
-  suspends on a `WaitRequest` (return suspended) or raises
-  `StopIteration` (done).
-- Tests in `tests/test_repl_yield.py` cover the exhaustive matrix.
+`done(...)` is a REPL tool that stores `repl.done_result` (validating against
+`output_schema` if present) and raises `DoneSignal`. `replay=True` returns the
+node without appending — used to rebuild a live REPL from a graph that already
+holds the result nodes.
 
 ---
 
-## Resume semantics
+## Delegation
 
-An awaited launcher is a Python coroutine suspension point. It is
-**not** a request to copy child outputs into the next LLM prompt.
+Delegation is a single async REPL tool, `launch_subagents`, built per agent by
+`make_launch_subagents` (`rlmflow/tools/builtins.py`). When agent code runs
+`results = await launch_subagents([...])` inside an exec turn, the tool:
 
-### The data path
+1. for each **cold** spec, creates a child `Graph` from `query` (sharing the
+   parent's `graph_id`, depth+1); for each **warm** spec that already carries a
+   prepared `graph`, calls `flow.adopt(parent, child, name=...)` to reparent it
+   — each child is announced with an `AddChild` event. Specs past `max_depth` or
+   over `max_query_chars` become placeholder result strings;
+2. appends a `SupervisingOutput(waiting_on=child_ids)` to the parent;
+3. submits each child to the **run's** `TaskQueue` (children self-drive with
+   `run_agent`), then awaits `tasks.changed()` until all children are finished;
+4. appends a `ResumeAction(resumed_from=child_ids)`, collects each child's
+   `result()` (validated against its `output_schema` if any), and returns the
+   list into the suspended `await`.
 
-For code like:
+So the whole delegate → wait → resume cycle happens *within one parent exec turn*.
+Submitting children to the same queue means the driving stream observes their
+events, and the queue's one-task-per-agent rule prevents double-driving. If no
+run exists (a bare `run_agent` with no stream), a throwaway `TaskQueue` runs the
+children. See the delegation/resume flow in [`node_model.md`](node_model.md).
 
-```python
-results = await launch_subagents([
-    {"name": "a", "query": q_a, "context": c_a},
-    {"name": "b", "query": q_b, "context": c_b},
-])
-print(len(results))
-```
+Payloads go in each spec's `inputs` (the child's `INPUTS`); `query` stays a short
+instruction. `prompt_profile` (legacy key `prompt` still accepted) stamps the
+child's `Graph.prompt_profile`. `output_schema` per spec makes the child's
+`done(value)` validated.
 
-the flow is:
-
-1. The parent REPL runs until `launch_subagents(...)` awaits its `WaitRequest`.
-2. The coroutine suspends. The assignment to `results` has **not**
-   happened yet.
-3. The graph records a `SupervisingOutput(waiting_on=[a, b])`.
-4. The scheduler runs the child agents until they finish.
-5. When all children have a terminal `DoneOutput`, the runtime
-   resumes the same parent coroutine and sends the child results
-   list back into the suspended `await`.
-6. The line becomes equivalent to `results = child_results`.
-7. The same stateful REPL continues and runs `print(len(results))`.
-8. If the resumed code ends without `done(...)` or another
-   `await launch_subagents(...)`, the engine records an `ExecOutput`
-   (`resumed_from=[...]`) and the next LLM turn continues in the same
-   stateful REPL — variables assigned after the wait are still in
-   scope.
-
-**There is exactly one data path from children back to parent code:**
-
-```
-Child DoneOutput.result
-  -> collected by step_after_supervising
-  -> sent into runtime.resume_code(graph, results)
-  -> assigned to parent REPL variable `results`
-```
-
-`ResumeAction` is **not** part of the data path. It's structured
-graph metadata: "the suspended coroutine resumed and ran some more
-code." The next prompt does **not** receive child result blobs or
-"wait completed" text — the LLM inspects `results` directly because
-the REPL is stateful.
-
-### Worked walkthrough
-
-Root receives:
-
-```text
-Research whether SDSK can reach $2000 by EOY 2026.
-```
-
-#### Step 0 — root query
-
-```
-root
-  [0] UserQuery   content="Query: Research whether SDSK..."
-```
-
-#### Step 1 — root delegates and waits
-
-The LLM emits one REPL block:
-
-```python
-contract = "Return JSON with claims, evidence, sources, contradictions."
-results = await launch_subagents([
-    {"name": "identity",     "query": "Identify the listed security.",      "context": contract, "model": "fast"},
-    {"name": "valuation",    "query": "Find price, market cap, multiples.", "context": contract, "model": "fast"},
-    {"name": "fundamentals", "query": "Research growth, revenue, margins.", "context": contract, "model": "fast"},
-    {"name": "analyst",      "query": "Collect analyst targets.",           "context": contract, "model": "fast"},
-])
-print(f"got {len(results)} child results")
-```
-
-Runtime execution:
-
-1. `launch_subagents(...)` creates four child agents through the host spawn hook.
-2. Its `WaitRequest` suspends the root coroutine.
-3. The graph records `SupervisingOutput(waiting_on=[...4 ids...])`.
-
-```
-root
-  [0] UserQuery
-  [1] LLMAction
-  [2] LLMOutput          code=<the REPL block above>
-  [3] ExecAction
-  [4] SupervisingOutput  waiting_on=[root.identity, root.valuation,
-                                     root.fundamentals, root.analyst]
-
-root.identity      [0] UserQuery
-root.valuation     [0] UserQuery
-root.fundamentals  [0] UserQuery
-root.analyst       [0] UserQuery
-```
-
-Data location: child outputs do not exist yet. Root REPL is suspended
-inside `launch_subagents(...)`. `results` does not exist
-yet in the top-level namespace.
-
-#### Step 2 — children run
-
-Each child runs to its own `DoneOutput`. After they all finish:
-
-```
-root.identity
-  [0] UserQuery
-  [1] LLMAction
-  [2] LLMOutput
-  [3] ExecAction
-  [4] DoneOutput  result='{"topic":"identity",...}'
-...
-```
-
-#### Step 3 — root resumes inline
-
-`NodeScheduler.runnable_agents` sees all of root's `waiting_on`
-children are terminal. `apply_one(Resume(root))` collects:
-
-```python
-child_results = [
-    graph["root.identity"].result(),
-    graph["root.valuation"].result(),
-    graph["root.fundamentals"].result(),
-    graph["root.analyst"].result(),
-]
-```
-
-…and calls `runtime.resume_code(graph, child_results)`. The suspended
-launcher line:
-
-```python
-results = await launch_subagents([...])
-```
-
-continues as if it were `results = child_results`. The same REPL
-continues:
-
-```python
-print(f"got {len(results)} child results")  # prints "got 4 child results"
-```
-
-The coroutine ends. The agent isn't done yet (no `done(...)` was
-called and no further await). The engine records:
-
-```
-root
-  [0] UserQuery
-  [1] LLMAction
-  [2] LLMOutput
-  [3] ExecAction
-  [4] SupervisingOutput
-  [5] ResumeAction        resumed_from=[...4 ids...]
-  [6] ExecOutput          output="got 4 child results\n"
-                          resumed_from=[...4 ids...]
-```
-
-Data location: `results` lives in the root REPL.
-`ResumeAction`/`ExecOutput` are trace/UI nodes — they're **not** a
-prompt payload.
-
-#### Step 4 — next LLM turn
-
-`build_messages` does **not** inject child result blobs or
-"wait completed" text. The next prompt just includes the normal
-continue instruction (`CONTINUE_ACTION`) and any stdout from the
-resumed block. The LLM knows the REPL is stateful and inspects
-`results` directly:
-
-```python
-import json
-sections = [json.loads(r) for r in results]
-report = synthesize_report(sections)
-done(report)
-```
-
-#### Final shape
-
-```
-root
-  [0] UserQuery
-  [1] LLMAction          delegate identity/valuation/fundamentals/analyst
-  [2] LLMOutput
-  [3] ExecAction
-  [4] SupervisingOutput  waiting_on=[...]
-  [5] ResumeAction       resumed root code ran
-  [6] ExecOutput         resumed stdout
-  [7] LLMAction          parse stateful `results`, synthesize, done(report)
-  [8] LLMOutput
-  [9] ExecAction
-  [10] DoneOutput
-
-root.{identity,valuation,fundamentals,analyst}
-  [0] UserQuery
-  [1] LLMAction
-  [2] LLMOutput
-  [3] ExecAction
-  [4] DoneOutput
-```
-
-### Multi-wait in one block
-
-A block can await twice — each `await launch_subagents([...])` is its own
-suspension point (this is the sequential pattern):
-
-```python
-[r1] = await launch_subagents([{"name": "a", "query": "..."}])
-[r2] = await launch_subagents([{"name": "b", "query": "...", "context": r1}])
-done(combine(r1, r2))
-```
-
-Each launcher's wait/resume gets its own `(SupervisingOutput, ResumeAction)`
-in the parent's trajectory. The REPL is the same coroutine both
-times — variables persist.
-
-### Multi-wait across blocks
-
-```python
-# Block 1
-results = await launch_subagents([{"name": "a", "query": "..."}])
-# block ends right after the awaited launcher
-
-# Block 2
-done("p:" + results[0])
-```
-
-Same agent, two LLM turns. The first block's `LLMOutput` →
-`ExecAction` → `SupervisingOutput`. After the child settles, the
-resume produces an `ExecOutput`; then the agent runs another LLM
-turn and the second block's code runs in a *fresh* REPL submission
-(but the runtime keeps the same namespace — the launcher,
-`results`, and any prior assignment are in scope).
+**Host warm path.** `flow.adopt(parent, child, *, name)` is the structural
+primitive (remap ids, move the REPL, emit `AddChild` — does not run). 
+`flow.launch_subgraphs(parent, children, *, queries=None, names=None)` is the
+graph-first wrapper that builds warm specs and calls `launch_subagents`, so
+host/example code never has to write the internal `graph` key. Use it for
+fork/rewind → fan-out → compare patterns (see `examples/shepherd/`).
 
 ---
 
-## Cold-start replay
+## Graph mutation and events
 
-> Superseded: current `Flow` recovery does not replay old Python code to
-> recreate suspended coroutine frames. When a live coroutine is unavailable,
-> the graph-backed recovery path injects a recovery observation and exposes
-> completed immediate child results through `get_subagent_result(...)`.
-
-When a saved or edited graph contains a completed `SupervisingOutput` but the
-live Python coroutine is gone, the engine cannot jump back to the source line
-after `await launch_subagents(...)`. Instead, it appends a recovery observation
-for that supervising node. The next LLM turn can call
-`get_subagent_result(...)` to read the completed immediate child results from
-the graph, then continue the parent task in ordinary Python.
+Every state change goes through one seam so observers and checkpointers see it:
 
 ```python
-def step_after_supervising(self, graph, last):
-    if not can_resume(graph, last):
-        return                      # children still need to advance
-    if runtime_has_live_coroutine(graph.agent_id):
-        resume_live_coroutine_with_child_results(...)
-    else:
-        append_recovery_observation_with_get_subagent_result_hint(...)
-    ...
+def append_node(self, graph, node):          # node or str
+    return self.apply_action(graph, graph.inject_action(node))
+
+def apply_action(self, graph, action):        # any GraphAction
+    apply_graph_action(base, action)          # mutate the graph value
+    run = self.runs.get(graph.graph_id)
+    if run is not None:                        # emit only for registered runs
+        run.tasks.emit(agent_id, replace(action, graph_id=graph.graph_id))
+    return action
 ```
 
-Recovery is intentionally best-effort: it preserves graph durability without
-pretending arbitrary Python coroutine frames can always be reconstructed.
+`GraphAction` (in `rlmflow/graph/events.py`) is the closed set of transitions:
+`GraphCreated`, `AppendNode`, `InsertNode`, `ReplaceNode`, `RemoveNode`,
+`AddChild`, `RemoveChild`. Each subclasses `Event` and exposes a uniform
+`node` / `node_id` / `node_type` view plus a stamped `graph_id`, so a merged
+stream (`parallel_stream`) is self-describing. Graph-only edits (`graph.inject`,
+`append`, `replace`, `rewind`, …) mutate the value directly; routing them through
+`Flow.append_node` / `Flow.apply_action` also emits them into a live run. See
+[`injections.md`](injections.md).
+
+---
+
+## REPL lifecycle
+
+`Flow` keeps live REPLs in `self.repls`, keyed by `repl_key(graph)` =
+`(graph_id, agent_id)`, so each agent's namespace, tools, and variables are
+isolated and survive across turns.
+
+- `repl_for(graph)` — return the agent's REPL, lazily opening one via
+  `runtime.open(graph)` and seeding it with `build_tools(...)`, the agent's
+  `INPUTS`, and process env (`AGENT_ID`, `DEPTH`, `MAX_DEPTH`, …).
+- `close_repl(graph)` / `close_repls(graph_id=None)` — tear down one agent's or a
+  whole trajectory's REPLs. `finish_run(close_repls=True)` closes on completion;
+  the default keeps them warm for pause/resume, fork, and inspection.
+- `rebuild_repl(graph)` — replay the agent's `ExecAction` code blocks (no LLM
+  calls, no appended nodes) to reconstruct REPL state. The correctness floor for
+  forks and reverts.
+- `fork` / `merge` / `discard` — branch a graph (deep copy, fresh `graph_id`) with
+  its REPL rebuilt; fold a child branch's delta (`ExecAction`s + one summary node)
+  and its variables back into a parent REPL; or eagerly free rejected branches.
+- `adopt(parent, child, *, name)` — reparent a prepared single-agent graph under
+  `parent` (warm attach; see Delegation above).
+- `get_var(graph, name)` / `get_env_var(graph, name)` — read the REPL Python
+  namespace or the `ENV` metadata channel back onto the host.
+- `_sync_repl_inputs(graph)` — re-inject `INPUTS` into a warm REPL after
+  `resolve_run` updates a resumed graph's inputs.
+
+---
+
+## Prompts, LLM calls, and tools
+
+**Prompt.** `messages(graph)` assembles the chat list: `build_system_prompt(graph)`
+resolves `self.system_prompt` (a `SystemPromptBuilder`, string, or
+`(flow, graph) -> str` function via `as_system_prompt_fn`), and the user side
+comes from `self.user_prompt` (a `UserPromptBuilder` or `(flow, graph) -> turns`
+function, both already callable) which projects the trajectory into
+`user`/`assistant` turns. `messages` then prepends the system message, truncates
+to `max_messages`, and coalesces adjacent same-role turns into one. The trailing
+nudge ("Continue." / "Give your final answer.") is not synthesized here — it is
+materialized as a real `UserQuery` node by `_ensure_nudge` before the call, so it
+persists in the trajectory. Customize with `SystemPromptBuilder` sections, a
+`UserPromptBuilder` subclass, or a `Flow` subclass — see
+[`prompt_customization.md`](prompt_customization.md).
+
+**LLM calls.** `_call_chat(messages, model)` is the single leaf call. Blocking
+clients run on `self.pool` (a `ThreadPool(workers=N)` that caps concurrent
+blocking calls); async clients stay on the loop and bypass the pool.
+`llm_request_timeout` bounds both. `llm_client(model)` resolves a named client
+from `llm_clients` (default is `llm`). `llm_query_batched` runs independent
+one-shot prompts concurrently through the same path (opt in with
+`use_llm_query=True`).
+
+**Tools.** `build_tools(graph, repl)` seeds each REPL namespace with the framework
+tools `done`, `launch_subagents`, and `INPUTS`, plus (optionally)
+`llm_query_batched`, then the runtime's registered tools and the flow's tools.
+`add_tool` / `remove_tool` mutate every live REPL so tools can appear mid-run
+(the prompt's tool section reflects them next turn). `done`, `launch_subagents`,
+and `INPUTS` are reserved and cannot be overridden.
 
 ---
 
 ## Persistence
 
-A workspace is the durable run. It separates per-agent node logs,
-the graph manifest, and task payloads:
-
-```text
-workspace/
-  graph.json                  # workspace manifest: root + agent list + spawns edges
-  session/
-    root/
-      agent.json              # per-agent invariants written once
-      session.jsonl           # one Node per line, in seq order
-      latest.json             # cached summary of the latest node
-      transcript.json         # full LLM chat history for this agent
-    root.child/
-      agent.json
-      session.jsonl
-      latest.json
-      transcript.json
-  context/
-    root/context.txt          # CONTEXT payload + metadata
-    root.child/context.txt
-```
-
-### Reads and writes
-
-- `session.write_state(node)` — append one immutable `Node` to
-  `session.jsonl` and update `latest.json`. Called from
-  `append_node()` in `engine/helpers.py`, which assigns `agent_id` and
-  `seq` deterministically.
-- `session.write_agent(graph)` — write the per-agent invariants
-  (`query`, `system_prompt`, `config`, `runtime`, etc.) to
-  `agent.json`. Called on agent creation only.
-- `session.write_transcript(agent_id, transcript)` — update the agent's
-  flat LLM chat history. Called from `RecursiveFlow.transcript_recorder.record_turn()`
-  (a `TranscriptRecorder` living in `rflow/engine/transcript.py`)
-  inside `reply_to()`, and from `record_terminal()` when an agent
-  finishes via `done(...)`. **Append-only**: each call adds just the
-  new messages since the last call, never rewrites the prefix.
-- `session.load_graph()` — rehydrate the persisted node log as the same
-  `Graph` shape the engine emits. `flows_to` edges are derived from
-  node order; `spawns` edges come straight from `graph.json`.
-
-### Transcripts
-
-The transcript file is parallel-but-separate from the trajectory.
-The trajectory tracks every action/observation; the transcript
-tracks the flat conversation as the LLM saw it across turns. Each
-turn appends only:
-
-- the new user-side messages (any nudges between the previous turn
-  and this one — typically `CONTINUE_ACTION` or an `ErrorOutput`'s
-  `content`)
-- the assistant reply
-- per-assistant metadata (timestamp, model, force_final, token
-  counts, elapsed_s, after_node_id, after_seq)
-
-Transcript-write failures are swallowed: persistence should never
-break a run.
-
-### CONTEXT
-
-`Workspace.context` stores optional payloads exposed inside the REPL
-as `CONTEXT`. The root agent's payload is keyword-only and optional:
-
-```python
-graph = agent.start("answer from the payload", context=large_text)
-```
-
-Inside the REPL, agents see `CONTEXT` (read-only payload), `SESSION`
-(read-only view of every other agent in the run), and the standard
-filesystem tools. Sample, slice, or pass the full payload explicitly:
-
-```python
-CONTEXT.info()                  # {"chars": int, "lines": int}
-sample  = CONTEXT.read(0, 2000) # char slice as str
-window  = CONTEXT.lines(0, 50)  # line slice as list[str]
-hits    = CONTEXT.grep(r"TODO") # lineno:line rows
-full    = CONTEXT.read()        # full payload
-```
-
-Child specs carry supporting payloads in `inputs`, a `dict[str, str]` exposed to
-the child as its own `INPUTS` dict. The child's `query` remains the task message;
-large context should go in `inputs`, not in `query`.
+`graph.save(path)` writes a self-contained run directory; `Graph.load(path)`
+rehydrates the same recursive shape. The manifest is `graph.json`; per-agent logs
+live under `agents/<agent-id>/` (`agent.json`, `session.jsonl`, `latest.json`).
+Cross-agent edges derive from the recursive structure and `SupervisingOutput`
+wait sets — there is no separate edge object to maintain. Save inside the stream
+loop for live checkpointing. See [`observability.md`](observability.md).
 
 ---
 
-## Runtime sessions
+## The overridable surface
 
-The engine keeps a separate runtime session per agent so each agent's
-REPL state, suspended coroutine, and tool closures are isolated.
+Every method on `Flow` is an extension seam; the engine dispatches through
+`self`, so subclass overrides take effect. Common ones:
 
-```python
-self.runtime_sessions: dict[str, Runtime] = {ROOT_RUNTIME_ID: root_runtime}
-```
-
-Three methods own the lifecycle:
-
-- `RecursiveFlow.runtime_for(ref)` — return the runtime bound to `ref`.
-  Lazily restores on a fresh engine attached to a forked or reloaded
-  workspace (the dict only holds `ROOT_RUNTIME_ID` after a cold
-  start; everything else is materialized on demand by cloning the
-  root or calling `runtime_factory`).
-- `RecursiveFlow.create_runtime_session(parent_runtime, *, agent_id)` —
-  allocate a fresh runtime session for a freshly-spawned child.
-  Called from `spawn_child()`.
-- `RecursiveFlow.inject_env(graph, node)` — clear and re-seed
-  `runtime.env` and the REPL namespace before each code execution
-  or resume. Pushes `AGENT_ID`, `DEPTH`, `MAX_DEPTH`,
-  `PARENT_NODE_ID`, `DONE_RESULT`, `DELEGATED`, plus `CONTEXT` /
-  `SESSION` proxies.
-
-Core tool seeding binds `done`, `launch_subagents`, `_rflow_spawn_child`, and
-`get_subagent_result`. In remote runtimes, `launch_subagents` is rebuilt inside
-the sandbox from the private host spawn proxy so child creation still mutates
-the host graph while ordinary tools can run in the sandbox.
-
-See [`runtimes.md`](runtimes.md) for the `Runtime` protocol and
-shipped variants.
-
----
-
-## RecursiveFlow — the overridable surface
-
-Every public method on `RecursiveFlow` is an extension seam. Subclass and
-override what you want; the default implementations call `super()`
-or pure helpers from `engine/*`.
-
-| Stage of the loop      | Methods                                                                                          |
-|------------------------|--------------------------------------------------------------------------------------------------|
-| Lifecycle              | `start`, `run`, `chat`, `step`, `terminate`                                                      |
-| Per-step transitions   | `apply_one`, `step_llm`, `step_exec`, `step_after_supervising`                                   |
-| LLM half-step          | `reply_to`, `call_llm`, `llm_client_for`, `extract_code`                                         |
-| Messages / prompt      | `build_messages`, `build_system_prompt`, `build_tools_section`, `build_status_section` |
-| Runtime / env          | `runtime_for`, `create_runtime_session`, `inject_env`, `register_tools`, `format_exec_output`    |
-| Child spawning         | `spawn_child`                                                                                    |
-| Bookkeeping            | `record_usage`, `node_config`                                                                    |
-
-Every override actually works. The engine calls these through
-`self`, so the dispatch goes through your subclass:
+| Stage | Methods |
+|---|---|
+| Drive lifecycle | `run`, `arun`, `run_streaming`, `resolve_run`, `run_for`, `_drive`, `finish_run`, `terminate` |
+| Scheduling | `schedule_agent`, `should_continue`, `run_agent_task`, `run_agent` |
+| Exec / REPL | `exec_turn`, `repl_for`, `close_repl(s)`, `rebuild_repl`, `fork`, `merge`, `discard`, `adopt`, `get_var`, `get_env_var` |
+| Delegation | `launch_subagents`, `launch_subgraphs` |
+| Graph mutation | `append_node`, `apply_action` |
+| Prompt / messages | `messages`, `build_system_prompt`, `build_tools`, `prompt_profile`, `prompt_name_for` |
+| LLM half | `_call_chat`, `llm_client`, `llm_query_batched` |
+| Tools | `add_tool`, `remove_tool` |
 
 ```python
-class LoggingFlow(RecursiveFlow):
-    def extract_code(self, text):
-        code = super().extract_code(text)
-        return None if code is None else PRELUDE + code
+class ReviewingFlow(rlmflow.Flow):
+    async def exec_turn(self, graph, code, *, replay=False):
+        if not replay and not approved(code):
+            node = rlmflow.ErrorOutput(content="rejected", output="rejected", error="rejected")
+            self.append_node(graph, node)
+            return node
+        return await super().exec_turn(graph, code, replay=replay)
 
-class RetryingFlow(RecursiveFlow):
-    def call_llm(self, messages, *, client=None):
-        for _ in range(3):
-            try: return super().call_llm(messages, client=client)
-            except TransientError: ...
-        raise
 
-class TracingFlow(RecursiveFlow):
-    def apply_one(self, action):
-        log.info("apply %s on %s", type(action).__name__, action.agent_id)
-        return super().apply_one(action)
-
-class CachedExecFlow(RecursiveFlow):
-    def step_exec(self, graph, llm_output):
-        if hit := self.cache.get(llm_output.code):
-            return self._write_cached(graph, llm_output, hit)
-        return super().step_exec(graph, llm_output)
-
-class RoutedFlow(RecursiveFlow):
-    def llm_client_for(self, graph):
-        if graph.depth >= 2:
-            return self.llm_clients["fast"]
-        return super().llm_client_for(graph)
-
-class GatedSpawnFlow(RecursiveFlow):
-    def spawn_child(self, *args, **kwargs):
-        if self.quota_exceeded(args[0]):
-            return "[refused: quota exceeded]"
-        return super().spawn_child(*args, **kwargs)
+class RoutedFlow(rlmflow.Flow):
+    def llm_client(self, model="default"):
+        if model == "default" and self.depth_hint >= 2:
+            return super().llm_client("fast")
+        return super().llm_client(model)
 ```
 
-For prompt-builder customization (the common case), don't subclass —
-use `PromptBuilder` sections instead. See
+For prompt-only customization (the common case), don't subclass `Flow` — edit a
+`SystemPromptBuilder`'s sections. See
 [`prompt_customization.md`](prompt_customization.md).
-
----
-
-## Concurrency
-
-`RecursiveFlow.step()` plans every runnable agent's next action, then
-applies them through `self.pool`. The pool is a small abstraction
-with one method:
-
-```python
-class Pool(ABC):
-    @abstractmethod
-    def execute(self, tasks: list[tuple[str, Callable[[], Any]]]) -> dict[str, Any]: ...
-```
-
-Three shipped pools (`rflow/utils/pool.py`):
-
-- `ThreadPool(max_workers)` — `concurrent.futures.ThreadPoolExecutor`.
-  Used by default when `FlowConfig.max_concurrency >= 2`.
-- `SequentialPool` — runs one task at a time. Used when
-  `max_concurrency` is `None`, `0`, or `1`. Useful for debugging
-  and rate-limited setups.
-- `CallablePool(fn)` — wraps a plain `def fn(tasks): ...` so users
-  can plug in custom schedulers.
-
-Default `max_concurrency = os.cpu_count()`. Agent work is mostly LLM
-I/O, so the threadpool is essentially free; explicit `None` is the
-opt-out.
-
-You can also pass a custom `pool=` to `RecursiveFlow(...)`:
-
-```python
-agent = RecursiveFlow(..., pool=ThreadPool(max_workers=4))
-agent = RecursiveFlow(..., pool=lambda tasks: my_async_scheduler(tasks))
-```
-
----
-
-## Action edge cases
-
-A few edge cases that crop up in real runs:
-
-### No code block
-
-If the LLM reply has no parseable ```repl``` block, `extract_code`
-returns `None`. `step_exec` writes an `ExecAction` with empty `code`
-and an `ErrorOutput(content=NO_CODE_BLOCK, error="no_code_block")`.
-The next round routes back to `step_llm` and the model is nudged to
-retry.
-
-### Max iterations
-
-`act_one` checks `iteration_count(graph)` (count of `LLMAction`
-nodes) against `graph.config["max_iterations"]` only when that value is
-not `None`. By default root agents are unbounded (`max_iterations=None`) and
-children use `child_max_iterations=20`. When a configured cap is exhausted,
-`act_one` emits `CallLLM(force_final=True)`. `build_messages` swaps the trailing
-`CONTINUE_ACTION` for `FINAL_ANSWER_ACTION`, which strongly nudges the model to
-call `done(...)`.
-
-### Terminate
-
-`agent.terminate(graph)` marks every still-running agent for a
-final-answer turn:
-
-```python
-def terminate(self, graph):
-    for aid in graph.agents:
-        if not graph.agents[aid].finished:
-            self.terminate_requested.add(aid)
-    return self.session.load_graph()
-```
-
-`act_one` then propagates this into `CallLLM(force_final=True)` on
-the next round.
-
-### Budget
-
-`apply_one` enforces `FlowConfig.max_budget` at the top of every call.
-When exceeded, it writes
-`DoneOutput(result=f"[budget exceeded: {n} tokens]")` and skips the
-handler entirely.
-
-### Max depth
-
-`spawn_child` rejects new children once
-`parent.depth >= config.max_depth`:
-
-```python
-if parent.depth >= self.config.max_depth:
-    return f"[refused: max depth {self.config.max_depth}] Do this directly."
-```
-
-The string return is the documented refusal protocol: `launch_subagents(...)`
-places the refusal string in that child's result slot so the parent can handle
-the refused task inline.
 
 ---
 
 ## Where to read next
 
-- [`node_model.md`](node_model.md) — typed graph node taxonomy,
-  action / observation alternation, delegation wait/resume flow.
-- [`control.md`](control.md) — user-facing step loop, forks, custom
-  tools/prompts.
-- [`observability.md`](observability.md) — querying the `Graph` API,
+- [`node_model.md`](node_model.md) — node taxonomy, action/observation
+  alternation, delegation wait/resume flow.
+- [`streaming.md`](streaming.md) — the scheduler, `until` boundaries, `n`, and
+  parallelism.
+- [`control.md`](control.md) — user-facing loop, save/resume, rewind, fork,
+  multi-turn runs, custom tools/prompts.
+- [`observability.md`](observability.md) — querying the `Graph`, run layout,
   viewer, exports.
-- [`runtimes.md`](runtimes.md) — Runtime protocol, shipped backends.
-- [`security.md`](security.md) — trust boundary, isolation knobs.
-- [`prompt_customization.md`](prompt_customization.md) — building
-  custom system prompts.
+- [`runtimes.md`](runtimes.md) — `Runtime` protocol and shipped backends.
+- [`security.md`](security.md) — trust boundary, isolation knobs, approval gates.

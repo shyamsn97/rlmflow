@@ -1,25 +1,31 @@
-"""Run the boids coding task with rflow, official RLM, or both.
+"""Run the boids coding task with rlmflow, official RLM, or both.
 
 Examples:
-    python examples/coding/boids/boids.py --runner rflow
+    python examples/coding/boids/boids.py --runner rlmflow
     python examples/coding/boids/boids.py --runner rlm
     python examples/coding/boids/boids.py --runner both
 
 The two runners use the same query and write into suffixed directories so their
 artifacts and trajectories can be compared directly:
-`{out_dir}-rflow` and `{out_dir}-rlm-official`.
+`{out_dir}-rlmflow` and `{out_dir}-rlm-official`.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import inspect
 import os
 import shutil
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 from pydantic import BaseModel
+
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
 TASK = """Create a runnable browser-based boids simulation in plain HTML, CSS, and JavaScript.
 Requirements:
@@ -46,14 +52,10 @@ def pushd(path: Path) -> Iterator[None]:
         os.chdir(previous)
 
 
-def build_rflow_llm(model: str):
-    import rflow
+def build_rlmflow_llm(model: str):
+    from common import build_client
 
-    return (
-        rflow.AnthropicClient(model)
-        if model.startswith("claude")
-        else rflow.OpenAIClient(model)
-    )
+    return build_client(model)
 
 
 def reset_run_dir(path: Path, *, force: bool) -> None:
@@ -93,7 +95,7 @@ class BoidsSimulation(BaseModel):
     style_css: str
     boids_js: str
 
-def run_rflow(
+def run_rlmflow(
     run_dir: Path,
     *,
     model: str,
@@ -103,49 +105,62 @@ def run_rflow(
     max_concurrency: int,
     no_viz: bool,
 ) -> None:
-    import rflow
-    # from rflow.tools import FILE_TOOLS
+    from rlmflow import (
+        FILE_TOOLS,
+        ConsumerGroup,
+        Flow,
+        Graph,
+        GraphCheckpointer,
+        LiveTreeRenderer,
+        LocalRuntime,
+    )
 
     reset_run_dir(run_dir, force=True)
     (run_dir / "task.txt").write_text(TASK)
 
-    runtime = rflow.LocalRuntime(working_directory=run_dir)
-    # runtime.register_tools(FILE_TOOLS)
-    flow = rflow.Flow(
-        build_rflow_llm(model),
-        llm_clients={"fast": build_rflow_llm(fast_model)},
+    runtime = LocalRuntime(working_directory=run_dir)
+    runtime.register_tools(FILE_TOOLS)
+    flow = Flow(
+        build_rlmflow_llm(model),
+        llm_clients={"fast": build_rlmflow_llm(fast_model)},
         runtime=runtime,
         max_depth=max_depth,
         max_iters=max_iters,
-        max_concurrency=max_concurrency,
+        workers=max_concurrency,
     )
 
-    print(f"\n=== rflow run ===\nworkdir: {run_dir}\nmodel: {model}\n")
+    print(f"\n=== rlmflow run ===\nworkdir: {run_dir}\nmodel: {model}\n")
     try:
-        graph = flow.start(TASK, output_schema=BoidsSimulation)
-        if no_viz:
-            while not graph.finished:
-                graph = flow.step(graph)
-        else:
-            from rflow.utils.viz import live_view
+        graph = Graph(query=TASK)
+        graph_dir = run_dir / "graph"
+        consumers = ConsumerGroup(
+            [
+                LiveTreeRenderer(clear=not no_viz),
+                GraphCheckpointer(graph_dir),
+            ]
+        )
 
-            with live_view() as view:
-                view(graph)
-                while not graph.finished:
-                    graph = flow.step(graph)
-                    graph.save(run_dir / "graph")
-                    view(graph)
+        async def drive() -> None:
+            try:
+                async for event in flow.run_streaming(
+                    graph=graph,
+                    output_schema=BoidsSimulation,
+                ):
+                    consumers.handle(event, graph)
+            finally:
+                consumers.close()
+
+        asyncio.run(drive())
 
         result = graph.result() or ""
         (run_dir / "response.txt").write_text(str(result))
-        graph_dir = graph.save(run_dir / "graph")
-        print("\nrflow response:")
+        print("\nrlmflow response:")
         print(result or "(no result)")
-        print(f"\nrflow graph: {graph_dir}")
+        print(f"\nrlmflow graph: {graph_dir}")
     finally:
-        flow.close()
+        flow.close_repls()
 
-    print("\nrflow files:")
+    print("\nrlmflow files:")
     for item in summarize_files(run_dir):
         print(f"- {item}")
 
@@ -210,10 +225,10 @@ def parse_args() -> argparse.Namespace:
     examples_root = Path(__file__).resolve().parents[2]
     default_out = examples_root / "_runs" / "coding" / "boids"
 
-    parser = argparse.ArgumentParser(description="Compare rflow and official RLM on boids.")
+    parser = argparse.ArgumentParser(description="Compare rlmflow and official RLM on boids.")
     parser.add_argument(
         "--runner",
-        choices=("rflow", "rlm", "both"),
+        choices=("rlmflow", "rlm", "both"),
         default="both",
         help="Which runner to execute.",
     )
@@ -221,14 +236,14 @@ def parse_args() -> argparse.Namespace:
         "--out-dir",
         type=Path,
         default=default_out,
-        help="Base output path. Runner outputs use -rflow and -rlm-official suffixes.",
+        help="Base output path. Runner outputs use -rlmflow and -rlm-official suffixes.",
     )
     parser.add_argument("--model", default="gpt-5")
     parser.add_argument("--fast-model", default="gpt-5-mini")
     parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument("--max-iters", type=int, default=30)
     parser.add_argument("--max-concurrency", type=int, default=8)
-    parser.add_argument("--no-viz", action="store_true", help="Disable rflow live tree.")
+    parser.add_argument("--no-viz", action="store_true", help="Disable rlmflow live tree.")
     parser.add_argument(
         "--rlm-quiet",
         action="store_true",
@@ -245,14 +260,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     out_dir = args.out_dir.resolve()
-    rflow_dir = suffixed_dir(out_dir, "rflow")
+    rlmflow_dir = suffixed_dir(out_dir, "rlmflow")
     official_dir = suffixed_dir(out_dir, "rlm-official")
 
-    if args.runner in ("rflow", "both"):
-        if rflow_dir.exists() and args.force:
-            shutil.rmtree(rflow_dir)
-        run_rflow(
-            rflow_dir,
+    if args.runner in ("rlmflow", "both"):
+        if rlmflow_dir.exists() and args.force:
+            shutil.rmtree(rlmflow_dir)
+        run_rlmflow(
+            rlmflow_dir,
             model=args.model,
             fast_model=args.fast_model,
             max_depth=args.max_depth,
@@ -274,8 +289,8 @@ def main() -> None:
         )
 
     print("\nDone. Compare outputs:")
-    if args.runner in ("rflow", "both"):
-        print(f"- rflow: {rflow_dir}")
+    if args.runner in ("rlmflow", "both"):
+        print(f"- rlmflow: {rlmflow_dir}")
     if args.runner in ("rlm", "both"):
         print(f"- official RLM: {official_dir}")
 

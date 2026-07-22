@@ -16,10 +16,25 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import random
+import sys
 from pathlib import Path
 
-import rflow
+from rlmflow import (
+    ConsumerGroup,
+    DockerRuntime,
+    Flow,
+    Graph,
+    GraphCheckpointer,
+    LiveTreeRenderer,
+)
+
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
+
+from common import build_client, example_run_dir  # noqa: E402
 
 _TOPICS = [
     "the migration to the new billing system",
@@ -72,14 +87,6 @@ def generate_long_document(sections: int, *, seed: int = 7) -> str:
     return "\n\n".join(parts)
 
 
-def build_llm(model: str):
-    return (
-        rflow.AnthropicClient(model)
-        if model.startswith("claude")
-        else rflow.OpenAIClient(model)
-    )
-
-
 SUMMARIZE_QUERY = """\
 The full document is in `INPUTS["document"]` (a str). It is long, so summarize
 it with a map-reduce strategy instead of reading it all at once:
@@ -125,7 +132,7 @@ def main() -> None:
     parser.add_argument("--no-viz", action="store_true")
     parser.add_argument(
         "--out-dir",
-        default=str(Path(__file__).resolve().parents[1] / "_runs" / "summarizer"),
+        default=str(example_run_dir("summarizer")),
         help="Save the final run here (default: examples/_runs/summarizer/).",
     )
     parser.add_argument(
@@ -141,46 +148,47 @@ def main() -> None:
     else:
         document = generate_long_document(args.sections)
 
-    runtime = (
-        rflow.DockerRuntime(args.docker_image) if args.docker_image else None
-    )
+    runtime = DockerRuntime(args.docker_image) if args.docker_image else None
 
     llm_clients = None
     if args.fast_model:
-        llm_clients = {"fast": build_llm(args.fast_model)}
+        llm_clients = {"fast": build_client(args.fast_model)}
 
-    flow = rflow.Flow(
-        build_llm(args.model),
+    flow = Flow(
+        build_client(args.model),
         llm_clients=llm_clients,
         runtime=runtime,
         max_depth=args.max_depth,
         max_iters=args.max_iters,
     )
 
-    graph = flow.start(SUMMARIZE_QUERY, {"document": document})
+    graph = Graph(query=SUMMARIZE_QUERY)
 
-    if args.no_viz:
-        while not graph.finished:
-            graph = flow.step(graph)
-            print(graph.tree())
-    else:
-        from rflow.utils.viz import live
+    consumers = ConsumerGroup([LiveTreeRenderer(clear=not args.no_viz)])
+    if args.out_dir:
+        consumers.append(GraphCheckpointer(Path(args.out_dir)))
 
-        graph = live(flow, graph)[-1]
+    async def drive() -> None:
+        try:
+            async for event in flow.run_streaming(
+                graph=graph, inputs={"document": document}
+            ):
+                consumers.handle(event, graph)
+        finally:
+            consumers.close()
+
+    asyncio.run(drive())
 
     print(f"\n{'=' * 60}\nFINAL SUMMARY\n{'=' * 60}")
     print(graph.result())
 
     if args.out_dir:
-        path = graph.save(Path(args.out_dir))
-        print(f"\nGraph saved to {path}")
+        print(f"\nGraph checkpointed to {Path(args.out_dir)}")
 
     if args.viewer:
-        from rflow.utils.viewer import open_viewer
+        print("Viewer support is not part of the minimal example path.")
 
-        open_viewer([graph])
-
-    flow.close()
+    flow.close_repls(graph.graph_id)
 
 
 if __name__ == "__main__":

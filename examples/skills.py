@@ -16,34 +16,19 @@ This example demonstrates the intended shape for user-authored skills:
 from __future__ import annotations
 
 import argparse
+import asyncio
+import sys
 import tempfile
 from pathlib import Path
 
-import rflow
-from rflow.prompts import DEFAULT_BUILDER
+from rlmflow import Flow, Graph, GraphCheckpointer, SystemPromptBuilder
+from rlmflow.clients import OpenAIClient
 
+examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+if str(examples_dir) not in sys.path:
+    sys.path.insert(0, str(examples_dir))
 
-def _example_run_dir(source_file: str | Path, name: str) -> Path:
-    source = Path(source_file).resolve()
-    for parent in (source.parent, *source.parents):
-        if parent.name == "examples":
-            return parent / "_runs" / name
-    return source.parent / "_runs" / name
-
-
-def _save_example_graph(
-    graph,
-    source_file: str | Path,
-    name: str,
-    *,
-    out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
-) -> Path:
-    path = graph.save(
-        Path(out_dir) if out_dir is not None else _example_run_dir(source_file, name)
-    )
-    print(f"{label} {path}")
-    return path
+from common import example_run_dir, save_example_graph  # noqa: E402
 
 
 NUMPY_LINEAR_ALGEBRA_SKILL = """\
@@ -120,16 +105,15 @@ def skills_section(skill_paths: list[Path]):
     return render
 
 
-def build_flow(skills_dir: Path, *, model: str) -> rflow.Flow:
+def build_flow(skills_dir: Path, *, model: str) -> Flow:
     """Create a flow whose prompt includes the installed skill."""
     skill_path = install_example_skill(skills_dir)
-    flow = rflow.Flow(rflow.OpenAIClient(model=model), max_iters=5)
-    flow.prompt_builder = DEFAULT_BUILDER.section(
-        "skills",
-        skills_section([skill_path]),
-        title="Skills",
-        before="tools",
+    flow = Flow(OpenAIClient(model=model), max_iters=5)
+    prompt = SystemPromptBuilder()
+    prompt.sections.add(
+        "skills", skills_section([skill_path]), title="Skills", before="tools"
     )
+    flow.system_prompt = prompt
     return flow
 
 
@@ -150,7 +134,7 @@ def main() -> None:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=_example_run_dir(__file__, "skills"),
+        default=example_run_dir("skills"),
         help="Save the final run here (default: examples/_runs/skills/).",
     )
     args = parser.parse_args()
@@ -170,19 +154,28 @@ def main() -> None:
             "(0, 1), (1, 2), (2, 2), (3, 4), then report m, b, the "
             "predicted values, and the L2 residual norm."
         )
-        graph = flow.start(query)
+        graph = Graph(query=query)
 
         print(f"Wrote skill artifact under: {skills_dir}")
         print("- skills/numpy-linear-algebra/SKILL.md")
         if args.print_prompt:
             print("\n--- rendered system prompt ---\n")
-            print(graph.system_prompt)
+            print(flow.build_system_prompt(graph))
             print("\n--- live run ---\n")
 
-        while not graph.finished:
-            graph = flow.step(graph)
+        checkpointer = GraphCheckpointer(args.out_dir)
+
+        async def drive() -> None:
+            try:
+                async for _event in flow.run_streaming(graph=graph):
+                    checkpointer.handle(_event, graph)
+            finally:
+                checkpointer.close()
+
+        asyncio.run(drive())
         print(graph.result())
-        _save_example_graph(graph, __file__, "skills", out_dir=args.out_dir)
+        save_example_graph(graph, "skills", out_dir=args.out_dir)
+        flow.close_repls(graph.graph_id)
     finally:
         if tmp is not None:
             tmp.cleanup()
