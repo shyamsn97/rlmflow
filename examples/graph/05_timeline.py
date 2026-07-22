@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 
-from rflow import DoneOutput, Graph, LLMOutput, UserQuery, render_tree
+from rlmflow import DoneOutput, Graph, LLMOutput, UserQuery, render_tree
 
 
 def main() -> None:

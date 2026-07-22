@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 
-from rflow import (
+from rlmflow import (
     ExecOutput,
     Flow,
     Graph,
@@ -585,17 +585,17 @@ def test_minimal_max_query_chars_refuses_overlong_child_query():
 def test_minimal_rflow_env_vars_visible_to_agent():
     reply = (
         "```repl\n"
-        'done(ENV["RFLOW_AGENT_ID"] + "|" + ENV["RFLOW_IS_ROOT"] '
-        '+ "|" + ENV["RFLOW_MAX_DEPTH"])\n'
+        'done(ENV["RLMFLOW_AGENT_ID"] + "|" + ENV["RLMFLOW_IS_ROOT"] '
+        '+ "|" + ENV["RLMFLOW_MAX_DEPTH"])\n'
         "```"
     )
     flow = Flow(StubLLM(lambda _messages: reply), max_depth=3)
     graph = Graph(query="q")
 
     assert flow.run(graph=graph) == "root|1|3"
-    assert "RFLOW_AGENT_ID" not in os.environ
-    assert flow.get_env_var(graph, "RFLOW_AGENT_ID") == "root"
-    assert flow.get_env_var(graph, "RFLOW_MAX_DEPTH") == "3"
+    assert "RLMFLOW_AGENT_ID" not in os.environ
+    assert flow.get_env_var(graph, "RLMFLOW_AGENT_ID") == "root"
+    assert flow.get_env_var(graph, "RLMFLOW_MAX_DEPTH") == "3"
 
 
 

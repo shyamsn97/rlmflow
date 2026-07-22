@@ -40,13 +40,13 @@ feedback without pretending the model wrote a REPL block:
 
 ```python
 import asyncio
-import rflow
+import rlmflow
 
-graph = rflow.Graph(query="Wait for a controller note, then finish.")
+graph = rlmflow.Graph(query="Wait for a controller note, then finish.")
 
 agent.append_node(
     graph,
-    rflow.ExecOutput(
+    rlmflow.ExecOutput(
         output="Injected controller observation: submit your final answer now.",
         content="Injected controller observation: submit your final answer now.",
     ),
@@ -74,7 +74,7 @@ async def run_with_controller_stop():
             injected = True
             agent.append_node(
                 graph,
-                rflow.UserQuery(content="Controller stop request: finalize now."),
+                rlmflow.UserQuery(content="Controller stop request: finalize now."),
             )
 ```
 

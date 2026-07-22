@@ -19,8 +19,8 @@ import os
 import sys
 from pathlib import Path
 
-from rflow.clients import OpenAIClient
-from rflow import FILE_TOOLS, Flow, LocalRuntime, tui
+from rlmflow.clients import OpenAIClient
+from rlmflow import FILE_TOOLS, Flow, LocalRuntime, tui
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:

@@ -51,7 +51,7 @@ flow and wait/resume semantics:
 ## Querying the graph
 
 ```python
-from rflow import render_tree
+from rlmflow import render_tree
 
 render_tree(graph)                             # ASCII tree render
 graph.current()                                # latest node on the root agent
@@ -101,7 +101,7 @@ run/
 
 ```python
 run_dir = graph.save("runs/deep_research")
-latest = rflow.Graph.load(run_dir)
+latest = rlmflow.Graph.load(run_dir)
 ```
 
 For live checkpointing, save inside the stream loop:
@@ -122,7 +122,7 @@ asyncio.run(drive())
 each tick, or hand events to a stream consumer:
 
 ```python
-from rflow import render_tree, LiveGraphTree, LiveTreeRenderer, ConsumerGroup
+from rlmflow import render_tree, LiveGraphTree, LiveTreeRenderer, ConsumerGroup
 
 # One-shot render from any snapshot
 print(render_tree(graph))
@@ -153,7 +153,7 @@ selector, and a per-agent transcript over a swimlane of the run. `source` can be
 a saved run directory, a `Graph`, or a list of snapshots:
 
 ```python
-from rflow import open_viewer
+from rlmflow import open_viewer
 
 open_viewer("runs/deep_research")   # saved run directory
 open_viewer(graph)                  # single snapshot
@@ -168,7 +168,7 @@ For blog posts, PR comments, papers, or CI artifacts, render the graph to a PNG
 per-step snapshots these build on.
 
 ```python
-from rflow import save_image, save_steps, replay
+from rlmflow import save_image, save_steps, replay
 
 save_image("runs/deep_research", "final.png")
 save_steps("runs/deep_research", "frames/",     # step_000.png, step_001.png, ...

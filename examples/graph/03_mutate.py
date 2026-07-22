@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from rflow import DoneOutput, Graph, UserQuery, render_tree
+from rlmflow import DoneOutput, Graph, UserQuery, render_tree
 
 
 def build_graph() -> Graph:

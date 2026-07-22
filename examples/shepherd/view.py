@@ -1,7 +1,7 @@
 """Board-panel UI helpers for the shepherd example.
 
 :class:`PanelViewer` aggregates per-lane boards (terminal and/or Gradio via
-``sink``). The shepherd host calls it alongside :class:`rflow.LiveGraphTree`
+``sink``). The shepherd host calls it alongside :class:`rlmflow.LiveGraphTree`
 on each stream event.
 """
 
@@ -11,7 +11,7 @@ import sys
 import time
 from collections.abc import Callable
 
-from rflow import AppendNode, ExecOutput, Flow, Graph, StreamConsumer
+from rlmflow import AppendNode, ExecOutput, Flow, Graph, StreamConsumer
 
 
 def _looks_like_grid(text: str) -> bool:

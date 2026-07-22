@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from rflow import DoneOutput, ErrorOutput, Graph, LLMOutput, UserQuery
+from rlmflow import DoneOutput, ErrorOutput, Graph, LLMOutput, UserQuery
 
 
 def build_graph() -> Graph:

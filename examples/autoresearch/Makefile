@@ -26,7 +26,7 @@ help:
 	@echo "  make sync        Install task deps with uv"
 	@echo "  make prepare     Download/tokenize TinyStories"
 	@echo "  make train       Run one local train.py experiment"
-	@echo "  make run         Run rflow coordinator with Modal trials"
+	@echo "  make run         Run rlmflow coordinator with Modal trials"
 	@echo "  make smoke       Run with MAX_SUBMISSIONS=1 and --no-live"
 	@echo "  make lint        Lint runner files"
 	@echo ""

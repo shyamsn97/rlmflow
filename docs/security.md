@@ -66,12 +66,12 @@ rewrite code before it touches the runtime. Short-circuit by appending an
 instead of running the code:
 
 ```python
-import rflow
+import rlmflow
 
-class ReviewingFlow(rflow.Flow):
+class ReviewingFlow(rlmflow.Flow):
     async def exec_turn(self, graph, code, *, replay=False):
         if not replay and "rm -rf" in code and input(f"run? {code}\n> ") != "y":
-            node = rflow.ErrorOutput(
+            node = rlmflow.ErrorOutput(
                 content="rejected by reviewer",
                 output="rejected by reviewer",
                 error="rejected",

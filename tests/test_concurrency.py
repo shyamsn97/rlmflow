@@ -13,7 +13,7 @@ import asyncio
 import threading
 import time
 
-from rflow import Flow, Graph
+from rlmflow import Flow, Graph
 
 from helpers import first_user
 
@@ -131,7 +131,7 @@ def test_deep_delegation_does_not_deadlock_under_bounded_pool():
 
 
 def test_per_repl_env_is_isolated_across_concurrent_local_agents():
-    # The parent reads its own RFLOW_AGENT_ID *after* awaiting delegation. With a
+    # The parent reads its own RLMFLOW_AGENT_ID *after* awaiting delegation. With a
     # process-global env this would be clobbered by a concurrent child; the
     # per-REPL env keeps each agent's metadata isolated in one process.
     def reply(messages):
@@ -140,10 +140,10 @@ def test_per_repl_env_is_isolated_across_concurrent_local_agents():
                 "```repl\n"
                 "results = await launch_subagents(["
                 "{'name': 'a', 'query': 'child'}, {'name': 'b', 'query': 'child'}])\n"
-                'done(ENV["RFLOW_AGENT_ID"] + "::" + ",".join(results))\n'
+                'done(ENV["RLMFLOW_AGENT_ID"] + "::" + ",".join(results))\n'
                 "```"
             )
-        return '```repl\ndone(ENV["RFLOW_AGENT_ID"])\n```'
+        return '```repl\ndone(ENV["RLMFLOW_AGENT_ID"])\n```'
 
     flow = Flow(SyncBlockingLLM(reply), max_depth=1, workers=4)
 

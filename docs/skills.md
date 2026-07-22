@@ -34,15 +34,15 @@ Load project conventions into every agent:
 ```python
 from pathlib import Path
 
-import rflow
-from rflow import SystemPromptBuilder
+import rlmflow
+from rlmflow import SystemPromptBuilder
 
 
-def project_skill(flow: rflow.Flow, graph: rflow.Graph) -> str:
+def project_skill(flow: rlmflow.Flow, graph: rlmflow.Graph) -> str:
     return Path("skills/project-style/SKILL.md").read_text(encoding="utf-8")
 
 
-flow = rflow.Flow(rflow.OpenAIClient(model="gpt-4o-mini"))
+flow = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-4o-mini"))
 prompt = SystemPromptBuilder()
 prompt.sections.add("project_skill", project_skill, title="Project Skill", before="tools")
 flow.system_prompt = prompt
@@ -55,8 +55,8 @@ Choose domain skills from the current task:
 ```python
 from pathlib import Path
 
-import rflow
-from rflow import SystemPromptBuilder
+import rlmflow
+from rlmflow import SystemPromptBuilder
 
 SKILL_DIR = Path("skills")
 
@@ -69,7 +69,7 @@ def _read_skill(name: str) -> str:
     return f"### {name}\n{body}"
 
 
-def workspace_skills(flow: rflow.Flow, graph: rflow.Graph) -> str:
+def workspace_skills(flow: rlmflow.Flow, graph: rlmflow.Graph) -> str:
     query = graph.query.lower()
     skills = [_read_skill("project-style")]
 
@@ -81,7 +81,7 @@ def workspace_skills(flow: rflow.Flow, graph: rflow.Graph) -> str:
     return "\n\n".join(skill for skill in skills if skill)
 
 
-flow = rflow.Flow(rflow.OpenAIClient(model="gpt-4o-mini"))
+flow = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-4o-mini"))
 prompt = SystemPromptBuilder()
 prompt.sections.add(
     "workspace_skills", workspace_skills, title="Workspace Skills", before="tools"
@@ -96,17 +96,17 @@ Give spawned agents a tighter contract than the root planner:
 ```python
 from pathlib import Path
 
-import rflow
-from rflow import SystemPromptBuilder
+import rlmflow
+from rlmflow import SystemPromptBuilder
 
 
-def child_contract(flow: rflow.Flow, graph: rflow.Graph) -> str:
+def child_contract(flow: rlmflow.Flow, graph: rlmflow.Graph) -> str:
     if graph.depth == 0:
         return ""
     return Path("skills/child-agent-contract/SKILL.md").read_text(encoding="utf-8")
 
 
-flow = rflow.Flow(rflow.OpenAIClient(model="gpt-4o-mini"))
+flow = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-4o-mini"))
 prompt = SystemPromptBuilder()
 prompt.sections.add(
     "child_contract", child_contract, title="Child Agent Contract", after="strategy"
@@ -121,13 +121,13 @@ Turn lessons from previous runs into reusable guidance:
 ```python
 from pathlib import Path
 
-import rflow
-from rflow import SystemPromptBuilder
+import rlmflow
+from rlmflow import SystemPromptBuilder
 
 MEMORY_DIR = Path("skills/run-memory")
 
 
-def run_memory(flow: rflow.Flow, graph: rflow.Graph) -> str:
+def run_memory(flow: rlmflow.Flow, graph: rlmflow.Graph) -> str:
     blocks = []
     for path in sorted(MEMORY_DIR.glob("*.md")):
         text = path.read_text(encoding="utf-8").strip()
@@ -136,7 +136,7 @@ def run_memory(flow: rflow.Flow, graph: rflow.Graph) -> str:
     return "\n\n".join(blocks)
 
 
-flow = rflow.Flow(rflow.OpenAIClient(model="gpt-4o-mini"))
+flow = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-4o-mini"))
 prompt = SystemPromptBuilder()
 prompt.sections.add("run_memory", run_memory, title="Run Memory", before="examples")
 flow.system_prompt = prompt

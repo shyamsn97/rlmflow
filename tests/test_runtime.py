@@ -1,15 +1,15 @@
 import asyncio
 import sys
 
-from rflow import (
+from rlmflow import (
     Flow,
     Graph,
     LocalRuntime,
     SubprocessRuntime,
     tool,
 )
-from rflow.runtime import PopenConnection, build_docker_argv
-from rflow.runtime.protocol import (
+from rlmflow.runtime import PopenConnection, build_docker_argv
+from rlmflow.runtime.protocol import (
     CapabilitiesRequest,
     PingRequest,
     ProxyCall,
@@ -18,8 +18,8 @@ from rflow.runtime.protocol import (
     parse_client_message,
     parse_request,
 )
-from rflow.runtime.repl import DoneSignal
-from rflow.runtime.repl_client import RemoteRepl
+from rlmflow.runtime.repl import DoneSignal
+from rlmflow.runtime.repl_client import RemoteRepl
 
 from helpers import (
     StubLLM,
@@ -72,7 +72,7 @@ def test_minimal_local_runtime_uses_working_directory(tmp_path):
 def test_minimal_repl_client_uses_minimal_repl_server():
     repl = RemoteRepl(
         PopenConnection(
-            [sys.executable, "-u", "-m", "rflow.runtime.repl_server"],
+            [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
             label="test minimal remote REPL",
             repl_timeout=5,
         )
@@ -105,8 +105,8 @@ def test_minimal_local_repl_env_channel_round_trips():
     def reply(messages):
         return (
             "```repl\n"
-            'ENV["solved"] = ENV["RFLOW_IS_ROOT"] == "1"\n'
-            'done(ENV["RFLOW_AGENT_ID"])\n'
+            'ENV["solved"] = ENV["RLMFLOW_IS_ROOT"] == "1"\n'
+            'done(ENV["RLMFLOW_AGENT_ID"])\n'
             "```"
         )
 
@@ -116,14 +116,14 @@ def test_minimal_local_repl_env_channel_round_trips():
     assert flow.run(graph=graph) == "root"
     published.update(flow.repl_for(graph).env)
     assert published["solved"] is True
-    assert published["RFLOW_AGENT_ID"] == "root"
+    assert published["RLMFLOW_AGENT_ID"] == "root"
 
 
 def test_minimal_subprocess_runtime_exposes_env_metadata():
     flow = Flow(
         StubLLM(
             lambda _messages: (
-                '```repl\ndone(ENV["RFLOW_AGENT_ID"] + "|" + ENV["RFLOW_IS_ROOT"])\n```'
+                '```repl\ndone(ENV["RLMFLOW_AGENT_ID"] + "|" + ENV["RLMFLOW_IS_ROOT"])\n```'
             )
         ),
         runtime=SubprocessRuntime(),
@@ -137,7 +137,7 @@ def test_minimal_subprocess_runtime_exposes_env_metadata():
 def test_minimal_repl_client_reads_back_published_env():
     repl = RemoteRepl(
         PopenConnection(
-            [sys.executable, "-u", "-m", "rflow.runtime.repl_server"],
+            [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
             label="test minimal remote REPL",
             repl_timeout=5,
         )
@@ -146,8 +146,8 @@ def test_minimal_repl_client_reads_back_published_env():
     async def run():
         try:
             repl.seed({}, {})
-            repl.update_env({"RFLOW_AGENT_ID": "root.child"})
-            await repl.run('assert ENV["RFLOW_AGENT_ID"] == "root.child"\nENV["solved"] = True')
+            repl.update_env({"RLMFLOW_AGENT_ID": "root.child"})
+            await repl.run('assert ENV["RLMFLOW_AGENT_ID"] == "root.child"\nENV["solved"] = True')
             return dict(repl.env)
         finally:
             repl.close()
@@ -155,7 +155,7 @@ def test_minimal_repl_client_reads_back_published_env():
     env = asyncio.run(run())
 
     assert env["solved"] is True
-    assert env["RFLOW_AGENT_ID"] == "root.child"
+    assert env["RLMFLOW_AGENT_ID"] == "root.child"
 
 
 
@@ -188,7 +188,7 @@ def test_minimal_subprocess_injects_and_retrieves_live_object_by_value():
 
     repl = RemoteRepl(
         PopenConnection(
-            [sys.executable, "-u", "-m", "rflow.runtime.repl_server"],
+            [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
             label="test minimal remote REPL",
             repl_timeout=5,
         )
@@ -213,8 +213,8 @@ def test_minimal_subprocess_injects_and_retrieves_live_object_by_value():
 def test_minimal_repl_client_inject_rejects_unpicklable_without_capability():
     # A JSON-unsafe value + a sandbox that can't cloudpickle -> a clear error,
     # not a silent JSON coercion failure.
-    from rflow.runtime.protocol import CapabilityMap
-    from rflow.runtime.repl_client import RemoteRepl
+    from rlmflow.runtime.protocol import CapabilityMap
+    from rlmflow.runtime.repl_client import RemoteRepl
 
     class Dummy(RemoteRepl):
         def __init__(self):
@@ -254,7 +254,7 @@ def test_minimal_remote_protocol_models_round_trip():
 def test_minimal_repl_server_supports_ping_and_capabilities():
     repl = RemoteRepl(
         PopenConnection(
-            [sys.executable, "-u", "-m", "rflow.runtime.repl_server"],
+            [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
             label="test minimal remote REPL",
             repl_timeout=5,
         )
@@ -311,7 +311,7 @@ def test_minimal_docker_argv_uses_minimal_repl_server(tmp_path):
         network="none",
     )
 
-    assert "rflow.runtime.repl_server" in argv
+    assert "rlmflow.runtime.repl_server" in argv
     assert argv[:4] == ["docker", "run", "-i", "--rm"]
 
 

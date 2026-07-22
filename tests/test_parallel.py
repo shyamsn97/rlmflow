@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from rflow import (
+from rlmflow import (
     Flow,
     Graph,
     SequentialPool,

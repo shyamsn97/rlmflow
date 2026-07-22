@@ -11,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from rflow import Event, Flow, Graph, render_tree
+from rlmflow import Event, Flow, Graph, render_tree
 
 RUN_DIR = Path(__file__).resolve().parents[1] / "_runs" / "streaming-until"
 

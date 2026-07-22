@@ -1,6 +1,6 @@
 """Run a platformer-building Flow task inside Docker.
 
-Each agent's code runs in a Docker container via ``rflow.DockerRuntime``.
+Each agent's code runs in a Docker container via ``rlmflow.DockerRuntime``.
 
 Setup:
     docker build -t rlmflow:local .
@@ -21,7 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from rflow import (  # noqa: E402
+from rlmflow import (  # noqa: E402
     ConsumerGroup,
     DockerRuntime,
     Flow,

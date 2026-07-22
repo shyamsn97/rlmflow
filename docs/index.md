@@ -4,7 +4,7 @@ Pick the doc that matches what you're trying to do.
 
 ## Get oriented
 
-- [Blog post](https://shyamsn97.github.io/blog/rflow/) — long-form pitch.
+- [Blog post](https://shyamsn97.github.io/blog/rlmflow/) — long-form pitch.
   Why recursive agents, why graphs over flat traces, and walkthroughs.
 - [Positioning](positioning.md) — when to use rlmflow vs
   rlm-minimal, ypi, LangGraph, CrewAI, AutoGen, SWE-agent, Aider.
@@ -43,7 +43,7 @@ Pick the doc that matches what you're trying to do.
 ## Research Notes
 
 - [RAO implementation plan](research/rao_implementation_plan.md) — how to
-  implement Recursive Agent Optimization as a first-class `rflow.rao` module
+  implement Recursive Agent Optimization as a first-class `rlmflow.rao` module
   over `Flow` rollouts.
 - [DeLM vs. rlmflow](research/delm_vs_rlmflow.md) — how DeLM-style
   coordination could sit on top of recursive execution graphs.

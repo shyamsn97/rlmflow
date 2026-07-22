@@ -19,7 +19,7 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
-from rflow import (
+from rlmflow import (
     Flow,
     Graph,
     GraphCheckpointer,

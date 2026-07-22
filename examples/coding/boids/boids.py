@@ -1,13 +1,13 @@
-"""Run the boids coding task with rflow, official RLM, or both.
+"""Run the boids coding task with rlmflow, official RLM, or both.
 
 Examples:
-    python examples/coding/boids/boids.py --runner rflow
+    python examples/coding/boids/boids.py --runner rlmflow
     python examples/coding/boids/boids.py --runner rlm
     python examples/coding/boids/boids.py --runner both
 
 The two runners use the same query and write into suffixed directories so their
 artifacts and trajectories can be compared directly:
-`{out_dir}-rflow` and `{out_dir}-rlm-official`.
+`{out_dir}-rlmflow` and `{out_dir}-rlm-official`.
 """
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ def run_rflow(
     max_concurrency: int,
     no_viz: bool,
 ) -> None:
-    from rflow import (
+    from rlmflow import (
         FILE_TOOLS,
         ConsumerGroup,
         Flow,
@@ -129,7 +129,7 @@ def run_rflow(
         workers=max_concurrency,
     )
 
-    print(f"\n=== rflow run ===\nworkdir: {run_dir}\nmodel: {model}\n")
+    print(f"\n=== rlmflow run ===\nworkdir: {run_dir}\nmodel: {model}\n")
     try:
         graph = Graph(query=TASK)
         graph_dir = run_dir / "graph"
@@ -225,10 +225,10 @@ def parse_args() -> argparse.Namespace:
     examples_root = Path(__file__).resolve().parents[2]
     default_out = examples_root / "_runs" / "coding" / "boids"
 
-    parser = argparse.ArgumentParser(description="Compare rflow and official RLM on boids.")
+    parser = argparse.ArgumentParser(description="Compare rlmflow and official RLM on boids.")
     parser.add_argument(
         "--runner",
-        choices=("rflow", "rlm", "both"),
+        choices=("rlmflow", "rlm", "both"),
         default="both",
         help="Which runner to execute.",
     )
@@ -236,14 +236,14 @@ def parse_args() -> argparse.Namespace:
         "--out-dir",
         type=Path,
         default=default_out,
-        help="Base output path. Runner outputs use -rflow and -rlm-official suffixes.",
+        help="Base output path. Runner outputs use -rlmflow and -rlm-official suffixes.",
     )
     parser.add_argument("--model", default="gpt-5")
     parser.add_argument("--fast-model", default="gpt-5-mini")
     parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument("--max-iters", type=int, default=30)
     parser.add_argument("--max-concurrency", type=int, default=8)
-    parser.add_argument("--no-viz", action="store_true", help="Disable rflow live tree.")
+    parser.add_argument("--no-viz", action="store_true", help="Disable rlmflow live tree.")
     parser.add_argument(
         "--rlm-quiet",
         action="store_true",
@@ -260,10 +260,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     out_dir = args.out_dir.resolve()
-    rflow_dir = suffixed_dir(out_dir, "rflow")
+    rflow_dir = suffixed_dir(out_dir, "rlmflow")
     official_dir = suffixed_dir(out_dir, "rlm-official")
 
-    if args.runner in ("rflow", "both"):
+    if args.runner in ("rlmflow", "both"):
         if rflow_dir.exists() and args.force:
             shutil.rmtree(rflow_dir)
         run_rflow(
@@ -289,8 +289,8 @@ def main() -> None:
         )
 
     print("\nDone. Compare outputs:")
-    if args.runner in ("rflow", "both"):
-        print(f"- rflow: {rflow_dir}")
+    if args.runner in ("rlmflow", "both"):
+        print(f"- rlmflow: {rflow_dir}")
     if args.runner in ("rlm", "both"):
         print(f"- official RLM: {official_dir}")
 

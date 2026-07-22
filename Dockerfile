@@ -4,7 +4,7 @@
 #   docker build -t rlmflow:local .
 #
 # Use:
-#   from rflow.runtime.docker import DockerRuntime
+#   from rlmflow.runtime.docker import DockerRuntime
 #   runtime = DockerRuntime("rlmflow:local")
 #
 # Or via any of the bundled examples:
@@ -19,12 +19,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /opt/rlmflow
 COPY pyproject.toml README.md ./
-COPY rflow ./rflow
+COPY rlmflow ./rlmflow
+COPY rlmflow ./rlmflow
 RUN pip install ".[openai,anthropic,cloudpickle]"
 
 # DockerRuntime bind-mounts the host workspace at /workspace.
 WORKDIR /workspace
 
-# DockerRuntime spawns: `docker run -i --rm <image> python -m rflow.runtime.repl`.
+# DockerRuntime spawns: `docker run -i --rm <image> python -m rlmflow.runtime.repl`.
 # Setting it as CMD also makes `docker run -i rlmflow:local` work standalone.
-CMD ["python", "-m", "rflow.runtime.repl"]
+CMD ["python", "-m", "rlmflow.runtime.repl"]

@@ -238,7 +238,7 @@ def _parse_result(stdout: str) -> dict[str, object]:
 
 
 def _write_temp(content: str) -> str:
-    fd, path = tempfile.mkstemp(prefix="rflow-bench-", suffix=".txt")
+    fd, path = tempfile.mkstemp(prefix="rlmflow-bench-", suffix=".txt")
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(content)
     return path

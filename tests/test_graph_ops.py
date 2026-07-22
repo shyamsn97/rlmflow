@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from rflow import (
+from rlmflow import (
     Flow,
     Graph,
     LLMOutput,
@@ -221,8 +221,8 @@ def test_inject_tools_backfills_open_repls():
     # Materialize the REPL first, so backfill (not build_tools) is exercised.
     repl = flow.repl_for(controller)
     # Register a live run so open_repls can pair the graph with its REPL.
-    from rflow.flow import Run
-    from rflow.tasks import TaskQueue
+    from rlmflow.flow import Run
+    from rlmflow.tasks import TaskQueue
 
     flow.runs[controller.graph_id] = Run(graph=controller, tasks=TaskQueue())
 

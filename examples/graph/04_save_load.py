@@ -7,7 +7,7 @@ import importlib.util
 import shutil
 from pathlib import Path
 
-from rflow import Graph
+from rlmflow import Graph
 
 
 def build_graph() -> Graph:

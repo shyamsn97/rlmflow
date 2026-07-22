@@ -1,14 +1,14 @@
 import asyncio
 import sys
 
-from rflow import (
+from rlmflow import (
     Flow,
     Graph,
     tool,
 )
-from rflow.runtime import PopenConnection
-from rflow.runtime.repl import DoneSignal
-from rflow.runtime.repl_client import RemoteRepl
+from rlmflow.runtime import PopenConnection
+from rlmflow.runtime.repl import DoneSignal
+from rlmflow.runtime.repl_client import RemoteRepl
 
 from helpers import (
     StubLLM,
@@ -212,7 +212,7 @@ def test_minimal_add_remove_tool_reject_reserved_names():
 def test_minimal_repl_client_inject_and_remove_tool():
     repl = RemoteRepl(
         PopenConnection(
-            [sys.executable, "-u", "-m", "rflow.runtime.repl_server"],
+            [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
             label="test minimal remote REPL",
             repl_timeout=5,
         )
@@ -247,7 +247,7 @@ def test_minimal_repl_client_inject_and_remove_tool():
 
 
 def test_minimal_tool_metadata_marks_async_and_renders_await():
-    from rflow.tools import format_tool_line, get_tool_metadata
+    from rlmflow.tools import format_tool_line, get_tool_metadata
 
     @tool("Do async work.")
     async def worker(x):
@@ -267,7 +267,7 @@ def test_minimal_tool_metadata_marks_async_and_renders_await():
 def test_minimal_repl_client_async_proxy_tool_is_awaitable():
     repl = RemoteRepl(
         PopenConnection(
-            [sys.executable, "-u", "-m", "rflow.runtime.repl_server"],
+            [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
             label="test minimal remote REPL",
             repl_timeout=5,
         )

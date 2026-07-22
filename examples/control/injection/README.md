@@ -19,7 +19,7 @@ truncate the now-obsolete children, adopt the edited graph on a fresh
 Inspect the baseline with:
 
 ```python
-from rflow import open_viewer
+from rlmflow import open_viewer
 
 open_viewer("examples/_runs/word-search/baseline")
 ```

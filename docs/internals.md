@@ -29,18 +29,18 @@ Run       per-graph run state: the Graph, its TaskQueue scheduler, and its
 
 Supporting pieces:
 
-- **`TaskQueue`** (`rflow/tasks.py`) — a small, graph-free async scheduler. One
+- **`TaskQueue`** (`rlmflow/tasks.py`) — a small, graph-free async scheduler. One
   in-flight task per agent id, a follow-up slot, and an event stream.
-- **`Runtime` / `ReplBackend`** (`rflow/runtime/`) — the code sandbox. `Flow`
+- **`Runtime` / `ReplBackend`** (`rlmflow/runtime/`) — the code sandbox. `Flow`
   opens one REPL per agent and drives `start(code)` / `resume(value)` on it. See
   [`runtimes.md`](runtimes.md).
-- **`SystemPromptBuilder`** (`rflow/prompts/`) — named sections that render the
+- **`SystemPromptBuilder`** (`rlmflow/prompts/`) — named sections that render the
   system prompt from the current `flow` and `graph`; `UserPromptBuilder` projects
   the trajectory into user/assistant turns. See
   [`prompt_customization.md`](prompt_customization.md).
 
 The principle: **`Graph` holds state; `Flow` holds policy.** Anything that is a
-pure function of a graph is a graph method or a free helper in `rflow/utils`;
+pure function of a graph is a graph method or a free helper in `rlmflow/utils`;
 anything that needs engine config, clients, or live REPLs is a method on `Flow`.
 
 ---
@@ -200,7 +200,7 @@ holds the result nodes.
 ## Delegation
 
 Delegation is a single async REPL tool, `launch_subagents`, built per agent by
-`make_launch_subagents` (`rflow/tools/builtins.py`). When agent code runs
+`make_launch_subagents` (`rlmflow/tools/builtins.py`). When agent code runs
 `results = await launch_subagents([...])` inside an exec turn, the tool:
 
 1. for each **cold** spec, creates a child `Graph` from `query` (sharing the
@@ -251,7 +251,7 @@ def apply_action(self, graph, action):        # any GraphAction
     return action
 ```
 
-`GraphAction` (in `rflow/graph/events.py`) is the closed set of transitions:
+`GraphAction` (in `rlmflow/graph/events.py`) is the closed set of transitions:
 `GraphCreated`, `AppendNode`, `InsertNode`, `ReplaceNode`, `RemoveNode`,
 `AddChild`, `RemoveChild`. Each subclasses `Event` and exposes a uniform
 `node` / `node_id` / `node_type` view plus a stamped `graph_id`, so a merged
@@ -349,16 +349,16 @@ Every method on `Flow` is an extension seam; the engine dispatches through
 | Tools | `add_tool`, `remove_tool` |
 
 ```python
-class ReviewingFlow(rflow.Flow):
+class ReviewingFlow(rlmflow.Flow):
     async def exec_turn(self, graph, code, *, replay=False):
         if not replay and not approved(code):
-            node = rflow.ErrorOutput(content="rejected", output="rejected", error="rejected")
+            node = rlmflow.ErrorOutput(content="rejected", output="rejected", error="rejected")
             self.append_node(graph, node)
             return node
         return await super().exec_turn(graph, code, replay=replay)
 
 
-class RoutedFlow(rflow.Flow):
+class RoutedFlow(rlmflow.Flow):
     def llm_client(self, model="default"):
         if model == "default" and self.depth_hint >= 2:
             return super().llm_client("fast")

@@ -2,7 +2,7 @@ import asyncio
 import threading
 import time
 
-from rflow import (
+from rlmflow import (
     Flow,
     Graph,
 )

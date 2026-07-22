@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from rflow import Flow, Graph
+from rlmflow import Flow, Graph
 
 from helpers import StubLLM, counting_replies, first_user
 

@@ -276,7 +276,7 @@ def submit(
         "timeout_s": config.timeout_s,
     }
     # Enable Modal's output once for the process (thread-safe), then keep the
-    # ephemeral app alive until the remote call finishes. Each rflow child blocks
+    # ephemeral app alive until the remote call finishes. Each rlmflow child blocks
     # here, so several children block on independent Modal calls concurrently.
     _enable_output_once(modal)
     with app.run():

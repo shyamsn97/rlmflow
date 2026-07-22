@@ -20,10 +20,10 @@ export PRINT_HELP_PYSCRIPT
 EVAL_PROVIDER ?= openai
 EVAL_MODEL ?= gpt-5-mini
 EVAL_DATASETS ?= oolong
-EVAL_RUNNERS ?= vanilla rflow-local
+EVAL_RUNNERS ?= vanilla rlmflow-local
 EVAL_SEEDS ?= 0:10
 EVAL_BENCHMARK_DATASETS ?= oolong official_browsecomp official_longbench_v2 official_livecodebench official_sudoku_extreme
-EVAL_BENCHMARK_RUNNERS ?= rflow-local vanilla official-rlm
+EVAL_BENCHMARK_RUNNERS ?= rlmflow-local vanilla official-rlm
 EVAL_BENCHMARK_SEEDS ?= 0:20
 EVAL_MAX_ITERS ?= 20
 EVAL_MAX_DEPTH ?= 1
@@ -32,14 +32,14 @@ EVAL_EXECUTOR ?= local
 EVAL_PARALLEL ?= 1
 EVAL_BEST_OF_N ?= 1
 EVAL_ATTEMPT_TIMEOUT ?= 900
-EVAL_MODAL_APP_NAME ?= rflow-benchmarks
+EVAL_MODAL_APP_NAME ?= rlmflow-benchmarks
 EVAL_MODAL_CPU ?= 1
 EVAL_MODAL_TIMEOUT ?= 3600
 EVAL_OUT_DIR ?= benchmarks/eval/runs
 EVAL_DATASET_PARAMS ?=
-EVAL_RUNNER_PARAMS ?= --runner-param rflow-local.max_iters=$(EVAL_MAX_ITERS) --runner-param rflow-local.max_depth=$(EVAL_MAX_DEPTH) --runner-param rflow-local.use_llm_query=$(EVAL_INCLUDE_LLM_QUERY)
+EVAL_RUNNER_PARAMS ?= --runner-param rlmflow-local.max_iters=$(EVAL_MAX_ITERS) --runner-param rlmflow-local.max_depth=$(EVAL_MAX_DEPTH) --runner-param rlmflow-local.use_llm_query=$(EVAL_INCLUDE_LLM_QUERY)
 EVAL_ARGS ?=
-EVAL_WANDB_PROJECT ?= rflow-eval
+EVAL_WANDB_PROJECT ?= rlmflow-eval
 EVAL_WANDB_ENTITY ?=
 EVAL_WANDB_ENTITY_ARG := $(if $(EVAL_WANDB_ENTITY),--wandb-entity $(EVAL_WANDB_ENTITY),)
 
@@ -49,17 +49,17 @@ help: ## Show this help message.
 eval-help: ## Show eval harness CLI help.
 	cd $(REPO_ROOT) && python -m benchmarks.eval --help
 
-eval-smoke: ## Run local fake eval smoke across fake/vanilla/rflow.
+eval-smoke: ## Run local fake eval smoke across fake/vanilla/rlmflow.
 	cd $(REPO_ROOT) && python -m benchmarks.eval \
 		--model fake \
 		--dataset synthetic_needle \
-		--runner fake vanilla rflow-local \
+		--runner fake vanilla rlmflow-local \
 		--seeds 0:3 \
 		--dataset-param synthetic_needle.records=8 \
 		--dataset-param synthetic_needle.filler_words=2 \
-		--runner-param rflow-local.max_iters=3 \
-		--runner-param rflow-local.max_depth=1 \
-		--runner-param rflow-local.live_save=false \
+		--runner-param rlmflow-local.max_iters=3 \
+		--runner-param rlmflow-local.max_depth=1 \
+		--runner-param rlmflow-local.live_save=false \
 		--out-dir $(EVAL_OUT_DIR) \
 		$(EVAL_ARGS)
 

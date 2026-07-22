@@ -28,7 +28,7 @@ Direct CLI:
 python -m benchmarks.eval \
   --model fake \
   --dataset synthetic_needle \
-  --runner fake vanilla rflow-local \
+  --runner fake vanilla rlmflow-local \
   --seeds 0:3 \
   --dataset-param synthetic_needle.records=8 \
   --dataset-param synthetic_needle.filler_words=2
@@ -40,7 +40,7 @@ python -m benchmarks.eval \
 python -m benchmarks.eval \
   --model openai:gpt-5-mini \
   --dataset oolong official_browsecomp official_longbench_v2 official_livecodebench official_sudoku_extreme \
-  --runner vanilla rflow-local official-rlm \
+  --runner vanilla rlmflow-local official-rlm \
   --seeds 0:20 \
   --wandb
 ```
@@ -55,7 +55,7 @@ is unchanged. To fan rows out to cheap one-CPU Modal workers:
 python -m benchmarks.eval \
   --model openai:gpt-5-mini \
   --dataset oolong official_browsecomp official_longbench_v2 official_livecodebench official_sudoku_extreme \
-  --runner vanilla rflow-local official-rlm \
+  --runner vanilla rlmflow-local official-rlm \
   --seed 0 \
   --limit 50 \
   --executor modal \

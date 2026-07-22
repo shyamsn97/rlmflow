@@ -21,8 +21,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from rflow import Flow, Graph, GraphCheckpointer, SystemPromptBuilder
-from rflow.clients import OpenAIClient
+from rlmflow import Flow, Graph, GraphCheckpointer, SystemPromptBuilder
+from rlmflow.clients import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:

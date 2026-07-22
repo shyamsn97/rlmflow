@@ -7,7 +7,7 @@ around four components:
 
 - `Dataset` - yields examples and scores predictions.
 - `Model` - wraps inference.
-- `Runner` - executes an example (`vanilla`, `rflow-local`, `official-rlm`, etc.).
+- `Runner` - executes an example (`vanilla`, `rlmflow-local`, `official-rlm`, etc.).
 - `Logger` - writes JSONL, console output, reports, or W&B metrics.
 
 Initial datasets:
@@ -37,12 +37,12 @@ Direct equivalent:
 python -m benchmarks.eval \
   --model fake \
   --dataset synthetic_needle \
-  --runner fake vanilla rflow-local \
+  --runner fake vanilla rlmflow-local \
   --seeds 0:3 \
   --dataset-param synthetic_needle.records=8 \
   --dataset-param synthetic_needle.filler_words=2 \
-  --runner-param rflow-local.max_iters=3 \
-  --runner-param rflow-local.max_depth=1
+  --runner-param rlmflow-local.max_iters=3 \
+  --runner-param rlmflow-local.max_depth=1
 ```
 
 Real run:
@@ -51,7 +51,7 @@ Real run:
 python -m benchmarks.eval \
   --model openai:gpt-5-mini \
   --dataset oolong official_browsecomp official_longbench_v2 official_livecodebench official_sudoku_extreme \
-  --runner vanilla rflow-local official-rlm \
+  --runner vanilla rlmflow-local official-rlm \
   --seeds 0:20 \
   --wandb
 ```
@@ -62,7 +62,7 @@ Modal parallel run:
 python -m benchmarks.eval \
   --model openai:gpt-5-mini \
   --dataset oolong official_browsecomp official_longbench_v2 official_livecodebench official_sudoku_extreme \
-  --runner vanilla rflow-local official-rlm \
+  --runner vanilla rlmflow-local official-rlm \
   --seed 0 \
   --limit 50 \
   --executor modal \
@@ -99,6 +99,6 @@ The harness tracks the library's async LLM clients and graph-first runner:
 - **Models** (`benchmarks/eval/models/openai.py`, `anthropic.py`) wrap
   `OpenAIClient` / `AnthropicClient`, whose `completion` is async. The sync
   `Model.complete` bridge uses `asyncio.run(...)`.
-- **`rflow-local` runner** builds `Graph(query=example.prompt, inputs=...)` and
+- **`rlmflow-local` runner** builds `Graph(query=example.prompt, inputs=...)` and
   drives with `flow.run_streaming(graph=graph)` — `Example.prompt` is task text,
   not `Graph.prompt_profile`.

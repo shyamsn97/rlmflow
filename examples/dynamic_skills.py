@@ -29,8 +29,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from rflow import Flow, Graph, LLMUsage, SystemPromptBuilder
-from rflow.tools import tool
+from rlmflow import Flow, Graph, LLMUsage, SystemPromptBuilder
+from rlmflow.tools import tool
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:

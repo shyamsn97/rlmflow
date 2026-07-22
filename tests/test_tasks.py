@@ -2,7 +2,7 @@
 
 import asyncio
 
-from rflow.tasks import TaskQueue
+from rlmflow.tasks import TaskQueue
 
 
 async def collect(queue):

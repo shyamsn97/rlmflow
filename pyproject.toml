@@ -101,7 +101,7 @@ Repository = "https://github.com/shyamsn97/rlmflow"
 Issues = "https://github.com/shyamsn97/rlmflow/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["rflow"]
+packages = ["rlmflow", "rflow"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -114,7 +114,7 @@ timeout = 30
 timeout_method = "thread"
 
 [tool.coverage.run]
-source = ["rflow"]
+source = ["rlmflow"]
 omit = ["*/tests/*", "*/__pycache__/*"]
 
 [tool.coverage.report]

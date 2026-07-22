@@ -1,6 +1,6 @@
-"""Shared stubs and fixtures for the rflow test suite."""
+"""Shared stubs and fixtures for the rlmflow test suite."""
 
-from rflow import ExecAction, ExecOutput, Graph, LLMOutput, LLMUsage
+from rlmflow import ExecAction, ExecOutput, Graph, LLMOutput, LLMUsage
 
 
 class StubLLM:

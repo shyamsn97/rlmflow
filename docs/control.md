@@ -8,10 +8,10 @@ and resume are all graph operations.
 
 ```python
 import asyncio
-from rflow import render_tree
+from rlmflow import render_tree
 
-agent = rflow.Flow(rflow.OpenAIClient(model="gpt-5"), max_depth=2)
-graph = rflow.Graph(query=query)
+agent = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-5"), max_depth=2)
+graph = rlmflow.Graph(query=query)
 
 async def drive():
     async for _event in agent.run_streaming(graph=graph):
@@ -91,7 +91,7 @@ A saved graph directory is the durable run:
 ```python
 graph.save("runs/deep_research")
 
-resumed = rflow.Graph.load("runs/deep_research")
+resumed = rlmflow.Graph.load("runs/deep_research")
 agent.run(graph=resumed)   # or: async for _ in agent.run_streaming(graph=resumed): ...
 ```
 
@@ -215,8 +215,8 @@ orchestrator.
 Subclass `Runtime` and implement `open(agent)` to mint a backend:
 
 ```python
-class MyRuntime(rflow.Runtime):
-    def open(self, agent: rflow.Graph) -> rflow.ReplBackend:
+class MyRuntime(rlmflow.Runtime):
+    def open(self, agent: rlmflow.Graph) -> rlmflow.ReplBackend:
         return MyBackend(...)
 ```
 
@@ -228,14 +228,14 @@ See [`runtimes.md`](runtimes.md).
 Register tools on the runtime before constructing or stepping the flow:
 
 ```python
-@rflow.tool("Search files for a regex.")
+@rlmflow.tool("Search files for a regex.")
 def search(pattern: str, path: str = ".") -> str:
     ...
 
-runtime = rflow.LocalRuntime(working_directory=".")
+runtime = rlmflow.LocalRuntime(working_directory=".")
 runtime.register_tool(search)
-runtime.register_tools(rflow.FILE_TOOLS)
-agent = rflow.Flow(rflow.OpenAIClient(model="gpt-5"), runtime=runtime)
+runtime.register_tools(rlmflow.FILE_TOOLS)
+agent = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-5"), runtime=runtime)
 ```
 
 ## Custom Prompt
@@ -243,7 +243,7 @@ agent = rflow.Flow(rflow.OpenAIClient(model="gpt-5"), runtime=runtime)
 For a fuller guide, see [`prompt_customization.md`](prompt_customization.md).
 
 ```python
-from rflow import SystemPromptBuilder
+from rlmflow import SystemPromptBuilder
 
 GUARDRAILS = """
 - Verify before `done()`. Empty/zero/surprising results -> one sanity check first.
@@ -254,7 +254,7 @@ prompt = SystemPromptBuilder()
 prompt.sections.update("role", "You are a security auditor.")
 prompt.sections.add("guardrails", GUARDRAILS, title="Guardrails", after="strategy")
 
-agent = rflow.Flow(rflow.OpenAIClient(model="gpt-5"), system_prompt=prompt)
+agent = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-5"), system_prompt=prompt)
 ```
 
 `agent.system_prompt` accepts a `SystemPromptBuilder`, a string, or a

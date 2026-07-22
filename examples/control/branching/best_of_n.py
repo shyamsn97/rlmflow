@@ -14,7 +14,7 @@ import argparse
 import shutil
 from pathlib import Path
 
-from rflow import Flow, Graph, LLMUsage
+from rlmflow import Flow, Graph, LLMUsage
 
 FRUITS = [
     ("lemon", "citrus"),

@@ -5,7 +5,7 @@
   <a href="https://github.com/shyamsn97/rlmflow/pkgs/container/rlmflow"><img src="https://img.shields.io/badge/ghcr.io-rlmflow-2496ED?logo=docker&logoColor=white" alt="Docker" /></a>
 </p>
 
-Read the blog post: [rlmflow](https://shyamsn97.github.io/blog/rflow/).
+Read the blog post: [rlmflow](https://shyamsn97.github.io/blog/rlmflow/).
 
 **rlmflow** is a Python library for building **recursive agents** — agents
 that spawn other agents — as live execution graphs. Every query, action,
@@ -83,7 +83,7 @@ The graph is the run itself:
 
 ```python
 import asyncio
-from rflow import Graph, render_tree
+from rlmflow import Graph, render_tree
 
 graph = Graph(query=query)
 
@@ -148,8 +148,8 @@ from pathlib import Path
 
 import asyncio
 
-from rflow.clients import OpenAIClient
-from rflow import FILE_TOOLS, Flow, Graph, LocalRuntime, open_viewer, render_tree
+from rlmflow.clients import OpenAIClient
+from rlmflow import FILE_TOOLS, Flow, Graph, LocalRuntime, open_viewer, render_tree
 
 workdir = Path("examples/_runs/quickstart")
 runtime = LocalRuntime(working_directory=workdir)
@@ -192,15 +192,15 @@ later with `Graph.load(path)` or `open_viewer(path)`.
 recursive agent run is a drop-in replacement for any raw LLM.
 
 ```python
-import rflow
-from rflow import FlowLLM
-from rflow.clients import LLMClient, OpenAIClient
+import rlmflow
+from rlmflow import FlowLLM
+from rlmflow.clients import LLMClient, OpenAIClient
 
 def ask(llm: LLMClient, q: str) -> str:
     return llm.chat([{"role": "user", "content": q}])
 
 ask(OpenAIClient(model="gpt-4o-mini"), "2+2?")                      # one LLM call
-ask(FlowLLM(rflow.Flow(OpenAIClient(model="gpt-4o-mini"))), "2+2?")  # full agent loop
+ask(FlowLLM(rlmflow.Flow(OpenAIClient(model="gpt-4o-mini"))), "2+2?")  # full agent loop
 ```
 
 Nest agents by passing one `FlowLLM(inner_flow)` as another flow's `llm`. See
@@ -217,7 +217,7 @@ Nest agents by passing one `FlowLLM(inner_flow)` as another flow's `llm`. See
 
 ```python
 import asyncio
-from rflow import Graph, render_tree
+from rlmflow import Graph, render_tree
 
 graph = Graph(query=query)
 
@@ -253,7 +253,7 @@ SupervisingOutput -> ResumeAction -> ...        (children settled — supervisor
 The graph is queryable in plain Python:
 
 ```python
-render_tree(graph)              # ASCII tree render (rflow.render_tree)
+render_tree(graph)              # ASCII tree render (rlmflow.render_tree)
 graph["root.scanner_api"]       # sub-Graph rooted at that agent
 graph["root.scanner_api"].nodes # node trajectory for one agent
 graph.children                  # dict[str, Graph] of direct children
@@ -293,11 +293,11 @@ See [`docs/injections.md`](docs/injections.md) and
 and reopen it with `Graph.load(...)`:
 
 ```python
-graph = rflow.Graph(query=query)
+graph = rlmflow.Graph(query=query)
 agent.run(graph=graph)
 run_dir = graph.save("runs/deep_research")
 
-latest = rflow.Graph.load(run_dir)
+latest = rlmflow.Graph.load(run_dir)
 ```
 
 Fork an independent branch from any point and continue it with a `Flow`:
@@ -318,7 +318,7 @@ and the live graph-controller pool example in
 ## Visualization
 
 Because the run is a typed graph, every view is just a render of that graph. It
-all lives in `rflow.view` (re-exported from `rflow`) and works on a saved run
+all lives in `rlmflow.view` (re-exported from `rlmflow`) and works on a saved run
 directory, a single `Graph`, or a list of step snapshots.
 
 ### Live terminal tree
@@ -328,7 +328,7 @@ any snapshot — reprint it each tick to watch a run unfold:
 
 ```python
 import asyncio
-from rflow import render_tree
+from rlmflow import render_tree
 
 async def drive():
     async for _event in agent.run_streaming(graph=graph):
@@ -348,7 +348,7 @@ it events as they arrive.
 selector, and a per-agent transcript over a swimlane of the run:
 
 ```python
-from rflow import open_viewer
+from rlmflow import open_viewer
 
 open_viewer("runs/deep_research")   # needs: pip install rlmflow[viewer]
 ```
@@ -371,7 +371,7 @@ saved run directory, a `Graph`, or a list of snapshots, and need
 `pip install rlmflow[image]` (Plotly + kaleido):
 
 ```python
-from rflow import save_image, save_steps
+from rlmflow import save_image, save_steps
 
 save_image("runs/deep_research", "hero.png")
 save_steps(
@@ -392,11 +392,11 @@ every DSPy "LM call" becomes a full recursive agent run:
 
 ```python
 import dspy
-import rflow
-from rflow import DSPyFlow, FlowLLM
-from rflow.clients import OpenAIClient
+import rlmflow
+from rlmflow import DSPyFlow, FlowLLM
+from rlmflow.clients import OpenAIClient
 
-flow = rflow.Flow(OpenAIClient(model="gpt-4o-mini"), max_depth=1, max_iters=5)
+flow = rlmflow.Flow(OpenAIClient(model="gpt-4o-mini"), max_depth=1, max_iters=5)
 
 dspy.configure(lm=DSPyFlow(FlowLLM(flow), model="rlmflow/gpt-4o-mini"))
 qa = dspy.ChainOfThought("question -> answer")
@@ -456,8 +456,8 @@ Add `--include-optional`, `--include-live`, `--include-sandbox`, or
 
 The shared eval harness lives under [`benchmarks/eval/`](benchmarks/eval/).
 It uses a task/runner registry, writes `results.jsonl` + `summary.json`, records
-rflow graph-shape metrics, shows tqdm progress bars, and can log per-row metrics
-to W&B. Real runs can compare `vanilla`, `rflow`, and the upstream official RLM
+rlmflow graph-shape metrics, shows tqdm progress bars, and can log per-row metrics
+to W&B. Real runs can compare `vanilla`, `rlmflow`, and the upstream official RLM
 runner ported from [`avilum/minrlm/eval`](https://github.com/avilum/minrlm/tree/master/eval).
 It also writes model-oriented reports under `eval-runs/<model>/<benchmark>/`,
 including per-question JSON files with prompt, inputs, expected answer, and each
@@ -474,7 +474,7 @@ extension points and W&B usage.
 - [~] OOLONG, LongBench-v2, CodeQA, SWE-bench, etc. benchmarks [benchmarks](benchmarks/eval/)
 - [~] Remote sandbox support (modal, e2b, daytona)
 - [ ] **REPL security (local)**
-- [ ] [RAO library module](docs/research/rao_implementation_plan.md): `rflow.rao` rollout collection, per-node rewards, leave-one-out advantages, depth weighting, trainer export
+- [ ] [RAO library module](docs/research/rao_implementation_plan.md): `rlmflow.rao` rollout collection, per-node rewards, leave-one-out advantages, depth weighting, trainer export
 - [ ] [DeLM-style coordination](docs/research/delm_vs_rlmflow.md): shared task queue, verified shared context, multi-worker coordinator over `Flow` graphs
 
 ## Docs
@@ -487,7 +487,7 @@ in [`docs/internals.md`](docs/internals.md). Research notes live under
   split, the two phases of a run, the per-agent scheduler, exec turns,
   delegation, REPL lifecycle, runtime backends, graph persistence, and extension
   seams.
-- [Blog post](https://shyamsn97.github.io/blog/rflow/): long-form pitch —
+- [Blog post](https://shyamsn97.github.io/blog/rlmflow/): long-form pitch —
   recursive agents, why graphs beat flat traces, and walkthroughs.
 - [Positioning](docs/positioning.md): when to use rlmflow vs
   rlm-minimal, ypi, LangGraph, CrewAI, AutoGen, SWE-agent, Aider.

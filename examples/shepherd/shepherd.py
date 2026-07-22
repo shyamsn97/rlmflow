@@ -42,7 +42,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from rflow import (
+from rlmflow import (
     ConsumerGroup,
     ExecAction,
     ExecOutput,
@@ -536,7 +536,7 @@ def make_shepherd_tools(
 
 def register_halts(flow: Flow, *, jam_pushes: int) -> None:
     """Name the host-driven ``worker_stop`` boundary once, up front, so the worker's
-    ``run_streaming`` selects it by name (see ``rflow.tools.graph_ops``). It stops
+    ``run_streaming`` selects it by name (see ``rlmflow.tools.graph_ops``). It stops
     the instant the worker solves, jams, or hits its push budget — the cue to hand
     off to the shepherd. (Recovery branches self-drive via ``launch_subgraphs``, so
     they aren't host-driven and can't use a named ``until``; their push budget is

@@ -14,7 +14,7 @@ import sys
 import threading
 from pathlib import Path
 
-from rflow import Flow, Graph, GraphCheckpointer, LLMUsage, render_tree
+from rlmflow import Flow, Graph, GraphCheckpointer, LLMUsage, render_tree
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:

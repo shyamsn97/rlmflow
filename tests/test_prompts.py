@@ -1,6 +1,6 @@
 import json
 
-from rflow import (
+from rlmflow import (
     Flow,
     Graph,
     LLMOutput,
@@ -155,7 +155,7 @@ def test_minimal_first_turn_note_present_then_drops_after_output():
 def test_default_prompt_forbids_nested_asyncio_event_loops():
     # LocalRepl already runs inside an event loop; nesting asyncio.run /
     # run_until_complete is a common agent footgun (RuntimeError).
-    from rflow.prompts import SYSTEM_PROMPT
+    from rlmflow.prompts import SYSTEM_PROMPT
 
     assert "Top-level `await`" in SYSTEM_PROMPT or "top-level `await`" in SYSTEM_PROMPT
     assert "asyncio.run" in SYSTEM_PROMPT
@@ -171,14 +171,14 @@ def test_minimal_first_turn_note_mentions_inputs_when_present():
 
 
 def test_minimal_static_system_prompt_within_size_guard():
-    from rflow.prompts import MAX_STATIC_PROMPT_CHARS, SYSTEM_PROMPT
+    from rlmflow.prompts import MAX_STATIC_PROMPT_CHARS, SYSTEM_PROMPT
 
     assert len(SYSTEM_PROMPT) <= MAX_STATIC_PROMPT_CHARS
 
 
 
 def test_minimal_prompt_builder_names_lists_sections_in_order():
-    from rflow.prompts import DEFAULT_BUILDER
+    from rlmflow.prompts import DEFAULT_BUILDER
 
     names = DEFAULT_BUILDER.names
     assert names[0] == "role"

@@ -14,7 +14,7 @@ Use full replacement only when you want to own that entire protocol yourself.
 Before changing the prompt, render the one your agent already sees:
 
 ```python
-graph = rflow.Graph(query="Summarize this document.", inputs={"document": document})
+graph = rlmflow.Graph(query="Summarize this document.", inputs={"document": document})
 print(agent.build_system_prompt(graph))
 ```
 
@@ -22,9 +22,9 @@ You can also render without starting a run by constructing the graph shape you
 want to inspect:
 
 ```python
-import rflow
+import rlmflow
 
-graph = rflow.Graph(query="Summarize this document.", agent_id="root", depth=0)
+graph = rlmflow.Graph(query="Summarize this document.", agent_id="root", depth=0)
 print(agent.build_system_prompt(graph))
 ```
 
@@ -71,8 +71,8 @@ return the list, so edits read top-to-bottom.
 `add` inserts a section `before`/`after` a named one (or appends):
 
 ```python
-import rflow
-from rflow import SystemPromptBuilder
+import rlmflow
+from rlmflow import SystemPromptBuilder
 
 project_rules = """
 - Preserve API compatibility unless the task explicitly asks for a breaking change.
@@ -83,7 +83,7 @@ project_rules = """
 prompt = SystemPromptBuilder()
 prompt.sections.add("project_rules", project_rules, title="Project Rules", after="final")
 
-agent = rflow.Flow(llm, max_depth=2, system_prompt=prompt)
+agent = rlmflow.Flow(llm, max_depth=2, system_prompt=prompt)
 # or set it after construction:
 agent.system_prompt = prompt
 ```
@@ -136,7 +136,7 @@ For a customization you want every time, subclass and override
 overriding a `render_*` method on `UserPromptBuilder`.
 
 ```python
-from rflow import SystemPromptBuilder
+from rlmflow import SystemPromptBuilder
 
 class AuditPrompt(SystemPromptBuilder):
     def default_sections(self):
@@ -144,7 +144,7 @@ class AuditPrompt(SystemPromptBuilder):
             "rules", RULES, title="Rules", after="final"
         )
 
-agent = rflow.Flow(llm, system_prompt=AuditPrompt())
+agent = rlmflow.Flow(llm, system_prompt=AuditPrompt())
 ```
 
 ### Build A Prompt From Scratch
@@ -153,8 +153,8 @@ Override `default_sections` to return your own `Sections`. Include the built-in
 callable sections if you want the standard runtime-generated tools/status blocks.
 
 ```python
-from rflow import SystemPromptBuilder
-from rflow.prompts import Sections, status_section, tools_section
+from rlmflow import SystemPromptBuilder
+from rlmflow.prompts import Sections, status_section, tools_section
 
 class MinimalPrompt(SystemPromptBuilder):
     def default_sections(self):
@@ -174,7 +174,7 @@ class MinimalPrompt(SystemPromptBuilder):
             .add("status", status_section, title="Status")
         )
 
-agent = rflow.Flow(llm, system_prompt=MinimalPrompt())
+agent = rlmflow.Flow(llm, system_prompt=MinimalPrompt())
 ```
 
 ## The `system_prompt` Source
@@ -189,10 +189,10 @@ function — and is resolved fresh on every turn:
 - **function** — a dynamic prompt without subclassing anything.
 
 ```python
-import rflow
+import rlmflow
 
 # constant string (most fragile — you own the whole protocol)
-agent = rflow.Flow(
+agent = rlmflow.Flow(
     llm,
     system_prompt="""
 You are a Python REPL agent.
@@ -208,7 +208,7 @@ def prompt_for(flow, graph):
     tail = "Return an executive summary." if graph.depth == 0 else "Return findings only."
     return f"You are an auditor. {tail}"
 
-agent = rflow.Flow(llm, system_prompt=prompt_for)
+agent = rlmflow.Flow(llm, system_prompt=prompt_for)
 ```
 
 A string that omits `launch_subagents`, `INPUTS`, `HISTORY`, or the `done(...)`
@@ -224,8 +224,8 @@ graph (`agent_id`, `depth`, `query`, `inputs`, `model`, …) — assembles a
 `Sections`, and renders it with `self.build(...)`.
 
 ```python
-import rflow
-from rflow import SystemPromptBuilder
+import rlmflow
+from rlmflow import SystemPromptBuilder
 
 
 class AuditPrompt(SystemPromptBuilder):
@@ -240,14 +240,14 @@ class AuditPrompt(SystemPromptBuilder):
         return self.build(sections, flow, graph)
 
 
-agent = rflow.Flow(llm, system_prompt=AuditPrompt())
+agent = rlmflow.Flow(llm, system_prompt=AuditPrompt())
 ```
 
 You can also replace narrower callable sections directly:
 
 ```python
-from rflow import SystemPromptBuilder
-from rflow.prompts import tools_section
+from rlmflow import SystemPromptBuilder
+from rlmflow.prompts import tools_section
 
 
 def careful_tools(engine, graph):
@@ -268,7 +268,7 @@ small additions like project rules or runtime notes. A prompt section can be
 either static text or a function:
 
 ```python
-def section(flow: rflow.Flow, graph: rflow.Graph) -> str:
+def section(flow: rlmflow.Flow, graph: rlmflow.Graph) -> str:
     ...
 ```
 
@@ -305,10 +305,10 @@ orchestrator RLM spawning coding agents, say. Register named **prompt profiles**
 on the flow, parallel to `llm_clients`/`model`:
 
 ```python
-import rflow
-from rflow import PromptProfile
+import rlmflow
+from rlmflow import PromptProfile
 
-flow = rflow.Flow(
+flow = rlmflow.Flow(
     llm,
     prompts={
         "coder": PromptProfile(
@@ -348,7 +348,7 @@ use when the host sets the profile at construction (`Graph(..., prompt_profile=
 "coder")`) and the orchestrator should not pick names:
 
 ```python
-flow = rflow.Flow(llm, prompts={"coder": CODER}, prompt_router="graph")
+flow = rlmflow.Flow(llm, prompts={"coder": CODER}, prompt_router="graph")
 worker = Graph(query="...", prompt_profile="coder")
 ```
 
@@ -356,7 +356,7 @@ worker = Graph(query="...", prompt_profile="coder")
 time and overrides whatever is on the graph (also suppresses advertising):
 
 ```python
-flow = rflow.Flow(
+flow = rlmflow.Flow(
     llm,
     prompts={"coder": CODER},
     prompt_router=lambda flow, graph: "coder" if graph.depth > 0 else "default",
@@ -396,8 +396,8 @@ Override one method to re-shape how a single node type becomes a message (return
 `None` to drop it):
 
 ```python
-import rflow
-from rflow import UserPromptBuilder
+import rlmflow
+from rlmflow import UserPromptBuilder
 
 
 class LabeledUser(UserPromptBuilder):
@@ -405,7 +405,7 @@ class LabeledUser(UserPromptBuilder):
         return {"role": "user", "content": "REPL OUTPUT:\n" + (node.content or node.output)}
 
 
-agent = rflow.Flow(llm, user_prompt=LabeledUser())
+agent = rlmflow.Flow(llm, user_prompt=LabeledUser())
 ```
 
 The overridable renderers are `render_user_query`, `render_llm_output`,
@@ -417,7 +417,7 @@ To change the nudge or truncation wording, subclass `Flow` — they are class
 attributes:
 
 ```python
-class TerseFlow(rflow.Flow):
+class TerseFlow(rlmflow.Flow):
     continue_nudge = "Continue."
     final_action = "Give your final answer now via done(...)."
 ```

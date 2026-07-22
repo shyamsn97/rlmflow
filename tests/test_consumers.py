@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from rflow import ConsumerGroup, Graph, GraphCheckpointer, StreamConsumer, WorkspaceSync
+from rlmflow import ConsumerGroup, Graph, GraphCheckpointer, StreamConsumer, WorkspaceSync
 
 
 class Recorder(StreamConsumer):

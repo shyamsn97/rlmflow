@@ -13,7 +13,7 @@ from benchmarks.eval.types import Logger, Row
 class WandbLogger(Logger):
     def __init__(
         self,
-        project: str = "rflow-eval",
+        project: str = "rlmflow-eval",
         entity: str | None = None,
         root: Path | str | None = None,
     ) -> None:

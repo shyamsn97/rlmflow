@@ -19,7 +19,7 @@ Sources:
 ## Short Answer
 
 RAO is a natural fit for this repo, but it should be implemented as a
-first-class `rflow.rao` library module around `RecursiveFlow`, not as a rewrite
+first-class `rlmflow.rao` library module around `RecursiveFlow`, not as a rewrite
 of the runtime.
 
 `rlmflow` already has most of the inference substrate RAO assumes:
@@ -45,7 +45,7 @@ The missing RAO pieces are training-specific:
 So the right implementation boundary is:
 
 ```text
-rflow runtime
+rlmflow runtime
   RecursiveFlow
   Graph / Node
   Workspace
@@ -92,7 +92,7 @@ Use separate dataclasses:
 from dataclasses import dataclass, field
 from typing import Any
 
-import rflow
+import rlmflow
 
 
 @dataclass(frozen=True)
@@ -142,7 +142,7 @@ from typing import Protocol
 
 
 class RewardFn(Protocol):
-    def score(self, task: TaskSpec, graph: rflow.Graph) -> float:
+    def score(self, task: TaskSpec, graph: rlmflow.Graph) -> float:
         """Return this agent node's local success/proxy score."""
 ```
 
@@ -173,7 +173,7 @@ Implementation sketch:
 
 ```python
 def score_tree(
-    graph: rflow.Graph,
+    graph: rlmflow.Graph,
     task_for_agent: dict[str, TaskSpec],
     reward_fn: RewardFn,
     *,
@@ -223,7 +223,7 @@ def leave_one_out_advantages(root_rewards: list[float]) -> list[float]:
 Depth weighting should be applied after advantage computation:
 
 ```python
-def depth_weights(graphs: list[rflow.Graph]) -> dict[int, float]:
+def depth_weights(graphs: list[rlmflow.Graph]) -> dict[int, float]:
     counts: dict[int, int] = {}
     for graph in graphs:
         for agent in graph.walk():
@@ -241,11 +241,11 @@ dominate just because recursion fans out.
 ## Rollout Collection
 
 Add RAO as a first-class library module. It should be separate from the core
-runtime loop, but still live under `rflow/` because rollout collection, reward
+runtime loop, but still live under `rlmflow/` because rollout collection, reward
 aggregation, and training export are reusable library features:
 
 ```text
-rflow/rao/
+rlmflow/rao/
   __init__.py
   tasks.py          # TaskSpec, TaskSampler
   rewards.py        # RewardFn, score_tree
@@ -256,9 +256,9 @@ rflow/rao/
 ```
 
 Keep RAO out of `RecursiveFlow.step(...)` and the graph data model; do not keep
-it out of the package. The clean boundary is a sibling package: `rflow/rao`
+it out of the package. The clean boundary is a sibling package: `rlmflow/rao`
 consumes `RecursiveFlow`, `Graph`, `Workspace`, transcripts, and contexts.
-Example scripts should be thin entrypoints that import from `rflow.rao`.
+Example scripts should be thin entrypoints that import from `rlmflow.rao`.
 
 Collector shape:
 
@@ -483,18 +483,18 @@ Use this as the working checklist for turning the plan into code.
 
 ### RAO Package Skeleton
 
-- [ ] Add `rflow/rao/__init__.py`.
-- [ ] Add `rflow/rao/tasks.py` with `TaskSpec` and a small
+- [ ] Add `rlmflow/rao/__init__.py`.
+- [ ] Add `rlmflow/rao/tasks.py` with `TaskSpec` and a small
   `TaskSampler` protocol.
-- [ ] Add `rflow/rao/rewards.py` with `RewardFn`, `NodeScore`, and
+- [ ] Add `rlmflow/rao/rewards.py` with `RewardFn`, `NodeScore`, and
   `score_tree(...)`.
-- [ ] Add `rflow/rao/advantages.py` with leave-one-out advantage and
+- [ ] Add `rlmflow/rao/advantages.py` with leave-one-out advantage and
   depth-weight helpers.
-- [ ] Add `rflow/rao/export.py` with `TrajectoryExample` and JSONL export.
-- [ ] Add `rflow/rao/collect.py` with `RAORolloutCollector`.
-- [ ] Add `rflow/rao/trainers.py` with `TrainerAdapter` and
+- [ ] Add `rlmflow/rao/export.py` with `TrajectoryExample` and JSONL export.
+- [ ] Add `rlmflow/rao/collect.py` with `RAORolloutCollector`.
+- [ ] Add `rlmflow/rao/trainers.py` with `TrainerAdapter` and
   `JsonlTrainerAdapter`.
-- [ ] Keep examples as thin runnable wrappers over `rflow.rao`, not as the
+- [ ] Keep examples as thin runnable wrappers over `rlmflow.rao`, not as the
   implementation home.
 
 ### Rollout And Scoring

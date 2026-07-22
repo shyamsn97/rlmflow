@@ -75,8 +75,8 @@ Examples that use file tools register them on the runtime
 (`runtime.register_tools(FILE_TOOLS)`) and set `working_directory`, so relative
 paths resolve into that directory the same way in local and Docker modes.
 
-Each agent reads its `RFLOW_*` metadata from its own per-REPL `ENV` mapping
-(e.g. `ENV["RFLOW_AGENT_ID"]`), so that metadata is isolated per agent in every
+Each agent reads its `RLMFLOW_*` metadata from its own per-REPL `ENV` mapping
+(e.g. `ENV["RLMFLOW_AGENT_ID"]`), so that metadata is isolated per agent in every
 runtime, including the in-process `LocalRuntime`. For true parallel local
 *code* execution prefer `SubprocessRuntime` (one process per agent, isolated
 cwd); `LocalRuntime` still serializes cwd changes inside the host process. Use
@@ -90,7 +90,7 @@ python examples/summarizer.py        # saves to examples/_runs/summarizer/
 ```
 
 ```python
-from rflow import open_viewer, save_image
+from rlmflow import open_viewer, save_image
 
 open_viewer("examples/_runs/summarizer")            # interactive Gradio app
 save_image("examples/_runs/summarizer", "run.png")  # static PNG (rlmflow[image])
@@ -113,8 +113,8 @@ Install the matching extra first: `rlmflow[modal]` or `rlmflow[sandbox]`.
 For fully locked-down local runs, pass a `DockerRuntime`:
 
 ```python
-from rflow import DockerRuntime, Flow
-from rflow.clients import OpenAIClient
+from rlmflow import DockerRuntime, Flow
+from rlmflow.clients import OpenAIClient
 
 runtime = DockerRuntime("rlmflow:local", working_directory="./proj")
 flow = Flow(OpenAIClient(model="gpt-4o"), runtime=runtime)

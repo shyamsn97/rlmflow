@@ -7,7 +7,7 @@ between steps are seen by the run when it resumes.
 
 import asyncio
 
-from rflow import Flow, Graph
+from rlmflow import Flow, Graph
 
 from helpers import StubLLM, counting_replies, first_user
 

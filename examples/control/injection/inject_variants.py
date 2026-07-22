@@ -30,7 +30,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rflow import (
+from rlmflow import (
     ExecOutput,
     Flow,
     Graph,

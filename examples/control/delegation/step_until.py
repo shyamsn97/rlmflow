@@ -18,7 +18,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rflow import Event, Flow, Graph, GraphCheckpointer, render_tree
+from rlmflow import Event, Flow, Graph, GraphCheckpointer, render_tree
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:

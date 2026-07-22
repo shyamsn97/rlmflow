@@ -1,4 +1,4 @@
-"""rflow runner for autoresearch on Modal."""
+"""rlmflow runner for autoresearch on Modal."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from rflow import (
+from rlmflow import (
     ConsumerGroup,
     DockerRuntime,
     FILE_TOOLS,
@@ -660,7 +660,7 @@ def run(args: argparse.Namespace) -> None:
 Run autoresearch for up to {args.max_submissions} non-baseline submissions.
 
 Use INPUTS["task_instructions"] for task context. Use the system prompt for the
-rflow loop policy and examples.
+rlmflow loop policy and examples.
 
 Start with run_baseline(); it is cached and does not run Modal. You are the
 planner: each turn inspect list_runs()/best_run()/submission_status(), then fan

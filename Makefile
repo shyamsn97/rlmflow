@@ -89,9 +89,9 @@ clean-test: ## remove test and coverage artifacts
 	rm -fr .pytest_cache
 
 lint: ## check style with flake8
-	isort --profile black rflow
-	black rflow
-	flake8 rflow
+	isort --profile black rlmflow
+	black rlmflow
+	flake8 rlmflow
 	python -m ruff check .
 
 # ── Markdown ─────────────────────────────────────────────────────────
@@ -110,8 +110,8 @@ install: clean lint
 
 doc:
 	rm -r docs/reference/
-	pdocs as_markdown rflow -o docs/reference
-	rm docs/reference/rflow/index.md
+	pdocs as_markdown rlmflow -o docs/reference
+	rm docs/reference/rlmflow/index.md
 	cp examples/*.ipynb docs/examples/
 	cp README.md docs/index.md
 

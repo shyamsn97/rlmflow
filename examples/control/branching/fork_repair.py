@@ -15,7 +15,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from rflow import (
+from rlmflow import (
     FILE_TOOLS,
     Flow,
     Graph,

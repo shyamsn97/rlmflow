@@ -21,7 +21,7 @@ import random
 import sys
 from pathlib import Path
 
-from rflow import (
+from rlmflow import (
     ConsumerGroup,
     DockerRuntime,
     Flow,

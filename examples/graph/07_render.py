@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from rflow import Graph, open_viewer, render_tree
+from rlmflow import Graph, open_viewer, render_tree
 
 
 def build_graph() -> Graph:

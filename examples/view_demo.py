@@ -1,7 +1,7 @@
 """Generate synthetic minimal Graph snapshots and open the minimal viewer.
 
 No LLM or runtime needed. This builds a small recursive graph timeline using
-``rflow.Graph`` and renders it with the lightweight viewer adapter.
+``rlmflow.Graph`` and renders it with the lightweight viewer adapter.
 
 Run:
     python examples/view_demo.py
@@ -14,7 +14,7 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 
-from rflow import (
+from rlmflow import (
     DoneOutput,
     ErrorOutput,
     ExecOutput,

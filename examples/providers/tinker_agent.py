@@ -14,8 +14,8 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rflow.clients import TinkerClient
-from rflow import ConsumerGroup, Flow, Graph, GraphCheckpointer, LiveTreeRenderer
+from rlmflow.clients import TinkerClient
+from rlmflow import ConsumerGroup, Flow, Graph, GraphCheckpointer, LiveTreeRenderer
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:

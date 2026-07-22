@@ -19,8 +19,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rflow.clients import OpenAIClient
-from rflow import (
+from rlmflow.clients import OpenAIClient
+from rlmflow import (
     ConsumerGroup,
     Flow,
     Graph,

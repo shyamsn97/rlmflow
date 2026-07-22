@@ -25,8 +25,8 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rflow.clients import OpenAIClient
-from rflow import Flow, FlowLLM, Graph, GraphCheckpointer
+from rlmflow.clients import OpenAIClient
+from rlmflow import Flow, FlowLLM, Graph, GraphCheckpointer
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:

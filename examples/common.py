@@ -26,8 +26,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rflow import Graph
-from rflow.clients import AnthropicClient, OpenAIClient
+from rlmflow import Graph
+from rlmflow.clients import AnthropicClient, OpenAIClient
 
 # The directory this module lives in, i.e. the repo's ``examples/`` folder.
 EXAMPLES_DIR = Path(__file__).resolve().parent

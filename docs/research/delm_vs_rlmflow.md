@@ -15,7 +15,7 @@ Sources:
 - DeLM repository: <https://github.com/yuzhenmao/DeLM>
 - DeLM paper: <https://arxiv.org/abs/2606.10662>
 - Local `rlmflow` architecture docs: `README.md`, `docs/internals.md`,
-  `docs/control.md`, and the core implementation under `rflow/`.
+  `docs/control.md`, and the core implementation under `rlmflow/`.
 
 ## Short Answer
 
@@ -251,7 +251,7 @@ Best for: validating prompts and user experience quickly.
 
 ### Option 2: Add A Reusable Coordinator Library
 
-Add a new module, likely under `rflow/control/` or `rflow/coordination/`,
+Add a new module, likely under `rlmflow/control/` or `rlmflow/coordination/`,
 that provides:
 
 - `SharedTaskQueue`
@@ -634,10 +634,10 @@ single Python process.
 
 Likely files:
 
-- `rflow/coordination/__init__.py`
-- `rflow/coordination/models.py`
-- `rflow/coordination/store.py`
-- `rflow/coordination/coordinator.py`
+- `rlmflow/coordination/__init__.py`
+- `rlmflow/coordination/models.py`
+- `rlmflow/coordination/store.py`
+- `rlmflow/coordination/coordinator.py`
 - `examples/control/shared_context/...`
 
 Features:
@@ -718,16 +718,16 @@ The API should make the coordinator feel like a separate mode, not mutate
 `RecursiveFlow.run(...)` into something ambiguous.
 
 ```python
-import rflow
-from rflow.coordination import DeLMCoordinator, SharedTask
+import rlmflow
+from rlmflow.coordination import DeLMCoordinator, SharedTask
 
-workspace = rflow.Workspace.create("./runs/my-problem")
+workspace = rlmflow.Workspace.create("./runs/my-problem")
 
-worker_factory = lambda ws: rflow.RecursiveFlow(
+worker_factory = lambda ws: rlmflow.RecursiveFlow(
     llm_client=llm,
     workspace=ws,
     runtime=runtime_factory(ws),
-    config=rflow.FlowConfig(max_depth=2, child_max_iterations=12),
+    config=rlmflow.FlowConfig(max_depth=2, child_max_iterations=12),
 )
 
 coordinator = DeLMCoordinator(
@@ -798,9 +798,9 @@ That preserves conceptual clarity:
 I would avoid calling the module `delm` directly unless we intentionally want to
 brand it as an implementation of the paper. Safer names:
 
-- `rflow.coordination`
-- `rflow.shared_context`
-- `rflow.swarm`
+- `rlmflow.coordination`
+- `rlmflow.shared_context`
+- `rlmflow.swarm`
 
 User-facing names could be:
 

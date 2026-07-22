@@ -10,6 +10,11 @@ each one is called out under **Breaking** below.
 
 ### Breaking
 
+- **Import package renamed `rflow` → `rlmflow`.** Prefer
+  `from rlmflow import Flow, Graph, ...`. A thin deprecated `import rflow`
+  shim re-exports `rlmflow` for one release. Public REPL env keys are now
+  `RLMFLOW_*` (was `RFLOW_*`). The local benchmark runner is
+  `rlmflow-local` (aliases: `rlmflow`, `rflow-local`, `rflow`).
 - **`Flow.run` / `arun` / `run_streaming` are keyword-only.** The old
   `graph_or_query` positional is gone; pass `query="..."` to start a fresh graph
   or `graph=g` to resume one (`flow.run(query="q")`, `flow.run(graph=g)`,
@@ -45,18 +50,18 @@ each one is called out under **Breaking** below.
   Spawn specs use `prompt_profile` (legacy `"prompt"` still accepted as a
   fallback). There is no `default_child_profile` / `default_child_prompt` on
   `Flow` — omit the key and the child stamps `"default"`.
-- **`rflow.minimal` is now the core package.** The minimal graph-first stack was
-  promoted to the top-level `rflow` package; everything outside it was retired.
-  Imports move from `rflow.minimal.*` to `rflow.*` (for example
-  `from rflow import Flow, Graph, LocalRuntime, FILE_TOOLS`), and LLM clients
-  live under `from rflow.clients import OpenAIClient, AnthropicClient`.
+- **`rflow.minimal` (historical) became the core package, now named
+  `rlmflow`.** The minimal graph-first stack was promoted to the top-level
+  package; everything outside it was retired. Imports are
+  `from rlmflow import Flow, Graph, LocalRuntime, FILE_TOOLS`, and LLM clients
+  live under `from rlmflow.clients import OpenAIClient, AnthropicClient`.
 - **Async, in-place streaming API.** `Flow` drives runs with
   `flow.run(query=...)` (sync), `await flow.arun(...)`, and
   `async for event in flow.run_streaming(graph=..., until=..., n=...)`.
   `run_streaming` yields the `Event`s it emits and mutates the `Graph` in place.
-- **Visualization consolidated in `rflow.view`.** `render_tree`,
+- **Visualization consolidated in `rlmflow.view`.** `render_tree`,
   `LiveTreeRenderer`, `LiveGraphTree`, `open_viewer`, `replay`, `save_image`, and
-  `save_steps` are re-exported from `rflow`. Static exports take a run directory,
+  `save_steps` are re-exported from `rlmflow`. Static exports take a run directory,
   a `Graph`, or a list of snapshots.
 - **DSPy adapter renamed** from `RecursiveFlowLM` to `DSPyFlow`; wrap a `Flow`
   in `FlowLLM` first: `DSPyFlow(FlowLLM(flow), model=...)`.
@@ -67,9 +72,9 @@ each one is called out under **Breaking** below.
 
 ### Removed
 
-- The `rlmflow` CLI (`view` / `render` / `version`) and the `rflow.utils`
+- The `rlmflow` CLI (`view` / `render` / `version`) and the `rlmflow.utils`
   observability/export surface (`save_trace`/`load_trace`, mermaid/dot/d2/gantt
-  exports, `save_html`/`save_gif`, `Node.plot`). Use `rflow.view` and
+  exports, `save_html`/`save_gif`, `Node.plot`). Use `rlmflow.view` and
   `graph.save(...)` / `Graph.load(...)` instead.
 
 ## [0.4.0] — 2026-06-12
@@ -199,7 +204,7 @@ each one is called out under **Breaking** below.
 - **LLM clients retry transient failures via `tenacity`.** The
   `chat` and `stream` methods on `OpenAIClient` and
   `AnthropicClient` retry on transient HTTP / protocol errors. The
-  module-level `_`-prefixed helpers and constants in `rflow/llm.py`
+  module-level `_`-prefixed helpers and constants in `rlmflow/llm.py`
   are now public.
 - **Workspace step retracing.** `Workspace.load_steps()` returns the
   full history as a list of progressive `Graph` snapshots. The
@@ -296,21 +301,21 @@ each one is called out under **Breaking** below.
   CI, `[tool.coverage.*]` config in `pyproject.toml`.
 - Early OOLONG benchmark harness for flat-vs-RLM comparison. This has since
   been superseded by the shared `benchmarks/eval/` harness.
-- `rflow.utils.save_image(node, path, ...)` — render a node's
+- `rlmflow.utils.save_image(node, path, ...)` — render a node's
   graph to PNG/SVG/PDF. Markers, edges, and fonts auto-scale via
   `element_mult` so the tree stays visually balanced on the larger
   export canvas. Promoted from a one-off notebook helper.
-- `rflow.utils.save_steps(states, dir, ...)` — multi-snapshot
+- `rlmflow.utils.save_steps(states, dir, ...)` — multi-snapshot
   variant: writes one image per state under `dir`.
-- `rflow.utils.render_html(states, ...)` /
-  `rflow.utils.save_html(states, path, ...)` — single-file
+- `rlmflow.utils.render_html(states, ...)` /
+  `rlmflow.utils.save_html(states, path, ...)` — single-file
   standalone stepper. Each slide pairs the Plotly graph for one
   snapshot with that snapshot's transcript and a node table; bottom
   nav has arrows + dots, plus keyboard left/right. Drop the file in
   a PR comment, attach to a CI artifact, or commit it next to the
   trace it came from. Promoted from
   `examples/blog_needle_graph.py:render_html_viewer`.
-- `rflow.utils.save_gif(states, path, ...)` — animate a trace as
+- `rlmflow.utils.save_gif(states, path, ...)` — animate a trace as
   an autoplay GIF. Renders each state to PNG with kaleido, then
   stitches frames with Pillow. Lazy-imports Pillow (raises a clear
   ImportError otherwise) so `[image]` stays focused on still
