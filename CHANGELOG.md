@@ -10,11 +10,11 @@ each one is called out under **Breaking** below.
 
 ### Breaking
 
-- **Import package renamed `rflow` → `rlmflow`.** Prefer
-  `from rlmflow import Flow, Graph, ...`. A thin deprecated `import rflow`
-  shim re-exports `rlmflow` for one release. Public REPL env keys are now
-  `RLMFLOW_*` (was `RFLOW_*`). The local benchmark runner is
-  `rlmflow-local` (aliases: `rlmflow`, `rflow-local`, `rflow`).
+- **Import package is `rlmflow` only.** Use `from rlmflow import Flow, Graph, ...`.
+  The old short import name is gone (no compatibility shim). Public REPL env
+  keys are `RLMFLOW_*`. The local benchmark runner is `rlmflow-local`
+  (alias: `rlmflow`).
+
 - **`Flow.run` / `arun` / `run_streaming` are keyword-only.** The old
   `graph_or_query` positional is gone; pass `query="..."` to start a fresh graph
   or `graph=g` to resume one (`flow.run(query="q")`, `flow.run(graph=g)`,
@@ -50,9 +50,8 @@ each one is called out under **Breaking** below.
   Spawn specs use `prompt_profile` (legacy `"prompt"` still accepted as a
   fallback). There is no `default_child_profile` / `default_child_prompt` on
   `Flow` — omit the key and the child stamps `"default"`.
-- **`rflow.minimal` (historical) became the core package, now named
-  `rlmflow`.** The minimal graph-first stack was promoted to the top-level
-  package; everything outside it was retired. Imports are
+- **Minimal graph-first stack is the core `rlmflow` package.** Everything
+  outside it was retired. Imports are
   `from rlmflow import Flow, Graph, LocalRuntime, FILE_TOOLS`, and LLM clients
   live under `from rlmflow.clients import OpenAIClient, AnthropicClient`.
 - **Async, in-place streaming API.** `Flow` drives runs with

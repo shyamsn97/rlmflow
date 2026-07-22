@@ -13,7 +13,7 @@ from benchmarks.eval.metrics import graph_metrics
 from benchmarks.eval.types import Example, Model, Prediction, RunContext, Runner
 
 
-@runner("rlmflow-local", aliases=["rlmflow", "rflow-local", "rflow"])
+@runner("rlmflow-local", aliases=["rlmflow"])
 class RLMFlowLocalRunner(Runner):
     def __init__(
         self,

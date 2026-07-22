@@ -582,7 +582,7 @@ def test_minimal_max_query_chars_refuses_overlong_child_query():
 
 
 
-def test_minimal_rflow_env_vars_visible_to_agent():
+def test_rlmflow_env_vars_visible_to_agent():
     reply = (
         "```repl\n"
         'done(ENV["RLMFLOW_AGENT_ID"] + "|" + ENV["RLMFLOW_IS_ROOT"] '

@@ -101,7 +101,7 @@ Repository = "https://github.com/shyamsn97/rlmflow"
 Issues = "https://github.com/shyamsn97/rlmflow/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["rlmflow", "rflow"]
+packages = ["rlmflow"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

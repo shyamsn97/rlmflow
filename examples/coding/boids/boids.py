@@ -52,7 +52,7 @@ def pushd(path: Path) -> Iterator[None]:
         os.chdir(previous)
 
 
-def build_rflow_llm(model: str):
+def build_rlmflow_llm(model: str):
     from common import build_client
 
     return build_client(model)
@@ -95,7 +95,7 @@ class BoidsSimulation(BaseModel):
     style_css: str
     boids_js: str
 
-def run_rflow(
+def run_rlmflow(
     run_dir: Path,
     *,
     model: str,
@@ -121,8 +121,8 @@ def run_rflow(
     runtime = LocalRuntime(working_directory=run_dir)
     runtime.register_tools(FILE_TOOLS)
     flow = Flow(
-        build_rflow_llm(model),
-        llm_clients={"fast": build_rflow_llm(fast_model)},
+        build_rlmflow_llm(model),
+        llm_clients={"fast": build_rlmflow_llm(fast_model)},
         runtime=runtime,
         max_depth=max_depth,
         max_iters=max_iters,
@@ -154,13 +154,13 @@ def run_rflow(
 
         result = graph.result() or ""
         (run_dir / "response.txt").write_text(str(result))
-        print("\nrflow response:")
+        print("\nrlmflow response:")
         print(result or "(no result)")
-        print(f"\nrflow graph: {graph_dir}")
+        print(f"\nrlmflow graph: {graph_dir}")
     finally:
         flow.close_repls()
 
-    print("\nrflow files:")
+    print("\nrlmflow files:")
     for item in summarize_files(run_dir):
         print(f"- {item}")
 
@@ -260,14 +260,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     out_dir = args.out_dir.resolve()
-    rflow_dir = suffixed_dir(out_dir, "rlmflow")
+    rlmflow_dir = suffixed_dir(out_dir, "rlmflow")
     official_dir = suffixed_dir(out_dir, "rlm-official")
 
     if args.runner in ("rlmflow", "both"):
-        if rflow_dir.exists() and args.force:
-            shutil.rmtree(rflow_dir)
-        run_rflow(
-            rflow_dir,
+        if rlmflow_dir.exists() and args.force:
+            shutil.rmtree(rlmflow_dir)
+        run_rlmflow(
+            rlmflow_dir,
             model=args.model,
             fast_model=args.fast_model,
             max_depth=args.max_depth,
@@ -290,7 +290,7 @@ def main() -> None:
 
     print("\nDone. Compare outputs:")
     if args.runner in ("rlmflow", "both"):
-        print(f"- rlmflow: {rflow_dir}")
+        print(f"- rlmflow: {rlmflow_dir}")
     if args.runner in ("rlm", "both"):
         print(f"- official RLM: {official_dir}")
 
