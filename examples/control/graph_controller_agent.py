@@ -226,6 +226,7 @@ class WorkerPoolControl:
                 output=f"Controller note: {note}",
                 content=f"Controller note: {note}",
             ),
+            injected=True,
         )
         return self.inspect_worker(worker=worker)
 
@@ -261,6 +262,7 @@ class WorkerPoolControl:
             run.worker.append_node(
                 run.graph[agent_id],
                 UserQuery(content="Controller stop request: finalize now."),
+                injected=True,
             )
         targets = "all unfinished agents" if agent_ids is None else ", ".join(agent_ids)
         return (

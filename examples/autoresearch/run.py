@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import html
 import json
 import random
 import re
@@ -40,8 +39,13 @@ from common import build_client  # noqa: E402
 
 try:  # Allow both `python examples/autoresearch/run.py` and imports.
     from .modal_runner import ModalConfig, preflight, submit, validate_gpu
+    from .plot_progress import load_trials, plot_matplotlib, plot_svg
 except ImportError:  # pragma: no cover
     from modal_runner import ModalConfig, preflight, submit, validate_gpu
+    from plot_progress import load_trials, plot_matplotlib, plot_svg
+
+
+PROGRESS_TITLE = "Tiny Autoresearch — (TinyStories + GPT2)"
 
 
 UPSTREAM_FILES = ("README.md", "prepare.py", "train.py", "program.md", "pyproject.toml", "uv.lock")
@@ -747,13 +751,13 @@ def write_run_report(
     report_path.write_text(
         json.dumps({"best": best_summary, "solutions": solutions}, indent=2) + "\n"
     )
-    _write_score_plot(out_dir / "scores.svg", solutions)
-    _write_elapsed_plot(out_dir / "elapsed.svg", solutions)
+    _write_progress_plots(state.ledger_path, out_dir, announce=announce)
     (out_dir / "summary.md").write_text(_markdown_report(best_summary, solutions))
 
     if announce:
         print(f"\n[autoresearch] report={report_path}")
         print(f"[autoresearch] summary={out_dir / 'summary.md'}")
+        print(f"[autoresearch] progress={out_dir / 'progress.svg'}")
         print(f"[autoresearch] ledger={state.ledger_path}")
         if best_summary:
             print(
@@ -807,118 +811,43 @@ def _markdown_report(
     lines.extend(
         [
             "",
-            "## Plots",
+            "## Progress",
             "",
-            "![Score by trial](scores.svg)",
-            "",
-            "![Elapsed time by trial](elapsed.svg)",
+            "![Autoresearch progress](progress.svg)",
             "",
         ]
     )
     return "\n".join(lines)
 
 
-def _write_score_plot(path: Path, solutions: list[dict[str, Any]]) -> None:
-    points = sorted(
-        (row for row in solutions if row.get("score") is not None),
-        key=lambda row: int(row["n"]),
+def _write_progress_plots(ledger_path: Path, out_dir: Path, *, announce: bool = False) -> None:
+    """Render the Karpathy-style progress plot (running best + kept/discarded).
+
+    Uses the shared `plot_progress` helpers so the live report and the
+    standalone script stay identical. Always writes `progress.svg` (fast,
+    dependency-free); on the final call also tries a `progress.png` via
+    matplotlib if it is available.
+    """
+    svg_path = out_dir / "progress.svg"
+    trials = load_trials(ledger_path) if ledger_path.exists() else []
+    if not trials:
+        svg_path.write_text(_empty_progress_svg())
+        return
+    plot_svg(trials, title=PROGRESS_TITLE, out=svg_path)
+    if announce:
+        try:
+            plot_matplotlib(trials, title=PROGRESS_TITLE, out=out_dir / "progress.png")
+        except Exception:  # noqa: BLE001 - matplotlib is optional on the host
+            pass
+
+
+def _empty_progress_svg() -> str:
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" '
+        'viewBox="0 0 1200 700"><rect width="100%" height="100%" fill="white"/>'
+        '<text x="600" y="350" text-anchor="middle" font-family="sans-serif" '
+        'fill="#6b7280" font-size="16">No succeeded trials yet</text></svg>\n'
     )
-    _write_svg_plot(
-        path,
-        points,
-        title="Score by trial (higher is better)",
-        value_key="score",
-        value_label="score",
-        color="#2563eb",
-    )
-
-
-def _write_elapsed_plot(path: Path, solutions: list[dict[str, Any]]) -> None:
-    _write_svg_plot(
-        path,
-        sorted(solutions, key=lambda row: int(row["n"])),
-        title="Elapsed time by trial",
-        value_key="time_elapsed",
-        value_label="seconds",
-        color="#059669",
-    )
-
-
-def _write_svg_plot(
-    path: Path,
-    rows: list[dict[str, Any]],
-    *,
-    title: str,
-    value_key: str,
-    value_label: str,
-    color: str,
-) -> None:
-    width, height = 900, 360
-    left, right, top, bottom = 75, 25, 45, 95
-    plot_width = width - left - right
-    plot_height = height - top - bottom
-    values = [float(row[value_key]) for row in rows]
-    if values:
-        low, high = min(values), max(values)
-        padding = (high - low) * 0.1 or max(abs(high) * 0.1, 1.0)
-        low, high = low - padding, high + padding
-    else:
-        low, high = 0.0, 1.0
-
-    def x_at(index: int) -> float:
-        return left + (plot_width / 2 if len(rows) == 1 else index * plot_width / max(1, len(rows) - 1))
-
-    def y_at(value: float) -> float:
-        return top + (high - value) * plot_height / (high - low)
-
-    svg = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}">',
-        '<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="{width / 2}" y="25" text-anchor="middle" '
-        f'font-family="sans-serif" font-size="18" font-weight="bold">{html.escape(title)}</text>',
-    ]
-    for tick in range(5):
-        value = low + tick * (high - low) / 4
-        y = y_at(value)
-        svg.extend(
-            [
-                f'<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}" '
-                'stroke="#e5e7eb"/>',
-                f'<text x="{left - 10}" y="{y + 4:.1f}" text-anchor="end" '
-                f'font-family="sans-serif" font-size="11">{value:.3f}</text>',
-            ]
-        )
-    svg.append(
-        f'<text x="16" y="{top + plot_height / 2}" text-anchor="middle" '
-        f'transform="rotate(-90 16 {top + plot_height / 2})" '
-        f'font-family="sans-serif" font-size="12">{html.escape(value_label)}</text>'
-    )
-    if rows:
-        coordinates = " ".join(
-            f"{x_at(i):.1f},{y_at(float(row[value_key])):.1f}"
-            for i, row in enumerate(rows)
-        )
-        svg.append(f'<polyline points="{coordinates}" fill="none" stroke="{color}" stroke-width="2"/>')
-        for i, row in enumerate(rows):
-            x = x_at(i)
-            y = y_at(float(row[value_key]))
-            name = html.escape(str(row.get("name") or ""))
-            svg.extend(
-                [
-                    f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{color}"/>',
-                    f'<text x="{x:.1f}" y="{height - bottom + 18}" '
-                    f'transform="rotate(35 {x:.1f} {height - bottom + 18})" '
-                    f'font-family="sans-serif" font-size="10">{name}</text>',
-                ]
-            )
-    else:
-        svg.append(
-            f'<text x="{width / 2}" y="{height / 2}" text-anchor="middle" '
-            'font-family="sans-serif" fill="#6b7280">No data yet</text>'
-        )
-    svg.append("</svg>\n")
-    path.write_text("\n".join(svg))
 
 
 def _markdown_cell(value: Any) -> str:

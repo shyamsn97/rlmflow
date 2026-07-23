@@ -256,12 +256,37 @@ def _positions(graph: Graph) -> dict[str, tuple[float, float]]:
     return _topology(graph)[0]
 
 
-def replay(graph: Graph) -> list[Graph]:
-    """Progressive snapshots: one per execution step, each a truncated copy.
+def replay(source: ViewSource) -> list[Graph]:
+    """Progressive per-step snapshots from a Graph, saved run dir, or list.
 
-    Thin wrapper over :meth:`Graph.get_timeline`.
+    Point this at a checkpoint directory and walk the run::
+
+        for snap in replay("runs/coding/graph"):
+            print(render_tree(snap))
+
+    Consecutive frames that look identical (bookkeeping-only ticks) are collapsed
+    so the step count tracks visible progress.
     """
-    return graph.get_timeline()
+    graphs = _graphs_from(source)
+    snapshots = list(graphs) if len(graphs) > 1 else graphs[0].get_timeline()
+    deduped: list[Graph] = []
+    for graph in snapshots:
+        if deduped and _visible_signature(deduped[-1]) == _visible_signature(graph):
+            deduped[-1] = graph
+        else:
+            deduped.append(graph)
+    return deduped
+
+
+def render_steps(source: ViewSource) -> list[str]:
+    """ASCII tree for every step. Zero deps — just a graph dir or Graph.
+
+    frames = render_steps("runs/coding/graph")
+    for i, frame in enumerate(frames, 1):
+        print(f"=== step {i}/{len(frames)} ===")
+        print(frame)
+    """
+    return [render_tree(graph) for graph in replay(source)]
 
 
 def _agent_label(agent: Graph, *, limit: int = 22) -> str:
@@ -440,7 +465,7 @@ def _transcript(agent: Graph) -> str:
 
 def open_viewer(source: ViewSource, **launch_kwargs: object) -> object:
     """Open a Gradio stepper, or print trees if Gradio is unavailable."""
-    snapshots = _snapshots(source)
+    snapshots = replay(source)
     should_launch = bool(launch_kwargs.pop("launch", True))
 
     try:
@@ -480,20 +505,6 @@ def open_viewer(source: ViewSource, **launch_kwargs: object) -> object:
     return demo.launch(**launch_kwargs)
 
 
-def _snapshots(source: ViewSource) -> list[Graph]:
-    graphs = _graphs_from(source)
-    snapshots = graphs if len(graphs) > 1 else replay(graphs[0])
-    # Collapse consecutive frames that render identically (e.g. a tick that only
-    # added a bookkeeping action) so step counts track visible progress.
-    deduped: list[Graph] = []
-    for graph in snapshots:
-        if deduped and _visible_signature(deduped[-1]) == _visible_signature(graph):
-            deduped[-1] = graph
-        else:
-            deduped.append(graph)
-    return deduped
-
-
 def save_image(
     source: ViewSource,
     path: str | Path,
@@ -525,7 +536,7 @@ def save_steps(
     text_mult: float = 1.0,
 ) -> list[Path]:
     """Write one frame per execution step (stable layout) for GIFs/blog strips."""
-    snapshots = _snapshots(source)
+    snapshots = replay(source)
     positions = _positions(snapshots[-1])
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -600,6 +611,7 @@ __all__ = [
     "ViewSource",
     "open_viewer",
     "replay",
+    "render_steps",
     "save_gif",
     "save_image",
     "save_steps",

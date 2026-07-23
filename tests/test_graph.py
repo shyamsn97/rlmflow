@@ -174,16 +174,29 @@ def test_minimal_graph_operation_helpers_edit_transcripts():
 
     assert isinstance(injected, AppendNode)
     assert [node.content for node in graph.nodes] == ["q", "please verify"]
+    assert graph.nodes[0].metadata.get("injected") is not True
+    assert graph.nodes[1].metadata.get("injected") is True
 
     first_id = graph.nodes[0].id
     graph.replace(first_id, UserQuery(content="replacement"))
 
     assert [node.content for node in graph.nodes] == ["replacement", "please verify"]
     assert [node.seq for node in graph.nodes] == [0, 1]
+    assert graph.nodes[0].metadata.get("injected") is True
 
     graph.rewind(graph.nodes[1].id)
 
     assert [node.content for node in graph.nodes] == ["replacement"]
+
+
+def test_inject_metadata_stamp_and_opt_out():
+    graph = Graph(query="q")
+    graph.append("steered")
+    graph.append("quiet", injected=False)
+
+    assert graph.nodes[0].metadata.get("injected") is not True
+    assert graph.nodes[1].metadata.get("injected") is True
+    assert graph.nodes[2].metadata.get("injected") is not True
 
 
 

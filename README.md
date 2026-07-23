@@ -270,7 +270,8 @@ graph.inject(
 agent.run(graph=graph)  # or: async for _ in agent.run_streaming(graph=graph): ...
 ```
 
-Injected nodes become ordinary graph nodes with the same shape as organic ones.
+Injected nodes become ordinary graph nodes with the same shape as organic ones,
+stamped with ``metadata["injected"] = True``.
 See [`docs/injections.md`](docs/injections.md) and
 [`examples/control/controller_injection.py`](examples/control/controller_injection.py).
 
@@ -340,17 +341,47 @@ open_viewer("runs/deep_research")   # needs: pip install rlmflow[viewer]
 
 ![rlmflow TUI showing chat, query/context inputs, and execution tree](docs/static/tui.png)
 
-`flow.tui()` opens a Textual chat interface with separate query/context inputs,
-live chat bubbles, and side tabs for the execution tree, agents, counts,
-waiting supervisors, errors, and latest nodes. See
-[`examples/tui_chat.py`](examples/tui_chat.py) for a runnable real-model example.
+`FlowTUI` is a stream consumer: feed it events from your own
+`async for event in flow.run_streaming(...)` loop (or pass that loop as `drive`
+to `FlowTUI().run(drive)` for the interactive prompt UI). It shows separate
+query/context inputs, live chat bubbles, and side tabs for the execution tree,
+agents, counts, waiting supervisors, errors, and latest nodes. Ctrl+S sends,
+Ctrl+R continues a paused run, Ctrl+T steps once. See
+[`examples/coding/agent.py`](examples/coding/agent.py) for a runnable example.
+
+### Replay / render a saved run
+
+Point anything at a graph directory (or a `Graph`) and walk the sequence:
+
+```python
+from rlmflow import replay, render_steps, render_tree
+
+# Graph snapshots, one per visible step
+for snap in replay("runs/coding/graph"):
+    print(render_tree(snap))
+
+# Or just the ASCII frames
+for i, frame in enumerate(render_steps("runs/coding/graph"), 1):
+    print(f"=== step {i} ===\n{frame}")
+```
+
+Or from the shell (after `pip install -e .`):
+
+```bash
+rlmflow view runs/coding/graph              # print every ASCII step
+rlmflow view runs/coding/graph --step 3     # one step
+rlmflow view runs/coding/graph --browser    # Gradio stepper
+rlmflow view runs/coding/graph --frames out/  # PNG strip (needs [image])
+rlmflow view runs/coding/graph --gif run.gif
+```
+
+`python -m rlmflow view …` works the same.
 
 ### Static frames for docs and blogs
 
 `save_image` writes one PNG/SVG/PDF of a run; `save_steps` writes one frame per
-execution step with a stable layout, ideal for GIFs or blog strips.
-`replay(graph)` gives the per-step snapshots they build on. All three accept a
-saved run directory, a `Graph`, or a list of snapshots, and need
+execution step with a stable layout, ideal for GIFs or blog strips. Both accept
+a saved run directory, a `Graph`, or a list of snapshots, and need
 `pip install rlmflow[image]` (Plotly + kaleido):
 
 ```python
@@ -412,7 +443,7 @@ Add `--include-optional`, `--include-live`, `--include-sandbox`, or
 | Example | What it shows |
 |---|---|
 | [`showcase.py`](examples/showcase.py) | Functional stepping, snapshots, save/load, and live terminal visualization. |
-| [`tui_chat.py`](examples/tui_chat.py) | Minimal Textual chat UI with live `render_tree` updates. |
+| [`coding/agent.py`](examples/coding/agent.py) | Coding agent in the rich TUI (or `--cli` for the REPL + live tree). |
 | [`structured_output.py`](examples/structured_output.py) | Root and child results validated with JSON Schema / Pydantic. |
 | [`drop_in_llm.py`](examples/drop_in_llm.py) | Minimal `FlowLLM` adapter, including nested flows. |
 | [`skills.py`](examples/skills.py) | On-disk skill files loaded through a dynamic prompt section. |
@@ -420,7 +451,6 @@ Add `--include-optional`, `--include-live`, `--include-sandbox`, or
 | [`mcp_weather.py`](examples/providers/mcp_weather.py) | Start a local MCP weather server, delegate city forecasts, and combine advice. |
 | [`tinker_agent.py`](examples/providers/tinker_agent.py) | Run the live terminal graph view with `TinkerClient` inference. |
 | [`sandboxes/`](examples/sandboxes/) | Build a small web app while Python code runs inside Docker or Modal. |
-| [`coding/agent.py`](examples/coding/agent.py) | Interactive coding agent that writes and edits files in a working directory. |
 | [`needle/haystack.py`](examples/needle/haystack.py) | Needle-in-a-haystack over a massive in-memory `INPUTS["haystack"]`. |
 | [`needle/filesystem.py`](examples/needle/filesystem.py) | Needle-in-a-haystack across many files with `FILE_TOOLS` and runtime working directories. |
 | [`summarizer.py`](examples/summarizer.py) | Recursive map-reduce summarization over a long document. |

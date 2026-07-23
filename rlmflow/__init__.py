@@ -14,7 +14,7 @@ from rlmflow.consumers import (
     WorkspaceSync,
     render_tree,
 )
-from rlmflow.consumers.tui import FlowTUI, tui
+from rlmflow.consumers.tui import FlowTUI
 from rlmflow.flow import Flow, code_block
 from rlmflow.graph import (
     ActionNode,
@@ -84,7 +84,14 @@ from rlmflow.tools import (
     tool,
 )
 from rlmflow.utils import find_code_blocks
-from rlmflow.utils.viewer import open_viewer, replay, save_gif, save_image, save_steps
+from rlmflow.utils.viewer import (
+    open_viewer,
+    render_steps,
+    replay,
+    save_gif,
+    save_image,
+    save_steps,
+)
 
 __all__ = [
     "ActionNode",
@@ -128,6 +135,7 @@ __all__ = [
     "SystemPromptBuilder",
     "UserPromptBuilder",
     "replay",
+    "render_steps",
     "save_gif",
     "save_image",
     "save_steps",
@@ -165,5 +173,4 @@ __all__ = [
     "register_halt",
     "render_tree",
     "tool",
-    "tui",
 ]

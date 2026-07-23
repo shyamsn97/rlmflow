@@ -44,6 +44,12 @@ class Node:
         return False
 
 
+def mark_injected(node: Node) -> Node:
+    """Stamp controller-edit provenance on ``node.metadata`` (in place)."""
+    node.metadata["injected"] = True
+    return node
+
+
 @dataclass
 class ObservationNode(Node):
     content: str = ""
@@ -178,7 +184,8 @@ class Graph:
 
             self.output_schema = json_schema_for(self.output_schema)
         if self.query and not self.nodes:
-            self.append(self.query)
+            # Seed via commit so the initial query is not marked injected.
+            self.commit(UserQuery(content=self.query))
 
     def current(self) -> Node | None:
         return self.nodes[-1] if self.nodes else None
@@ -229,8 +236,15 @@ class Graph:
         at: Node | str | None = None,
         mode: Literal["after", "before", "replace"] = "after",
         agent_id: str | None = None,
+        injected: bool = False,
     ) -> Any:
-        """Build the graph action for an inject/append/prepend/replace (no apply)."""
+        """Build the graph action for an inject/append/prepend/replace (no apply).
+
+        When ``injected`` is true, stamps ``metadata["injected"] = True`` on the
+        new node so controllers/renderers can distinguish controller edits from
+        organic scheduler commits. :meth:`inject` enables this by default;
+        :meth:`Flow.append_node` leaves it off unless the caller opts in.
+        """
         from rlmflow.graph.events import AppendNode, InsertNode, ReplaceNode
 
         if mode not in ("after", "before", "replace"):
@@ -239,6 +253,8 @@ class Graph:
             raise ValueError("inject(mode='replace') requires an 'at' anchor")
 
         new_node = UserQuery(content=node) if isinstance(node, str) else node
+        if injected:
+            mark_injected(new_node)
         if isinstance(at, Node):
             agent_id = agent_id or at.agent_id or None
         agent = self.agent_for(agent_id)
@@ -277,6 +293,7 @@ class Graph:
         mode: Literal["after", "before", "replace"] = "after",
         agent_id: str | None = None,
         truncate: Literal["none", "descendants"] = "none",
+        injected: bool = True,
     ) -> Any:
         """Insert or replace a node in an agent's trajectory — the base edit op.
 
@@ -287,15 +304,19 @@ class Graph:
         ``"replace"``. With ``truncate="descendants"`` every node past the edit
         is dropped and orphaned children pruned, re-routing the branch.
 
-        Prefer the :meth:`append`, :meth:`prepend`, and :meth:`replace` helpers;
-        they are thin wrappers over this method. Live runs that need the edit
-        emitted into the stream should use ``flow.apply_action`` with
-        :meth:`inject_action` instead.
+        Controller edits stamp ``metadata["injected"] = True`` by default
+        (``injected=False`` to opt out). Prefer the :meth:`append`,
+        :meth:`prepend`, and :meth:`replace` helpers; they are thin wrappers
+        over this method. Live runs that need the edit emitted into the stream
+        should use ``flow.apply_action`` with :meth:`inject_action`, or
+        ``flow.append_node(..., injected=True)``.
         """
         if truncate not in ("none", "descendants"):
             raise ValueError("truncate must be 'none' or 'descendants'")
 
-        action = self.inject_action(node, at=at, mode=mode, agent_id=agent_id)
+        action = self.inject_action(
+            node, at=at, mode=mode, agent_id=agent_id, injected=injected
+        )
         apply_graph_action(self, action)
         if truncate == "descendants":
             agent = self.agent_for(action.agent_id)
@@ -309,13 +330,26 @@ class Graph:
         *,
         agent_id: str | None = None,
         truncate: Literal["none", "descendants"] = "none",
+        injected: bool = True,
     ) -> Any:
         """Add ``node`` at the end of the agent's trajectory."""
-        return self.inject(node, mode="after", agent_id=agent_id, truncate=truncate)
+        return self.inject(
+            node,
+            mode="after",
+            agent_id=agent_id,
+            truncate=truncate,
+            injected=injected,
+        )
 
-    def prepend(self, node: Node | str, *, agent_id: str | None = None) -> Any:
+    def prepend(
+        self,
+        node: Node | str,
+        *,
+        agent_id: str | None = None,
+        injected: bool = True,
+    ) -> Any:
         """Add ``node`` at the start of the agent's trajectory."""
-        return self.inject(node, mode="before", agent_id=agent_id)
+        return self.inject(node, mode="before", agent_id=agent_id, injected=injected)
 
     def append_query(
         self,
@@ -355,10 +389,16 @@ class Graph:
         *,
         agent_id: str | None = None,
         truncate: Literal["none", "descendants"] = "none",
+        injected: bool = True,
     ) -> Any:
         """Swap the node at ``at`` for ``node``; ``truncate='descendants'`` re-routes."""
         return self.inject(
-            node, at=at, mode="replace", agent_id=agent_id, truncate=truncate
+            node,
+            at=at,
+            mode="replace",
+            agent_id=agent_id,
+            truncate=truncate,
+            injected=injected,
         )
 
     def fork(
@@ -644,40 +684,45 @@ def apply_graph_action(graph: Graph | None, action: Any) -> Graph:
         agent.nodes.insert(action.index, action.node)
         _resequence(agent)
     elif isinstance(action, ReplaceNode):
-        agent = graph[action.agent_id]
-        for index, node in enumerate(agent.nodes):
-            if node.id == action.replaced_node_id:
-                action.node.agent_id = agent.agent_id
-                action.node.seq = node.seq
-                agent.nodes[index] = action.node
-                break
-        else:
-            raise KeyError(action.replaced_node_id)
+        _replace_node(graph[action.agent_id], action)
     elif isinstance(action, RemoveNode):
-        agent = graph[action.agent_id]
-        index = next(
-            (i for i, node in enumerate(agent.nodes) if node.id == action.node_id),
-            None,
-        )
-        if index is None:
-            raise KeyError(action.node_id)
-        if action.subtree:
-            del agent.nodes[index:]
-        else:
-            del agent.nodes[index]
-        _resequence(agent)
-        # Match ``inject(..., truncate="descendants")``: dropping a supervising
-        # / resume edge must drop the child agents that edge owned.
-        _prune_orphaned_children(agent)
+        _remove_node(graph[action.agent_id], action)
     elif isinstance(action, AddChild):
         parent = graph[action.parent_agent_id]
         action.child.graph_id = parent.graph_id
-        graph[action.parent_agent_id].children[action.child.agent_id] = action.child
+        parent.children[action.child.agent_id] = action.child
     elif isinstance(action, RemoveChild):
         del graph[action.parent_agent_id].children[action.child_agent_id]
     else:
         raise TypeError(f"unknown graph action: {action!r}")
     return graph
+
+
+def _replace_node(agent: Graph, action: Any) -> None:
+    for index, node in enumerate(agent.nodes):
+        if node.id == action.replaced_node_id:
+            action.node.agent_id = agent.agent_id
+            action.node.seq = node.seq
+            agent.nodes[index] = action.node
+            return
+    raise KeyError(action.replaced_node_id)
+
+
+def _remove_node(agent: Graph, action: Any) -> None:
+    index = next(
+        (i for i, node in enumerate(agent.nodes) if node.id == action.node_id),
+        None,
+    )
+    if index is None:
+        raise KeyError(action.node_id)
+    if action.subtree:
+        del agent.nodes[index:]
+    else:
+        del agent.nodes[index]
+    _resequence(agent)
+    # Match ``inject(..., truncate="descendants")``: dropping a supervising /
+    # resume edge must drop the child agents that edge owned.
+    _prune_orphaned_children(agent)
 
 
 def _resequence(graph: Graph) -> None:

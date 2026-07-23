@@ -275,7 +275,8 @@ def rendered_style_graph():
             tree[parent]["children"].append(idx)
         if depth < len(branching):
             for i in range(branching[depth]):
-                child_label = f"agent.{i}" if depth == 0 else f"{label}.{i}"
+                # Match rlmflow agent_ids: root.a, root.a.b, ...
+                child_label = f"{label}.{chr(ord('a') + i)}"
                 add(child_label, depth + 1, idx)
         return idx
 
@@ -380,7 +381,7 @@ def fork_supervising_graph(x_center):
     )
     wait_y = root_nodes[3].get_center()[1] - dy_root * 1.55
     agent0, agent0_nodes, agent0_edges, agent0_label = agent_stack(
-        "agent.0",
+        "root.a",
         ["query", "llm", "exec"],
         x=x_center - 0.95,
         top_y=wait_y,
@@ -389,7 +390,7 @@ def fork_supervising_graph(x_center):
         fs=FS_CAP,
     )
     agent1, agent1_nodes, agent1_edges, agent1_label = agent_stack(
-        "agent.1",
+        "root.b",
         ["query", "llm", "exec"],
         x=x_center,
         top_y=wait_y,
@@ -398,7 +399,7 @@ def fork_supervising_graph(x_center):
         fs=FS_CAP,
     )
     agent2, agent2_nodes, agent2_edges, agent2_label = agent_stack(
-        "agent.2",
+        "root.c",
         ["query", "llm", "done"],
         x=x_center + 0.95,
         top_y=wait_y,
@@ -500,7 +501,7 @@ def simplified_style_graph(*, with_labels=True):
         dy=0.35,
     )
 
-    agent_defs = [("agent.0", -2.65), ("agent.1", 0.0), ("agent.2", 2.65)]
+    agent_defs = [("root.a", -2.65), ("root.b", 0.0), ("root.c", 2.65)]
     agents = []
     fanout_edges = VGroup()
     child_query = VGroup()
@@ -538,8 +539,9 @@ def simplified_style_graph(*, with_labels=True):
     leaf_finish = VGroup()
     for (name, ax), a_nodes in zip(agent_defs, agents):
         for i, off in enumerate(leaf_offsets):
+            leaf_name = f"{name}.{chr(ord('a') + i)}"
             _stack, nodes, edges, label = agent_stack(
-                lbl(f"{name}.{i}"),
+                lbl(leaf_name),
                 ["query", "llm", "exec", "done"],
                 x=ax + off,
                 top_y=-1.06,
@@ -699,13 +701,13 @@ class RecursiveFlowHero(Scene):
                     ("llm", "llm", [2]),
                     ("exec", "exec", [3]),
                     ("wait", "supervising", [4, 7, 10]),
-                    ("agent.0", "query", [5]),
+                    ("root.a", "query", [5]),
                     ("llm", "llm", [6]),
                     ("done", "done", []),
-                    ("agent.1", "query", [8]),
+                    ("root.b", "query", [8]),
                     ("llm", "llm", [9]),
                     ("done", "done", []),
-                    ("agent.2", "query", [11]),
+                    ("root.c", "query", [11]),
                     ("llm", "llm", [12]),
                     ("done", "done", []),
                 ],
@@ -717,13 +719,13 @@ class RecursiveFlowHero(Scene):
                     ("llm", "llm", [2]),
                     ("exec", "exec", [3]),
                     ("wait", "supervising", [4, 7, 10, 13]),
-                    ("agent.0", "query", [5]),
+                    ("root.a", "query", [5]),
                     ("llm", "llm", [6]),
                     ("done", "done", []),
-                    ("agent.1", "query", [8]),
+                    ("root.b", "query", [8]),
                     ("llm", "llm", [9]),
                     ("done", "done", []),
-                    ("agent.2", "query", [11]),
+                    ("root.c", "query", [11]),
                     ("llm", "llm", [12]),
                     ("done", "done", []),
                     ("resume", "resume", [14]),
@@ -794,14 +796,14 @@ class RecursiveFlowHero(Scene):
         # Phase 3 — multitree at supervising, fork, replace with straight path.
         fork_code = code_card(
             [
-                ("supervising_node = graph.filter(", DIM),
-                ("    filter=lambda node:", DIM),
-                ('    node.type == "supervising_output")', DIM),
-                ("forked_graph = graph.replace(", DIM),
-                ("    supervising_node,", DIM),
-                ("    rlmflow.ExecOutput(output=prompt),", DIM),
+                ("branch = graph.fork()", DIM),
+                ("sup = next(n for n in branch.nodes", DIM),
+                ('    if n.type == "supervising_output")', DIM),
+                ("branch.replace(sup,", DIM),
+                ("    ExecOutput(output=prompt),", DIM),
                 ('    truncate="descendants")', DIM),
-                ("forked_graph = agent.step(forked_graph)", DIM),
+                ("async for event in agent.run_streaming(", DIM),
+                ('    graph=branch, until="done"):', DIM),
             ],
             width=5.35,
             height=3.10,
@@ -926,7 +928,7 @@ class RecursiveFlowHero(Scene):
         fork_rhs = VGroup(fork_tree, fork_badge, inj, fork_tail)
         self.play(
             ReplacementTransform(head, cont_title),
-            *fork_light(7),
+            *fork_light(6),
             FadeOut(hi_box),
             run_time=0.60,
         )

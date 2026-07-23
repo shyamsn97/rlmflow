@@ -28,6 +28,7 @@ from rlmflow.graph.graph import (
     UserQuery,
     apply_graph_action,
     load_run,
+    mark_injected,
     node_from_dict,
     system_prompt_id,
 )
@@ -58,6 +59,7 @@ __all__ = [
     "UserQuery",
     "apply_graph_action",
     "load_run",
+    "mark_injected",
     "node_from_dict",
     "system_prompt_id",
 ]

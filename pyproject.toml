@@ -29,6 +29,9 @@ dependencies = [
     "tenacity>=8.0",
 ]
 
+[project.scripts]
+rlmflow = "rlmflow.cli:main"
+
 [project.optional-dependencies]
 openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.20"]

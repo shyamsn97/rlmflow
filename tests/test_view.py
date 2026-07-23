@@ -9,6 +9,8 @@ from rlmflow import (
     LLMOutput,
     SupervisingOutput,
     UserQuery,
+    replay,
+    render_steps,
 )
 from rlmflow.consumers.ui import LiveGraphTree, LiveTreeRenderer, render_tree
 from rlmflow.utils.viewer import _topology, _visible_nodes
@@ -159,3 +161,20 @@ def test_viewer_topology_fans_children_out_and_collapses_bookkeeping():
     # Children fan out to distinct columns below the supervisor.
     assert positions[left_first][0] != positions[right_first][0]
     assert positions[left_first][1] < positions[supervising.id][1]
+
+
+def test_replay_and_render_steps_accept_a_graph_directory(tmp_path):
+    graph = Graph(query="root query")
+    graph.append(LLMOutput(content="plan", code="pass"))
+    graph.append(DoneOutput(result="ok"))
+    path = graph.save(tmp_path / "run")
+
+    snaps = replay(path)
+    frames = render_steps(path)
+
+    assert len(snaps) >= 2
+    assert len(frames) == len(snaps)
+    assert "root:" in frames[-1]
+    assert "done ok" in frames[-1]
+    # Same helpers work on an in-memory Graph.
+    assert len(render_steps(graph)) == len(frames)

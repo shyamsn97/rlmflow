@@ -1,11 +1,11 @@
-"""Rendering a minimal Graph."""
+"""Rendering a minimal Graph — save it, then replay the step sequence."""
 
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
 
-from rlmflow import Graph, open_viewer, render_tree
+from rlmflow import Graph, open_viewer, render_steps, render_tree
 
 
 def build_graph() -> Graph:
@@ -26,7 +26,13 @@ def main() -> None:
 
     print(render_tree(graph))
     print(f"\nGraph saved to {path}")
-    open_viewer(graph, launch=False)
+
+    # Point at the directory — no load boilerplate.
+    frames = render_steps(path)
+    for i, frame in enumerate(frames, 1):
+        print(f"\n=== step {i}/{len(frames)} ===\n{frame}")
+
+    open_viewer(path, launch=False)
 
 
 if __name__ == "__main__":

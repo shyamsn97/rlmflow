@@ -72,6 +72,13 @@ and a live report:
 These report files refresh after every ledger update, so they remain useful
 while a run is still in progress or if the coordinator exits early.
 
+Karpathy-style progress plot (kept vs discarded + running best):
+
+```bash
+python plot_progress.py ../_runs/autoresearch/<timestamp>
+# writes progress.png (or progress.svg if matplotlib is unavailable)
+```
+
 ## Metric
 
 Lower `val_bpb` is better. The final training summary must contain:

@@ -240,8 +240,8 @@ fork/rewind → fan-out → compare patterns (see `examples/shepherd/`).
 Every state change goes through one seam so observers and checkpointers see it:
 
 ```python
-def append_node(self, graph, node):          # node or str
-    return self.apply_action(graph, graph.inject_action(node))
+def append_node(self, graph, node, *, injected=False):  # node or str
+    return self.apply_action(graph, graph.inject_action(node, injected=injected))
 
 def apply_action(self, graph, action):        # any GraphAction
     apply_graph_action(base, action)          # mutate the graph value

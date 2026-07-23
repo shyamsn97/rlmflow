@@ -22,7 +22,7 @@ Those edit the graph value. To inject *while a run is streaming* (so the edit is
 emitted into the live event stream), go through the Flow instead:
 
 ```python
-flow.append_node(graph, ExecOutput(...))   # append a typed node, emitted to the run
+flow.append_node(graph, ExecOutput(...), injected=True)  # stamp + emit into the run
 flow.apply_action(graph, action)           # apply any GraphAction (e.g. add a child)
 ```
 
@@ -50,6 +50,7 @@ agent.append_node(
         output="Injected controller observation: submit your final answer now.",
         content="Injected controller observation: submit your final answer now.",
     ),
+    injected=True,
 )
 
 agent.run(graph=graph)  # persists the note, then continues
@@ -75,6 +76,7 @@ async def run_with_controller_stop():
             agent.append_node(
                 graph,
                 rlmflow.UserQuery(content="Controller stop request: finalize now."),
+                injected=True,
             )
 ```
 
@@ -86,8 +88,10 @@ can `done(...)` cleanly.
 - `inject` covers append/insert/replace via `mode`; `replace(..., truncate=
   "descendants")` also rewrites history and prunes orphaned children. `rewind`
   and `remove_child` remain for pure removal.
-- Injected nodes are stored as ordinary node rows; there is no per-node
-  injection metadata.
+- Injected nodes are ordinary node rows with ``metadata["injected"] = True``.
+  ``Graph.inject`` / ``append`` / ``prepend`` / ``replace`` stamp this by
+  default; ``Flow.append_node`` does so when called with ``injected=True``
+  (organic scheduler commits leave it unset).
 - Do not inject into a finished agent.
 - Multiple adjacent observation nodes are allowed and coalesce in the message
   projection.

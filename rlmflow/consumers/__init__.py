@@ -14,13 +14,12 @@ __all__ = [
     "StreamConsumer",
     "WorkspaceSync",
     "render_tree",
-    "tui",
 ]
 
 
 def __getattr__(name: str):
-    if name in ("FlowTUI", "tui"):
-        from rlmflow.consumers import tui as _tui
+    if name == "FlowTUI":
+        from rlmflow.consumers.tui import FlowTUI
 
-        return getattr(_tui, name)
+        return FlowTUI
     raise AttributeError(name)

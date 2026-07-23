@@ -114,14 +114,6 @@ EXAMPLES: list[Example] = [
         note="opens a minimal render_tree-backed viewer or prints a fallback",
     ),
     Example(
-        "tui-chat",
-        "examples/tui_chat.py",
-        category="manual",
-        env=("OPENAI_API_KEY",),
-        modules=("openai", "textual"),
-        note="opens the live Textual TUI against a real OpenAI-backed Flow",
-    ),
-    Example(
         "drop-in-llm",
         "examples/drop_in_llm.py",
         category="live",
@@ -271,9 +263,10 @@ EXAMPLES: list[Example] = [
         "examples/coding/agent.py",
         category="manual",
         env=("OPENAI_API_KEY",),
-        modules=("openai",),
+        modules=("openai", "textual"),
+        args=("--cli",),
         stdin="quit\n",
-        note="interactive shell; smoke only starts and exits",
+        note="rich TUI by default; smoke uses --cli and exits",
     ),
 ]
 

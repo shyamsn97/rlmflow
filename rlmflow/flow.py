@@ -865,9 +865,18 @@ class Flow:
             specs.append(spec)
         return launch(specs)
 
-    def append_node(self, graph: Graph, node: Node | str) -> Event:
-        """Append via :meth:`Graph.inject_action` and emit into the active run."""
-        return self.apply_action(graph, graph.inject_action(node))
+    def append_node(
+        self, graph: Graph, node: Node | str, *, injected: bool = False
+    ) -> Event:
+        """Append via :meth:`Graph.inject_action` and emit into the active run.
+
+        Organic scheduler commits leave ``injected=False`` (default). Controller
+        edits that should show up as injected in traces/renderers pass
+        ``injected=True`` (stamps ``metadata["injected"]``).
+        """
+        return self.apply_action(
+            graph, graph.inject_action(node, injected=injected)
+        )
 
     def apply_action(self, graph: Graph, action: GraphAction) -> GraphAction:
         base = None if isinstance(action, GraphCreated) else graph

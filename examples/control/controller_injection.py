@@ -69,12 +69,16 @@ def observation_injection() -> None:
     graph = Graph(query="Wait for a controller note, then finish.")
     assert_types(graph, ["user_query"])
 
-    flow.append_node(graph, ExecOutput(output=OBSERVATION, content=OBSERVATION))
+    flow.append_node(
+        graph,
+        ExecOutput(output=OBSERVATION, content=OBSERVATION),
+        injected=True,
+    )
     assert_types(graph, ["user_query", "exec_output"])
 
     extra = graph.nodes[-1]
     assert isinstance(extra, ExecOutput)
-    assert "injected" not in set(extra.metadata)
+    assert extra.metadata.get("injected") is True
 
     print_states("after controller append_node(...)", graph)
 
