@@ -20,14 +20,9 @@ from typing import Literal
 from pydantic import BaseModel
 
 from rlmflow.clients import OpenAIClient
-from rlmflow import (
-    ConsumerGroup,
-    Flow,
-    Graph,
-    GraphCheckpointer,
-    LiveTreeRenderer,
-    render_tree,
-)
+from rlmflow import Flow, start
+from rlmflow.consumers import ConsumerGroup, GraphCheckpointer
+from rlmflow.view import LiveTreeRenderer, render_tree
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -98,7 +93,7 @@ def main() -> None:
         "agents."
     )
 
-    graph = Graph(query=query)
+    graph = start(query=query)
 
     consumers = ConsumerGroup([LiveTreeRenderer()])
     if args.out_dir:
@@ -107,24 +102,24 @@ def main() -> None:
     async def drive() -> None:
         try:
             async for event in flow.run_streaming(
-                graph=graph,
+                graph,
                 inputs={"trip_brief": TRIP_BRIEF},
                 output_schema=PackingPlan,
             ):
-                consumers.handle(event, graph)
+                consumers.handle(event)
         finally:
             consumers.close()
 
     asyncio.run(drive())
 
-    plan = PackingPlan.model_validate_json(graph.result())
+    plan = PackingPlan.model_validate_json(graph.agent_result())
 
     print("Typed result:")
     print(type(plan).__name__)
     print(plan.model_dump_json(indent=2))
 
     print("\nGraph result:")
-    print(graph.result())
+    print(graph.agent_result())
 
     print("\nTree:")
     print(render_tree(graph))
@@ -132,7 +127,7 @@ def main() -> None:
     if args.out_dir:
         print(f"\nGraph checkpointed to {Path(args.out_dir)}")
 
-    flow.close_repls(graph.graph_id)
+    flow.runtime.close_repls(graph.trajectory_id)
 
 
 if __name__ == "__main__":

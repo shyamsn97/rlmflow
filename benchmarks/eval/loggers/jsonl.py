@@ -37,14 +37,7 @@ class JsonlLogger(Logger):
 
 
 def row_artifact_path(root: Path, row: Row) -> Path:
-    return (
-        root
-        / "artifacts"
-        / row.dataset
-        / row.example_id
-        / row.runner
-        / "prediction.json"
-    )
+    return root / "artifacts" / row.dataset / row.example_id / row.runner / "prediction.json"
 
 
 def load_rows(path: Path) -> list[Row]:

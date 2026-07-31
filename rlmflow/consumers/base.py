@@ -1,18 +1,17 @@
-"""Small stream-consumer primitives for graph event streams."""
+"""Small consumer primitives for published Node streams."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from contextlib import suppress
 
-from rlmflow.graph import Graph
-from rlmflow.graph.events import Event
+from rlmflow.graph import Node
 
 
 class StreamConsumer:
-    """Base class for objects that react to streamed graph events."""
+    """Base class for objects that react to published Nodes."""
 
-    def handle(self, event: Event, graph: Graph | None) -> None:
+    def handle(self, node: Node) -> None:
         raise NotImplementedError
 
     def close(self) -> None:
@@ -20,7 +19,7 @@ class StreamConsumer:
 
 
 class ConsumerGroup(StreamConsumer):
-    """Fan out each event to a list of consumers."""
+    """Fan out each Node to a list of consumers."""
 
     def __init__(self, consumers: Iterable[StreamConsumer] = ()) -> None:
         self.consumers = list(consumers)
@@ -28,9 +27,9 @@ class ConsumerGroup(StreamConsumer):
     def append(self, consumer: StreamConsumer) -> None:
         self.consumers.append(consumer)
 
-    def handle(self, event: Event, graph: Graph | None) -> None:
+    def handle(self, node: Node) -> None:
         for consumer in self.consumers:
-            consumer.handle(event, graph)
+            consumer.handle(node)
 
     def close(self) -> None:
         for consumer in reversed(self.consumers):

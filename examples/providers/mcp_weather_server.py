@@ -29,6 +29,7 @@ def mcp_tool(fn):
         return fn
     return mcp.tool()(fn)
 
+
 WEATHER_CODES = {
     0: "clear",
     1: "mostly clear",

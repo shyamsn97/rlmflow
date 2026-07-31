@@ -80,11 +80,7 @@ class Registry(Generic[T]):
         if tags is None:
             return sorted(self._items)
         wanted = set(tags)
-        return sorted(
-            name
-            for name, item in self._items.items()
-            if wanted.intersection(item.tags)
-        )
+        return sorted(name for name, item in self._items.items() if wanted.intersection(item.tags))
 
     def expand(self, values: Iterable[str]) -> list[str]:
         expanded: list[str] = []

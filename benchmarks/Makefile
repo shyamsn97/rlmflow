@@ -20,8 +20,9 @@ export PRINT_HELP_PYSCRIPT
 EVAL_PROVIDER ?= openai
 EVAL_MODEL ?= gpt-5-mini
 EVAL_DATASETS ?= oolong
-EVAL_RUNNERS ?= vanilla rlmflow-local
+EVAL_RUNNERS ?= vanilla rlmflow-local official-rlm
 EVAL_SEEDS ?= 0:10
+EVAL_BENCHMARK_DATASETS_FULL ?= oolong official_browsecomp official_longbench_v2 official_livecodebench official_sudoku_extreme
 EVAL_BENCHMARK_DATASETS ?= oolong official_browsecomp official_longbench_v2 official_livecodebench official_sudoku_extreme
 EVAL_BENCHMARK_RUNNERS ?= rlmflow-local vanilla official-rlm
 EVAL_BENCHMARK_SEEDS ?= 0:20
@@ -63,8 +64,7 @@ eval-smoke: ## Run local fake eval smoke across fake/vanilla/rlmflow.
 		--out-dir $(EVAL_OUT_DIR) \
 		$(EVAL_ARGS)
 
-eval-test: ## Run focused eval harness tests.
-	cd $(REPO_ROOT) && python -m pytest tests/test_eval_benchmarks.py
+eval-test: eval-smoke ## Alias for the deterministic local eval smoke.
 
 eval-run: ## Run real eval harness. Override EVAL_PROVIDER/MODEL/TASKS/RUNNERS/SEEDS/ARGS.
 	cd $(REPO_ROOT) && python -m benchmarks.eval \
@@ -122,6 +122,24 @@ eval-benchmark:
 		--wandb \
 		--wandb-project $(EVAL_WANDB_PROJECT) \
 		$(EVAL_WANDB_ENTITY_ARG) \
+		$(EVAL_DATASET_PARAMS) \
+		$(EVAL_RUNNER_PARAMS) \
+		$(EVAL_ARGS)
+
+eval-benchmark-oolong:
+	cd $(REPO_ROOT) && python -m benchmarks.eval \
+		--model $(EVAL_PROVIDER):$(EVAL_MODEL) \
+		--dataset oolong \
+		--runner $(EVAL_BENCHMARK_RUNNERS) \
+		--seeds 0:20 \
+		--out-dir $(EVAL_OUT_DIR) \
+		--executor $(EVAL_EXECUTOR) \
+		--parallel $(EVAL_PARALLEL) \
+		--best-of-n $(EVAL_BEST_OF_N) \
+		--attempt-timeout $(EVAL_ATTEMPT_TIMEOUT) \
+		--modal-app-name $(EVAL_MODAL_APP_NAME) \
+		--modal-cpu $(EVAL_MODAL_CPU) \
+		--modal-timeout $(EVAL_MODAL_TIMEOUT) \
 		$(EVAL_DATASET_PARAMS) \
 		$(EVAL_RUNNER_PARAMS) \
 		$(EVAL_ARGS)

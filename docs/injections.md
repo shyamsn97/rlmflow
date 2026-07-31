@@ -1,97 +1,87 @@
-# Node Injection
+# Node injection
 
-Node injection lets an external controller edit a running agent graph by
-appending typed nodes, then continuing the run with `agent.run(graph=graph)` or
-`agent.run_streaming(graph=graph)`. It is useful for budget controls, human/controller
-feedback, forced finalization, and repair nudges that should be represented in
-the same trace as normal model and runtime events.
+Controllers edit the caller-owned Node tree between streaming calls, then
+continue the same root.
 
-The caller owns the `Graph`, so injection is just a graph mutation followed by
-more scheduling. `graph.inject(...)` is the base graph-edit op; `append`,
-`prepend`, and `replace` are thin helpers over it:
+## Append an observation
 
 ```python
-graph.inject("controller note")                     # append a user-turn (default)
-graph.inject(node, at=anchor, mode="before")        # insert before a node
-graph.append(node)                                  # mode="after"   (sugar)
-graph.prepend(node)                                 # mode="before"  (sugar)
-graph.replace(anchor, node, truncate="descendants") # swap + re-route a branch
-```
+from rlmflow import ExecOutput
 
-Those edit the graph value. To inject *while a run is streaming* (so the edit is
-emitted into the live event stream), go through the Flow instead:
-
-```python
-flow.append_node(graph, ExecOutput(...), injected=True)  # stamp + emit into the run
-flow.apply_action(graph, action)           # apply any GraphAction (e.g. add a child)
-```
-
-All three mutate `graph` in place. Nothing is committed to a live REPL session
-until the next `run_streaming`/`run`, which persists the appended nodes as ordinary graph
-rows, updates the message projection, and resumes normal scheduling.
-
-For a runnable offline demo, see
-[`examples/control/controller_injection.py`](../examples/control/controller_injection.py).
-
-## Inject A Controller Observation
-
-Append an `ExecOutput` when you want the next LLM turn to see controller-authored
-feedback without pretending the model wrote a REPL block:
-
-```python
-import asyncio
-import rlmflow
-
-graph = rlmflow.Graph(query="Wait for a controller note, then finish.")
-
-agent.append_node(
-    graph,
-    rlmflow.ExecOutput(
-        output="Injected controller observation: submit your final answer now.",
-        content="Injected controller observation: submit your final answer now.",
+flow.append(
+    root.tail("root.worker"),
+    ExecOutput(
+        content="Controller observation: finalize with current evidence.",
+        output="Controller observation: finalize with current evidence.",
     ),
     injected=True,
 )
 
-agent.run(graph=graph)  # persists the note, then continues
+flow.run(root)
 ```
 
-Adjacent observations are coalesced into one user-role message by the message
-projection (`flow.messages(graph)`), so providers with strict role alternation
-still accept the prompt. `graph.inject(text, agent_id=...)` is the shorthand for
-appending a `UserQuery` observation to a specific agent (a string is wrapped as a
-`UserQuery`; pass a `Node` to inject any typed node).
-
-## Inject Mid-Run From The Stream
-
-Because `run_streaming` mutates the graph in place, a controller can watch the
-event stream and inject at a chosen boundary:
+A string is wrapped as `UserQuery`:
 
 ```python
-async def run_with_controller_stop():
-    injected = False
-    async for event in agent.run_streaming(graph=graph):
-        if not injected and event.type == "append_node" and event.node_type == "exec_output":
-            injected = True
-            agent.append_node(
-                graph,
-                rlmflow.UserQuery(content="Controller stop request: finalize now."),
-                injected=True,
-            )
+flow.append(
+    root.tail("root.worker"),
+    "Controller stop request: finalize now.",
+    injected=True,
+)
 ```
 
-The injected node becomes an ordinary graph row; the next model turn reads it and
-can `done(...)` cleanly.
+Injected Nodes are ordinary durable Nodes with:
 
-## Rules
+```python
+node.metadata["injected"] = True
+node.metadata["mutation"]["type"] == "append"
+```
 
-- `inject` covers append/insert/replace via `mode`; `replace(..., truncate=
-  "descendants")` also rewrites history and prunes orphaned children. `rewind`
-  and `remove_child` remain for pure removal.
-- Injected nodes are ordinary node rows with ``metadata["injected"] = True``.
-  ``Graph.inject`` / ``append`` / ``prepend`` / ``replace`` stamp this by
-  default; ``Flow.append_node`` does so when called with ``injected=True``
-  (organic scheduler commits leave it unset).
-- Do not inject into a finished agent.
-- Multiple adjacent observation nodes are allowed and coalesce in the message
-  projection.
+## Insert, replace, and remove
+
+Structural edits use operation-specific surgery functions:
+
+```python
+from rlmflow import ExecOutput, surgery
+
+inserted = surgery.insert(root, anchor_id, "note", mode="after")
+replacement = surgery.insert(
+    root,
+    anchor_id,
+    ExecOutput(content="replacement", output="replacement"),
+    mode="replace",
+    truncate="descendants",
+)
+removed = surgery.remove(root, node_id)
+```
+
+`mode` is `after`, `before`, or `replace`. `truncate="descendants"` drops the
+displaced continuation; the default preserves and rehomes it.
+
+Surgery validates before mutating and returns the affected Node. It stamps
+mutation provenance in metadata.
+
+## Reactive control
+
+Stop at a boundary, edit, then resume:
+
+```python
+async for _ in flow.run_streaming(root, until="idle"):
+    pass
+
+flow.append(root.tail(), "Human feedback: verify the auth path.", injected=True)
+
+async for _ in flow.run_streaming(root):
+    pass
+```
+
+The first stream settles its active round before returning, so the edit cannot
+race an in-flight transition. The next prompt projection reads the changed tree.
+
+Do not mutate a tree from inside an unrelated concurrent task. Live framework
+tools receive the stream-local publisher and should use the Flow/surgery
+operation that owns their mutation.
+
+See
+[`examples/control/controller_injection.py`](../examples/control/controller_injection.py)
+for a runnable example.

@@ -96,10 +96,12 @@ class ReplServer:
         if isinstance(msg, CapabilitiesRequest):
             return ReplResponse(id=msg.id, capabilities=self.capabilities)
         if isinstance(msg, RunRequest):
-            output = await self.repl.run(msg.code)
+            # The answer travels back over the proxied ``done``, not this response,
+            # so the client classifies the run on its side.
+            run = await self.repl.run(msg.code)
             return ReplResponse(
                 id=msg.id,
-                output=output,
+                output=run.output,
                 errored=self.repl.errored,
                 env=dict(self.repl.env),
             )

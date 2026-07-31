@@ -12,21 +12,21 @@ Pick the doc that matches what you're trying to do.
 ## Use rlmflow
 
 - [Control](control.md) — streaming loop, save/load resume, rewind,
-  forks, `INPUTS`, cold `launch_subagents` and warm `launch_subgraphs` /
-  `adopt`, custom tools.
+  forks, `INPUTS`, cold `launch_subagents` and warm `launch_branches`, custom
+  tools.
 - [Streaming and scheduling](streaming.md) — detailed guide to
-  `run_streaming(..., until=...)`, per-agent queues, boundaries, and delegation.
+  `run_streaming(..., until=...)`, structured concurrency, boundaries, and delegation.
 - [Skills](skills.md) — workspace `SKILL.md` files, always-on skills,
   query-selected skills, child-only skills, run-memory skills.
-- [Node injection](injections.md) — append typed controller events to a
-  running graph, then continue with `agent.run(graph=graph)` / `agent.run_streaming(graph=graph)`.
-- [Observability](observability.md) — querying the `Graph`,
+- [Node injection](injections.md) — append controller Nodes between streaming
+  calls, then continue the same root.
+- [Observability](observability.md) — querying the Node tree,
   run layout, `LiveGraphTree` / `LiveTreeRenderer`, the Gradio viewer, and static
   image/step exports.
 - [Node model](node_model.md) — typed graph state taxonomy, action /
   observation alternation, delegation wait/resume flow.
 - [Runtimes](runtimes.md) — `Runtime` protocol, shipped runtimes
-  (Local / Docker / Modal / E2B / Daytona), writing your own.
+  (Local / subprocess / Docker / Modal), writing your own.
 - [Prompt customization](prompt_customization.md) — `SystemPromptBuilder`
   sections, `PromptProfile` / `prompt_profile` / `prompt_router`, full replacement.
 - [Security](security.md) — trust model, Docker isolation knobs,
@@ -36,9 +36,8 @@ Pick the doc that matches what you're trying to do.
 
 ## Extend rlmflow
 
-- [**Internals**](internals.md) — the `Flow`/`Graph`/`Run` split, the two phases
-  of a run, the per-agent scheduler, exec turns, delegation, REPL lifecycle,
-  runtime backends, graph persistence, and extension seams.
+- [**Internals**](internals.md) — Node structure, Flow transitions, structured
+  concurrency, publication, Runtime identity, surgery, and persistence.
 
 ## Research Notes
 

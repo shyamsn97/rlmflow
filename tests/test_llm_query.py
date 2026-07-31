@@ -2,14 +2,14 @@ import asyncio
 import threading
 import time
 
-from rlmflow import (
-    Flow,
-    Graph,
-)
-
 from helpers import (
     StubLLM,
     UsageLLM,
+)
+
+from rlmflow import (
+    Flow,
+    start,
 )
 
 
@@ -39,23 +39,18 @@ def test_minimal_llm_query_batched_bounds_blocking_calls_by_workers():
     assert max_seen == 2
 
 
-
 def test_minimal_llm_query_batched_can_be_used_as_opt_in_tool():
     def reply(messages):
         if len(messages) == 1:
             return messages[0]["content"].upper()
         return (
-            "```repl\n"
-            'results = await llm_query_batched(["a", "b"])\n'
-            'done("|".join(results))\n'
-            "```"
+            '```repl\nresults = await llm_query_batched(["a", "b"])\ndone("|".join(results))\n```'
         )
 
     flow = Flow(StubLLM(reply), use_llm_query=True)
-    graph = Graph(query="q")
+    graph = start("q")
 
-    assert flow.run(graph=graph) == "A|B"
-
+    assert flow.run(graph) == "A|B"
 
 
 def test_minimal_llm_query_batched_routes_model():
@@ -66,7 +61,6 @@ def test_minimal_llm_query_batched_routes_model():
         return await flow.llm_query_batched(["a", "b"], model="fast")
 
     assert asyncio.run(collect()) == ["A", "B"]
-
 
 
 def test_minimal_llm_query_batched_supports_output_schema():
@@ -81,7 +75,6 @@ def test_minimal_llm_query_batched_supports_output_schema():
         return await flow.llm_query_batched(["q1", "q2"], output_schema=schema)
 
     assert asyncio.run(collect()) == [{"answer": 3}, {"answer": 3}]
-
 
 
 def test_minimal_llm_query_batched_forwards_sampling_kwargs():
@@ -103,7 +96,4 @@ def test_minimal_llm_query_batched_forwards_sampling_kwargs():
         )
 
     assert asyncio.run(collect()) == ["ok"]
-    assert llm.calls == [
-        {"temperature": 0.5, "top_p": 0.9, "max_tokens": 10, "stop": ["x"]}
-    ]
-
+    assert llm.calls == [{"temperature": 0.5, "top_p": 0.9, "max_tokens": 10, "stop": ["x"]}]

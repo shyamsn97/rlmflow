@@ -2,7 +2,7 @@
 
 Keeps message shaping out of ``flow.py``. Durable guidance lives in the system
 prompt (``prompts.py``); this module only holds what the system prompt cannot
-carry: the projection of a graph trajectory into chat messages, the dynamic
+carry: the projection of a trajectory into chat messages, the dynamic
 inputs manifest (names + sizes), and the nudges tied to run state (continue,
 forced-final, truncation). Uses the **inputs-as-`INPUTS`** model: each agent's
 inputs live in a single ``INPUTS`` dict so a key never shadows a REPL variable.
@@ -14,10 +14,9 @@ from collections.abc import Callable
 from typing import Any
 
 from rlmflow.graph import (
+    AgentStart,
     ErrorOutput,
-    ExecAction,
     ExecOutput,
-    Graph,
     LLMOutput,
     Node,
     SupervisingOutput,
@@ -34,6 +33,11 @@ CONTINUE_NUDGE = "Continue. Reply with one ```repl``` block, or call done(...)."
 
 TRUNCATION_SUMMARY = (
     "[earlier turns omitted to fit the context window; the most recent turns follow]"
+)
+
+COLD_REPL_NOTE = (
+    "[this agent's REPL was restarted, so variables and imports from earlier turns "
+    "are gone. Re-derive whatever you need before using it.]"
 )
 
 
@@ -64,7 +68,7 @@ def build_inputs_manifest(inputs: dict[str, str]) -> str:
 class PromptBuilder:
     """Shared base for the two prompt sides.
 
-    A ``PromptBuilder`` is a ``(flow, graph) -> list[dict]`` callable: it renders
+    A ``PromptBuilder`` is a ``(flow, root) -> list[dict]`` callable: it renders
     one side of the conversation into chat messages. ``SystemPromptBuilder``
     returns a single ``system`` message; ``UserPromptBuilder`` returns the
     ``user``/``assistant`` turns. ``Flow.messages`` just concatenates the two
@@ -72,40 +76,33 @@ class PromptBuilder:
     share this one shape.
     """
 
-    def __call__(self, flow: Any, graph: Graph) -> list[dict[str, str]]:
+    def __call__(self, flow: Any, agent: Node) -> list[dict[str, str]]:
         raise NotImplementedError
 
 
 class UserPromptBuilder(PromptBuilder):
-    """Prepare the graph for this turn, then project it into conversation turns.
+    """Project one agent transcript into conversation turns.
 
-    ``__call__`` runs the fixed machinery: it commits ``build()``'s per-turn
-    content as a ``UserQuery`` node, materializes the continue/forced-final nudge
-    (``ensure_nudge``), and only then projects the graph to chat messages
-    (``project``). The graph is the single source of truth — everything the model
-    sees this turn is a committed node before projection, which invents nothing.
+    Projection is pure. ``Flow.llm_turn`` commits ``build()`` output and the
+    continue/forced-final nudge before asking this builder to render the tree.
 
-    Override ``build(flow, graph) -> str | None`` to inject per-turn content (an
+    Override ``build(flow, agent) -> str | None`` to inject per-turn content (an
     observation, an injection); it returns ``None`` by default (nudge only). A
-    bare ``(flow, graph) -> str | None`` can be passed as ``build_fn=`` (or as
+    bare ``(flow, agent) -> str | None`` can be passed as ``build_fn=`` (or as
     ``user=`` on a profile — see ``as_user_prompt``). Override one ``render_*``
     to reshape how a node type projects (return ``None`` to drop it), or
     ``render_node`` to change dispatch wholesale.
     """
 
     def __init__(
-        self, build_fn: Callable[[Any, Graph], str | None] | None = None
+        self, build_fn: Callable[[Any, Node], str | None] | None = None
     ) -> None:
         self._build_fn = build_fn
 
-    def __call__(self, flow: Any, graph: Graph) -> list[dict[str, str]]:
-        content = self.build(flow, graph)
-        if content:
-            flow.append_node(graph, UserQuery(content=content))
-        self.ensure_nudge(flow, graph)
-        return self.project(flow, graph)
+    def __call__(self, flow: Any, node: Node) -> list[dict[str, str]]:
+        return self.project(flow, node)
 
-    def build(self, flow: Any, graph: Graph) -> str | None:
+    def build(self, flow: Any, agent: Node) -> str | None:
         """Per-turn content to add to the conversation, or ``None`` for nothing.
 
         Uses ``build_fn`` when one was passed at construction; otherwise override
@@ -113,37 +110,31 @@ class UserPromptBuilder(PromptBuilder):
         node before projecting, so it lands in the durable trajectory.
         """
         if self._build_fn is not None:
-            return self._build_fn(flow, graph)
+            return self._build_fn(flow, agent)
         return None
 
-    def ensure_nudge(self, flow: Any, graph: Graph) -> None:
-        """Materialize the trailing nudge as a real ``UserQuery`` node.
+    def project(self, flow: Any, node: Node, keep: int | None = None) -> list[dict[str, str]]:
+        """The conversation as of ``node``: its own agent's nodes, as turns.
 
-        Formerly ``Flow._ensure_nudge``: on the last allowed turn commit the
-        forced-final instruction; otherwise commit the continue nudge unless the
-        trajectory already ends on a user turn (e.g. ``build()`` just added one).
-        Making the nudge a node keeps the transcript self-contained.
+        Walks backwards, so with ``keep`` the work is the size of the prompt rather
+        than the size of the history: it stops as soon as that many turns are in
+        hand instead of rendering a whole transcript to drop most of it.
         """
-        llm_turns = sum(isinstance(node, LLMOutput) for node in graph.nodes)
-        if llm_turns == flow.max_iters_for(graph) - 1:
-            flow.append_node(graph, UserQuery(content=flow.final_action))
-            return
-        turns = self.project(flow, graph)
-        if not turns or turns[-1]["role"] != "user":
-            flow.append_node(graph, UserQuery(content=flow.continue_nudge))
-
-    def project(self, flow: Any, graph: Graph) -> list[dict[str, str]]:
-        """Pure projection of the graph's nodes into conversation turns."""
         turns: list[dict[str, str]] = []
-        for node in graph.nodes:
-            msg = self.render_node(node)
-            if msg is not None:
-                turns.append(msg)
-        return turns
+        for current in node.walk(reverse=True):
+            msg = self.render_node(current)
+            if msg is None:
+                continue
+            turns.append(msg)
+            if keep is not None and len(turns) >= keep:
+                break
+        return turns[::-1]
 
-    # Dispatch: one renderer per node type. Nodes that are graph bookkeeping
+    # Dispatch: one renderer per node type. Nodes that are tree bookkeeping
     # rather than turns (``ExecAction``, ``DoneOutput``) fall through to ``None``.
     def render_node(self, node: Node) -> dict[str, str] | None:
+        if isinstance(node, AgentStart):
+            return {"role": "user", "content": node.content}
         if isinstance(node, UserQuery):
             return self.render_user_query(node)
         if isinstance(node, LLMOutput):
@@ -163,20 +154,20 @@ class UserPromptBuilder(PromptBuilder):
         return {"role": "assistant", "content": node.content}
 
     def render_exec_output(self, node: ExecOutput) -> dict[str, str] | None:
-        return {"role": "user", "content": node.content or node.output}
+        return {"role": "user", "content": node.content}
 
     def render_error_output(self, node: ErrorOutput) -> dict[str, str] | None:
-        return {"role": "user", "content": node.content or node.output}
+        return {"role": "user", "content": node.content}
 
     def render_supervising_output(
         self, node: SupervisingOutput
     ) -> dict[str, str] | None:
-        return {"role": "user", "content": node.content or node.output}
+        return {"role": "user", "content": node.content}
 
 
 #: Per-turn content: return a string to commit as a ``UserQuery``, or ``None``.
 #: Bare functions are wrapped via ``as_user_prompt`` into a ``UserPromptBuilder``.
-UserPromptBuildFn = Callable[[Any, Graph], str | None]
+UserPromptBuildFn = Callable[[Any, Node], str | None]
 UserPromptSource = UserPromptBuildFn | UserPromptBuilder
 UserPromptFn = UserPromptBuildFn  # alias
 
@@ -184,7 +175,7 @@ UserPromptFn = UserPromptBuildFn  # alias
 def as_user_prompt(source: Any) -> UserPromptBuilder:
     """Normalize a user-prompt source to a ``UserPromptBuilder``.
 
-    A bare ``(flow, graph) -> str | None`` becomes ``UserPromptBuilder(build_fn=…)``
+    A bare ``(flow, agent) -> str | None`` becomes ``UserPromptBuilder(build_fn=…)``
     so ``PromptProfile(user=fn)`` / ``Flow(user_prompt=fn)`` just work.
     """
     if isinstance(source, UserPromptBuilder):
@@ -209,24 +200,17 @@ def coalesce_roles(messages: list[dict[str, str]]) -> list[dict[str, str]]:
     return merged
 
 
-def merge_summary(child: Graph, delta: list[Node]) -> str:
-    """Default one-line prompt summary for a merged branch's delta."""
-    result = child.result() or "(no result)"
-    n_exec = sum(1 for node in delta if isinstance(node, ExecAction))
-    return f"[merged branch {child.graph_id}] {result} (folded {n_exec} exec step(s))"
-
-
 __all__ = [
+    "COLD_REPL_NOTE",
     "CONTINUE_NUDGE",
     "FINAL_ANSWER_ACTION",
     "TRUNCATION_SUMMARY",
     "PromptBuilder",
-    "UserPromptBuilder",
     "UserPromptBuildFn",
+    "UserPromptBuilder",
     "UserPromptFn",
     "UserPromptSource",
     "as_user_prompt",
     "build_inputs_manifest",
     "coalesce_roles",
-    "merge_summary",
 ]

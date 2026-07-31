@@ -158,8 +158,13 @@ EXAMPLES: list[Example] = [
         "examples/summarizer.py",
         category="live",
         args=(
-            "--sections", "6", "--no-viz", "--max-iters", "8",
-            "--out-dir", "{tmp}/summarizer",
+            "--sections",
+            "6",
+            "--no-viz",
+            "--max-iters",
+            "8",
+            "--out-dir",
+            "{tmp}/summarizer",
         ),
         env=("OPENAI_API_KEY",),
         modules=("openai",),
@@ -170,8 +175,13 @@ EXAMPLES: list[Example] = [
         "examples/needle/haystack.py",
         category="live",
         args=(
-            "--num-lines", "2000", "--no-viz", "--max-iters", "8",
-            "--out-dir", "{tmp}/needle/haystack",
+            "--num-lines",
+            "2000",
+            "--no-viz",
+            "--max-iters",
+            "8",
+            "--out-dir",
+            "{tmp}/needle/haystack",
         ),
         env=("OPENAI_API_KEY",),
         modules=("openai",),
@@ -182,8 +192,13 @@ EXAMPLES: list[Example] = [
         "examples/needle/filesystem.py",
         category="live",
         args=(
-            "--num-files", "50", "--no-viz", "--max-iters", "8",
-            "--out-dir", "{tmp}/needle-filesystem",
+            "--num-files",
+            "50",
+            "--no-viz",
+            "--max-iters",
+            "8",
+            "--out-dir",
+            "{tmp}/needle-filesystem",
         ),
         env=("OPENAI_API_KEY",),
         modules=("openai",),
@@ -194,8 +209,14 @@ EXAMPLES: list[Example] = [
         "examples/needle/minimal_filesystem.py",
         category="live",
         args=(
-            "--num-files", "30", "--lines-per-file", "40", "--max-iters", "8",
-            "--out-dir", "{tmp}/needle-minimal-filesystem",
+            "--num-files",
+            "30",
+            "--lines-per-file",
+            "40",
+            "--max-iters",
+            "8",
+            "--out-dir",
+            "{tmp}/needle-minimal-filesystem",
         ),
         env=("OPENAI_API_KEY",),
         modules=("openai",),
@@ -276,7 +297,11 @@ def module_exists(name: str) -> bool:
 
 
 def should_include(example: Example, args: argparse.Namespace) -> bool:
-    if args.pattern and args.pattern.lower() not in example.name.lower() and args.pattern not in example.path:
+    if (
+        args.pattern
+        and args.pattern.lower() not in example.name.lower()
+        and args.pattern not in example.path
+    ):
         return False
     return (
         example.category == "offline"
@@ -327,16 +352,32 @@ def run_example(example: Example, tmpdir: Path, *, verbose: bool) -> tuple[str, 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--include-optional", action="store_true", help="run optional-dependency examples")
-    parser.add_argument("--include-live", action="store_true", help="run examples that call live LLM APIs")
-    parser.add_argument("--include-sandbox", action="store_true", help="run Modal/E2B/Daytona examples")
-    parser.add_argument("--include-manual", action="store_true", help="include interactive/manual smoke checks")
+    parser.add_argument(
+        "--include-optional", action="store_true", help="run optional-dependency examples"
+    )
+    parser.add_argument(
+        "--include-live", action="store_true", help="run examples that call live LLM APIs"
+    )
+    parser.add_argument(
+        "--include-sandbox", action="store_true", help="run Modal/E2B/Daytona examples"
+    )
+    parser.add_argument(
+        "--include-manual", action="store_true", help="include interactive/manual smoke checks"
+    )
     parser.add_argument("--all", action="store_true", help="enable every include flag")
-    parser.add_argument("--list", action="store_true", help="list selected examples without running them")
-    parser.add_argument("--pattern", help="only include examples whose name/path contains this text")
+    parser.add_argument(
+        "--list", action="store_true", help="list selected examples without running them"
+    )
+    parser.add_argument(
+        "--pattern", help="only include examples whose name/path contains this text"
+    )
     parser.add_argument("--fail-fast", action="store_true", help="stop after the first failure")
-    parser.add_argument("--strict-skips", action="store_true", help="treat missing env/deps as failure")
-    parser.add_argument("--verbose", action="store_true", help="print full output for successful examples")
+    parser.add_argument(
+        "--strict-skips", action="store_true", help="treat missing env/deps as failure"
+    )
+    parser.add_argument(
+        "--verbose", action="store_true", help="print full output for successful examples"
+    )
     return parser.parse_args()
 
 

@@ -1,6 +1,6 @@
-"""Compare repair branches with the Graph-centric API.
+"""Compare repair branches with the Node-only API.
 
-Each repair attempt is a separate ``Graph(...)`` run in its own working
+Each repair attempt is a separate ``start(...)`` run in its own working
 directory; the resulting graphs are directly comparable.
 
 Usage:
@@ -18,11 +18,11 @@ from pathlib import Path
 from rlmflow import (
     FILE_TOOLS,
     Flow,
-    Graph,
-    GraphCheckpointer,
     LLMUsage,
     LocalRuntime,
+    start,
 )
+from rlmflow.consumers import GraphCheckpointer
 
 TASK = "Implement slugify(text) in slugify.py so tests/test_slugify.py passes."
 
@@ -81,10 +81,7 @@ class RepairLLM:
     def chat(self, messages, *args, **kwargs):
         self.last_usage = LLMUsage(input_tokens=100, output_tokens=50)
         return (
-            "```repl\n"
-            f"write_file('slugify.py', {self.implementation!r})\n"
-            f"done({self.label!r})\n"
-            "```"
+            f"```repl\nwrite_file('slugify.py', {self.implementation!r})\ndone({self.label!r})\n```"
         )
 
 
@@ -115,22 +112,20 @@ def run_branch(root: Path, name: str, implementation: str, label: str):
     # File tools run inside this branch's own working directory.
     runtime = LocalRuntime(working_directory=workdir)
     runtime.register_tools(FILE_TOOLS)
-    flow = Flow(
-        RepairLLM(implementation, label), runtime=runtime, max_depth=0, max_iters=3
-    )
-    graph = Graph(query=TASK)
+    flow = Flow(RepairLLM(implementation, label), runtime=runtime, max_depth=0, max_iters=3)
+    graph = start(query=TASK)
     checkpointer = GraphCheckpointer(workdir / "graph")
 
     async def drive() -> None:
         try:
-            async for event in flow.run_streaming(graph=graph):
-                checkpointer.handle(event, graph)
+            async for event in flow.run_streaming(graph):
+                checkpointer.handle(event)
         finally:
             checkpointer.close()
 
     asyncio.run(drive())
     passed, output = run_tests(workdir)
-    flow.close_repls(graph.graph_id)
+    flow.runtime.close_repls(graph.trajectory_id)
     return workdir, graph, passed, output
 
 
@@ -157,7 +152,7 @@ def main() -> None:
     for name, implementation, label in branches:
         workdir, graph, passed, output = run_branch(root, name, implementation, label)
         results.append((passed, workdir, graph, output))
-        print(f"{name}: tests={'PASS' if passed else 'FAIL'} result={graph.result()!r}")
+        print(f"{name}: tests={'PASS' if passed else 'FAIL'} result={graph.agent_result()!r}")
         print("  " + brief_test_output(output).replace("\n", "\n  "))
 
     winner = next((item for item in results if item[0]), results[0])

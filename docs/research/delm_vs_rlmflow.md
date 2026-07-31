@@ -1,7 +1,8 @@
-# DeLM vs. RecursiveFlow: Research and Adoption Plan
+# DeLM and rlmflow: Research and Adoption Plan
 
-> **API note (current codebase):** this research note uses older names —
-> read `Flow` for `RecursiveFlow`, `Graph.inputs` / `INPUTS` for
+> **Historical terminology:** this research note predates the Node-only API and
+> uses older architecture names. Read `Flow` for `RecursiveFlow`,
+> `UserQuery.inputs` / `INPUTS` for
 > `context` / `CONTEXT` spawn payloads, and `prompt_profile` for per-agent
 > prompt selection. See `docs/control.md` / `docs/internals.md` for the
 > current surface.
@@ -92,18 +93,19 @@ discoveries. The public README describes each solver thread as owning its own
 planner, delegated implementer runs, Docker container, and local memory, while
 `SharedLessons` holds cross-thread notes.
 
-## What RecursiveFlow Is Today
+## Historical rlmflow Baseline
 
-RecursiveFlow is centered on a recursive execution graph.
+The architecture evaluated when this note was written centered on a recursive
+execution graph. The current implementation represents the same tree directly
+with `Node`; see `docs/internals.md` for the live design.
 
-One `Graph` is one agent's trajectory plus its child graphs. Each agent has
-flat invariants such as `agent_id`, `depth`, `query`, `runtime`, and
-`parent_node_id`, plus a `nodes` list and `children`.
+One recursive Node tree contains every agent trajectory. `agent_id` identifies a
+trajectory, while `node.latest_query()` provides its query, inputs, model,
+prompt profile, and output schema.
 
 The node trajectory is typed:
 
 - `UserQuery`
-- `LLMAction`
 - `LLMOutput`
 - `ExecAction`
 - `ExecOutput`
@@ -116,8 +118,8 @@ The main public delegation surface is:
 
 ```python
 results = await launch_subagents([
-    {"name": "search", "query": "Find evidence", "context": chunk_a},
-    {"name": "verify", "query": "Check the answer", "context": chunk_b},
+    {"name": "search", "query": "Find evidence", "inputs": {"chunk": chunk_a}},
+    {"name": "verify", "query": "Check the answer", "inputs": {"chunk": chunk_b}},
 ])
 done(combine(results))
 ```
@@ -128,13 +130,12 @@ resumes with the child results.
 
 The engine loop is explicit and inspectable:
 
-- `NodeScheduler` decides which graph agents are runnable.
-- `act(...)` projects runnable agents into pure action intents.
-- `RecursiveFlow.apply_one(...)` materializes those actions as persisted graph nodes.
-- `Workspace` and `Session` write durable per-agent logs and `graph.json`.
-- Runtimes execute REPL code locally, in Docker, or in sandbox backends.
-- Fork, replay, continuation, injection, and graph surgery operate on the same
-  typed graph model.
+- `Flow.run_streaming` selects runnable leaves from the whole Node tree.
+- `TaskQueue.run` owns each structured coroutine batch.
+- Transitions append and publish the affected Node directly.
+- Consumers and `persistence` write durable per-agent logs and `graph.json`.
+- Runtime executes REPL code locally, in a subprocess, Docker, or Modal.
+- Fork, replay, continuation, injection, and surgery operate on the same tree.
 
 This is not just an agent harness. It is an execution trace system.
 
@@ -279,7 +280,7 @@ Make the engine itself no longer tree-first. Every agent becomes a peer worker
 over a global queue and shared memory.
 
 This is not recommended. It would fight the current design, weaken graph
-clarity, and blur the meaning of `Graph.children`, `SupervisingOutput`,
+clarity, and blur the meaning of `Node.children`, `SupervisingOutput`,
 `ResumeAction`, replay, and injection. It would also force DeLM semantics onto
 tasks where a recursive supervisor is the clearer model.
 
@@ -457,17 +458,17 @@ For long-context QA, useful lesson types would include:
 - "this source is irrelevant for the question"
 - "unfold this raw span if reasoning about subclaim Q"
 
-## How This Maps Onto Existing RecursiveFlow Pieces
+## How This Maps Onto Existing rlmflow Pieces
 
-RecursiveFlow already has several pieces we can reuse.
+rlmflow already has several pieces we can reuse.
 
-`Workspace` and `Session` can store per-worker traces. Each worker can run in a
-forked workspace or a sibling workspace under one problem directory. The
-existing `graph.json`, `session/`, `context/`, and artifact storage give us
-durable evidence.
+`GraphCheckpointer` and `WorkspaceSync` store per-worker traces. Each worker can
+run in a forked working directory or a sibling directory under one problem
+directory. The persisted `graph.json` and per-agent logs provide durable
+evidence.
 
-`Graph` gives lesson provenance. A lesson can cite a specific `agent_id`,
-`node_id`, `DoneOutput`, `ErrorOutput`, or `ExecOutput`.
+The Node tree gives lesson provenance. A lesson can cite a specific `agent_id`,
+Node id, `DoneOutput`, `ErrorOutput`, or `ExecOutput`.
 
 `launch_subagents` remains useful inside a worker. DeLM does not eliminate
 recursive decomposition; it changes how top-level solver threads share progress.
@@ -476,19 +477,17 @@ A worker can still spawn child agents for local subproblems.
 Structured output is directly useful. Worker tasks should often return typed
 `WorkerResult` or `LessonProposal` objects rather than free-form prose.
 
-`llm_query_batched(...)` can help with verification and compression. A batch of
-candidate lessons can be checked or summarized concurrently through the same
-LLM scheduling channel.
+`llm_query_batched(...)` can help with verification and compression. Candidate lessons
+can be checked or summarized concurrently through the same client pool.
 
 Fork and injection become more valuable. If one worker finds a promising but
-incomplete path, another worker can fork that workspace and continue from the
-graph state. If a verifier rejects a lesson, we can inject feedback into the
-worker graph or fork a repair attempt.
+incomplete path, another worker can fork that trajectory and continue from the
+same Node state. If a verifier rejects a lesson, we can inject feedback or fork
+a repair attempt.
 
-The current `Context` abstraction is not enough by itself. `Workspace.context`
-is per-agent payload storage. DeLM needs a problem-level mutable shared context
-with concurrency control, admission records, indexes, and maybe compaction. It
-can reuse the store, but it should be its own abstraction.
+Per-agent `UserQuery.inputs` are not enough by themselves. DeLM needs a
+problem-level mutable shared context with concurrency control, admission
+records, indexes, and perhaps compaction. It should be its own abstraction.
 
 ## Hard Parts
 
@@ -500,7 +499,7 @@ they become global state.
 
 For `rlmflow`, a verifier should check each proposed lesson against:
 
-- the worker's `Graph`
+- the worker's Node tree
 - relevant `ExecOutput` / `ErrorOutput`
 - file diffs or artifacts
 - test logs
@@ -715,23 +714,25 @@ Risk: high to very high.
 ## API Sketch
 
 The API should make the coordinator feel like a separate mode, not mutate
-`RecursiveFlow.run(...)` into something ambiguous.
+`Flow.run(...)` into something ambiguous.
 
 ```python
+from pathlib import Path
+
 import rlmflow
 from rlmflow.coordination import DeLMCoordinator, SharedTask
 
-workspace = rlmflow.Workspace.create("./runs/my-problem")
+problem_dir = Path("./runs/my-problem")
 
-worker_factory = lambda ws: rlmflow.RecursiveFlow(
-    llm_client=llm,
-    workspace=ws,
-    runtime=runtime_factory(ws),
-    config=rlmflow.FlowConfig(max_depth=2, child_max_iterations=12),
+worker_factory = lambda workdir: rlmflow.Flow(
+    llm,
+    runtime=runtime_factory(workdir),
+    max_depth=2,
+    max_iters=12,
 )
 
 coordinator = DeLMCoordinator(
-    workspace=workspace,
+    problem_dir=problem_dir,
     worker_factory=worker_factory,
     verifier=llm_verifier,
     max_workers=4,
@@ -773,9 +774,9 @@ class WorkerResult(BaseModel):
     lesson_proposals: list[SharedLesson]
 ```
 
-## Implications For The Existing Graph Model
+## Implications For The Existing Node Model
 
-We should not force the shared task queue into `Graph.children`.
+We should not force the shared task queue into `Node.children`.
 
 A DeLM problem run is not one recursive graph. It is a collection of worker
 graphs plus coordinator state. Some worker graphs may have recursive children,
@@ -785,11 +786,11 @@ A future viewer could show this as two linked views:
 
 - problem-level timeline: tasks claimed, lessons proposed, lessons admitted,
   finalization
-- worker graph view: the existing RecursiveFlow graph for each task
+- worker tree view: the existing rlmflow Node tree for each task
 
 That preserves conceptual clarity:
 
-- `Graph` remains "one agent and its recursive descendants".
+- The Node tree remains "one agent and its recursive descendants".
 - `DeLMCoordinator` becomes "one problem-level shared-state run".
 - `SharedLesson` links the two.
 

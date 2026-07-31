@@ -126,7 +126,9 @@ def _load_hf_rows(dataset_name: str, split: str, data_dir: Path) -> list[dict[st
     return [dict(row) for row in load_dataset(dataset_name, split=split)]
 
 
-def _select_rows(rows: list[dict[str, Any]], *, limit: int | None, seed: int) -> list[dict[str, Any]]:
+def _select_rows(
+    rows: list[dict[str, Any]], *, limit: int | None, seed: int
+) -> list[dict[str, Any]]:
     count = limit or 1
     indices = list(range(len(rows)))
     random.Random(seed).shuffle(indices)

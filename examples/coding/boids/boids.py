@@ -38,7 +38,12 @@ Requirements:
 - Use a dark color background.
 - Do not use ES modules; wire scripts with `<script src="..."></script>` tags.
 - Render 100s of colorful boids on a 2D canvas. Do not add configurations, just the canvas.
-- Verify that all files exist, script tags are ordered correctly, and the JavaScript has no obvious syntax/runtime wiring errors before returning.
+- The three files are separable components that must agree on a shared contract
+    (canvas element id, dimensions, script order). Decide that contract first, then
+    produce each file (`index.html`, `style.css`, `boids.js`) independently against it so
+    the pieces stay consistent.
+- Integrate the files and verify that all files exist, script tags are ordered correctly,
+    and the JavaScript has no obvious syntax/runtime wiring errors before returning.
 """
 
 
@@ -90,10 +95,12 @@ def supported_kwargs(callable_obj, kwargs: dict) -> dict:
         print(f"Skipping unsupported official RLM kwargs: {', '.join(dropped)}")
     return {name: value for name, value in kwargs.items() if name in accepted}
 
+
 class BoidsSimulation(BaseModel):
     index_html: str
     style_css: str
     boids_js: str
+
 
 def run_rlmflow(
     run_dir: Path,
@@ -107,13 +114,11 @@ def run_rlmflow(
 ) -> None:
     from rlmflow import (
         FILE_TOOLS,
-        ConsumerGroup,
         Flow,
-        Graph,
-        GraphCheckpointer,
-        LiveTreeRenderer,
         LocalRuntime,
+        start,
     )
+    from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveTreeRenderer
 
     reset_run_dir(run_dir, force=True)
     (run_dir / "task.txt").write_text(TASK)
@@ -131,7 +136,7 @@ def run_rlmflow(
 
     print(f"\n=== rlmflow run ===\nworkdir: {run_dir}\nmodel: {model}\n")
     try:
-        graph = Graph(query=TASK)
+        graph = start(query=TASK)
         graph_dir = run_dir / "graph"
         consumers = ConsumerGroup(
             [
@@ -143,22 +148,22 @@ def run_rlmflow(
         async def drive() -> None:
             try:
                 async for event in flow.run_streaming(
-                    graph=graph,
+                    graph,
                     output_schema=BoidsSimulation,
                 ):
-                    consumers.handle(event, graph)
+                    consumers.handle(event)
             finally:
                 consumers.close()
 
         asyncio.run(drive())
 
-        result = graph.result() or ""
+        result = graph.agent_result() or ""
         (run_dir / "response.txt").write_text(str(result))
         print("\nrlmflow response:")
         print(result or "(no result)")
         print(f"\nrlmflow graph: {graph_dir}")
     finally:
-        flow.close_repls()
+        flow.runtime.close_repls()
 
     print("\nrlmflow files:")
     for item in summarize_files(run_dir):

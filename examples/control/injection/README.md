@@ -2,16 +2,16 @@
 
 This directory demonstrates prompt-based graph surgery on a real saved
 `Flow` run. The point is injection: replace a real `SupervisingOutput` node,
-truncate the now-obsolete children, adopt the edited graph on a fresh
-`Flow`, and continue stepping.
+truncate the now-obsolete children, then continue each edited Node tree on a
+fresh `Flow`.
 
 ## Files
 
 - `word_search.py` generates the baseline delegated run for finding `AGENT` and
   saves it to `examples/_runs/word-search/baseline/` (manifest + `agents/` logs).
 - `inject_variants.py` loads that run, edits copies with
-  `graph.replace(..., truncate="descendants")`, and continues both variants in parallel with
-  separate `Flow` instances. It saves the finished variants beside the baseline
+  `surgery.insert(..., mode="replace", truncate="descendants")`, and continues
+  both variants in parallel on one `Flow`. It saves the finished variants beside the baseline
   at `examples/_runs/word-search/variant-cols/` and `.../variant-root/`. The
   baseline and variants use the same structured `WordSearchResult` shape, so
   validation checks the typed graph result instead of scraping a prose answer.
@@ -19,7 +19,7 @@ truncate the now-obsolete children, adopt the edited graph on a fresh
 Inspect the baseline with:
 
 ```python
-from rlmflow import open_viewer
+from rlmflow.view import open_viewer
 
 open_viewer("examples/_runs/word-search/baseline")
 ```
@@ -38,7 +38,7 @@ open_viewer("examples/_runs/word-search/baseline")
    python examples/control/injection/inject_variants.py
    ```
 
-`inject_variants.py` creates two edited graphs in memory:
+`inject_variants.py` creates two edited Node trees in memory:
 
 - **Variation A** replaces the `root.cols` delegated route with one direct
   column helper function.
@@ -58,8 +58,8 @@ in a direct deterministic scanner.
 
 - The edited node is a real `SupervisingOutput` from the baseline trace.
 - `truncate="descendants"` removes obsolete waited-on child routes.
-- Each variant gets its own `Flow`; `flow.run_streaming(graph=edited, until=...)`
+- Each variant gets its own `Flow`; `flow.run_streaming(edited, until=...)`
   continues the edited copy (no `flow.graph = ...`).
 - Both variants are streamed in the same loop so you can watch them diverge.
-- `graph.result()` returns the structured word-search payload from `DoneOutput`,
+- `root.agent_result()` returns the structured word-search payload from `DoneOutput`,
   and the example validates it with `WordSearchResult.model_validate(...)`.

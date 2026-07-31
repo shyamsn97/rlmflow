@@ -17,14 +17,14 @@ from pathlib import Path
 import dspy
 
 from rlmflow.clients import OpenAIClient
-from rlmflow import DSPyFlow, Flow, FlowLLM
+from rlmflow import Flow
+from rlmflow.integrations import DSPyFlow, FlowLLM
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
 from common import save_example_graph  # noqa: E402
-
 
 
 def main() -> None:

@@ -21,7 +21,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-from rlmflow import Flow, Graph, GraphCheckpointer, SystemPromptBuilder
+from rlmflow import (
+    Flow,
+    SystemPromptBuilder,
+    start,
+)
+from rlmflow.consumers import GraphCheckpointer
 from rlmflow.clients import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -110,9 +115,7 @@ def build_flow(skills_dir: Path, *, model: str) -> Flow:
     skill_path = install_example_skill(skills_dir)
     flow = Flow(OpenAIClient(model=model), max_iters=5)
     prompt = SystemPromptBuilder()
-    prompt.sections.add(
-        "skills", skills_section([skill_path]), title="Skills", before="tools"
-    )
+    prompt.sections.add("skills", skills_section([skill_path]), title="Skills", before="tools")
     flow.system_prompt = prompt
     return flow
 
@@ -154,7 +157,7 @@ def main() -> None:
             "(0, 1), (1, 2), (2, 2), (3, 4), then report m, b, the "
             "predicted values, and the L2 residual norm."
         )
-        graph = Graph(query=query)
+        graph = start(query=query)
 
         print(f"Wrote skill artifact under: {skills_dir}")
         print("- skills/numpy-linear-algebra/SKILL.md")
@@ -167,15 +170,15 @@ def main() -> None:
 
         async def drive() -> None:
             try:
-                async for _event in flow.run_streaming(graph=graph):
-                    checkpointer.handle(_event, graph)
+                async for _event in flow.run_streaming(graph):
+                    checkpointer.handle(_event)
             finally:
                 checkpointer.close()
 
         asyncio.run(drive())
-        print(graph.result())
+        print(graph.agent_result())
         save_example_graph(graph, "skills", out_dir=args.out_dir)
-        flow.close_repls(graph.graph_id)
+        flow.runtime.close_repls(graph.trajectory_id)
     finally:
         if tmp is not None:
             tmp.cleanup()

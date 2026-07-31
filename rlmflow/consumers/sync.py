@@ -7,14 +7,13 @@ import time
 from pathlib import Path
 
 from rlmflow.consumers.base import StreamConsumer
-from rlmflow.graph import Graph
-from rlmflow.graph.events import Event
+from rlmflow.graph import Node
 
 DEFAULT_IGNORE = (".venv", "__pycache__", ".pytest_cache", ".git")
 
 
 class WorkspaceSync(StreamConsumer):
-    """Mirror a run directory into a local workspace while events stream."""
+    """Mirror a run directory into a local workspace while Nodes stream."""
 
     def __init__(
         self,
@@ -34,7 +33,7 @@ class WorkspaceSync(StreamConsumer):
         if _is_relative_to(self.target_dir, self.source_dir):
             raise ValueError("target_dir must not be inside source_dir")
 
-    def handle(self, event: Event, graph: Graph | None) -> None:
+    def handle(self, node: Node) -> None:
         now = time.monotonic()
         if self.every_s and now - self.last < self.every_s:
             return

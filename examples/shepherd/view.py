@@ -11,7 +11,12 @@ import sys
 import time
 from collections.abc import Callable
 
-from rlmflow import AppendNode, ExecOutput, Flow, Graph, StreamConsumer
+from rlmflow import (
+    ExecOutput,
+    Flow,
+    Node,
+)
+from rlmflow.consumers import StreamConsumer
 
 
 def _looks_like_grid(text: str) -> bool:
@@ -31,9 +36,7 @@ def side_by_side(labeled: list[tuple[str, str]], *, gap: str = "    ") -> str:
     widths = [max((len(line) for line in col), default=0) for col in cols]
     rows = []
     for r in range(height):
-        cells = [
-            (col[r] if r < len(col) else "").ljust(w) for col, w in zip(cols, widths)
-        ]
+        cells = [(col[r] if r < len(col) else "").ljust(w) for col, w in zip(cols, widths)]
         rows.append(gap.join(cells).rstrip())
     return "\n".join(rows)
 
@@ -42,15 +45,13 @@ def grid_of_blocks(labeled: list[tuple[str, str]], *, cols: int = 4) -> str:
     """``side_by_side`` wrapped into rows of at most ``cols`` blocks, so a large
     fan-out (e.g. 8 branches) renders as a grid instead of one very wide line."""
     cols = max(1, cols)
-    rows = [
-        side_by_side(labeled[i : i + cols]) for i in range(0, len(labeled), cols)
-    ]
+    rows = [side_by_side(labeled[i : i + cols]) for i in range(0, len(labeled), cols)]
     return "\n\n".join(row for row in rows if row)
 
 
-def panel_status(flow: Flow, graph: Graph) -> str:
+def panel_status(flow: Flow, graph: Node) -> str:
     """Live one-line status for a board panel, read from the graph's REPL env."""
-    env = flow.repl_for(graph).env
+    env = flow.runtime.repl_for(graph).env
     pushes = env.get("pushes")
     step = f"push {pushes}" if pushes is not None else "push ?"
     if env.get("solved"):
@@ -65,14 +66,14 @@ def panel_status(flow: Flow, graph: Graph) -> str:
 class PanelViewer(StreamConsumer):
     """Live side-by-side boards, one panel per **agent**, updated push-by-push.
 
-    One panel per agent, keyed by ``(graph_id, agent_id)`` in first-seen order.
-    On each event the viewer walks the passed graph's whole tree, so a root plus
-    its ``launch_subagents`` / ``launch_subgraphs`` children — which all share the
-    root's ``graph_id`` — each get their own panel (keying by ``graph_id`` alone
+    One panel per agent, keyed by ``(trajectory_id, agent_id)`` in first-seen order.
+    On each Node the viewer walks its whole tree, so a root plus
+    its ``launch_subagents`` / ``launch_branches`` children — which all share the
+    root's ``trajectory_id`` — each get their own panel (keying by ``trajectory_id`` alone
     would collapse them into one). Each panel shows that agent's board (via
     ``board_of``) or its latest ``ExecOutput`` grid, so the worker and every
     recovery branch animate as their streams advance. Safe to share across
-    concurrently-gathered streams: event handling runs on one asyncio loop, so
+    concurrently-gathered streams: Node handling runs on one asyncio loop, so
     updates never interleave.
     """
 
@@ -82,9 +83,9 @@ class PanelViewer(StreamConsumer):
         title: str = "",
         cols: int = 4,
         every_s: float = 0.1,
-        status_of: Callable[[Graph], str] | None = None,
-        board_of: Callable[[Graph], str] | None = None,
-        frames_of: Callable[[Graph], list[str]] | None = None,
+        status_of: Callable[[Node], str] | None = None,
+        board_of: Callable[[Node], str] | None = None,
+        frames_of: Callable[[Node], list[str]] | None = None,
         frame_ms: int = 70,
         sink: Callable[[list[tuple[str, str]]], None] | None = None,
         paint: bool = True,
@@ -112,66 +113,71 @@ class PanelViewer(StreamConsumer):
         # When False, still aggregate + sink, but do not clear/print the TTY —
         # use this when a sibling LiveGraphTree owns the terminal frame.
         self.paint = paint
-        # Panels are keyed per agent by ``(graph_id, agent_id)`` — agent_ids like
-        # "root" collide across the worker and shepherd graphs, so the graph_id is
+        # Panels are keyed per agent by ``(trajectory_id, agent_id)`` — agent_ids like
+        # "root" collide across the worker and shepherd graphs, so the trajectory_id is
         # part of the key. ``_root_labels`` holds host-supplied names for a graph's
         # root agent (children default to their short agent_id).
         self._order: list[tuple[str, str]] = []
         self._labels: dict[tuple[str, str], str] = {}
         self._blocks: dict[tuple[str, str], str] = {}
-        self._graphs: dict[tuple[str, str], Graph] = {}
+        self._graphs: dict[tuple[str, str], Node] = {}
         self._root_labels: dict[str, str] = {}
         self._last_paint = 0.0
         self._closed = False
 
-    def label(self, graph_id: str, label: str) -> None:
+    def label(self, trajectory_id: str, label: str) -> None:
         """Name a graph's root-agent panel (e.g. "worker"/"shepherd")."""
-        self._root_labels[graph_id] = label
-        key = (graph_id, graph_id and self._root_agent_id(graph_id))
+        self._root_labels[trajectory_id] = label
+        key = (trajectory_id, trajectory_id and self._root_agent_id(trajectory_id))
         if key in self._labels:
             self._labels[key] = label
 
-    def _root_agent_id(self, graph_id: str) -> str | None:
+    def _root_agent_id(self, trajectory_id: str) -> str | None:
         for gid, agent_id in self._order:
-            if gid == graph_id and self._graphs[(gid, agent_id)].parent_agent_id is None:
+            if gid == trajectory_id and self._graphs[(gid, agent_id)].parent_agent_id() is None:
                 return agent_id
         return None
 
-    def _default_label(self, agent: Graph) -> str:
-        if agent.parent_agent_id is None:
-            return self._root_labels.get(agent.graph_id, agent.agent_id)
+    def _default_label(self, agent: Node) -> str:
+        if agent.parent_agent_id() is None:
+            return self._root_labels.get(agent.trajectory_id, agent.agent_id)
         # A child lane: show its short id ("root.b0" -> "b0").
         return agent.agent_id.rsplit(".", 1)[-1]
 
-    def handle(self, event, graph: Graph | None) -> None:
-        if graph is None or self._closed:
+    def handle(self, node: Node) -> None:
+        if self._closed:
             return
+        graph = node.root()
         # Fan out to every agent in this root's tree so children that share the
-        # root's graph_id (launch_subgraphs branches) each animate in their own lane.
-        for agent in graph.walk():
-            self._observe(agent, event if agent is graph else None)
+        # root's trajectory_id (launch_branches) each animate in their own lane.
+        agents = [graph.tail(agent_id) for agent_id in graph.agent_ids()]
+        for agent in agents:
+            self._observe(
+                agent,
+                node if node.agent_id == agent.agent_id else None,
+            )
         # Play out this turn's per-sub-step frames so a box-level push visibly walks
         # the player around cell-by-cell instead of snapping (looking teleporty).
         if self.frames_of is not None:
-            for agent in graph.walk():
+            for agent in agents:
                 self._animate(agent)
         now = time.monotonic()
         if self.every_s and now - self._last_paint < self.every_s:
             return
         self._paint()
 
-    def _safe_frames(self, agent: Graph) -> list[str]:
+    def _safe_frames(self, agent: Node) -> list[str]:
         try:
             return list(self.frames_of(agent) or [])  # type: ignore[misc]
         except Exception:  # noqa: BLE001 - a viewer must never crash a run
             return []
 
-    def _animate(self, agent: Graph) -> None:
+    def _animate(self, agent: Node) -> None:
         """Paint this turn's sub-step frames for ``agent`` in sequence (short delay
         each) so the walk-around before each shove is visible. ``frames`` is the
         current turn only (replaced each turn), so we play it once — when it differs
         from what we last drew for this lane."""
-        key = (agent.graph_id, agent.agent_id)
+        key = (agent.trajectory_id, agent.agent_id)
         frames = self._safe_frames(agent)
         if not frames or frames == self._last_frames.get(key):
             return
@@ -183,8 +189,8 @@ class PanelViewer(StreamConsumer):
             if delay and i < len(frames) - 1:
                 time.sleep(delay)
 
-    def _observe(self, agent: Graph, event) -> None:
-        key = (agent.graph_id, agent.agent_id)
+    def _observe(self, agent: Node, changed: Node | None) -> None:
+        key = (agent.trajectory_id, agent.agent_id)
         if key not in self._order:
             self._order.append(key)
             self._labels.setdefault(key, self._default_label(agent))
@@ -200,10 +206,8 @@ class PanelViewer(StreamConsumer):
                 board = None
             if board:
                 self._blocks[key] = board
-        elif event is not None and isinstance(event, AppendNode) and isinstance(
-            event.node, ExecOutput
-        ):
-            text = (event.node.content or "").rstrip()
+        elif isinstance(changed, ExecOutput):
+            text = (changed.content or "").rstrip()
             if _looks_like_grid(text) or key not in self._blocks:
                 self._blocks[key] = text
 
@@ -251,7 +255,7 @@ class PanelViewer(StreamConsumer):
             print("\n".join([self.title, *(h for h, _ in panels)]).strip(), flush=True)
 
     def close(self) -> None:
-        """Paint the final frame once; later events/closes are no-ops so the end
+        """Paint the final frame once; later Nodes/closes are no-ops so the end
         state (and the report printed after it) is not wiped by a re-clear."""
         if self._closed:
             return

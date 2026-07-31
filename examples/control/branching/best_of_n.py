@@ -1,7 +1,7 @@
 """Best-of-N with independent Flow branches.
 
-Each branch is a fresh ``Graph(...)`` run saved to its own ``graph.json``,
-demonstrating the Graph-centric surface.
+Each branch is a fresh ``start(...)`` run saved to its own ``graph.json``,
+demonstrating the Node-only surface.
 
 Usage:
     python examples/control/branching/best_of_n.py
@@ -14,7 +14,12 @@ import argparse
 import shutil
 from pathlib import Path
 
-from rlmflow import Flow, Graph, LLMUsage
+from rlmflow import (
+    persistence,
+    Flow,
+    LLMUsage,
+    start,
+)
 
 FRUITS = [
     ("lemon", "citrus"),
@@ -57,17 +62,13 @@ class MockLLM:
             if name in text:
                 answer = correct
                 if name == "apple":
-                    answer = self.APPLE_CANDIDATES[
-                        self.seed % len(self.APPLE_CANDIDATES)
-                    ]
+                    answer = self.APPLE_CANDIDATES[self.seed % len(self.APPLE_CANDIDATES)]
                 return f'```repl\ndone("{answer}")\n```'
         return ROOT_REPLY
 
 
 def score(result: str) -> tuple[int, dict[str, str]]:
-    preds = dict(
-        chunk.strip().split("=", 1) for chunk in result.split(",") if "=" in chunk
-    )
+    preds = dict(chunk.strip().split("=", 1) for chunk in result.split(",") if "=" in chunk)
     preds = {key.strip(): value.strip() for key, value in preds.items()}
     return sum(1 for key, value in TRUTH.items() if preds.get(key) == value), preds
 
@@ -75,12 +76,12 @@ def score(result: str) -> tuple[int, dict[str, str]]:
 def run_branch(root: Path, idx: int) -> tuple[str, int, dict[str, str], int]:
     llm = MockLLM(seed=idx)
     flow = Flow(llm, max_depth=1, max_iters=10)
-    graph = Graph(query=QUERY)
-    flow.run(graph=graph)
+    graph = start(query=QUERY)
+    flow.run(graph)
     # Each branch persists to its own directory (graph.json).
-    graph.save(root / f"branch_{idx}")
-    flow.close_repls(graph.graph_id)
-    result = graph.result()
+    persistence.save(graph, root / f"branch_{idx}")
+    flow.runtime.close_repls(graph.trajectory_id)
+    result = graph.agent_result()
     correct, preds = score(result)
     return result, correct, preds, llm.call_count
 
@@ -104,9 +105,7 @@ def main() -> None:
     for i, (_result, correct, preds, calls) in enumerate(branches):
         print(f"branch_{i}: score={correct}/{len(TRUTH)} calls={calls} {preds}")
 
-    best_result, best_correct, best_preds, _calls = max(
-        branches, key=lambda item: item[1]
-    )
+    best_result, best_correct, best_preds, _calls = max(branches, key=lambda item: item[1])
     print(f"\n[best] score={best_correct}/{len(TRUTH)} {best_preds}")
     print(best_result)
 

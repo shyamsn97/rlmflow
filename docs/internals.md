@@ -1,385 +1,246 @@
-# rlmflow Internals
+# rlmflow internals
 
-A reference for the engine's mechanics: the `Flow`/`Graph`/`Run` split, the two
-phases of a run, the per-agent scheduler, the exec turn, delegation, REPL
-lifecycle, prompts, tools, and the overridable seams on `Flow`. If you want to
-subclass the engine, debug a weird run, or build something on top of rlmflow,
-this is the doc.
-
-User-facing topic guides cover the *what*: [`control.md`](control.md),
-[`streaming.md`](streaming.md), [`node_model.md`](node_model.md),
-[`observability.md`](observability.md), [`runtimes.md`](runtimes.md),
-[`prompt_customization.md`](prompt_customization.md), and
-[`security.md`](security.md). This doc covers the *how*.
-
----
-
-## Architecture at a glance
-
-Three objects carry the whole engine:
+rlmflow has one durable type and three resource owners:
 
 ```text
-Flow      policy + environment: config, LLM clients, pool, prompt builder,
-          tools, live REPLs, and the run registry. Graph-agnostic and shared.
-Graph     the durable state: one recursive node per agent. Caller-owned. The
-          run *is* the graph — Flow only mutates it and emits events.
-Run       per-graph run state: the Graph, its TaskQueue scheduler, and its
-          `until` boundary. One active run per `graph_id`.
+Node       recursive durable state
+Flow       execution and policy
+Runtime    live REPL sessions
+TaskQueue  structured task batches and stream routing
 ```
 
-Supporting pieces:
+There is no `Graph`, `Agent`, `Run`, `Driver`, Event hierarchy, detached worker
+queue, or merge subsystem. All execution, branching, prompt, model, and tool
+methods live directly on `Flow`.
 
-- **`TaskQueue`** (`rlmflow/tasks.py`) — a small, graph-free async scheduler. One
-  in-flight task per agent id, a follow-up slot, and an event stream.
-- **`Runtime` / `ReplBackend`** (`rlmflow/runtime/`) — the code sandbox. `Flow`
-  opens one REPL per agent and drives `start(code)` / `resume(value)` on it. See
-  [`runtimes.md`](runtimes.md).
-- **`SystemPromptBuilder`** (`rlmflow/prompts/`) — named sections that render the
-  system prompt from the current `flow` and `graph`; `UserPromptBuilder` projects
-  the trajectory into user/assistant turns. See
-  [`prompt_customization.md`](prompt_customization.md).
+`Pool`, `ThreadPool`, `SequentialPool`, and `TaskQueue` live together in
+`rlmflow.execution`; `parallel` and `structured` remain focused top-level APIs.
 
-The principle: **`Graph` holds state; `Flow` holds policy.** Anything that is a
-pure function of a graph is a graph method or a free helper in `rlmflow/utils`;
-anything that needs engine config, clients, or live REPLs is a method on `Flow`.
+## Node tree
 
----
-
-## The data model
-
-A `Graph` is a recursive structure: it *is* one agent, and `graph[other_aid]`
-returns the `Graph` rooted at any descendant. Per-agent invariants are flat
-fields; sub-agents live in `graph.children`; the trajectory lives in
-`graph.nodes`.
+A root Node is a trajectory. Any Node is also a direct reference to one point
+in one agent transcript.
 
 ```python
-graph.agent_id          # str  — "root", "root.search", ...
-graph.graph_id          # str  — trajectory id (a fork mints a new one)
-graph.depth             # int
-graph.query             # str
-graph.inputs            # dict[str, str] — this agent's INPUTS
-graph.model             # str  — model label for this agent
-graph.prompt_profile    # str  — PromptProfile selector (not prompt text)
-graph.output_schema     # required done() schema, if any
-graph.parent_agent_id   # str | None
-
-graph.nodes             # list[Node] — this agent's trajectory (seq order)
-graph.children          # dict[str, Graph] — direct sub-agents
-graph.agents            # dict[agent_id, Graph] — every agent in the subtree
-graph.walk()            # iterator over this agent, then all descendants
-graph.finished          # root node terminal and all descendants finished
+node.parent
+node.children
+node.agent_id
+node.trajectory_id
+node.metadata
 ```
 
-Trajectories strictly alternate **observations** and **actions**; every action
-is followed by exactly one observation. There is no `LLMAction` node — the model
-turn is the `LLMOutput` observation itself, and `ExecAction` records the code the
-engine then ran. See [`node_model.md`](node_model.md) for the full taxonomy and
-[`observability.md`](observability.md) for the query surface.
-
----
-
-## A run in two phases
-
-`run`, `arun`, and `run_streaming` are keyword-only and share one shape. Each
-call is resolved (phase 1) and then driven (phase 2).
+The child with the same `agent_id` is the next transcript step. Children with a
+different `agent_id` are spawned agents.
 
 ```python
-async def run_streaming(self, *, graph=None, query=None, inputs=None,
-                        output_schema=None, merge_inputs=True,
-                        until="done", n=None, close_repls=False):
-    run = self.resolve_run(graph=graph, query=query, inputs=inputs,
-                           output_schema=output_schema, merge_inputs=merge_inputs)
-    async for event in self._drive(run, until=until, n=n, close_repls=close_repls):
-        yield event
+node.step_child
+node.spawn_children
+node.tail()
+node.transcript()
+node.latest_query()
+node.leaves()
+node.finished()
 ```
 
-### Phase 1 — `resolve_run`
+`Node.attach(child)` is the only ordinary link primitive. It accepts one
+detached, childless Node, sets its parent and inherited identity, and rejects a
+second same-agent continuation. It is O(1).
 
-Turns the caller's request into a live, **registered** `Run`, emitting the
-structural events observers need. Exactly one of two shapes:
+`walk()` is iterative, so deep histories do not consume Python recursion.
+`finished()` without an `agent_id` is recursive: every descendant leaf must be
+terminal.
 
-- **`query` alone** builds a fresh `Graph`, registers it, and announces it with a
-  `GraphCreated` event.
-- **`graph`** is resumed. `inputs`/`output_schema` are applied to the graph *in
-  place* first (so they take effect even on a finished graph); `inputs` merges
-  into the existing dict unless `merge_inputs=False` replaces it, and any warm
-  REPL's `INPUTS` is re-synced. If `query` is also given, it is appended as a
-  fresh `UserQuery` turn (an `AppendNode` event), which flips `finished` back to
-  false — this is the multi-turn / long-running path.
+Nodes own no clients, REPLs, tasks, callbacks, or sequence allocators.
 
-Registration happens *before* emission because `apply_action` only streams
-events for graphs that already have a run.
+## Transition path
 
-### `run_for` — the run registry
+```text
+run_streaming(root)
+  -> claim root.trajectory_id
+  -> find runnable leaves
+  -> TaskQueue.run(step(leaf), ...)
+  -> transition attaches and publishes Node
+  -> stream yields Node
+```
 
-`run_for(graph)` is a pure registry keyed by `graph.graph_id`: resume the
-existing (live or paused) run, or register a fresh one. It never mutates the
-graph or emits — all resolution lives in `resolve_run` ahead of it, so a new turn
-on a finished graph is resolved correctly instead of being skipped by an early
-registry hit.
+`Flow.steps` is the complete state machine:
 
-### Phase 2 — `_drive`
+```text
+UserQuery          -> llm_turn
+ExecOutput         -> llm_turn
+ErrorOutput        -> llm_turn
+ResumeAction       -> llm_turn
+SupervisingOutput  -> resume_supervisor
+LLMOutput          -> extract_code
+ExecAction         -> exec_turn
+DoneOutput         -> terminal
+```
 
-Assumes a resolved, registered run. It schedules ready agents and yields events
-until the `until` boundary:
+`step(node)` applies termination and budget policy, dispatches one transition,
+and returns the resulting Node.
+
+## Structured concurrency
+
+Each `run_streaming` call owns a local Node queue. `TaskQueue.claim()` registers
+that queue by trajectory while the stream is active.
+
+One host round submits one coroutine per runnable leaf to `TaskQueue.run()`.
+Delegation submits child drivers the same way. `TaskQueue` implements each batch
+with `asyncio.TaskGroup`, so every caller settles its submitted children before
+returning.
+
+`TaskQueue` also tracks top-level rounds for `aclose()`, active trajectory
+publishers, termination requests, and named halts. A trajectory claim occurs
+before an existing root can receive query/input/schema mutations.
+
+## Publication
+
+`Flow.append(parent, child)` is the ordinary mutation point:
+
+1. normalize a string to `UserQuery`;
+2. stamp `child.metadata["mutation"]`;
+3. call `parent.attach(child)`;
+4. call `tasks.publish(child)`;
+5. return the child.
+
+There is no Event conversion. `TaskQueue` routes the actual affected Node to the
+active queue for its trajectory.
+
+Direct surgery functions return affected Nodes. Live tools publish the returned
+Node through `TaskQueue`.
+
+## Model and exec turns
+
+`llm_turn` reads configuration from `node.latest_query()`, lets the prompt
+builder append any durable nudge, calls the selected client, and appends
+`LLMOutput`.
+
+Synchronous clients run through the shared Pool. Async clients run directly on
+the event loop.
+
+An `ExecAction` may append multiple Nodes while its Python frame is suspended:
+
+```text
+ExecAction
+  -> SupervisingOutput
+      -> child agents
+  -> ResumeAction
+  -> ExecOutput | ErrorOutput | DoneOutput
+```
+
+`Flow.continuation(node)` owns the current same-agent cursor for that frame.
+Every launch and the final output use the same closure, so no root scan is
+needed between appends.
+
+## Delegation and recovery
+
+`launch_subagents` validates safe, unique child identity segments, appends one
+supervisor, attaches children, drives them through `TaskQueue.run()`, appends
+one resume action to that exact supervisor, and returns results in spec order.
+
+Re-executing a recorded action reuses its recorded child groups. It never
+duplicates those subtrees.
+
+A loaded checkpoint restores no suspended Python frame. If it ends on
+`SupervisingOutput`, unfinished children run first. Once all children are
+terminal, `resume_supervisor` appends `ResumeAction`; the ordinary state machine
+then continues with a fresh model turn.
+
+## Runtime identity
+
+Runtime keys live REPLs by:
 
 ```python
-while True:
-    if not run.tasks.has_events():
-        for agent in graph.walk():
-            self.schedule_agent(run, agent)          # one task per ready agent
-    async for item in run.tasks.items():
-        yield item.item                              # stream the event
-        agent = graph.agent_for(item.agent_id)
-        if self.should_continue(run, agent, item.item):
-            self.schedule_agent(run, agent)          # enqueue next unit
-        else:
-            run.tasks.stop(agent.agent_id)           # "stop" = no follow-up
-    if graph.finished or until in {"done", "finished"}:
-        break
-    ...                                              # non-full boundary: pause
+(node.trajectory_id, node.agent_id)
 ```
 
-Stopping is just the *absence* of a next task for that agent — there is no pause
-primitive. `should_continue` encodes the `until` policy (`next`, `idle`, `error`,
-`supervising`, a callable, or full-run). `SupervisingOutput` and `ResumeAction`
-events never continue their own agent. A finished (or full-run) drive tears down
-the run via `finish_run`; a paused bounded run keeps its queue so a later call
-resumes from the graph. See [`streaming.md`](streaming.md) for the boundary
-semantics and parallelism model.
+Runtime also remembers the live Node associated with each key so newly
+registered factory/scoped tools can be backfilled into open REPLs.
 
----
+Adopting a prepared branch moves its warm REPL and rebinds:
 
-## `run_agent_task` — one graph-producing unit
+- `done` and `launch_subagents`;
+- dynamic tools;
+- `INPUTS`;
+- `RLMFLOW_AGENT_ID`;
+- depth, parent id, max depth, root status, and replay status.
 
-Each scheduled task advances one agent by exactly one node-producing step:
+Loading a saved tree opens no REPL. A graph handed to a `Flow` that has none for it
+— loaded, forked, or from another process — is replayed once before the run loop
+starts: each unfinished agent's namespace is rebuilt by re-running its recorded
+`ExecAction`s in transcript order. Agents that already answered are skipped, since
+nothing will run in their namespaces again. `RLMFLOW_REPLAY` is `"1"` during the
+rebuild, so
+`launch_subagents` hands back the answers its children already gave instead of
+launching them again, and agent code can skip work it should not repeat. Pass
+`Flow(restore="lazy")` to skip the rebuild and instead tell each unfinished agent, in
+its own transcript, that its variables are gone.
+
+## Branches and surgery
+
+Supported branch operations are:
 
 ```python
-async def run_agent_task(self, graph):
-    if graph.finished: return
-    if graph.agent_id in self._terminate_requested:
-        self.append_node(graph, DoneOutput(result=TERMINATED)); return
-    if budget_exceeded(root, self.max_budget):
-        self.append_node(graph, DoneOutput(result=BUDGET_EXCEEDED)); return
+await flow.fork(root)
+await flow.rewind(root)
+await flow.launch_branches(parent, branches)
+flow.discard(branch)
 
-    current = graph.current()
-    if isinstance(current, LLMOutput):        # model spoke -> run its code
-        self.append_node(graph, ExecAction(code=current.code)); return
-    if isinstance(current, ExecAction):        # code queued -> execute it
-        await self.exec_turn(graph, current.code); return
-
-    if llm_turns >= max_iters:                 # cap reached
-        self.append_node(graph, DoneOutput(result=MAX_ITERS_EXCEEDED)); return
-    self._ensure_nudge(graph, force_final=...)         # nudge as a real node
-    messages = self.messages(graph)                    # then call the model
-    reply, usage = await self._call_chat(messages, graph.model)
-    self.append_node(graph, LLMOutput(content=reply, code=code_block(reply), ...))
+surgery.checkpoint(root)
+surgery.revert(root, checkpoint)
+surgery.insert(root, ...)
+surgery.remove(root, ...)
 ```
 
-`max_iters` counts `LLMOutput` nodes; children fall back to `child_max_iters` via
-`iter_budget`. Budget/terminate are checked at the top of every unit.
-`run_agent(graph)` is the self-driving loop (`while not finished: run_agent_task`)
-used by delegated children.
+`surgery.fork()` and `surgery.rewind()` own branch selection, copying, and
+mutation metadata. The corresponding async Flow methods are thin adapters that
+ask Runtime to replay the selected branch or mark it lazy.
 
-## `exec_turn` — the observation half
+Merge is intentionally unsupported. Callers select a branch to continue,
+discard alternatives, or attach prepared branches with `Flow.launch_branches`.
 
-`exec_turn(graph, code)` runs code against the agent's REPL and appends exactly
-one observation node:
-
-- `repl.done_result` set → `DoneOutput` (terminal; never truncated).
-- `repl.errored` or a dead session → `ErrorOutput`.
-- otherwise → `ExecOutput` (stdout, capped at `max_output_length`).
-
-`done(...)` is a REPL tool that stores `repl.done_result` (validating against
-`output_schema` if present) and raises `DoneSignal`. `replay=True` returns the
-node without appending — used to rebuild a live REPL from a graph that already
-holds the result nodes.
-
----
-
-## Delegation
-
-Delegation is a single async REPL tool, `launch_subagents`, built per agent by
-`make_launch_subagents` (`rlmflow/tools/builtins.py`). When agent code runs
-`results = await launch_subagents([...])` inside an exec turn, the tool:
-
-1. for each **cold** spec, creates a child `Graph` from `query` (sharing the
-   parent's `graph_id`, depth+1); for each **warm** spec that already carries a
-   prepared `graph`, calls `flow.adopt(parent, child, name=...)` to reparent it
-   — each child is announced with an `AddChild` event. Specs past `max_depth` or
-   over `max_query_chars` become placeholder result strings;
-2. appends a `SupervisingOutput(waiting_on=child_ids)` to the parent;
-3. submits each child to the **run's** `TaskQueue` (children self-drive with
-   `run_agent`), then awaits `tasks.changed()` until all children are finished;
-4. appends a `ResumeAction(resumed_from=child_ids)`, collects each child's
-   `result()` (validated against its `output_schema` if any), and returns the
-   list into the suspended `await`.
-
-So the whole delegate → wait → resume cycle happens *within one parent exec turn*.
-Submitting children to the same queue means the driving stream observes their
-events, and the queue's one-task-per-agent rule prevents double-driving. If no
-run exists (a bare `run_agent` with no stream), a throwaway `TaskQueue` runs the
-children. See the delegation/resume flow in [`node_model.md`](node_model.md).
-
-Payloads go in each spec's `inputs` (the child's `INPUTS`); `query` stays a short
-instruction. `prompt_profile` (legacy key `prompt` still accepted) stamps the
-child's `Graph.prompt_profile`. `output_schema` per spec makes the child's
-`done(value)` validated.
-
-**Host warm path.** `flow.adopt(parent, child, *, name)` is the structural
-primitive (remap ids, move the REPL, emit `AddChild` — does not run). 
-`flow.launch_subgraphs(parent, children, *, queries=None, names=None)` is the
-graph-first wrapper that builds warm specs and calls `launch_subagents`, so
-host/example code never has to write the internal `graph` key. Use it for
-fork/rewind → fan-out → compare patterns (see `examples/shepherd/`).
-
----
-
-## Graph mutation and events
-
-Every state change goes through one seam so observers and checkpointers see it:
-
-```python
-def append_node(self, graph, node, *, injected=False):  # node or str
-    return self.apply_action(graph, graph.inject_action(node, injected=injected))
-
-def apply_action(self, graph, action):        # any GraphAction
-    apply_graph_action(base, action)          # mutate the graph value
-    run = self.runs.get(graph.graph_id)
-    if run is not None:                        # emit only for registered runs
-        run.tasks.emit(agent_id, replace(action, graph_id=graph.graph_id))
-    return action
-```
-
-`GraphAction` (in `rlmflow/graph/events.py`) is the closed set of transitions:
-`GraphCreated`, `AppendNode`, `InsertNode`, `ReplaceNode`, `RemoveNode`,
-`AddChild`, `RemoveChild`. Each subclasses `Event` and exposes a uniform
-`node` / `node_id` / `node_type` view plus a stamped `graph_id`, so a merged
-stream (`parallel_stream`) is self-describing. Graph-only edits (`graph.inject`,
-`append`, `replace`, `rewind`, …) mutate the value directly; routing them through
-`Flow.append_node` / `Flow.apply_action` also emits them into a live run. See
-[`injections.md`](injections.md).
-
----
-
-## REPL lifecycle
-
-`Flow` keeps live REPLs in `self.repls`, keyed by `repl_key(graph)` =
-`(graph_id, agent_id)`, so each agent's namespace, tools, and variables are
-isolated and survive across turns.
-
-- `repl_for(graph)` — return the agent's REPL, lazily opening one via
-  `runtime.open(graph)` and seeding it with `build_tools(...)`, the agent's
-  `INPUTS`, and process env (`AGENT_ID`, `DEPTH`, `MAX_DEPTH`, …).
-- `close_repl(graph)` / `close_repls(graph_id=None)` — tear down one agent's or a
-  whole trajectory's REPLs. `finish_run(close_repls=True)` closes on completion;
-  the default keeps them warm for pause/resume, fork, and inspection.
-- `rebuild_repl(graph)` — replay the agent's `ExecAction` code blocks (no LLM
-  calls, no appended nodes) to reconstruct REPL state. The correctness floor for
-  forks and reverts.
-- `fork` / `merge` / `discard` — branch a graph (deep copy, fresh `graph_id`) with
-  its REPL rebuilt; fold a child branch's delta (`ExecAction`s + one summary node)
-  and its variables back into a parent REPL; or eagerly free rejected branches.
-- `adopt(parent, child, *, name)` — reparent a prepared single-agent graph under
-  `parent` (warm attach; see Delegation above).
-- `get_var(graph, name)` / `get_env_var(graph, name)` — read the REPL Python
-  namespace or the `ENV` metadata channel back onto the host.
-- `_sync_repl_inputs(graph)` — re-inject `INPUTS` into a warm REPL after
-  `resolve_run` updates a resumed graph's inputs.
-
----
-
-## Prompts, LLM calls, and tools
-
-**Prompt.** `messages(graph)` assembles the chat list: `build_system_prompt(graph)`
-resolves `self.system_prompt` (a `SystemPromptBuilder`, string, or
-`(flow, graph) -> str` function via `as_system_prompt_fn`), and the user side
-comes from `self.user_prompt` (a `UserPromptBuilder` or `(flow, graph) -> turns`
-function, both already callable) which projects the trajectory into
-`user`/`assistant` turns. `messages` then prepends the system message, truncates
-to `max_messages`, and coalesces adjacent same-role turns into one. The trailing
-nudge ("Continue." / "Give your final answer.") is not synthesized here — it is
-materialized as a real `UserQuery` node by `_ensure_nudge` before the call, so it
-persists in the trajectory. Customize with `SystemPromptBuilder` sections, a
-`UserPromptBuilder` subclass, or a `Flow` subclass — see
-[`prompt_customization.md`](prompt_customization.md).
-
-**LLM calls.** `_call_chat(messages, model)` is the single leaf call. Blocking
-clients run on `self.pool` (a `ThreadPool(workers=N)` that caps concurrent
-blocking calls); async clients stay on the loop and bypass the pool.
-`llm_request_timeout` bounds both. `llm_client(model)` resolves a named client
-from `llm_clients` (default is `llm`). `llm_query_batched` runs independent
-one-shot prompts concurrently through the same path (opt in with
-`use_llm_query=True`).
-
-**Tools.** `build_tools(graph, repl)` seeds each REPL namespace with the framework
-tools `done`, `launch_subagents`, and `INPUTS`, plus (optionally)
-`llm_query_batched`, then the runtime's registered tools and the flow's tools.
-`add_tool` / `remove_tool` mutate every live REPL so tools can appear mid-run
-(the prompt's tool section reflects them next turn). `done`, `launch_subagents`,
-and `INPUTS` are reserved and cannot be overridden.
-
----
+Surgery validates before mutating. Internal `surgery.adopt` rebuilds a
+single-agent chain through leaf attachment. Checkpoints fingerprint durable
+prefix content, not only Node ids, so rewritten history is rejected.
 
 ## Persistence
 
-`graph.save(path)` writes a self-contained run directory; `Graph.load(path)`
-rehydrates the same recursive shape. The manifest is `graph.json`; per-agent logs
-live under `agents/<agent-id>/` (`agent.json`, `session.jsonl`, `latest.json`).
-Cross-agent edges derive from the recursive structure and `SupervisingOutput`
-wait sets — there is no separate edge object to maintain. Save inside the stream
-loop for live checkpointing. See [`observability.md`](observability.md).
+`rlmflow.graph.persistence` writes the v2 recursive JSON shape and derives
+`order` values structurally. Loading validates node types and unique ids,
+rebuilds parent links, and applies one trajectory id.
 
----
+Per-agent projection paths accept only ASCII alphanumeric, `_`, and `-`
+segments. Resolved paths must stay beneath the run's `agents/` directory.
 
-## The overridable surface
+`latest_summary(root)["finished"]` uses recursive completion.
 
-Every method on `Flow` is an extension seam; the engine dispatches through
-`self`, so subclass overrides take effect. Common ones:
+## Complexity
 
-| Stage | Methods |
-|---|---|
-| Drive lifecycle | `run`, `arun`, `run_streaming`, `resolve_run`, `run_for`, `_drive`, `finish_run`, `terminate` |
-| Scheduling | `schedule_agent`, `should_continue`, `run_agent_task`, `run_agent` |
-| Exec / REPL | `exec_turn`, `repl_for`, `close_repl(s)`, `rebuild_repl`, `fork`, `merge`, `discard`, `adopt`, `get_var`, `get_env_var` |
-| Delegation | `launch_subagents`, `launch_subgraphs` |
-| Graph mutation | `append_node`, `apply_action` |
-| Prompt / messages | `messages`, `build_system_prompt`, `build_tools`, `prompt_profile`, `prompt_name_for` |
-| LLM half | `_call_chat`, `llm_client`, `llm_query_batched` |
-| Tools | `add_tool`, `remove_tool` |
+For local transcript length `L`, tree size `N`, and runnable leaves `F`:
 
-```python
-class ReviewingFlow(rlmflow.Flow):
-    async def exec_turn(self, graph, code, *, replay=False):
-        if not replay and not approved(code):
-            node = rlmflow.ErrorOutput(content="rejected", output="rejected", error="rejected")
-            self.append_node(graph, node)
-            return node
-        return await super().exec_turn(graph, code, replay=replay)
-
-
-class RoutedFlow(rlmflow.Flow):
-    def llm_client(self, model="default"):
-        if model == "default" and self.depth_hint >= 2:
-            return super().llm_client("fast")
-        return super().llm_client(model)
+```text
+Node.attach                 O(1)
+leaf.tail                   O(L remaining)
+leaf.transcript             O(L)
+leaf.latest_query           O(L)
+root.walk / root.leaves     O(N)
+host round discovery        O(N)
+host round execution        O(F) tasks
+serialization               O(N)
+fork/adopt                  O(N)
 ```
 
-For prompt-only customization (the common case), don't subclass `Flow` — edit a
-`SystemPromptBuilder`'s sections. See
-[`prompt_customization.md`](prompt_customization.md).
+## Invariants
 
----
-
-## Where to read next
-
-- [`node_model.md`](node_model.md) — node taxonomy, action/observation
-  alternation, delegation wait/resume flow.
-- [`streaming.md`](streaming.md) — the scheduler, `until` boundaries, `n`, and
-  parallelism.
-- [`control.md`](control.md) — user-facing loop, save/resume, rewind, fork,
-  multi-turn runs, custom tools/prompts.
-- [`observability.md`](observability.md) — querying the `Graph`, run layout,
-  viewer, exports.
-- [`runtimes.md`](runtimes.md) — `Runtime` protocol and shipped backends.
-- [`security.md`](security.md) — trust boundary, isolation knobs, approval gates.
+1. Nodes contain no live execution objects.
+2. Every task has one lexical owner.
+3. Every function settles the tasks it creates.
+4. One trajectory has at most one active stream per Flow.
+5. One Node is never concurrently advanced twice.
+6. Connected trees are acyclic and have one trajectory id.
+7. Agent ids are unique and child identity segments are filesystem-safe.
+8. Ordinary attachment receives one detached leaf.
+9. Root completion requires every descendant leaf to be terminal.
+10. Every live durable mutation publishes its affected Node once.
+11. Mutation provenance lives under `node.metadata["mutation"]`.
+12. Save/load is a cold execution boundary.

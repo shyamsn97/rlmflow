@@ -28,13 +28,13 @@ python examples/summarizer.py --sections 10 --no-viz
 | [`needle/`](needle/) | Needle-in-haystack (in-memory + filesystem variants) |
 | [`coding/`](coding/) | Interactive file-editing agent |
 | [`autoresearch/`](autoresearch/) | TinyStories autoresearch loop with Modal GPU trials |
-| [`shepherd/`](shepherd/) | Meta-agent recovers a jammed Sokoban worker via rewind + `launch_subgraphs` (warm children), with `LiveGraphTree` + board panels |
+| [`shepherd/`](shepherd/) | Meta-agent recovers a jammed Sokoban worker via rewind + `launch_branches` (warm children), with `LiveGraphTree` + board panels |
 
 ## Tours & integrations
 
 | Folder | What it shows |
 |---|---|
-| [`graph/`](graph/) | Offline Graph API (query, edit, save, fork, render) |
+| [`graph/`](graph/) | Offline Node API (query, edit, save, fork, render) |
 | [`control/`](control/) | Delegation, branching, injection |
 | [`sandboxes/`](sandboxes/) | Docker and Modal remote execution |
 | [`providers/`](providers/) | DSPy, MCP, Tinker adapters |
@@ -90,7 +90,7 @@ python examples/summarizer.py        # saves to examples/_runs/summarizer/
 ```
 
 ```python
-from rlmflow import open_viewer, save_image
+from rlmflow.view import open_viewer, save_image
 
 open_viewer("examples/_runs/summarizer")            # interactive Gradio app
 save_image("examples/_runs/summarizer", "run.png")  # static PNG (rlmflow[image])

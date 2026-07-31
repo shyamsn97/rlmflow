@@ -83,7 +83,8 @@ It gives an LLM a REPL and recursive delegation tools, then persists every query
 
 **Choose AutoGen** when you need async multi-agent messaging at scale, OpenTelemetry, or Microsoft ecosystem integration.
 
-**Choose rlmflow** when you want a simpler synchronous step API where the entire recursive execution is one inspectable graph.
+**Choose rlmflow** when you want a direct Node step/stream API where the entire
+recursive execution is one inspectable tree.
 
 ### vs SWE-agent / OpenHands
 

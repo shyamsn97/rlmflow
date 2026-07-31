@@ -29,28 +29,34 @@ class StructuredOutputError(ValueError):
         super().__init__(_format_error_message(content, schema, cause))
 
 
-class StructuredOutputParser:
-    def system_prompt_hint(self, schema: Schema) -> str:
-        return json.dumps(json_schema_for(schema), indent=2)
+def system_prompt_hint(schema: Schema) -> str:
+    return json.dumps(json_schema_for(schema), indent=2)
 
-    def __call__(self, content: str, schema: Schema) -> Any:
-        if isinstance(schema, Mapping | str):
-            try:
-                value = json.loads(content)
-                jsonschema.validate(instance=value, schema=_load_json_schema(schema))
-                return value
-            except (json.JSONDecodeError, jsonschema.ValidationError) as exc:
-                raise StructuredOutputError(
-                    content=content,
-                    schema=schema,
-                    cause=exc,
-                ) from exc
+
+def parse_structured_output(content: str, schema: Schema) -> Any:
+    """Validate JSON content against a Pydantic or JSON schema."""
+    if isinstance(schema, Mapping | str):
         try:
-            return _adapter_for(schema).validate_json(content)
-        except ValidationError as exc:
+            value = json.loads(content)
+            jsonschema.validate(instance=value, schema=_load_json_schema(schema))
+            return value
+        except (json.JSONDecodeError, jsonschema.ValidationError) as exc:
             raise StructuredOutputError(
-                content=content, schema=schema, cause=exc
+                content=content,
+                schema=schema,
+                cause=exc,
             ) from exc
+    try:
+        return _adapter_for(schema).validate_json(content)
+    except ValidationError as exc:
+        raise StructuredOutputError(content=content, schema=schema, cause=exc) from exc
+
+
+class StructuredOutputParser:
+    """Compatibility shim for the original public parser object."""
+
+    system_prompt_hint = staticmethod(system_prompt_hint)
+    __call__ = staticmethod(parse_structured_output)
 
 
 def _adapter_for(schema: type[BaseModel] | TypeAdapter[Any]) -> TypeAdapter[Any]:
@@ -100,4 +106,6 @@ __all__ = [
     "StructuredOutputError",
     "StructuredOutputParser",
     "json_schema_for",
+    "parse_structured_output",
+    "system_prompt_hint",
 ]

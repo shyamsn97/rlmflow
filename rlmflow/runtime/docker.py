@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+from rlmflow.graph import Node
 from rlmflow.runtime.connections import PopenConnection
 from rlmflow.runtime.repl import Repl
 from rlmflow.runtime.repl_client import RemoteRepl
 from rlmflow.runtime.runtime import Runtime
-
-if TYPE_CHECKING:
-    from rlmflow.graph import Graph
 
 
 def build_docker_argv(
@@ -91,7 +88,7 @@ class DockerRuntime(Runtime):
             **options,
         )
 
-    def deploy_repl_server(self, graph: Graph) -> RemoteRepl:
+    def deploy_repl_server(self, agent: Node) -> RemoteRepl:
         cwd = str(self.working_directory) if self.working_directory else None
         options = dict(self.options)
         repl_timeout = options.pop("repl_timeout", None)
@@ -105,8 +102,8 @@ class DockerRuntime(Runtime):
             )
         )
 
-    def open(self, graph: Graph) -> Repl:
-        return self.deploy_repl_server(graph)
+    def open(self, agent: Node) -> Repl:
+        return self.deploy_repl_server(agent)
 
 
 __all__ = ["DockerRuntime", "build_docker_argv"]

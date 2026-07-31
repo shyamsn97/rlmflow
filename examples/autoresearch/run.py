@@ -17,19 +17,17 @@ from pathlib import Path
 from typing import Any
 
 from rlmflow import (
-    ConsumerGroup,
     DockerRuntime,
     FILE_TOOLS,
     Flow,
-    Graph,
-    GraphCheckpointer,
-    LiveTreeRenderer,
     LocalRuntime,
     SubprocessRuntime,
     SystemPromptBuilder,
-    WorkspaceSync,
+    start,
     tool,
 )
+from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, WorkspaceSync
+from rlmflow.view import LiveTreeRenderer
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -39,10 +37,10 @@ from common import build_client  # noqa: E402
 
 try:  # Allow both `python examples/autoresearch/run.py` and imports.
     from .modal_runner import ModalConfig, preflight, submit, validate_gpu
-    from .plot_progress import load_trials, plot_matplotlib, plot_svg
+    from .plot_progress import load_trials, plot_matplotlib, plot_svg, plot_tree_svg
 except ImportError:  # pragma: no cover
     from modal_runner import ModalConfig, preflight, submit, validate_gpu
-    from plot_progress import load_trials, plot_matplotlib, plot_svg
+    from plot_progress import load_trials, plot_matplotlib, plot_svg, plot_tree_svg
 
 
 PROGRESS_TITLE = "Tiny Autoresearch — (TinyStories + GPT2)"
@@ -318,9 +316,9 @@ class AutoresearchState:
                 self._check_budget(count_created=True)
                 if hypothesis:
                     for other in self.latest_by_slug().values():
-                        if other.get("hypothesis") == hypothesis and other.get(
-                            "status"
-                        ) in (RUNNING_STATUSES | {"succeeded"}):
+                        if other.get("hypothesis") == hypothesis and other.get("status") in (
+                            RUNNING_STATUSES | {"succeeded"}
+                        ):
                             raise SubmissionError(
                                 f"duplicate hypothesis already tried as {other['slug']!r}; "
                                 "propose a new idea (see list_runs())"
@@ -443,7 +441,9 @@ class AutoresearchState:
         submitted_running = sum(1 for row in rows if row.get("status") == "submitted")
         succeeded = sum(1 for row in rows if row.get("status") == "succeeded")
         failed = sum(1 for row in rows if row.get("status") in FAIL_STATUSES)
-        remaining = None if self.max_submissions is None else max(0, self.max_submissions - used - created)
+        remaining = (
+            None if self.max_submissions is None else max(0, self.max_submissions - used - created)
+        )
         return {
             "max_submissions": self.max_submissions,
             "used_submissions": used,
@@ -679,17 +679,19 @@ new direction, not stop). After each wave, re-check submission_status() and
 launch the next one.
 """
     graph_dir = args.out / "graph"
-    graph = Graph(query=query)
-    inputs = {"task_instructions": (example_dir / "program.md").read_text()}
-    checkpointer = GraphCheckpointer(
-        graph_dir,
-        every_s=args.checkpoint_every_s,
-        metadata={
+    graph = start(query=query)
+    graph.metadata.update(
+        {
             "kind": "autoresearch",
             "max_submissions": args.max_submissions,
             "model": args.model,
             "out": str(args.out),
-        },
+        }
+    )
+    inputs = {"task_instructions": (example_dir / "program.md").read_text()}
+    checkpointer = GraphCheckpointer(
+        graph_dir,
+        every_s=args.checkpoint_every_s,
     )
     consumers = ConsumerGroup(
         [
@@ -710,15 +712,15 @@ launch the next one.
             sync.sync()
 
         async def drive() -> None:
-            async for event in flow.run_streaming(graph=graph, inputs=inputs):
-                consumers.handle(event, graph)
+            async for event in flow.run_streaming(graph, inputs=inputs):
+                consumers.handle(event)
 
         asyncio.run(drive())
-        print(graph.result())
+        print(graph.agent_result())
         write_run_report(state, args.out, announce=True)
     finally:
         consumers.close()
-        flow.close_repls(graph.graph_id)
+        flow.runtime.close_repls(graph.trajectory_id)
 
 
 def build_runtime(kind: str, docker_image: str, workdir: Path):
@@ -740,9 +742,7 @@ def write_run_report(
     rows.sort(key=_rank_key)
     solutions = [_report_row(row) for row in rows]
     scored = [
-        row
-        for row in rows
-        if row.get("status") == "succeeded" and row.get("score") is not None
+        row for row in rows if row.get("status") == "succeeded" and row.get("score") is not None
     ]
     best = max(scored, key=lambda row: float(row["score"])) if scored else None
     best_summary = _report_row(best) if best else None
@@ -758,12 +758,10 @@ def write_run_report(
         print(f"\n[autoresearch] report={report_path}")
         print(f"[autoresearch] summary={out_dir / 'summary.md'}")
         print(f"[autoresearch] progress={out_dir / 'progress.svg'}")
+        print(f"[autoresearch] lineage={out_dir / 'lineage.svg'}")
         print(f"[autoresearch] ledger={state.ledger_path}")
         if best_summary:
-            print(
-                f"[autoresearch] best={best_summary['name']} "
-                f"score={best_summary['score']}"
-            )
+            print(f"[autoresearch] best={best_summary['name']} score={best_summary['score']}")
 
 
 def _report_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -815,6 +813,10 @@ def _markdown_report(
             "",
             "![Autoresearch progress](progress.svg)",
             "",
+            "## Lineage",
+            "",
+            "![Autoresearch lineage](lineage.svg)",
+            "",
         ]
     )
     return "\n".join(lines)
@@ -829,11 +831,14 @@ def _write_progress_plots(ledger_path: Path, out_dir: Path, *, announce: bool = 
     matplotlib if it is available.
     """
     svg_path = out_dir / "progress.svg"
+    tree_path = out_dir / "lineage.svg"
     trials = load_trials(ledger_path) if ledger_path.exists() else []
     if not trials:
         svg_path.write_text(_empty_progress_svg())
+        tree_path.write_text(_empty_progress_svg())
         return
     plot_svg(trials, title=PROGRESS_TITLE, out=svg_path)
+    plot_tree_svg(trials, title=PROGRESS_TITLE, out=tree_path)
     if announce:
         try:
             plot_matplotlib(trials, title=PROGRESS_TITLE, out=out_dir / "progress.png")
@@ -942,7 +947,12 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
 
 
 def default_out_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "_runs" / "autoresearch" / time.strftime("%Y%m%d-%H%M%S")
+    return (
+        Path(__file__).resolve().parents[1]
+        / "_runs"
+        / "autoresearch"
+        / time.strftime("%Y%m%d-%H%M%S")
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -957,7 +967,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--modal-timeout-s", type=int, default=1200)
     parser.add_argument("--created-trial-timeout-s", type=int, default=1800)
     parser.add_argument("--submitted-trial-timeout-s", type=int, default=1500)
-    parser.add_argument("--agent-runtime", choices=("subprocess", "local", "docker"), default="subprocess")
+    parser.add_argument(
+        "--agent-runtime", choices=("subprocess", "local", "docker"), default="subprocess"
+    )
     parser.add_argument("--docker-image", default="rlmflow:local")
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--checkpoint-every-s", type=float, default=0.0)

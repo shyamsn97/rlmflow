@@ -93,7 +93,6 @@ class CapabilityMap(WireModel):
     namespace_snapshot: bool = False
     filesystem_snapshot: bool = False
     process_checkpoint: bool = False
-    fork: Literal["none", "replay", "snapshot", "process"] = "none"
     # Whether the sandbox can (de)serialize live objects by value (cloudpickle).
     cloudpickle: bool = False
 

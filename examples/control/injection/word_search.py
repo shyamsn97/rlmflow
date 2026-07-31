@@ -11,7 +11,7 @@ That route is intentionally plausible but more complicated than necessary. It
 creates a real root ``SupervisingOutput`` that ``inject_variants.py`` can later
 replace with a direct scanner route. The finished run is saved as a run
 directory (``graph.json`` manifest plus per-agent logs nested under
-``agents/``) that ``inject_variants.py`` loads with minimal ``Graph.load``.
+``agents/``) that ``inject_variants.py`` loads with ``persistence.load``.
 
 Run:
     export OPENAI_API_KEY=...
@@ -28,7 +28,9 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rlmflow import Flow, Graph, GraphCheckpointer, render_tree
+from rlmflow import Flow, start, persistence
+from rlmflow.consumers import GraphCheckpointer
+from rlmflow.view import render_tree
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -95,8 +97,6 @@ You can aproach this problem with the following strategy:
 """
 
 
-
-
 def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
     return (
         hit.word,
@@ -114,26 +114,26 @@ def run(model: str, out_dir: Path) -> None:
         max_depth=2,
     )
 
-    graph = Graph(query=QUERY)
+    graph = start(query=QUERY)
     print(render_tree(graph))
     checkpointer = GraphCheckpointer(out_dir)
 
     async def run_to_done() -> None:
         try:
             async for _event in flow.run_streaming(
-                graph=graph,
+                graph,
                 inputs={"grid": GRID},
                 output_schema=WordSearchResult,
             ):
-                checkpointer.handle(_event, graph)
+                checkpointer.handle(_event)
                 print(render_tree(graph))
         finally:
             checkpointer.close()
 
     asyncio.run(run_to_done())
-    flow.close_repls(graph.graph_id)
+    flow.runtime.close_repls(graph.trajectory_id)
 
-    result = WordSearchResult.model_validate_json(graph.result())
+    result = WordSearchResult.model_validate_json(graph.agent_result())
     actual = {_hit_key(hit) for hit in result.found}
     missing = set(result.missing)
 
@@ -143,10 +143,10 @@ def run(model: str, out_dir: Path) -> None:
         raise SystemExit("agent returned word-search hits that do not match EXPECTED")
 
     print("agent returned the expected word-search hits!")
-    path = graph.save(out_dir)
+    path = persistence.save(graph, out_dir)
     print(f"\nwrote baseline run: {path}")
     print(f"  manifest: {path / 'graph.json'}")
-    print(f"  agents:   {path / 'agents'} ({len(list(graph.agents))} agents)")
+    print(f"  agents:   {path / 'agents'} ({len(graph.agent_ids())} agents)")
     save_example_graph(graph, "injection-word-search")
 
 
@@ -156,10 +156,7 @@ def main() -> None:
     parser.add_argument(
         "--out-dir",
         type=Path,
-        default=Path(__file__).resolve().parents[2]
-        / "_runs"
-        / "word-search"
-        / "baseline",
+        default=Path(__file__).resolve().parents[2] / "_runs" / "word-search" / "baseline",
     )
     args = parser.parse_args()
 

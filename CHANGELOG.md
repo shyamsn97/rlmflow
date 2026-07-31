@@ -10,71 +10,97 @@ each one is called out under **Breaking** below.
 
 ### Breaking
 
-- **Import package is `rlmflow` only.** Use `from rlmflow import Flow, Graph, ...`.
-  The old short import name is gone (no compatibility shim). Public REPL env
-  keys are `RLMFLOW_*`. The local benchmark runner is `rlmflow-local`
-  (alias: `rlmflow`).
+- **Node-only execution model.** `Graph`, `Agent`, run registries, Driver
+  objects, and the Event hierarchy are removed. Build a root with
+  `start(query, ...)`; `Flow` mutates that recursive Node tree directly.
+- **Node streaming.** `run_streaming(root_or_query, until=...)` yields affected
+  Nodes, not Event wrappers. Mutation provenance lives in
+  `node.metadata["mutation"]`.
+- **Branch API simplified.** Merge and public `Flow.adopt` are removed.
+  `Flow.fork`, `Flow.rewind`, `Flow.launch_branches`, `Flow.discard`, and
+  `rlmflow.surgery` cover branch workflows.
+- **A delegating step writes one node, like every other step.** Children hang off
+  the `ExecAction` that launched them, so `SupervisingOutput` is gone from the node
+  model and a delegating turn records a single `ExecOutput` holding everything its
+  block printed — including what printed before the launch, which used to be a
+  separate node that escaped `max_output_length`. Runs saved with the old node still
+  load, reading it back as an `ExecOutput`. With the frontier no longer moving
+  mid-step, work in flight is keyed by the node being stepped instead of by its
+  agent. `waiting_on` is read off the tree: an `ExecAction`'s `AgentStart` children.
 
-- **`Flow.run` / `arun` / `run_streaming` are keyword-only.** The old
-  `graph_or_query` positional is gone; pass `query="..."` to start a fresh graph
-  or `graph=g` to resume one (`flow.run(query="q")`, `flow.run(graph=g)`,
-  `async for event in flow.run_streaming(graph=g, until=...)`). `parallel_run` /
-  `parallel_stream` keep their `*graphs` varargs. `Flow.run_for(graph)` is now a
-  pure run registry; graph resolution/emission moved to `Flow.resolve_run(...)`.
+- **`Repl.run` returns a `ReplRun`, not a string.** One value carries how a block
+  ended — `output` plus a `ReplStatus` of `OK`, `ERROR`, `DONE`, or `DEAD`, the
+  answer from `done(...)`, and the exception that killed the REPL — instead of a
+  string plus the `errored` and `done_result` attributes a caller had to reset and
+  read around it. `Runtime.execute(node, code)` adds the `DEAD` case: a REPL that
+  dies is an observation for the agent and an eviction from the runtime, so no
+  caller handles that exception any more. A dead REPL is now told apart from code
+  that raised: its `ErrorOutput` carries `error="repl"` and appends the cold-REPL
+  note, since the agent's namespace went with it.
+
+### Fixed
+
+- **Resuming a saved run rebuilds its live REPL.** `persistence.load` followed by
+  a run previously started with an empty namespace, so an agent's own variables
+  raised `NameError` while its transcript said it had set them — and it retried
+  until it hit an iteration cap. A fork had the same problem. A graph a `Flow` has no
+  REPLs for is now replayed once before the run loop starts. Use
+  `Flow(restore="lazy")` to keep the old behaviour, which now also appends a note
+  to the transcript so the agent knows to re-derive its variables.
+- **Resuming a finished run returns its answer.** Whether an agent had answered was
+  read from the task queue, which only knows about steps taken in the current run, so
+  a loaded terminal agent was submitted for another step and raised `TypeError:
+  cannot step DoneOutput`. `submit_leaves` now reads it from the frontier, and
+  consults the queue only for the case a graph cannot show: a step that raised.
+- **`max_iters` and `max_budget` survive a save.** Both are recorded on the root
+  `UserQuery` and preferred over the running `Flow`'s defaults, so resuming a run
+  in another process no longer silently changes its limits.
+- **A token budget is charged to the agent that spent it.** `budget_exceeded` now
+  measures an agent's own subtree against the limit that agent recorded, instead
+  of measuring the whole trajectory and terminating whichever agent happened to
+  step next — which meant a frugal agent could be killed for a sibling's spend,
+  chosen by scheduling order. A root budget still bounds the whole run.
 
 ### Added
 
-- **Long-running / multi-turn agents on one graph.** `graph.append_query(text,
-  *, inputs=None, output_schema=None, merge_inputs=True)` appends a new
-  `UserQuery` turn (flipping `finished` back to false) so the next run re-drives
-  the same trajectory with its full history and warm REPL. Equivalently, pass
-  `query=` to `run`/`run_streaming` alongside `graph=` to append and drive in one
-  call — the new turn is emitted as an `AppendNode` event, and updated `inputs`
-  are synced into the live REPL's `INPUTS`. `inputs` merges by default;
-  `merge_inputs=False` replaces.
-- **Warm child launch.** `flow.adopt(parent, child, *, name)` reparents a
-  prepared (fork/rewind) graph under `parent`. `flow.launch_subgraphs(parent,
-  children, *, queries=None, names=None)` is the host-side wrapper that runs
-  those graphs as children via `launch_subagents`' warm path.
+- **`Flow(restore="replay" | "lazy")`** — how a graph this flow did not run gets its
+  live state back. `Flow.replay` re-runs each agent's recorded `ExecAction`s;
+  `Flow.note_cold` is the cheap alternative that tells unfinished agents their
+  namespace is gone. Both hang off one check in `run_streaming`, so load, fork, and
+  cross-process resume share a path.
+- **`RLMFLOW_REPLAY`** — `"1"` in an agent's `ENV` while its recorded code is being
+  re-run, `"0"` during a live turn. `launch_subagents` reads it and returns the
+  answers its children already gave rather than launching again; agent code can read
+  it to skip downloads, writes, or anything else it should not repeat.
+- **Graph format version 3** — adds the limits recorded on `UserQuery`. Version 2
+  runs still load (`persistence.SUPPORTED_VERSIONS`).
+- **Long-running / multi-turn agents.** `flow.append_query(root, text, ...)`
+  appends a `UserQuery`; passing a finished root with `query=` appends and drives
+  the next turn while preserving history and the warm REPL.
+- **Warm child launch.** `flow.launch_branches(parent, children, *,
+  queries=None, names=None)` reparents prepared fork/rewind branches and runs
+  them as children through `launch_subagents`' warm path.
 - **`LiveGraphTree` stream consumer** — Rich live agent tree with
   active/waiting status; compose with other consumers via `ConsumerGroup`.
-- **`flow.get_env_var(graph, name)`** — read a key from an agent's REPL `ENV`
-  metadata channel (distinct from `get_var`, which reads the Python namespace).
-- **Named `PromptProfile`s** — `Flow(prompts=..., prompt_router=...)` plus
-  per-agent `Graph.prompt_profile` / spawn-spec `prompt_profile`.
+- **Named `PromptProfile`s** — `Flow(prompt_profiles=..., prompt_router=...)`
+  plus per-agent `UserQuery.prompt_profile` / spawn-spec `prompt_profile`.
+- **Structured execution module.** `Pool`, `ThreadPool`, `SequentialPool`, and
+  the small structured-concurrency `TaskQueue` live in `rlmflow.execution`.
 
 ### Changed
 
-- **`Graph.prompt` → `Graph.prompt_profile`.** The field is a profile *selector*
-  (not prompt text). Deserialization still accepts the legacy `"prompt"` key.
-  Spawn specs use `prompt_profile` (legacy `"prompt"` still accepted as a
-  fallback). There is no `default_child_profile` / `default_child_prompt` on
-  `Flow` — omit the key and the child stamps `"default"`.
-- **Minimal graph-first stack is the core `rlmflow` package.** Everything
-  outside it was retired. Imports are
-  `from rlmflow import Flow, Graph, LocalRuntime, FILE_TOOLS`, and LLM clients
-  live under `from rlmflow.clients import OpenAIClient, AnthropicClient`.
-- **Async, in-place streaming API.** `Flow` drives runs with
-  `flow.run(query=...)` (sync), `await flow.arun(...)`, and
-  `async for event in flow.run_streaming(graph=..., until=..., n=...)`.
-  `run_streaming` yields the `Event`s it emits and mutates the `Graph` in place.
-- **Visualization consolidated in `rlmflow.view`.** `render_tree`,
-  `LiveTreeRenderer`, `LiveGraphTree`, `open_viewer`, `replay`, `save_image`, and
-  `save_steps` are re-exported from `rlmflow`. Static exports take a run directory,
-  a `Graph`, or a list of snapshots.
-- **DSPy adapter renamed** from `RecursiveFlowLM` to `DSPyFlow`; wrap a `Flow`
-  in `FlowLLM` first: `DSPyFlow(FlowLLM(flow), model=...)`.
-- **`group_flows(...)`** replaces `parallel_step` for running multiple flows
-  concurrently and merging their event streams over the shared `Pool`.
-- **Benchmark model wrappers** bridge the sync harness onto async
-  `OpenAIClient` / `AnthropicClient` via `asyncio.run(...)`.
+- **Prompt selection is explicit.** Spawn specs use `prompt_profile`; children
+  inherit their immediate parent's profile when omitted. `prompt_router` is an
+  optional callable, and unknown profile names raise `ValueError`.
+- **Runtime owns REPL lifecycle.** REPL lookup, replay, closure, and rebinding
+  live on `Runtime`; warm branch attachment uses `Runtime.rebind_repl`.
+- **Persistence and consumers accept Nodes directly.** Save/load uses
+  `rlmflow.persistence`; stream consumers handle one Node at a time.
 
 ### Removed
 
-- The `rlmflow` CLI (`view` / `render` / `version`) and the `rlmflow.utils`
-  observability/export surface (`save_trace`/`load_trace`, mermaid/dot/d2/gantt
-  exports, `save_html`/`save_gif`, `Node.plot`). Use `rlmflow.view` and
-  `graph.save(...)` / `Graph.load(...)` instead.
+- `rlmflow.pool`, `rlmflow.tasks`, `rlmflow.simple_flow`, the Event hierarchy,
+  and the separate `Graph` wrapper.
 
 ## [0.4.0] — 2026-06-12
 

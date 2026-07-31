@@ -1,237 +1,154 @@
-# Streaming And Scheduling
+# Streaming and structured execution
 
-`Flow.run_streaming(...)` is the low-level way to drive a run. It mutates the
-caller-owned `Graph` in place and yields typed graph `Event`s as work is
-committed. The same method also controls **where execution stops** through the
-`until` argument.
-
-The important model is simple:
-
-- every agent has its own event queue;
-- every agent can have at most one active task at a time;
-- after an event is yielded, `Flow` decides whether to enqueue that agent's next
-  task;
-- if `Flow` does not enqueue a next task, that agent stops at the current
-  boundary.
-
-There are no parked coroutine frames for step boundaries. Stopping is just "do
-not add another task for this agent."
-
-## Basic Use
-
-Run to completion and observe every graph mutation:
+`Flow.run_streaming(...)` mutates a caller-owned Node tree and yields each
+durable Node as it is attached or changed.
 
 ```python
+from rlmflow import Flow, start
+
 flow = Flow(client)
-graph = Graph(query="Audit this repository.")
+root = start("Audit this repository.")
 
-async for event in flow.run_streaming(graph=graph):
-    print(event.type, getattr(event, "node_type", ""))
+async for node in flow.run_streaming(root):
+    mutation = node.metadata.get("mutation", {})
+    print(node.agent_id, mutation.get("type"), node.type)
 
-print(graph.result())
+print(root.agent_result())
 ```
 
-`flow.run(graph=graph)` is the synchronous convenience wrapper for the same full run.
+The tree is the durable state. There is no separate run object, event object, or
+worker queue. `TaskQueue` runs structured coroutine batches and retains the
+small amount of live stream/control state.
 
-## Boundaries With `until`
+## Execution ownership
 
-`until` controls whether the scheduler adds more work after each event.
+One streaming call owns one local `asyncio.Queue[Node]`, registered by
+trajectory with `TaskQueue`. Work is structured by the Python call tree:
 
-`until="done"` is the default. It keeps scheduling until the whole graph is
-finished:
+```text
+run_streaming
+  -> host round
+      -> one step per runnable leaf
+          -> exec_turn
+              -> child run_leaf tasks
+```
+
+Flow submits each local batch to `TaskQueue.run()`, which uses
+`asyncio.TaskGroup`. Every function therefore settles the tasks it submits
+before returning; top-level rounds are also tracked so `aclose()` can cancel
+them.
+
+The host starts a round from every runnable leaf in the entire tree. A
+supervisor waiting for unfinished children is not runnable. Delegated children
+self-drive until terminal and publish into their parent's stream.
+
+## Stream boundaries
+
+`until` decides whether another host round starts. It never abandons work
+already in flight.
+
+- `"done"` / `"finished"`: run until no runnable leaves remain.
+- `"next"`: stop after the next appended Node.
+- `"idle"`: stop at `ExecOutput` or `DoneOutput`; an `ErrorOutput` is allowed to
+  recover first.
+- `"error"`: stop when an `ErrorOutput` is published.
+- callable: receives `(node, root)` and stops when it returns true.
 
 ```python
-async for event in flow.run_streaming(graph=graph, until="done"):
+async for node in flow.run_streaming(root, until="next"):
+    ...
+
+def child_done(node, root):
+    return node.agent_id != root.agent_id and node.type == "done_output"
+
+async for node in flow.run_streaming(root, until=child_done):
     ...
 ```
 
-`until="next"` advances the active frontier by one node-producing task, then
-stops:
+There is no built-in `"supervising"` boundary. Use a callable:
 
 ```python
-async for event in flow.run_streaming(graph=graph, until="next"):
+from rlmflow import SupervisingOutput
+
+until_supervising = lambda node, root: isinstance(node, SupervisingOutput)
+```
+
+Call `run_streaming` again with the same root to continue after a boundary.
+Reactive edits are deterministic between streaming calls because the prior
+round has settled.
+
+## Published Nodes
+
+Ordinary transitions stamp:
+
+```python
+node.metadata["mutation"] = {
+    "type": "append",
+    "parent_id": parent.id,
+}
+```
+
+Other operations use mutation names such as `create`, `update`, `spawn`,
+`insert`, `replace`, `remove`, `revert`, `fork`, and `adopt`.
+
+A fresh string run yields its initial `UserQuery`:
+
+```python
+async for node in flow.run_streaming("new query"):
     ...
 ```
 
-Use it when you want the most literal debug step. It surfaces errors immediately:
-if an agent emits `ErrorOutput`, the scheduler stops there instead of trying to
-heal it.
-
-`until="idle"` advances each active agent until it reaches a rest point:
+Input/schema-only updates publish the updated `UserQuery`. Consumers receive
+Nodes directly and derive the live root with `node.root()`:
 
 ```python
-async for event in flow.run_streaming(graph=graph, until="idle"):
-    ...
+async for node in flow.run_streaming(root):
+    checkpointer.handle(node)
+    renderer.handle(node)
 ```
-
-Rest means `ExecOutput` or `DoneOutput`. `ErrorOutput` is not rest, so `idle`
-keeps scheduling the agent until it recovers to a clean observation or finishes.
-
-Named event boundaries stop when that event is observed:
-
-```python
-async for event in flow.run_streaming(graph=graph, until="supervising"):
-    ...
-
-async for event in flow.run_streaming(graph=graph, until="error"):
-    ...
-```
-
-A callable boundary receives `(event, graph)`:
-
-```python
-def child_finished(event, graph):
-    return (
-        event.type == "append_node"
-        and event.agent_id != "root"
-        and event.node_type == "done_output"
-    )
-
-async for event in flow.run_streaming(graph=graph, until=child_finished):
-    ...
-```
-
-For non-`done` boundaries, the run is left alive. Continue it by calling
-`run_streaming(...)` again with the same graph:
-
-```python
-async for _event in flow.run_streaming(graph=graph, until="idle"):
-    pass
-
-graph.inject("Use this controller note before finalizing.")
-
-async for _event in flow.run_streaming(graph=graph, until="done"):
-    pass
-```
-
-Because the previous streaming call stopped with no active work, the injected
-graph edit is read before any new task is scheduled.
-
-## Multiple Steps With `n`
-
-`n` means "number of boundary passes", not "number of raw events".
-
-```python
-async for event in flow.run_streaming(graph=graph, until="next", n=3):
-    ...
-```
-
-With `until="next"`, that advances the active frontier three scheduler steps.
-With `until="idle"`, it advances to idle three times. Each step may yield more
-than one event because multiple agents can run in parallel.
-
-## What A Task Is
-
-Internally, one scheduled agent task emits one graph-producing unit:
-
-- if the current node is a `UserQuery`, `ExecOutput`, `ErrorOutput`, or
-  `ResumeAction`, the task calls the model and commits `LLMOutput`;
-- if the current node is `LLMOutput`, the task commits `ExecAction`;
-- if the current node is `ExecAction`, the task executes the code and commits
-  `ExecOutput`, `ErrorOutput`, `DoneOutput`, or `SupervisingOutput`.
-
-After each committed event, the scheduler decides whether to schedule the next
-task for that same agent.
-
-This keeps `next` precise: one scheduler step cannot silently run a full model
-turn beyond the event you observed.
-
-## The Task Queue
-
-The queue is intentionally small and graph-free. It tracks:
-
-- `queues[agent_id]`: emitted events waiting to be streamed;
-- `tasks[agent_id]`: the currently running task for that agent, if any;
-- `queued[agent_id]`: follow-up work remembered for an agent that is still
-  running;
-- `notify`: an event that wakes the stream when new output or task completion
-  happens.
-
-The queue does not know about `until`, graph nodes, child agents, or prompts.
-Those are `Flow` concerns.
-
-The core behavior is:
-
-```python
-queue.add(agent_id, work)     # schedule next work, or remember it if running
-queue.emit(agent_id, event)   # append an event to that agent's stream
-queue.stop(agent_id)          # drop queued follow-up work
-
-async for agent_id, event in queue.stream():
-    ...
-```
-
-When a task finishes, the queue starts any remembered follow-up for the same
-agent. If there is no follow-up, the agent simply has no work.
-
-## Parallelism
-
-Parallelism falls out of per-agent scheduling:
-
-- every ready agent can have one active task;
-- different agents' tasks run concurrently as unbounded `asyncio` tasks;
-- only *blocking* leaf work (a sync `client.chat`) is bounded — by the flow's
-  `Pool` (`ThreadPool(workers=N)`); an async client bypasses the pool entirely;
-- `SequentialPool` runs blocking calls one at a time (deterministic; debug).
-
-So `until="next"` is a global step: every ready agent can advance once in the
-same streaming call. A parent waiting for children does not consume a step until
-the children finish.
 
 ## Delegation
 
-`launch_subagents(...)` creates child graphs and emits normal graph events:
+`launch_subagents(...)` is an awaited REPL tool:
 
-1. the parent emits `SupervisingOutput`;
-2. child graphs get `UserQuery` nodes;
-3. child work is scheduled;
-4. the parent waits for child results;
-5. the parent emits `ResumeAction`, then continues and eventually emits its next
-   observation.
+1. append `SupervisingOutput`;
+2. attach each accepted child `UserQuery`;
+3. drive children concurrently in an `asyncio.TaskGroup`;
+4. append `ResumeAction` to the exact supervisor;
+5. return results to the suspended parent code;
+6. append the parent's final output.
 
-Delegation uses one path regardless of `until`: each child is submitted to a task
-queue and self-drives (`run_agent`), and the parent polls until they finish. When
-a streaming run is driving the graph, children are submitted to *its* queue, so
-the stream observes their events and the queue's one-task-per-agent rule keeps
-anything from double-driving a child. No agent run ever holds a pool slot while
-it waits on its children, so nested delegation cannot starve at any depth.
+The stream therefore sees supervisor, child, resume, and final parent Nodes in
+durable order. A child failure becomes that child's terminal result, so siblings
+settle and the parent receives an explicit failure value.
 
-## Reactive Control
+## Parallel roots
 
-The safe edit point is between streaming calls:
+`parallel_stream(flow, *roots)` merges independent Node streams. Roots share
+the Flow's clients, pool, tools, and Runtime.
 
-```python
-async for _event in flow.run_streaming(graph=graph, until="idle"):
-    pass
+Only one active stream per `trajectory_id` is allowed. This rejects both the
+same root object and a shared-session clone before query/input updates mutate
+the trajectory. Isolated forks have fresh trajectory ids and may run
+concurrently.
 
-graph.inject("Controller instruction: finish now.")
+## Cancellation and cleanup
 
-async for _event in flow.run_streaming(graph=graph, until="done"):
-    pass
-```
+Closing a stream cancels and settles its current host round. Passing
+`close_repls=True` closes that trajectory's REPLs on every exit path: completion,
+boundary, error, cancellation, or explicit generator close.
 
-At that point no scheduler task is running. The graph is the durable state; the
-queue is disposable execution state. Rewinds, forks, and injected nodes should be
-represented as graph mutations, then the next streaming call schedules work from
-that graph frontier.
+`await flow.aclose()` cancels all tracked top-level rounds, closes every REPL,
+and closes the blocking-call pool.
 
-## Mental Model
+## Parallelism limits
 
-Think of the graph as the source of truth and the queue as a pump:
+Async transitions and child drivers are ordinary asyncio tasks. Only blocking
+calls such as a synchronous `client.chat` consume the Flow's `Pool`:
 
-```text
-graph frontier -> schedule ready agent tasks -> emit events -> yield events
-              -> decide continue/stop per agent -> schedule next tasks
-```
+- `ThreadPool(workers=N)` bounds blocking calls;
+- async clients bypass the thread pool;
+- `SequentialPool` makes blocking calls deterministic for debugging.
 
-`until` is the "decide continue/stop" policy:
-
-- `done`: keep going until the graph is finished;
-- `next`: stop each agent after its next event;
-- `idle`: keep going until each agent reaches a clean rest;
-- `error`: keep going until an error event is observed;
-- `supervising`: keep going until a delegation event is observed;
-- callable: keep going until your predicate returns true.
-
-This is why the implementation can stay small: stopping does not require a
-special pause primitive. It just means there is no next task in the queue.
+No agent holds a pool slot while awaiting delegated children, so nested
+delegation cannot deadlock by exhausting worker threads.

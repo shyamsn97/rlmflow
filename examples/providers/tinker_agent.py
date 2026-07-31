@@ -15,7 +15,9 @@ import sys
 from pathlib import Path
 
 from rlmflow.clients import TinkerClient
-from rlmflow import ConsumerGroup, Flow, Graph, GraphCheckpointer, LiveTreeRenderer
+from rlmflow import Flow, start
+from rlmflow.consumers import ConsumerGroup, GraphCheckpointer
+from rlmflow.view import LiveTreeRenderer
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -25,9 +27,7 @@ from common import example_run_dir, save_example_graph  # noqa: E402
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Run a tiny Flow task with Tinker."
-    )
+    parser = argparse.ArgumentParser(description="Run a tiny Flow task with Tinker.")
     parser.add_argument(
         "--base-model",
         default="Qwen/Qwen3-8B",
@@ -59,7 +59,7 @@ def main() -> None:
     )
     flow = Flow(llm, max_iters=args.max_iters)
     print(f"Query: {args.query}\n")
-    graph = Graph(query=args.query)
+    graph = start(query=args.query)
     consumers = ConsumerGroup(
         [
             LiveTreeRenderer(),
@@ -69,15 +69,15 @@ def main() -> None:
 
     async def drive() -> None:
         try:
-            async for event in flow.run_streaming(graph=graph):
-                consumers.handle(event, graph)
+            async for event in flow.run_streaming(graph):
+                consumers.handle(event)
         finally:
             consumers.close()
 
     asyncio.run(drive())
-    print(graph.result())
+    print(graph.agent_result())
     save_example_graph(graph, "tinker-agent")
-    flow.close_repls(graph.graph_id)
+    flow.runtime.close_repls(graph.trajectory_id)
 
 
 if __name__ == "__main__":

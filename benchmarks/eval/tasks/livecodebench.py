@@ -60,7 +60,11 @@ class LiveCodeBenchDataset(Dataset):
         return Score(
             value=value,
             correct=passed_all if total else False,
-            details={"passed": passed, "total": total, "expected": f"{passed}/{total} public tests"},
+            details={
+                "passed": passed,
+                "total": total,
+                "expected": f"{passed}/{total} public tests",
+            },
         )
 
     def _load(self, split: str) -> list[dict[str, Any]]:
@@ -79,7 +83,10 @@ class LiveCodeBenchDataset(Dataset):
                     "LiveCodeBench requires the eval extra: pip install -e '.[eval]'"
                 ) from exc
             disable_progress_bar()
-            rows = [dict(row) for row in load_dataset("json", data_files=self._jsonl_files, split="train")]
+            rows = [
+                dict(row)
+                for row in load_dataset("json", data_files=self._jsonl_files, split="train")
+            ]
         if self.max_samples:
             rows = rows[: self.max_samples]
         if not rows:
@@ -117,7 +124,9 @@ class LiveCodeBenchDataset(Dataset):
         )
 
 
-def _select_rows(rows: list[dict[str, Any]], *, limit: int | None, seed: int) -> list[dict[str, Any]]:
+def _select_rows(
+    rows: list[dict[str, Any]], *, limit: int | None, seed: int
+) -> list[dict[str, Any]]:
     count = limit or 1
     indices = list(range(len(rows)))
     random.Random(seed).shuffle(indices)

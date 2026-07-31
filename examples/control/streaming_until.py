@@ -11,7 +11,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from rlmflow import Event, Flow, Graph, render_tree
+from rlmflow import (
+    Flow,
+    Node,
+    persistence,
+    start,
+)
+from rlmflow.view import render_tree
 
 RUN_DIR = Path(__file__).resolve().parents[1] / "_runs" / "streaming-until"
 
@@ -41,24 +47,31 @@ def first_user(messages: list[dict[str, Any]]) -> str:
     return next(message["content"] for message in messages if message["role"] == "user")
 
 
-async def collect(flow: Flow, **kwargs: Any) -> list[Event]:
-    return [event async for event in flow.run_streaming(**kwargs)]
+async def collect(flow: Flow, root: Node, **kwargs: Any) -> list[Node]:
+    return [node async for node in flow.run_streaming(root, **kwargs)]
 
 
-def event_label(event: Event) -> str:
-    if event.type == "graph_created":
-        return f"{event.graph.agent_id}: graph_created"
-    if event.type == "append_node":
-        return f"{event.agent_id}: append {event.node_type}"
-    if event.type == "add_child":
-        return f"{event.parent_agent_id}: add child {event.child.agent_id}"
-    return event.type
+def after_appends(count: int):
+    seen = 0
+
+    def halt(node: Node, _root: Node) -> bool:
+        nonlocal seen
+        if node.metadata.get("mutation", {}).get("type") == "append":
+            seen += 1
+        return seen >= count
+
+    return halt
 
 
-def print_events(title: str, events: list[Event], graph: Graph) -> None:
+def node_label(node: Node) -> str:
+    mutation = node.metadata.get("mutation", {}).get("type", "append")
+    return f"{node.agent_id}: {mutation} {node.type}"
+
+
+def print_nodes(title: str, nodes: list[Node], graph: Node) -> None:
     print(f"\n=== {title} ===")
-    for event in events:
-        print(f"- {event_label(event)}")
+    for node in nodes:
+        print(f"- {node_label(node)}")
     print(render_tree(graph))
 
 
@@ -70,18 +83,18 @@ async def demo_next_idle_and_resume() -> None:
         return "```repl\nprint('working')\n```"
 
     flow = Flow(ScriptedLLM(reply), max_iters=8)
-    graph = Graph(query="work until I inject a stop instruction")
+    graph = start(query="work until I inject a stop instruction")
 
-    events = await collect(flow, graph=graph, until="next", n=3)
-    print_events("until='next', n=3: exactly three appended nodes", events, graph)
+    events = await collect(flow, graph, until=after_appends(3))
+    print_nodes("callable boundary: exactly three appended nodes", events, graph)
 
-    events = await collect(flow, graph=graph, until="idle")
-    print_events("until='idle': settle at a clean exec_output", events, graph)
+    events = await collect(flow, graph, until="idle")
+    print_nodes("until='idle': settle at a clean exec_output", events, graph)
 
-    graph.inject("STOP NOW")
-    events = await collect(flow, graph=graph, until="done")
-    print_events("resume after injection, until='done'", events, graph)
-    graph.save(RUN_DIR / "next-idle-and-resume")
+    flow.append(graph.tail(), "STOP NOW", injected=True)
+    events = await collect(flow, graph, until="done")
+    print_nodes("resume after injection, until='done'", events, graph)
+    persistence.save(graph, RUN_DIR / "next-idle-and-resume")
 
 
 async def demo_idle_heals_errors() -> None:
@@ -94,11 +107,11 @@ async def demo_idle_heals_errors() -> None:
             )
         )
     )
-    graph = Graph(query="recover from a bad response")
+    graph = start(query="recover from a bad response")
 
-    events = await collect(flow, graph=graph, until="idle")
-    print_events("until='idle': pass through error_output to exec_output", events, graph)
-    graph.save(RUN_DIR / "idle-heals-errors")
+    events = await collect(flow, graph, until="idle")
+    print_nodes("until='idle': pass through error_output to exec_output", events, graph)
+    persistence.save(graph, RUN_DIR / "idle-heals-errors")
 
 
 async def demo_callable_boundary_with_child() -> None:
@@ -113,18 +126,14 @@ async def demo_callable_boundary_with_child() -> None:
         return "```repl\ndone('child done')\n```"
 
     flow = Flow(ScriptedLLM(reply), max_depth=1)
-    graph = Graph(query="parent")
+    graph = start(query="parent")
 
-    def child_done(event: Event, current: Graph) -> bool:
-        return (
-            event.type == "append_node"
-            and event.agent_id != current.agent_id
-            and event.node_type == "done_output"
-        )
+    def child_done(node: Node, current: Node) -> bool:
+        return node.agent_id != current.agent_id and node.type == "done_output"
 
-    events = await collect(flow, graph=graph, until=child_done)
-    print_events("until=<callable>: observe child done_output", events, graph)
-    graph.save(RUN_DIR / "callable-boundary-with-child")
+    events = await collect(flow, graph, until=child_done)
+    print_nodes("until=<callable>: observe child done_output", events, graph)
+    persistence.save(graph, RUN_DIR / "callable-boundary-with-child")
 
 
 async def main() -> None:

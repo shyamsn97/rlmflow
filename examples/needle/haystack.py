@@ -22,13 +22,12 @@ import sys
 from pathlib import Path
 
 from rlmflow import (
-    ConsumerGroup,
     DockerRuntime,
     Flow,
-    Graph,
-    GraphCheckpointer,
-    LiveTreeRenderer,
+    start,
 )
+from rlmflow.consumers import ConsumerGroup, GraphCheckpointer
+from rlmflow.view import LiveTreeRenderer
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -109,7 +108,7 @@ def main():
         max_iters=args.max_iters,
     )
 
-    graph = Graph(
+    graph = start(
         query=(
             "I'm looking for a magic number buried somewhere in the haystack in "
             "INPUTS['haystack']. What is it? Chunk the string and search the "
@@ -123,27 +122,25 @@ def main():
 
     async def drive() -> None:
         try:
-            async for event in flow.run_streaming(
-                graph=graph, inputs={"haystack": haystack}
-            ):
-                consumers.handle(event, graph)
+            async for event in flow.run_streaming(graph, inputs={"haystack": haystack}):
+                consumers.handle(event)
         finally:
             consumers.close()
 
     asyncio.run(drive())
 
     print(f"\n{'=' * 40}")
-    print(f"Result:         {graph.result()}")
+    print(f"Result:         {graph.agent_result()}")
     print(f"Actual answer:  {answer}")
-    print(f"Correct:        {answer in graph.result()}")
+    print(f"Correct:        {answer in graph.agent_result()}")
 
     if args.out_dir:
-        print(f"Graph checkpointed to {Path(args.out_dir)}")
+        print(f"Node checkpointed to {Path(args.out_dir)}")
 
     if args.viewer:
         print("Viewer support is not part of the minimal example path.")
 
-    flow.close_repls(graph.graph_id)
+    flow.runtime.close_repls(graph.trajectory_id)
 
 
 if __name__ == "__main__":

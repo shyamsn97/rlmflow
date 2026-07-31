@@ -351,9 +351,7 @@ def _secrets(modal, _config: ModalConfig) -> list[Any]:
 
 
 def _image(modal, config: ModalConfig):
-    python_version = config.python_version or (
-        f"{sys.version_info.major}.{sys.version_info.minor}"
-    )
+    python_version = config.python_version or (f"{sys.version_info.major}.{sys.version_info.minor}")
     return (
         modal.Image.from_registry(
             "nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04",

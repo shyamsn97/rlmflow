@@ -94,11 +94,11 @@ benchmarks/runs/<run_id>/
 
 ## Current API notes
 
-The harness tracks the library's async LLM clients and graph-first runner:
+The harness tracks the library's async LLM clients and Node-only runner:
 
 - **Models** (`benchmarks/eval/models/openai.py`, `anthropic.py`) wrap
   `OpenAIClient` / `AnthropicClient`, whose `completion` is async. The sync
   `Model.complete` bridge uses `asyncio.run(...)`.
-- **`rlmflow-local` runner** builds `Graph(query=example.prompt, inputs=...)` and
-  drives with `flow.run_streaming(graph=graph)` — `Example.prompt` is task text,
-  not `Graph.prompt_profile`.
+- **`rlmflow-local` runner** builds `start(query=example.prompt, inputs=...)` and
+  drives with `flow.run_streaming(root)` — `Example.prompt` is task text,
+  while model and prompt-profile settings live on the root `UserQuery`.

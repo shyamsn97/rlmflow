@@ -22,13 +22,12 @@ import sys
 from pathlib import Path
 
 from rlmflow import (
-    ConsumerGroup,
     DockerRuntime,
     Flow,
-    Graph,
-    GraphCheckpointer,
-    LiveTreeRenderer,
+    start,
 )
+from rlmflow.consumers import ConsumerGroup, GraphCheckpointer
+from rlmflow.view import LiveTreeRenderer
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -75,15 +74,11 @@ def generate_long_document(sections: int, *, seed: int = 7) -> str:
             body.append(rng.choice(_FILLER))
         if i == planted_section:
             body.append(
-                f"Critically, the team confirmed the public launch date was "
-                f"moved to {launch_date}."
+                f"Critically, the team confirmed the public launch date was moved to {launch_date}."
             )
         parts.append("\n".join(body))
 
-    print(
-        f"Generated {sections}-section document "
-        f"(key fact planted in section {planted_section})."
-    )
+    print(f"Generated {sections}-section document (key fact planted in section {planted_section}).")
     return "\n\n".join(parts)
 
 
@@ -135,9 +130,7 @@ def main() -> None:
         default=str(example_run_dir("summarizer")),
         help="Save the final run here (default: examples/_runs/summarizer/).",
     )
-    parser.add_argument(
-        "--viewer", action="store_true", help="Open the viewer after finishing."
-    )
+    parser.add_argument("--viewer", action="store_true", help="Open the viewer after finishing.")
     args = parser.parse_args()
 
     print(f">>> {'DOCKER' if args.docker_image else 'LOCAL'} RUNTIME")
@@ -162,7 +155,7 @@ def main() -> None:
         max_iters=args.max_iters,
     )
 
-    graph = Graph(query=SUMMARIZE_QUERY)
+    graph = start(query=SUMMARIZE_QUERY)
 
     consumers = ConsumerGroup([LiveTreeRenderer(clear=not args.no_viz)])
     if args.out_dir:
@@ -170,17 +163,15 @@ def main() -> None:
 
     async def drive() -> None:
         try:
-            async for event in flow.run_streaming(
-                graph=graph, inputs={"document": document}
-            ):
-                consumers.handle(event, graph)
+            async for event in flow.run_streaming(graph, inputs={"document": document}):
+                consumers.handle(event)
         finally:
             consumers.close()
 
     asyncio.run(drive())
 
     print(f"\n{'=' * 60}\nFINAL SUMMARY\n{'=' * 60}")
-    print(graph.result())
+    print(graph.agent_result())
 
     if args.out_dir:
         print(f"\nGraph checkpointed to {Path(args.out_dir)}")
@@ -188,7 +179,7 @@ def main() -> None:
     if args.viewer:
         print("Viewer support is not part of the minimal example path.")
 
-    flow.close_repls(graph.graph_id)
+    flow.runtime.close_repls(graph.trajectory_id)
 
 
 if __name__ == "__main__":

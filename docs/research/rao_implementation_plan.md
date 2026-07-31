@@ -1,11 +1,9 @@
 # Recursive Agent Optimization: Implementation Plan
 
-> **API note (current codebase):** read `Graph.inputs` / REPL `INPUTS` wherever
-> this note says `Graph.context` / `CONTEXT`; `Flow` (not `RecursiveFlow` /
-> `FlowConfig`) for the engine; `Graph.prompt_profile` for per-agent prompt
-> selection. Cold spawn still uses `launch_subagents`; warm host fan-out uses
-> `flow.launch_subgraphs` / `flow.adopt`. See `docs/control.md` and
-> `docs/internals.md`.
+> **Current API:** `Flow` drives a recursive Node tree. Active task settings live
+> on each agent's latest `UserQuery`; agent code reads its inputs through
+> `INPUTS`. Cold spawn uses `launch_subagents`; prepared host branches use
+> `flow.launch_branches`. See `docs/control.md` and `docs/internals.md`.
 
 This note sketches how to implement Recursive Agent Optimization (RAO) on top of
 `rlmflow`.
@@ -19,7 +17,7 @@ Sources:
 ## Short Answer
 
 RAO is a natural fit for this repo, but it should be implemented as a
-first-class `rlmflow.rao` library module around `RecursiveFlow`, not as a rewrite
+first-class `rlmflow.rao` library module around `Flow`, not as a rewrite
 of the runtime.
 
 `rlmflow` already has most of the inference substrate RAO assumes:
@@ -27,9 +25,9 @@ of the runtime.
 - one recursive agent policy used at every tree depth;
 - a Python REPL action loop;
 - `launch_subagents([...])` for recursive delegation;
-- a durable tree of per-agent trajectories via `Graph.children`;
-- per-agent task payloads through `Graph.context` / `CONTEXT`;
-- depth and iteration controls through `FlowConfig`;
+- a durable tree of per-agent trajectories via recursive `Node.children`;
+- per-agent task payloads through `UserQuery.inputs` / `INPUTS`;
+- depth and iteration controls directly on `Flow`;
 - workspaces for replay, inspection, forking, and dataset export.
 
 The missing RAO pieces are training-specific:
@@ -46,9 +44,9 @@ So the right implementation boundary is:
 
 ```text
 rlmflow runtime
-  RecursiveFlow
-  Graph / Node
-  Workspace
+  Flow
+  Node
+  persistence / consumers
   launch_subagents
 
 RAO research layer
@@ -77,14 +75,14 @@ The RAO project page describes three important ideas:
   train the same policy, but deeper nodes are reweighted so they do not dominate
   updates just because they are more numerous.
 
-That maps cleanly onto a `Graph`: each `Graph` object is one agent trajectory,
-and `graph.children` is the recursive execution tree.
+That maps cleanly onto the Node tree: each `agent_id` identifies one agent
+trajectory, and child-agent roots are attached beneath the supervising Node.
 
 ## Core Data Model
 
-Do not add RAO fields directly to `Graph` unless they are durable run state
+Do not add RAO fields directly to `Node` unless they are durable run state
 needed for normal inference. Rewards, advantages, and trainer metadata are
-research annotations over a graph, not core graph state.
+research annotations over a tree, not core Node state.
 
 Use separate dataclasses:
 
@@ -142,8 +140,8 @@ from typing import Protocol
 
 
 class RewardFn(Protocol):
-    def score(self, task: TaskSpec, graph: rlmflow.Graph) -> float:
-        """Return this agent node's local success/proxy score."""
+    def score(self, task: TaskSpec, node: rlmflow.Node) -> float:
+        """Return this agent trajectory's local success/proxy score."""
 ```
 
 For benchmark tasks where child tasks have no gold label, use proxy reward:
@@ -160,7 +158,7 @@ should not know what "success" means.
 
 ## RAO Reward Computation
 
-For each agent graph `X`, compute:
+For each agent trajectory `X`, compute:
 
 ```text
 reward(X) = local_score(X) + lambda * mean(local_score(child) for child in X.children)
@@ -173,20 +171,24 @@ Implementation sketch:
 
 ```python
 def score_tree(
-    graph: rlmflow.Graph,
+    root: rlmflow.Node,
     task_for_agent: dict[str, TaskSpec],
     reward_fn: RewardFn,
     *,
     delegation_bonus: float,
 ) -> dict[str, NodeScore]:
+    agents = {
+        agent_id: root.transcript(agent_id)[0]
+        for agent_id in root.agent_ids()
+    }
     local = {
         agent.agent_id: reward_fn.score(task_for_agent[agent.agent_id], agent)
-        for agent in graph.walk()
+        for agent in agents.values()
     }
 
     scores: dict[str, NodeScore] = {}
-    for agent in graph.walk():
-        child_scores = [local[child.agent_id] for child in agent.children.values()]
+    for agent in agents.values():
+        child_scores = [local[agent_id] for agent_id in agent.child_agents()]
         child_score = sum(child_scores) / len(child_scores) if child_scores else 0.0
         reward = local[agent.agent_id] + delegation_bonus * child_score
         scores[agent.agent_id] = NodeScore(
@@ -198,10 +200,10 @@ def score_tree(
     return scores
 ```
 
-The missing piece is `task_for_agent`. Today child `Graph.query` and
-`Graph.context` hold enough information for many benchmarks. For stricter RAO,
-we may want to persist a normalized child `TaskSpec` whenever a sub-agent is
-spawned.
+The missing piece is `task_for_agent`. Today each agent's latest
+`UserQuery.content` and `UserQuery.inputs` hold enough information for many
+benchmarks. For stricter RAO, persist a normalized child `TaskSpec` whenever a
+sub-agent is spawned.
 
 ## Advantage Computation
 
@@ -223,11 +225,12 @@ def leave_one_out_advantages(root_rewards: list[float]) -> list[float]:
 Depth weighting should be applied after advantage computation:
 
 ```python
-def depth_weights(graphs: list[rlmflow.Graph]) -> dict[int, float]:
+def depth_weights(roots: list[rlmflow.Node]) -> dict[int, float]:
     counts: dict[int, int] = {}
-    for graph in graphs:
-        for agent in graph.walk():
-            counts[agent.depth] = counts.get(agent.depth, 0) + 1
+    for root in roots:
+        for agent_id in root.agent_ids():
+            depth = root.depth(agent_id)
+            counts[depth] = counts.get(depth, 0) + 1
 
     if not counts:
         return {}
@@ -255,9 +258,9 @@ rlmflow/rao/
   trainers.py       # adapter interfaces
 ```
 
-Keep RAO out of `RecursiveFlow.step(...)` and the graph data model; do not keep
+Keep RAO out of `Flow.step(...)` and the Node data model; do not keep
 it out of the package. The clean boundary is a sibling package: `rlmflow/rao`
-consumes `RecursiveFlow`, `Graph`, `Workspace`, transcripts, and contexts.
+consumes `Flow`, `Node`, persisted transcripts, and input payloads.
 Example scripts should be thin entrypoints that import from `rlmflow.rao`.
 
 Collector shape:
@@ -281,11 +284,11 @@ class RAORolloutCollector:
 
 For each task:
 
-1. Create `G` isolated graphs (one trajectory each).
+1. Create `G` isolated root Nodes with `rlmflow.start(...)`.
 2. Drive them on one `Flow` with the shared policy (e.g. via `parallel_run`).
-3. Run each with `flow.run(query=task.query, inputs=task.inputs)`, or step with
-   `flow.run_streaming(graph=graph, until=...)`.
-4. Drive each graph until done, max iterations, or error.
+3. Run each with `flow.run(task.query, inputs=task.inputs)`, or stream a prepared
+   root with `flow.run_streaming(root, until=...)`.
+4. Drive each tree until done, max iterations, or error.
 5. Score each rollout tree.
 6. Compute leave-one-out root advantages.
 7. Export one training example per agent trajectory.
@@ -297,7 +300,7 @@ same scheduler pool or an external job runner.
 
 Training should use the actual LLM transcript, not just typed graph nodes.
 
-`Graph.nodes` is perfect for observability and reward analysis. For policy
+The Node tree is the durable source for observability and reward analysis. For policy
 updates, the trainer needs the prompt/messages and chosen action text. The
 workspace transcript files already preserve the message-level view. The exporter
 should therefore prefer:
@@ -306,7 +309,7 @@ should therefore prefer:
 workspace/session/<agent>/transcript.json
 ```
 
-and fall back to reconstructing from `Graph.nodes` only for offline tests.
+and fall back to `root.transcript(agent_id)` only for offline tests.
 
 A minimal export record:
 
@@ -421,7 +424,7 @@ Keep these small:
    spawn node id
    ```
 
-   Much of this is already in `Graph`; the main question is whether the exact
+   Much of this is already in the Node tree; the main question is whether the exact
    launch spec should be stored as node metadata for cleaner reward analysis.
 
 2. **Rollout terminal status**
@@ -467,7 +470,7 @@ Keep these small:
 
 Do not:
 
-- bake RAO rewards into `RecursiveFlow.step`;
+- bake RAO rewards into `Flow.step`;
 - add reward/advantage fields to every `Node`;
 - make `Workspace` understand training updates;
 - train directly from rendered graph visualizations;
@@ -501,14 +504,14 @@ Use this as the working checklist for turning the plan into code.
 
 - [ ] Build a collector that runs `rollouts_per_task` isolated workspaces per
   `TaskSpec`.
-- [ ] Export one scored `TrajectoryExample` per agent graph, not just per root
+- [ ] Export one scored `TrajectoryExample` per agent trajectory, not just per root
   rollout.
 - [ ] Read transcripts through `workspace.session.read_transcript(agent_id)`.
-- [ ] Derive child `TaskSpec`s from `Graph.query`, `Graph.context`, and parent
+- [ ] Derive child `TaskSpec`s from the latest `UserQuery` and parent
   spawn metadata.
 - [ ] Store rollout terminal status: success, wrong answer, max-iteration stop,
   runtime error, validation error.
-- [ ] Add tests on hand-built recursive `Graph` objects for reward aggregation.
+- [ ] Add tests on hand-built recursive Node trees for reward aggregation.
 - [ ] Add tests for leave-one-out advantages and depth inverse-frequency
   weighting.
 
@@ -615,9 +618,9 @@ single-agent setting.
 
 ## Open Questions
 
-- Should child launch specs be stored as explicit typed nodes, or is current
-  `Graph.query` / `Graph.context` enough?
-- Do we want `max_children_per_agent` and `max_total_agents` in `FlowConfig`?
+- Should child launch specs be stored as explicit typed nodes, or are the latest
+  `UserQuery.content` / `UserQuery.inputs` enough?
+- Do we want `max_children_per_agent` and `max_total_agents` directly on `Flow`?
 - Which trainer stack should be the first real adapter?
 - Should rollout collection use one workspace per rollout or one workspace per
   task with child run directories?

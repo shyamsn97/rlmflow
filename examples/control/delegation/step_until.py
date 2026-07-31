@@ -1,9 +1,9 @@
 """Show minimal ``Flow.run_streaming(..., until=...)`` boundaries during delegation.
 
 Minimal Flow does not expose the old ``eager_children`` toggle. Delegation fans
-out child agents as independent scheduler tasks; blocking LLM calls are bounded
+out child agents as independent asyncio tasks; blocking LLM calls are bounded
 by the flow's worker pool. This example focuses on the caller-facing control
-surface instead: choosing how much of the event stream to consume with
+surface instead: choosing how much of the Node stream to consume with
 ``until=...``.
 
 Run:
@@ -18,7 +18,14 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import Event, Flow, Graph, GraphCheckpointer, render_tree
+from rlmflow import (
+    Flow,
+    Node,
+    SupervisingOutput,
+    start,
+)
+from rlmflow.consumers import GraphCheckpointer
+from rlmflow.view import render_tree
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -37,84 +44,80 @@ call, then call done with their joined results. Use exactly these child names:
   `await asyncio.sleep(1)`.
 - `fast`: ask it to solve a tiny task immediately.
 
-This example script is observing the graph event stream, so keep the work small.
+This example script is observing the Node stream, so keep the work small.
 """
 
 
-def event_label(event: Event) -> str:
-    if event.type == "append_node":
-        return f"{event.agent_id}: append {event.node_type}"
-    if event.type == "add_child":
-        return f"{event.parent_agent_id}: add child {event.child.agent_id}"
-    if event.type == "graph_created":
-        return "graph created"
-    if event.type == "remove_child":
-        return f"{event.parent_agent_id}: remove child {event.child_agent_id}"
-    if event.type == "replace_node":
-        return f"{event.agent_id}: replace {event.node_type}"
-    if event.type == "remove_node":
-        return f"{event.agent_id}: remove node {event.node_id}"
-    return event.type
+def node_label(node: Node) -> str:
+    mutation = node.metadata.get("mutation", {}).get("type", "append")
+    return f"{node.agent_id}: {mutation} {node.type}"
 
 
-def print_events(title: str, events: list[Event], graph: Graph) -> None:
+def print_nodes(title: str, nodes: list[Node], graph: Node) -> None:
     print(f"\n=== {title} ===")
-    for event in events:
-        print(f"- {event_label(event)}")
+    for node in nodes:
+        print(f"- {node_label(node)}")
     print(render_tree(graph))
 
 
-async def run_example(args: argparse.Namespace) -> Graph:
+async def run_example(args: argparse.Namespace) -> Node:
     flow = Flow(
         build_client(args.model),
         max_depth=args.max_depth,
         max_iters=args.max_iters,
         workers=args.max_concurrency,
     )
-    graph = Graph(query=QUERY)
-    observed: list[Event] = []
+    graph = start(query=QUERY)
+    observed: list[Node] = []
     checkpointer = GraphCheckpointer(Path(args.out_dir))
 
-    async def collect(graph: Graph, **flow_kwargs) -> list[Event]:
-        events: list[Event] = []
-        async for event in flow.run_streaming(graph=graph, **flow_kwargs):
-            checkpointer.handle(event, graph)
-            events.append(event)
-        return events
+    async def collect(graph: Node, **flow_kwargs) -> list[Node]:
+        nodes: list[Node] = []
+        async for node in flow.run_streaming(graph, **flow_kwargs):
+            checkpointer.handle(node)
+            nodes.append(node)
+        return nodes
 
     events = await collect(graph, until="next")
     observed.extend(events)
-    print_events("until='next': first appended node", events, graph)
+    print_nodes("until='next': first appended node", events, graph)
 
-    events = await collect(graph, until="supervising")
+    events = await collect(
+        graph,
+        until=lambda node, _root: isinstance(node, SupervisingOutput),
+    )
     observed.extend(events)
-    print_events("until='supervising': parent has fanned out children", events, graph)
+    print_nodes("until='supervising': parent has fanned out children", events, graph)
 
-    def first_child_done(event: Event, graph: Graph) -> bool:
-        return (
-            event.type == "append_node"
-            and event.agent_id != "root"
-            and event.node_type == "done_output"
-        )
+    def first_child_done(node: Node, graph: Node) -> bool:
+        return node.agent_id != graph.agent_id and node.type == "done_output"
 
     events = await collect(graph, until=first_child_done)
     observed.extend(events)
-    print_events("until=<callable>: stop when any child is done", events, graph)
+    print_nodes("until=<callable>: stop when any child is done", events, graph)
 
-    events = await collect(graph, until="next", n=2)
+    seen = 0
+
+    def two_more_appends(node: Node, _graph: Node) -> bool:
+        nonlocal seen
+        if node.metadata.get("mutation", {}).get("type") == "append":
+            seen += 1
+        return seen >= 2
+
+    events = await collect(graph, until=two_more_appends)
     observed.extend(events)
-    print_events("until='next', n=2: consume two more global steps", events, graph)
+    print_nodes("callable boundary: consume two more global steps", events, graph)
 
-    while not graph.finished:
-        events = await collect(graph, until=lambda event, current: current.finished)
+    while not graph.finished():
+        events = await collect(graph, until=lambda event, current: current.finished())
         observed.extend(events)
-        print_events("until=<callable>: run is finished", events, graph)
+        print_nodes("until=<callable>: run is finished", events, graph)
 
     if observed:
-        print(f"\nObserved {len(observed)} graph events.")
+        print(f"\nObserved {len(observed)} Nodes.")
 
     checkpointer.close()
-    flow.close_repls(graph.graph_id)
+    flow.runtime.close_repls(graph.trajectory_id)
     return graph
 
 
@@ -137,7 +140,7 @@ def main() -> None:
     print("\n=== verdict ===")
     print("Delegated children fan out as independent scheduler tasks.")
     print("The caller chooses observation boundaries with run_streaming(..., until=...).")
-    print(f"Result: {graph.result()}")
+    print(f"Result: {graph.agent_result()}")
     save_example_graph(graph, "step-until", out_dir=args.out_dir)
 
 

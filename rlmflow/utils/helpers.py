@@ -8,11 +8,9 @@ import inspect
 from collections.abc import Callable
 from typing import Any
 
-from rlmflow.graph import Graph, LLMUsage, Node
+from rlmflow.graph import AgentStart, LLMUsage, start
 from rlmflow.tools import get_tool_metadata
 from rlmflow.utils.code import find_code_blocks
-
-ReplKey = tuple[str, str]
 
 
 def code_block(text: str) -> str:
@@ -51,37 +49,24 @@ async def call_sync_or_async(fn: Callable[..., Any], *args: Any, **kwargs: Any) 
     return await result if inspect.isawaitable(result) else result
 
 
-def common_prefix_len(a: list[Node], b: list[Node]) -> int:
-    """Length of the shared leading run of nodes, compared by ``node.id``."""
-    n = 0
-    for x, y in zip(a, b):
-        if x.id != y.id:
-            break
-        n += 1
-    return n
-
-
 def tool_name(fn: Any) -> str:
     """Registered name of a tool callable, falling back to ``fn.__name__``."""
     meta = get_tool_metadata(fn)
     return meta.name if meta is not None else fn.__name__
 
 
-def repl_key(graph: Graph) -> ReplKey:
-    """Identity of the REPL that backs an agent: ``(graph_id, agent_id)``."""
-    return (graph.graph_id, graph.agent_id)
-
-
-def graph_from_input(graph_or_query: Graph | str) -> Graph:
-    """Coerce a query string into a fresh root ``Graph``; pass graphs through.
+def node_from_input(node_or_query: AgentStart | str) -> AgentStart:
+    """Coerce a query string into a fresh root node; pass nodes through.
 
     Pure coercion for batch entry points (``parallel_run``/``parallel_stream``)
     that accept either shape. State resolution (inputs, output_schema, new
     turns) lives in :meth:`Flow.resolve_run`, not here.
     """
-    if isinstance(graph_or_query, Graph):
-        return graph_or_query
-    return Graph(query=graph_or_query)
+    return (
+        node_or_query
+        if isinstance(node_or_query, AgentStart)
+        else start(node_or_query)
+    )
 
 
 def usage_from_client(client: Any) -> LLMUsage:
@@ -112,11 +97,6 @@ def iter_budget(depth: int, max_iters: int, child_max_iters: int | None) -> int:
     return max_iters
 
 
-def budget_exceeded(root: Graph, max_budget: int | None) -> bool:
-    """True once the run's total token usage reaches ``max_budget``."""
-    return max_budget is not None and root.total_tokens() >= max_budget
-
-
 def sampling_kwargs(
     *,
     temperature: float | None = None,
@@ -134,28 +114,12 @@ def sampling_kwargs(
     return {key: value for key, value in pairs if value is not None}
 
 
-def llm_output_metadata(model: str, usage: LLMUsage) -> dict[str, Any]:
-    """Metadata block recorded on an ``LLMOutput`` node."""
-    return {
-        "model": model,
-        "usage": {
-            "input_tokens": usage.input_tokens,
-            "output_tokens": usage.output_tokens,
-        },
-    }
-
-
 __all__ = [
-    "ReplKey",
     "accepts_kwarg",
-    "budget_exceeded",
     "call_sync_or_async",
     "code_block",
-    "common_prefix_len",
-    "graph_from_input",
     "iter_budget",
-    "llm_output_metadata",
-    "repl_key",
+    "node_from_input",
     "sampling_kwargs",
     "tool_name",
     "truncate_output",

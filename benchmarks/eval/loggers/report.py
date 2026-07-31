@@ -46,7 +46,9 @@ class ReportLogger(Logger):
         lines.extend([""])
         lines.extend(_summary_table("By Runner", summary.get("by_runner", {})))
         lines.extend([""])
-        lines.extend(_summary_table("By Runner And Benchmark", summary.get("by_runner_dataset", {})))
+        lines.extend(
+            _summary_table("By Runner And Benchmark", summary.get("by_runner_dataset", {}))
+        )
         lines.extend(["", *_examples_section(rows)])
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")

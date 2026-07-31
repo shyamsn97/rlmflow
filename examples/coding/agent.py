@@ -19,17 +19,15 @@ from pathlib import Path
 from typing import Any
 
 from rlmflow import (
-    ConsumerGroup,
     DockerRuntime,
     FILE_TOOLS,
     Flow,
-    FlowTUI,
-    Graph,
-    GraphCheckpointer,
-    LiveTreeRenderer,
     LocalRuntime,
+    Node,
+    start,
 )
-from rlmflow.graph.events import is_append
+from rlmflow.consumers import ConsumerGroup, GraphCheckpointer
+from rlmflow.view import FlowTUI, LiveTreeRenderer
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -106,26 +104,24 @@ def main():
         else:
             graph = _run_tui(flow, workdir, max_steps_per_turn=args.max_steps_per_turn)
             if graph is not None:
-                print(f"\n{graph.result() or '(no result)'}\n")
-                print(f"Graph checkpointed under {workdir / 'graph'}")
+                print(f"\n{graph.agent_result() or '(no result)'}\n")
+                print(f"Node checkpointed under {workdir / 'graph'}")
                 print(f"Files written under {workdir}")
     finally:
-        flow.close_repls()
+        flow.runtime.close_repls()
 
 
-def _run_tui(
-    flow: Flow, workdir: Path, *, max_steps_per_turn: int | None
-) -> Graph | None:
+def _run_tui(flow: Flow, workdir: Path, *, max_steps_per_turn: int | None) -> Node | None:
     ui = FlowTUI()
     checkpointer = GraphCheckpointer(workdir / "graph")
 
     async def drive(
-        graph: Graph | None,
+        graph: Node | None,
         *,
         query: str | None = None,
         inputs: dict[str, str] | None = None,
         until: Any = "done",
-    ) -> Graph | None:
+    ) -> Node | None:
         # FlowTUI seeds ``graph`` on the first Send; later turns pass ``query``.
         if graph is None:
             return None
@@ -134,21 +130,19 @@ def _run_tui(
         if until == "done" and max_steps_per_turn is not None:
             steps = 0
 
-            def until_cap(event, current) -> bool:
+            def until_cap(node, current) -> bool:
                 nonlocal steps
-                if is_append(event):
+                if node.metadata.get("mutation", {}).get("type") == "append":
                     steps += 1
-                if current.finished:
+                if current.finished():
                     return True
                 return steps >= max_steps_per_turn
 
             boundary = until_cap
 
-        async for event in flow.run_streaming(
-            graph=graph, query=query, inputs=inputs, until=boundary
-        ):
-            ui.handle(event, graph)
-            checkpointer.handle(event, graph)
+        async for event in flow.run_streaming(graph, query=query, inputs=inputs, until=boundary):
+            ui.handle(event)
+            checkpointer.handle(event)
         return graph
 
     try:
@@ -169,7 +163,7 @@ def _run_cli(flow: Flow, workdir: Path, *, no_viz: bool) -> None:
         if not query or query.lower() in ("quit", "exit", "q"):
             break
 
-        graph = Graph(query=query)
+        graph = start(query=query)
         consumers = ConsumerGroup(
             [
                 LiveTreeRenderer(clear=not no_viz),
@@ -179,15 +173,15 @@ def _run_cli(flow: Flow, workdir: Path, *, no_viz: bool) -> None:
 
         async def drive() -> None:
             try:
-                async for event in flow.run_streaming(graph=graph):
-                    consumers.handle(event, graph)
+                async for event in flow.run_streaming(graph):
+                    consumers.handle(event)
             finally:
                 consumers.close()
 
         asyncio.run(drive())
 
-        print(f"\n{graph.result() or '(no result)'}\n")
-        print(f"Graph checkpointed to {workdir / 'graph'}")
+        print(f"\n{graph.agent_result() or '(no result)'}\n")
+        print(f"Node checkpointed to {workdir / 'graph'}")
         print(f"Files written under {workdir}")
 
 

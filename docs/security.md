@@ -11,9 +11,10 @@ isolated runtime:
 
 - `DockerRuntime` — a fresh container per session.
 - `ModalRuntime` — a remote Modal container.
-- `E2BRuntime` — a remote E2B sandbox.
-- `DaytonaRuntime` — a remote Daytona sandbox.
 - Custom `Runtime` — SSH, `kubectl exec`, Firecracker, gVisor, anything.
+
+`SubprocessRuntime` separates interpreter state but retains the host user's
+permissions. It is not a security boundary for untrusted code.
 
 ## Docker isolation knobs
 
@@ -60,8 +61,8 @@ privileges. Keep that surface small and validate arguments.
 
 ## Overrides for approval gates
 
-Override `Flow.exec_turn(graph, code, *, replay=False)` to gate, classify, or
-rewrite code before it touches the runtime. Short-circuit by appending an
+Override `Flow.exec_turn(node)` to gate, classify, or rewrite an `ExecAction`
+before it touches the runtime. Short-circuit by appending an
 `ErrorOutput` (the next model turn sees it as a normal failure observation)
 instead of running the code:
 
@@ -69,18 +70,17 @@ instead of running the code:
 import rlmflow
 
 class ReviewingFlow(rlmflow.Flow):
-    async def exec_turn(self, graph, code, *, replay=False):
-        if not replay and "rm -rf" in code and input(f"run? {code}\n> ") != "y":
-            node = rlmflow.ErrorOutput(
+    async def exec_turn(self, action: rlmflow.ExecAction):
+        if "rm -rf" in action.code and input(f"run? {action.code}\n> ") != "y":
+            rejected = rlmflow.ErrorOutput(
                 content="rejected by reviewer",
                 output="rejected by reviewer",
                 error="rejected",
             )
-            self.append_node(graph, node)
-            return node
-        return await super().exec_turn(graph, code, replay=replay)
+            return self.append(action, rejected)
+        return await super().exec_turn(action)
 ```
 
-Wrap the runtime or backend if you want approval at the transport layer.
-Subclass `Runtime.open(...)` to return a backend that gates `start(...)` and
-`resume(...)` before delegating to the underlying backend.
+Wrap the runtime or REPL if you want approval at the transport layer.
+Subclass `Runtime.open(...)` to return a `Repl` that gates `run(code)` before
+delegating to the underlying REPL.

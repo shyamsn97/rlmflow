@@ -6,8 +6,8 @@ import importlib
 import threading
 from collections import deque
 from contextlib import suppress
-from typing import TYPE_CHECKING
 
+from rlmflow.graph import Node
 from rlmflow.runtime.protocol import (
     ProxyCall,
     ReplResponse,
@@ -18,9 +18,6 @@ from rlmflow.runtime.protocol import (
 from rlmflow.runtime.repl import Repl
 from rlmflow.runtime.repl_client import RemoteRepl, ReplConnection
 from rlmflow.runtime.runtime import Runtime
-
-if TYPE_CHECKING:
-    from rlmflow.graph import Graph
 
 
 class ModalConnection(ReplConnection):
@@ -99,7 +96,7 @@ class ModalConnection(ReplConnection):
                 self._stdout_pending += _to_text(next(self._stdout_iter))
         except StopIteration as exc:
             raise self._closed_error() from exc
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             if self._is_expected_stream_close(exc):
                 raise self._closed_error() from exc
             raise
@@ -155,7 +152,7 @@ class ModalRuntime(Runtime):
         self.repl_timeout = repl_timeout
         self.container_kwargs = dict(container_kwargs)
 
-    def deploy_repl_server(self, graph: Graph) -> RemoteRepl:
+    def deploy_repl_server(self, agent: Node) -> RemoteRepl:
         return RemoteRepl(
             ModalConnection(
                 self.app_name,
@@ -167,8 +164,8 @@ class ModalRuntime(Runtime):
             )
         )
 
-    def open(self, graph: Graph) -> Repl:
-        return self.deploy_repl_server(graph)
+    def open(self, agent: Node) -> Repl:
+        return self.deploy_repl_server(agent)
 
 
 __all__ = ["ModalConnection", "ModalRuntime"]

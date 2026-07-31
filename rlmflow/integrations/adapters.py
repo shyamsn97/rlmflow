@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from rlmflow.flow import Flow
-from rlmflow.graph import Graph, LLMUsage
+from rlmflow.graph import LLMUsage, Node, start
 
 try:
     import dspy as _dspy
@@ -34,21 +34,21 @@ class FlowLLM:
 
     def __init__(self, flow: Flow) -> None:
         self.flow = flow
-        self.last_graph: Graph | None = None
+        self.last_graph: Node | None = None
         self.last_usage = LLMUsage()
 
     def chat(self, messages: list[dict[str, Any]], *args: Any, **kwargs: Any) -> str:
-        graph = Graph(query=messages_to_query(messages))
-        result = self.flow.run(graph=graph)
+        graph = start(messages_to_query(messages))
+        result = self.flow.run(graph)
         self.last_graph = graph
-        self.last_usage = graph.usage()
+        self.last_usage = LLMUsage(*graph.tokens())
         return result
 
     def completion(self, prompt: str, *args: Any, **kwargs: Any) -> str:
         return self.chat([{"role": "user", "content": prompt}], *args, **kwargs)
 
     def close(self) -> None:
-        self.flow.close_repls()
+        self.flow.runtime.close_repls()
 
 
 def _normalize_messages(

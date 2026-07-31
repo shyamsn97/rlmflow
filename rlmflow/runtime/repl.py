@@ -13,6 +13,8 @@ import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from contextlib import contextmanager
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +25,35 @@ class MissingReplError(Exception):
 
 class DoneSignal(BaseException):
     """Raised by ``done(...)`` to end a block immediately."""
+
+
+class ReplStatus(StrEnum):
+    """How a block of agent code ended."""
+
+    #: It ran to the end.
+    OK = "ok"
+    #: It raised; the traceback is the output.
+    ERROR = "error"
+    #: It called ``done(...)``, so its agent has an answer.
+    DONE = "done"
+    #: The REPL itself died, taking the namespace with it.
+    DEAD = "dead"
+
+
+@dataclass
+class ReplRun:
+    """The outcome of one block of agent code.
+
+    Every ending is a value, including the REPL dying: ``Runtime.execute`` catches
+    that and reports it as ``DEAD`` rather than raising at whoever asked for a step.
+    """
+
+    output: str = ""
+    status: ReplStatus = ReplStatus.OK
+    #: What ``done(...)`` was called with; set only when the status is ``DONE``.
+    answer: Any = None
+    #: What killed the REPL; set only when the status is ``DEAD``.
+    error: BaseException | None = None
 
 
 class Repl(ABC):
@@ -36,8 +67,9 @@ class Repl(ABC):
 
     Implementations expose four state attributes: ``namespace`` (the Python
     globals code runs against), ``env`` (the host<->REPL metadata channel),
-    ``done_result`` (the final answer once ``done(...)`` fires), and ``errored``
-    (whether the last run raised).
+    ``done_result`` (where the injected ``done(...)`` leaves its answer), and
+    ``errored`` (whether the last run raised). The last two are how a run reports
+    back from inside; callers read :class:`ReplRun` instead.
     """
 
     namespace: dict[str, Any]
@@ -66,13 +98,20 @@ class Repl(ABC):
     def update_env(self, values: dict[str, Any]) -> None: ...
 
     @abstractmethod
-    async def run(self, code: str) -> str: ...
+    async def run(self, code: str) -> ReplRun: ...
 
     @abstractmethod
-    def drain(self) -> str: ...
+    def read(self, *, clear: bool = False) -> str: ...
 
     @abstractmethod
     def close(self) -> None: ...
+
+    def outcome(self, output: str) -> ReplRun:
+        """Classify a finished run from the state it left behind."""
+        if self.done_result is not None:
+            return ReplRun(output=output, status=ReplStatus.DONE, answer=self.done_result)
+        status = ReplStatus.ERROR if self.errored else ReplStatus.OK
+        return ReplRun(output=output, status=status)
 
 
 _stdout_buf: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar(
@@ -152,10 +191,12 @@ class LocalRepl(Repl):
     def output(self) -> str:
         return self._buf.getvalue().strip()
 
-    def drain(self) -> str:
+    def read(self, *, clear: bool = False) -> str:
+        """Return captured stdout so far; with ``clear=True``, also reset the buffer."""
         output = self.output
-        self._buf = io.StringIO()
-        _stdout_buf.set(self._buf)
+        if clear:
+            self._buf = io.StringIO()
+            _stdout_buf.set(self._buf)
         return output
 
     def seed(
@@ -224,7 +265,9 @@ class LocalRepl(Repl):
                 os.chdir(previous_cwd)
                 _CWD_LOCK.release()
 
-    async def run(self, code: str) -> str:
+    async def run(self, code: str) -> ReplRun:
+        # Cleared here rather than by the caller: an answer belongs to one run.
+        self.done_result = None
         with self.capture():
             if not code.strip():
                 raise MissingReplError("missing ```repl``` block")
@@ -233,9 +276,12 @@ class LocalRepl(Repl):
             except SyntaxError as exc:
                 self.errored = True
                 self._buf.write(f"SyntaxError: {exc}")
-                return self.output
+                return self.outcome(self.output)
             if not has_top_level_await(tree):
-                exec(compile(tree, "<minimal-rlmflow>", "exec"), self.namespace)
+                exec(  # noqa: S102 - executing agent code is the REPL's purpose
+                    compile(tree, "<minimal-rlmflow>", "exec"),
+                    self.namespace,
+                )
             else:
                 compiled = compile(
                     tree,
@@ -246,7 +292,7 @@ class LocalRepl(Repl):
                 result = eval(compiled, self.namespace)
                 if inspect.iscoroutine(result):
                     await result
-        return self.output
+        return self.outcome(self.output)
 
 
 __all__ = [
@@ -254,5 +300,7 @@ __all__ = [
     "LocalRepl",
     "MissingReplError",
     "Repl",
+    "ReplRun",
+    "ReplStatus",
     "has_top_level_await",
 ]

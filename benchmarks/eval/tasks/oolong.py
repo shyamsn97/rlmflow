@@ -27,27 +27,29 @@ class OolongDataset(Dataset):
         self.data_dir = Path(data_dir)
         self.max_context_chars = max_context_chars
         self.max_context_tokens = max_context_tokens
-        self._rows: list[dict[str, Any]] | None = None
+        self._dataset: Any | None = None
+        self._eligible: list[int] | None = None
 
     def examples(self, *, split: str, limit: int | None, seed: int) -> list[Example]:
-        rows = self._load(split)
-        if not rows:
+        ds = self._load(split)
+        eligible = self._eligible_indices(ds)
+        if not eligible:
             raise ValueError("No OOLONG examples fit the configured limits.")
         count = limit or 1
-        indices = list(range(len(rows)))
-        random.Random(seed).shuffle(indices)
-        selected = indices[: min(count, len(indices))]
-        return [self._example(rows[index], index=index) for index in selected]
+        positions = list(range(len(eligible)))
+        random.Random(seed).shuffle(positions)
+        selected = positions[: min(count, len(positions))]
+        # Only the sampled rows are pulled out of the memory-mapped dataset;
+        # the full split (~20 GB of text for `test`) is never held in RAM.
+        return [self._example(dict(ds[eligible[pos]]), index=pos) for pos in selected]
 
-    def _load(self, split: str) -> list[dict[str, Any]]:
-        if self._rows is not None:
-            return self._rows
+    def _load(self, split: str):
+        if self._dataset is not None:
+            return self._dataset
         try:
             from datasets import load_dataset, load_from_disk  # pyright: ignore[reportMissingImports]
         except ImportError as exc:
-            raise RuntimeError(
-                "OOLONG requires the eval extra: pip install -e '.[eval]'"
-            ) from exc
+            raise RuntimeError("OOLONG requires the eval extra: pip install -e '.[eval]'") from exc
 
         local = self.data_dir / "oolong"
         if local.exists():
@@ -57,31 +59,53 @@ class OolongDataset(Dataset):
         else:
             ds = load_dataset(self.dataset_name, split=split)
 
-        rows: list[dict[str, Any]] = []
-        for row in ds:
-            context = str(
-                row.get("context_window_text_with_labels")
-                or row.get("context_window_text")
-                or ""
-            )
-            context_len = row.get("context_len")
+        self._dataset = ds
+        return ds
+
+    def _eligible_indices(self, ds) -> list[int]:
+        """Indices that satisfy the configured context limits.
+
+        Computed against the memory-mapped HF dataset so that, in the common
+        no-limit case, we never decode a single context string here.
+        """
+        if self._eligible is not None:
+            return self._eligible
+
+        n = ds.num_rows
+        if self.max_context_tokens is None and self.max_context_chars is None:
+            self._eligible = list(range(n))
+            return self._eligible
+
+        # `context_len` is a cheap int column; load it once when token-limiting.
+        context_lens = ds["context_len"] if self.max_context_tokens is not None else None
+        eligible: list[int] = []
+        for index in range(n):
             if self.max_context_tokens is not None:
+                context_len = context_lens[index] if context_lens is not None else None
                 if isinstance(context_len, (int, float)):
                     if context_len > self.max_context_tokens:
                         continue
-                elif len(context) // 4 > self.max_context_tokens:
+                elif self._context_chars(ds, index) // 4 > self.max_context_tokens:
                     continue
-            if self.max_context_chars is not None and len(context) > self.max_context_chars:
+            if (
+                self.max_context_chars is not None
+                and self._context_chars(ds, index) > self.max_context_chars
+            ):
                 continue
-            rows.append(dict(row))
-        self._rows = rows
-        return rows
+            eligible.append(index)
+        self._eligible = eligible
+        return eligible
+
+    @staticmethod
+    def _context_chars(ds, index: int) -> int:
+        row = ds[index]
+        return len(
+            str(row.get("context_window_text_with_labels") or row.get("context_window_text") or "")
+        )
 
     def _example(self, row: dict[str, Any], *, index: int) -> Example:
         context = str(
-            row.get("context_window_text_with_labels")
-            or row.get("context_window_text")
-            or ""
+            row.get("context_window_text_with_labels") or row.get("context_window_text") or ""
         )
         answers = _normalize_answers(row.get("answer"))
         answer_type = row.get("answer_type")

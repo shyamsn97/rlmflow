@@ -14,22 +14,26 @@ Use full replacement only when you want to own that entire protocol yourself.
 Before changing the prompt, render the one your agent already sees:
 
 ```python
-graph = rlmflow.Graph(query="Summarize this document.", inputs={"document": document})
-print(agent.build_system_prompt(graph))
+import rlmflow
+
+flow = rlmflow.Flow(llm)
+root = rlmflow.start("Summarize this document.", inputs={"document": document})
+print(flow.build_system_prompt(root))
 ```
 
-You can also render without starting a run by constructing the graph shape you
+You can render without starting a run by constructing the Node shape you
 want to inspect:
 
 ```python
 import rlmflow
 
-graph = rlmflow.Graph(query="Summarize this document.", agent_id="root", depth=0)
-print(agent.build_system_prompt(graph))
+flow = rlmflow.Flow(llm)
+root = rlmflow.start("Summarize this document.")
+print(flow.build_system_prompt(root))
 ```
 
-`build_system_prompt(graph)` is deterministic for a given `graph`, so the prompt
-an agent saw is always reproducible from its saved `Graph`.
+`build_system_prompt(node)` renders against the Node's active query settings and
+the Flow's current prompt/tool configuration.
 
 ## Default Builder Shape
 
@@ -53,7 +57,7 @@ The static text sections render back-to-back so the prompt reads as one
 continuous narrative; the split exists so each piece is independently swappable
 via `prompt.sections.update(name, ...)`. `tools`, `inputs`, `status`,
 `structured-output*`, `examples`, and `first-turn` are callable sections filled
-from the current flow and graph at build time.
+from the current Flow and Node at build time.
 
 ## Recommended: Edit `SystemPromptBuilder().sections`
 
@@ -180,7 +184,7 @@ agent = rlmflow.Flow(llm, system_prompt=MinimalPrompt())
 ## The `system_prompt` Source
 
 `system_prompt` (constructor arg or settable attribute) accepts any of three
-things — a `SystemPromptBuilder`, a plain string, or a `(flow, graph) -> str`
+things — a `SystemPromptBuilder`, a plain string, or a `(flow, node) -> str`
 function — and is resolved fresh on every turn:
 
 - **`SystemPromptBuilder`** (the default, `DEFAULT_BUILDER`) — the section
@@ -203,9 +207,9 @@ You are a Python REPL agent.
 """,
 )
 
-# or a function of (flow, graph)
-def prompt_for(flow, graph):
-    tail = "Return an executive summary." if graph.depth == 0 else "Return findings only."
+# or a function of (flow, node)
+def prompt_for(flow, node):
+    tail = "Return an executive summary." if node.depth() == 0 else "Return findings only."
     return f"You are an auditor. {tail}"
 
 agent = rlmflow.Flow(llm, system_prompt=prompt_for)
@@ -218,10 +222,10 @@ rule means the model will not reliably use those features — prefer a
 ## Dynamic Prompts
 
 When the prompt should depend on the current agent, depth, query, available
-tools, or project state, override `__call__` on a `SystemPromptBuilder`
-subclass. It receives `(flow, graph)` — all run-invariants are flat fields on the
-graph (`agent_id`, `depth`, `query`, `inputs`, `model`, …) — assembles a
-`Sections`, and renders it with `self.build(...)`.
+tools, or project state, override `render` on a `SystemPromptBuilder` subclass.
+It receives `(flow, node)`, assembles `Sections`, and renders them with
+`self.build(...)`. Active query/model/input settings are available through
+`node.latest_query()`.
 
 ```python
 import rlmflow
@@ -229,15 +233,15 @@ from rlmflow import SystemPromptBuilder
 
 
 class AuditPrompt(SystemPromptBuilder):
-    def __call__(self, flow=None, graph=None) -> str:
+    def render(self, flow=None, node=None) -> str:
         sections = self.default_sections()
         extra = (
             "At root depth, produce an executive summary after verification."
-            if graph is None or graph.depth == 0
+            if node is None or node.depth() == 0
             else "As a child call, return only structured findings."
         )
         sections.add("audit_depth_rules", extra, title="Depth Rules", after="strategy")
-        return self.build(sections, flow, graph)
+        return self.build(sections, flow, node)
 
 
 agent = rlmflow.Flow(llm, system_prompt=AuditPrompt())
@@ -250,8 +254,8 @@ from rlmflow import SystemPromptBuilder
 from rlmflow.prompts import tools_section
 
 
-def careful_tools(engine, graph):
-    return tools_section(engine, graph) + "\n- Prefer read-only tools before write tools."
+def careful_tools(flow, node):
+    return tools_section(flow, node) + "\n- Prefer read-only tools before write tools."
 
 
 prompt = SystemPromptBuilder()
@@ -268,14 +272,14 @@ small additions like project rules or runtime notes. A prompt section can be
 either static text or a function:
 
 ```python
-def section(flow: rlmflow.Flow, graph: rlmflow.Graph) -> str:
+def section(flow: rlmflow.Flow, node: rlmflow.Node) -> str:
     ...
 ```
 
-The signature is intentionally just `flow, graph`. There is no context dict
+The signature is intentionally just `flow, node`. There is no context dict
 and no separate prompt context object. If a section needs runtime tools, model
 registrations, config, or the current agent id, those are already reachable
-from `flow` and `graph`.
+from `flow` and `node`.
 
 ## Child-Specific Prompts
 
@@ -310,31 +314,24 @@ from rlmflow import PromptProfile
 
 flow = rlmflow.Flow(
     llm,
-    prompts={
+    prompt_profiles={
         "coder": PromptProfile(
             system="You are a coding agent. ...",
             description="implement code changes",   # shown to the orchestrator
         ),
-        "reviewer": "You are a terse reviewer.",     # bare str = system-only
+        "reviewer": PromptProfile(system="You are a terse reviewer."),
     },
 )
 ```
 
 A `PromptProfile` bundles a `system` and a `user` source; `None` on either side
-inherits the flow default. `"default"` is implicit (the flow's own
-`system_prompt`/`user_prompt`) and reserved.
+inherits the flow default. When omitted from `prompt_profiles`, `"default"`
+means the flow's own `system_prompt`/`user_prompt`; callers may also define it
+explicitly.
 
-How a profile is chosen is controlled by `prompt_router`:
-
-| `prompt_router` | Advertise profiles? | Resolves to |
-|---|---|---|
-| `"llm"` (default) | yes | `graph.prompt_profile` (spawn spec or host stamp) |
-| `"graph"` | no | `graph.prompt_profile` (host stamped the name) |
-| `(flow, graph) -> str` | no | the callable's return value |
-
-**LLM-selected (`"llm"`, the default).** With a non-empty registry, the profiles
-and their descriptions are advertised in the orchestrator's system prompt, and it
-names one per child in a `launch_subagents` spec:
+By default, Flow reads the profile name stamped on the Node's latest
+`UserQuery`. With a non-empty registry, profile names and descriptions are
+advertised in the orchestrator's system prompt, so it can name one per child:
 
 ```python
 await launch_subagents([
@@ -343,35 +340,22 @@ await launch_subagents([
 ])
 ```
 
-**Host-stamped (`"graph"`).** Honor `graph.prompt_profile` but do not advertise —
-use when the host sets the profile at construction (`Graph(..., prompt_profile=
-"coder")`) and the orchestrator should not pick names:
-
-```python
-flow = rlmflow.Flow(llm, prompts={"coder": CODER}, prompt_router="graph")
-worker = Graph(query="...", prompt_profile="coder")
-```
-
-**Host policy (callable).** A `(flow, graph) -> name` function runs at resolution
-time and overrides whatever is on the graph (also suppresses advertising):
+Pass a callable `prompt_router` only when host policy should choose the profile
+dynamically. A custom router also suppresses profile advertising:
 
 ```python
 flow = rlmflow.Flow(
     llm,
-    prompts={"coder": CODER},
-    prompt_router=lambda flow, graph: "coder" if graph.depth > 0 else "default",
+    prompt_profiles={"coder": CODER},
+    prompt_router=lambda flow, node: "coder" if node.depth() > 0 else "default",
 )
 ```
 
-The spawn spec's `prompt_profile` (or `"default"` when a spec omits it) is what
-gets stored on `Graph.prompt_profile` and serialized. Under `"llm"` / `"graph"` that stamp is
-what resolution uses; under a callable, the function wins at resolve time but the
-stamp is still recorded. If a resuming flow doesn't define that profile,
-resolution falls back to the system prompt last recorded on the graph rather than
-silently drifting.
-
-For full policy control, override `Flow.prompt_name_for(graph)` (returns the
-profile name) instead of passing a lambda.
+The spawn spec's `prompt_profile` is stored on `UserQuery.prompt_profile` and
+serialized. When omitted, a cold child inherits its immediate parent agent's
+profile; a prepared branch keeps its own profile. Without a router, that stamp
+is authoritative. With a router, the callable's result is authoritative.
+Unknown names raise `ValueError`.
 
 ## Customizing The User Turns
 
@@ -379,16 +363,18 @@ Everything above shapes the *system* message. The rest of the conversation — t
 user query, the assistant's replies, and the REPL/observation turns fed back in
 — is produced by the **user prompt source**, symmetric to `system_prompt`:
 
-- **`UserPromptBuilder`** (the default) — prepares the graph for this turn
+- **`UserPromptBuilder`** (the default) — prepares the Node trajectory for this turn
   (optional per-turn content + continue/forced-final nudge as real `UserQuery`
   nodes), then projects the trajectory into chat turns (`render_*` per node type).
-- **function** — a `(flow, graph) -> str | None` build hook. Wrapped as
+- **function** — a `(flow, node) -> str | None` build hook. Wrapped as
   `UserPromptBuilder(build_fn=…)` so you can pass it as `user=` /
   `user_prompt=` without subclassing. Return a string to commit as a `UserQuery`
   this turn (e.g. a live observation), or `None` for nothing.
 
-`Flow.messages` prepends the system message, truncates to `max_messages`, and
-coalesces adjacent same-role turns into one (so an injected instruction landing
+`Flow.messages` takes the node the prompt is being built for, projects backwards
+from it, keeps the last `keep_n_messages` turns (replacing what it dropped with a
+truncation notice), prepends the system message, and coalesces adjacent same-role
+turns into one (so an injected instruction landing
 right after a REPL output becomes a single user message — required by chat APIs
 that reject two same-role turns in a row).
 
@@ -410,7 +396,7 @@ agent = rlmflow.Flow(llm, user_prompt=LabeledUser())
 
 The overridable renderers are `render_user_query`, `render_llm_output`,
 `render_exec_output`, `render_error_output`, and `render_supervising_output`,
-dispatched by `render_node`. Node types that are graph bookkeeping rather than
+dispatched by `render_node`. Node types that are tree bookkeeping rather than
 turns (`ExecAction`, `DoneOutput`) are dropped.
 
 To change the nudge or truncation wording, subclass `Flow` — they are class

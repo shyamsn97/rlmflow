@@ -29,7 +29,13 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from rlmflow import Flow, Graph, LLMUsage, SystemPromptBuilder
+from rlmflow import (
+    persistence,
+    Flow,
+    LLMUsage,
+    SystemPromptBuilder,
+    start,
+)
 from rlmflow.tools import tool
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -69,8 +75,7 @@ class SkillLibrary:
         blocks = [f"### {skill.name}\n\n{skill.body}" for skill in skills]
         return (
             "Use these skills when they match the task. Each was installed into "
-            "this run via `add_skill` and is now part of your prompt.\n\n"
-            + "\n\n".join(blocks)
+            "this run via `add_skill` and is now part of your prompt.\n\n" + "\n\n".join(blocks)
         )
 
     def __len__(self) -> int:
@@ -87,10 +92,7 @@ def make_add_skill(library: SkillLibrary):
     )
     def add_skill(name: str, body: str) -> str:
         library.add(name, body)
-        return (
-            f"installed skill {name!r} "
-            f"(library now has {len(library)}: {library.names()})"
-        )
+        return f"installed skill {name!r} (library now has {len(library)}: {library.names()})"
 
     return add_skill
 
@@ -190,23 +192,23 @@ def main() -> None:
         print(f"Using live client ({args.model}).")
     flow = build_flow(library, llm, max_iters=args.max_iters)
 
-    graph = Graph(query=QUERY)
+    graph = start(query=QUERY)
     if args.print_prompt:
         print("\n--- Skills section BEFORE run (empty) ---\n")
         print(library.render())
 
     print("\n--- run ---\n")
-    flow.run(graph=graph)
+    flow.run(graph)
 
     print(f"\nagent installed skills: {library.names()}")
     if args.print_prompt:
         print("\n--- Skills section AFTER run (grown by the agent) ---\n")
         print(library.render())
 
-    print("\nresult:", graph.result())
-    path = graph.save(args.out_dir)
-    print(f"Graph saved to {path}")
-    flow.close_repls(graph.graph_id)
+    print("\nresult:", graph.agent_result())
+    path = persistence.save(graph, args.out_dir)
+    print(f"Node saved to {path}")
+    flow.runtime.close_repls(graph.trajectory_id)
 
 
 if __name__ == "__main__":

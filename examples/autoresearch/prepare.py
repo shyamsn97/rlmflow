@@ -97,7 +97,9 @@ def make_dataloader(batch_size: int, seq_len: int, split: str, seed: int | None 
     if seed is not None:
         generator = torch.Generator(device=data.device).manual_seed(seed)
     while True:
-        ix = torch.randint(0, data.numel() - seq_len - 1, (batch_size,), device=data.device, generator=generator)
+        ix = torch.randint(
+            0, data.numel() - seq_len - 1, (batch_size,), device=data.device, generator=generator
+        )
         x = torch.stack([data[i : i + seq_len] for i in ix])
         y = torch.stack([data[i + 1 : i + seq_len + 1] for i in ix])
         yield x, y
@@ -124,7 +126,9 @@ def evaluate_bpb(model, *_ignored) -> float:
     tokenizer = Tokenizer.from_directory()
     token_bytes = torch.tensor(
         [
-            0 if token_id == tokenizer.eos_token_id else len(tokenizer.decode([token_id]).encode("utf-8"))
+            0
+            if token_id == tokenizer.eos_token_id
+            else len(tokenizer.decode([token_id]).encode("utf-8"))
             for token_id in range(tokenizer.get_vocab_size())
         ],
         device=next(model.parameters()).device,

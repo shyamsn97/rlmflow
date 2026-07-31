@@ -14,7 +14,13 @@ import sys
 import threading
 from pathlib import Path
 
-from rlmflow import Flow, Graph, GraphCheckpointer, LLMUsage, render_tree
+from rlmflow import (
+    Flow,
+    LLMUsage,
+    start,
+)
+from rlmflow.consumers import GraphCheckpointer
+from rlmflow.view import render_tree
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -83,7 +89,7 @@ def main() -> None:
         use_llm_query=True,
     )
 
-    graph = Graph(
+    graph = start(
         query=(
             "Classify the reviews. You must use `await "
             "llm_query_batched(prompts)` for the per-review classifications, "
@@ -95,8 +101,8 @@ def main() -> None:
 
     async def drive() -> None:
         try:
-            async for _event in flow.run_streaming(graph=graph):
-                checkpointer.handle(_event, graph)
+            async for _event in flow.run_streaming(graph):
+                checkpointer.handle(_event)
                 print(render_tree(graph))
         finally:
             checkpointer.close()
@@ -108,9 +114,9 @@ def main() -> None:
         print("-", prompt)
 
     print("\nFinal answer:")
-    print(graph.result())
+    print(graph.agent_result())
     save_example_graph(graph, "llm-query-batched")
-    flow.close_repls(graph.graph_id)
+    flow.runtime.close_repls(graph.trajectory_id)
 
 
 if __name__ == "__main__":

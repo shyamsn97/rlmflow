@@ -24,7 +24,7 @@ from rlmflow.runtime.protocol import (
     SetEnvRequest,
     WireModel,
 )
-from rlmflow.runtime.repl import DoneSignal, MissingReplError, Repl
+from rlmflow.runtime.repl import DoneSignal, MissingReplError, Repl, ReplRun, ReplStatus
 from rlmflow.runtime.serial import (
     CLOUDPICKLE,
     decode_object,
@@ -183,10 +183,12 @@ class RemoteRepl(Repl):
         self.env.update(values)
         self.call(SetEnvRequest(id=self._next_id("set_env"), values=dict(values)))
 
-    async def run(self, code: str) -> str:
+    async def run(self, code: str) -> ReplRun:
+        self.done_result = None  # the proxied ``done`` fills it while the block runs
         if not code.strip():
             self.errored = True
-            return f"{MissingReplError.__name__}: missing ```repl``` block"
+            text = f"{MissingReplError.__name__}: missing ```repl``` block"
+            return ReplRun(output=text, status=ReplStatus.ERROR)
         self._loop = asyncio.get_running_loop()
         resp = await asyncio.to_thread(
             self.call, RunRequest(id=self._next_id("run"), code=code)
@@ -194,9 +196,9 @@ class RemoteRepl(Repl):
         self.errored = resp.errored
         if resp.env is not None:
             self.env = resp.env
-        return resp.output or ""
+        return self.outcome(resp.output or "")
 
-    def drain(self) -> str:
+    def read(self, *, clear: bool = False) -> str:
         return ""
 
     def close(self) -> None:

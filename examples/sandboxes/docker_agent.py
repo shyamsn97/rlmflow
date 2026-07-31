@@ -22,13 +22,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from rlmflow import (  # noqa: E402
-    ConsumerGroup,
     DockerRuntime,
     Flow,
-    Graph,
-    GraphCheckpointer,
-    LiveTreeRenderer,
+    Node,
+    start,
 )
+from rlmflow.consumers import ConsumerGroup, GraphCheckpointer  # noqa: E402
+from rlmflow.view import LiveTreeRenderer  # noqa: E402
 
 from examples.common import build_client  # noqa: E402
 
@@ -62,8 +62,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def run_turn(flow: Flow, query: str, *, use_live: bool, out_dir: Path) -> Graph:
-    graph = Graph(query=query)
+async def run_turn(flow: Flow, query: str, *, use_live: bool, out_dir: Path) -> Node:
+    graph = start(query=query)
     consumers = ConsumerGroup(
         [
             LiveTreeRenderer(clear=use_live),
@@ -71,8 +71,8 @@ async def run_turn(flow: Flow, query: str, *, use_live: bool, out_dir: Path) -> 
         ]
     )
     try:
-        async for event in flow.run_streaming(graph=graph):
-            consumers.handle(event, graph)
+        async for event in flow.run_streaming(graph):
+            consumers.handle(event)
     finally:
         consumers.close()
     return graph
@@ -97,10 +97,10 @@ def main() -> None:
                 out_dir=Path(args.out_dir),
             )
         )
-        print(graph.result())
-        print(f"Graph checkpointed to {Path(args.out_dir)}")
+        print(graph.agent_result())
+        print(f"Node checkpointed to {Path(args.out_dir)}")
     finally:
-        flow.close_repls()
+        flow.runtime.close_repls()
 
 
 if __name__ == "__main__":

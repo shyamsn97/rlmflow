@@ -796,14 +796,14 @@ class RecursiveFlowHero(Scene):
         # Phase 3 — multitree at supervising, fork, replace with straight path.
         fork_code = code_card(
             [
-                ("branch = graph.fork()", DIM),
-                ("sup = next(n for n in branch.nodes", DIM),
-                ('    if n.type == "supervising_output")', DIM),
-                ("branch.replace(sup,", DIM),
+                ("branch = await flow.fork(root)", DIM),
+                ("sup = next(n for n in branch.walk()", DIM),
+                ("    if isinstance(n, SupervisingOutput))", DIM),
+                ("surgery.insert(branch, sup.id,", DIM),
                 ("    ExecOutput(output=prompt),", DIM),
-                ('    truncate="descendants")', DIM),
-                ("async for event in agent.run_streaming(", DIM),
-                ('    graph=branch, until="done"):', DIM),
+                ('    mode="replace", truncate="descendants")', DIM),
+                ("async for node in flow.run_streaming(", DIM),
+                ('    branch, until="done"):', DIM),
             ],
             width=5.35,
             height=3.10,

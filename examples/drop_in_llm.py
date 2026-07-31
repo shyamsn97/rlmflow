@@ -26,7 +26,9 @@ import sys
 from pathlib import Path
 
 from rlmflow.clients import OpenAIClient
-from rlmflow import Flow, FlowLLM, Graph, GraphCheckpointer
+from rlmflow import Flow, start
+from rlmflow.consumers import GraphCheckpointer
+from rlmflow.integrations import FlowLLM
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -64,7 +66,8 @@ def demo_flow_as_llm():
     print(answer, "\n")
     if agent.last_graph is not None:
         save_example_graph(
-            agent.last_graph, "drop-in-llm",
+            agent.last_graph,
+            "drop-in-llm",
             out_dir=example_run_dir("drop-in-llm") / "flow-as-llm",
         )
     agent.close()
@@ -82,24 +85,25 @@ def demo_nested_flow():
         inner,
         max_iters=3,
     )
-    graph = Graph(query="What's the 7th Fibonacci number? Use ```repl``` to compute.")
+    graph = start(query="What's the 7th Fibonacci number? Use ```repl``` to compute.")
     run_dir = example_run_dir("drop-in-llm") / "nested-flow"
     checkpointer = GraphCheckpointer(run_dir)
 
     async def drive() -> None:
         try:
-            async for _event in outer.run_streaming(graph=graph):
-                checkpointer.handle(_event, graph)
+            async for _event in outer.run_streaming(graph):
+                checkpointer.handle(_event)
         finally:
             checkpointer.close()
 
     asyncio.run(drive())
-    print(graph.result())
+    print(graph.agent_result())
     save_example_graph(
-        graph, "drop-in-llm",
+        graph,
+        "drop-in-llm",
         out_dir=run_dir,
     )
-    outer.close_repls(graph.graph_id)
+    outer.runtime.close_repls(graph.trajectory_id)
     inner.close()
 
 

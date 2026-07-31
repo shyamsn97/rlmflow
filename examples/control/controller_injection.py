@@ -2,9 +2,8 @@
 
 The minimal controller workflow:
 
-1. The caller owns the ``Graph``.
-2. The controller applies graph actions with ``flow.append_node(...)`` or
-   ``flow.apply_action(...)``.
+1. The caller owns the root ``Node``.
+2. The controller attaches observations with ``flow.append(...)``.
 3. "Finalize now" is just another controller instruction in the graph.
 
 Run:
@@ -17,7 +16,14 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import ExecOutput, Flow, Graph, GraphCheckpointer, LLMUsage
+from rlmflow import (
+    ExecOutput,
+    Flow,
+    LLMUsage,
+    Node,
+    start,
+)
+from rlmflow.consumers import GraphCheckpointer
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -48,16 +54,16 @@ def banner(title: str) -> None:
     print("=" * 72)
 
 
-def state_types(graph) -> list[str]:
-    return [state.type for state in graph.nodes]
+def state_types(graph: Node) -> list[str]:
+    return [state.type for state in graph.transcript()]
 
 
-def assert_types(graph, expected: list[str]) -> None:
+def assert_types(graph: Node, expected: list[str]) -> None:
     actual = state_types(graph)
     assert actual == expected, f"expected states {expected}, got {actual}"
 
 
-def print_states(label: str, graph) -> None:
+def print_states(label: str, graph: Node) -> None:
     print(f"\n{label}")
     print("state types:", " -> ".join(state_types(graph)))
 
@@ -66,21 +72,21 @@ def observation_injection() -> None:
     banner("1. Inject an observation and let the LLM react")
 
     flow = Flow(DemoLLM(), max_depth=0, max_iters=4)
-    graph = Graph(query="Wait for a controller note, then finish.")
+    graph = start(query="Wait for a controller note, then finish.")
     assert_types(graph, ["user_query"])
 
-    flow.append_node(
-        graph,
+    flow.append(
+        graph.tail(),
         ExecOutput(output=OBSERVATION, content=OBSERVATION),
         injected=True,
     )
     assert_types(graph, ["user_query", "exec_output"])
 
-    extra = graph.nodes[-1]
+    extra = graph.tail()
     assert isinstance(extra, ExecOutput)
     assert extra.metadata.get("injected") is True
 
-    print_states("after controller append_node(...)", graph)
+    print_states("after controller commit(...)", graph)
 
     projected = flow.messages(graph)[-1]["content"]
     assert OBSERVATION in projected
@@ -91,15 +97,15 @@ def observation_injection() -> None:
 
     async def drive() -> None:
         try:
-            async for event in flow.run_streaming(graph=graph):
-                checkpointer.handle(event, graph)
+            async for event in flow.run_streaming(graph):
+                checkpointer.handle(event)
         finally:
             checkpointer.close()
 
     asyncio.run(drive())
-    assert graph.result() == "used the injected controller observation"
+    assert graph.agent_result() == "used the injected controller observation"
     print_states("after stepping: run reacted and finished", graph)
-    print(f"result={graph.result()!r}")
+    print(f"result={graph.agent_result()!r}")
     save_example_graph(
         graph,
         "controller-injection",
@@ -111,7 +117,7 @@ def controller_stop_instruction() -> None:
     banner("2. Inject a controller stop instruction")
 
     flow = Flow(DemoLLM(), max_depth=0, max_iters=4)
-    graph = Graph(query="This run will be stopped by the controller.")
+    graph = start(query="This run will be stopped by the controller.")
     run_dir = example_run_dir("controller-injection") / "controller-stop-instruction"
     checkpointer = GraphCheckpointer(run_dir)
 
@@ -121,18 +127,22 @@ def controller_stop_instruction() -> None:
         # the instruction we inject is guaranteed to be the next thing the agent
         # reads when we resume it.
         try:
-            async for event in flow.run_streaming(graph=graph, until="idle"):
-                checkpointer.handle(event, graph)
-            graph.inject("Controller stop request: finalize now with current state.")
-            async for event in flow.run_streaming(graph=graph, until="done"):
-                checkpointer.handle(event, graph)
+            async for event in flow.run_streaming(graph, until="idle"):
+                checkpointer.handle(event)
+            flow.append(
+                graph.tail(),
+                "Controller stop request: finalize now with current state.",
+                injected=True,
+            )
+            async for event in flow.run_streaming(graph, until="done"):
+                checkpointer.handle(event)
         finally:
             checkpointer.close()
 
     asyncio.run(run_with_controller_stop())
-    assert graph.result() == "controller stopped the run"
+    assert graph.agent_result() == "controller stopped the run"
     print_states("after controller stop instruction: clean done(...)", graph)
-    print(f"result={graph.result()!r}")
+    print(f"result={graph.agent_result()!r}")
     save_example_graph(
         graph,
         "controller-injection",

@@ -1,12 +1,12 @@
-"""Showcase the Graph-centric Flow API.
+"""Showcase the Node-only Flow API.
 
 This walks through the pieces that matter in the engine:
 
-1. Event-by-event execution that advances a caller-owned ``Graph``.
-2. Persisting a run with ``graph.save()`` / minimal ``Graph.load()``.
+1. Node-by-Node execution that advances a caller-owned trajectory.
+2. Persisting a run with ``persistence.save()`` / ``persistence.load()``.
 3. Latest-state inspection across agents.
 4. In-process history by keeping graph snapshots.
-5. Graph summary helpers (``render_tree(graph)``, ``graph.tokens()``).
+5. Node summary helpers (``render_tree(graph)``, ``graph.tokens()``).
 6. Gym-style stepping with a scalar reward.
 
 Usage:
@@ -24,16 +24,16 @@ from copy import deepcopy
 from pathlib import Path
 
 from rlmflow import (
-    ConsumerGroup,
     FILE_TOOLS,
     Flow,
-    Graph,
-    GraphCheckpointer,
     LLMUsage,
-    LiveTreeRenderer,
     LocalRuntime,
-    render_tree,
+    Node,
+    persistence,
+    start,
 )
+from rlmflow.consumers import ConsumerGroup, GraphCheckpointer
+from rlmflow.view import LiveTreeRenderer, render_tree
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -87,11 +87,11 @@ def banner(msg: str) -> None:
     print(f"{'=' * 60}{RESET}\n")
 
 
-def node_count(graph: Graph) -> int:
-    return sum(len(agent.nodes) for agent in graph.walk())
+def node_count(graph: Node) -> int:
+    return sum(1 for _node in graph.walk())
 
 
-async def run(flow: Flow, graph: Graph, no_viz: bool, out_dir: Path) -> list[Graph]:
+async def run(flow: Flow, graph: Node, no_viz: bool, out_dir: Path) -> list[Node]:
     history = [deepcopy(graph)]
     consumers = ConsumerGroup(
         [
@@ -101,33 +101,32 @@ async def run(flow: Flow, graph: Graph, no_viz: bool, out_dir: Path) -> list[Gra
     )
     step = 0
     try:
-        async for event in flow.run_streaming(graph=graph):
+        async for event in flow.run_streaming(graph):
             step += 1
             history.append(deepcopy(graph))
             if no_viz:
                 print(f"-- event {step}: {event.type} --")
-            consumers.handle(event, graph)
+            consumers.handle(event)
     finally:
         consumers.close()
     return history
 
 
-async def gym_loop(flow: Flow, graph: Graph, out_dir: Path) -> list[float]:
+async def gym_loop(flow: Flow, graph: Node, out_dir: Path) -> list[float]:
     rewards: list[float] = []
     checkpointer = GraphCheckpointer(out_dir)
     step = 0
-    while not graph.finished:
-        async for _event in flow.run_streaming(graph=graph, until="next"):
+    while not graph.finished():
+        async for _event in flow.run_streaming(graph, until="next"):
             pass
         checkpointer.save(graph)
         step += 1
-        current = graph.current()
-        reward = 1.0 if graph.finished else 0.0
+        current = graph.tail()
+        reward = 1.0 if graph.finished() else 0.0
         rewards.append(reward)
         kind = current.type if current else "empty"
         print(f"step {step}: state={kind} reward={reward}")
     return rewards
-
 
 
 def main() -> None:
@@ -150,53 +149,48 @@ def main() -> None:
     flow = file_flow(workdir, max_depth=args.max_depth, max_iters=args.max_iters)
 
     banner("1. Step-by-step execution")
-    graph = Graph(query="Create hello.py and goodbye.py. Delegate each file.")
+    graph = start(query="Create hello.py and goodbye.py. Delegate each file.")
     history = asyncio.run(run(flow, graph, args.no_viz, workdir / "run"))
     final = history[-1]
-    print(f"\n{GREEN}Result:{RESET} {final.result()}")
+    print(f"\n{GREEN}Result:{RESET} {final.agent_result()}")
 
-    banner("2. Persistence — graph.save() / Graph.load()")
-    path = final.save(workdir / "run")
-    loaded = Graph.load(path)
+    banner("2. Persistence — persistence.save() / persistence.load()")
+    path = persistence.save(final, workdir / "run")
+    loaded = persistence.load(path)
     print(
-        f"Saved + reloaded {len(loaded.agents)} agents and "
+        f"Saved + reloaded {len(loaded.agent_ids())} agents and "
         f"{node_count(loaded)} states from {path}"
     )
     print(render_tree(loaded))
 
     banner("3. Latest state per agent")
-    for aid, sub in loaded.agents.items():
-        current = sub.current()
-        label = current.type if current else "(empty)"
-        print(f"  {aid}: {label}")
+    for agent_id in loaded.agent_ids():
+        print(f"  {agent_id}: {loaded.tail(agent_id).type}")
 
     banner("4. Time travel — kept snapshots")
     for idx, snapshot in enumerate(history):
-        current = snapshot.current()
+        current = snapshot.tail()
         kind = current.type if current else "empty"
-        print(
-            f"{CYAN}step {idx}{RESET}: root [{kind}]  "
-            f"agents={len(snapshot.agents)}"
-        )
+        print(f"{CYAN}step {idx}{RESET}: root [{kind}]  agents={len(snapshot.agent_ids())}")
 
-    banner("5. Graph summary")
+    banner("5. Node summary")
     inp, out = final.tokens()
-    print(f"Agents:  {len(final.agents)}")
+    print(f"Agents:  {len(final.agent_ids())}")
     print(f"States:  {node_count(final)}")
     print(f"Tokens:  {inp + out:,} ({inp:,} in / {out:,} out)")
-    print(f"Final:   {final.current().type if final.current() else '(empty)'}")
+    print(f"Final:   {final.tail().type}")
 
     banner("6. Gym-style loop")
     flow3 = file_flow(workdir, max_depth=0, max_iters=args.max_iters)
-    graph3 = Graph(query="Write a haiku about recursion to haiku.txt")
+    graph3 = start(query="Write a haiku about recursion to haiku.txt")
     rewards = asyncio.run(gym_loop(flow3, graph3, workdir / "gym-run"))
-    print(f"{GREEN}Result:{RESET} {graph3.result()}")
+    print(f"{GREEN}Result:{RESET} {graph3.agent_result()}")
     print(f"Total reward: {sum(rewards):.1f}")
-    gym_path = graph3.save(workdir / "gym-run")
+    gym_path = persistence.save(graph3, workdir / "gym-run")
     print(f"Gym run saved to {gym_path}")
 
-    flow.close_repls(final.graph_id)
-    flow3.close_repls(graph3.graph_id)
+    flow.runtime.close_repls(final.trajectory_id)
+    flow3.runtime.close_repls(graph3.trajectory_id)
 
     banner("Done")
 

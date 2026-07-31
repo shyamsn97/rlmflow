@@ -5,7 +5,12 @@ from __future__ import annotations
 import asyncio
 import time
 
-from rlmflow import Flow, Graph, LocalRuntime
+from rlmflow import (
+    Flow,
+    LocalRuntime,
+    persistence,
+    start,
+)
 from rlmflow.clients.llm import LLMClient, LLMUsage
 
 from benchmarks.eval import runner
@@ -41,41 +46,39 @@ class RLMFlowLocalRunner(Runner):
             enable_structured_output=False,
             use_llm_query=self.use_llm_query,
         )
-        start = time.perf_counter()
+        started_at = time.perf_counter()
         # Seed the durable graph; `run_streaming` then drives the whole tree,
-        # mutating that graph in place and emitting one event per commit.
-        graph = Graph(query=example.prompt, inputs=example.inputs() or {})
+        # mutating that graph in place and publishing each changed Node.
+        graph = start(query=example.prompt, inputs=example.inputs() or {})
         cap = self.max_steps or max(200, self.max_iters * max(1, self.max_depth + 1) * 25)
         steps = 0
         error = None
 
         async def drive() -> None:
             nonlocal steps
-            async for event in flow.run_streaming(graph=graph):
-                if event.type != "append_node":
-                    continue
+            async for _node in flow.run_streaming(graph):
                 steps += 1
                 if self.live_save:
-                    graph.save(graph_dir)
+                    persistence.save(graph, graph_dir)
                 if steps >= cap:
                     raise RuntimeError(f"run exceeded step cap ({cap})")
 
         try:
             if self.live_save:
-                graph.save(graph_dir)
+                persistence.save(graph, graph_dir)
             asyncio.run(drive())
         except Exception as exc:  # benchmark rows should record failures
             error = f"{type(exc).__name__}: {exc}"
         finally:
-            flow.close_repls()
-            graph.save(graph_dir)
+            flow.runtime.close_repls()
+            persistence.save(graph, graph_dir)
 
         input_tokens, output_tokens = graph.tokens()
         return Prediction(
-            answer=graph.result(),
+            answer=graph.agent_result(),
             usage={"input_tokens": input_tokens, "output_tokens": output_tokens},
             metrics={
-                "time_seconds": time.perf_counter() - start,
+                "time_seconds": time.perf_counter() - started_at,
                 "iterations": steps,
                 "graph": graph_metrics(graph),
             },
@@ -99,9 +102,7 @@ class _ModelClient(LLMClient):
         )
         return text
 
-    def completion(
-        self, messages: list[dict[str, str]], *args, **kwargs
-    ) -> tuple[str, LLMUsage]:
+    def completion(self, messages: list[dict[str, str]], *args, **kwargs) -> tuple[str, LLMUsage]:
         text = self.chat(messages, *args, **kwargs)
         return text, self.last_usage
 

@@ -27,13 +27,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from rlmflow.clients import OpenAIClient  # noqa: E402
 from rlmflow import (  # noqa: E402
-    ConsumerGroup,
     Flow,
-    Graph,
-    GraphCheckpointer,
-    LiveTreeRenderer,
     ModalRuntime,
+    Node,
+    start,
 )
+from rlmflow.consumers import ConsumerGroup, GraphCheckpointer  # noqa: E402
+from rlmflow.view import LiveTreeRenderer  # noqa: E402
 
 from examples.common import save_example_graph  # noqa: E402
 
@@ -96,8 +96,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def run_turn(flow: Flow, query: str, *, use_live: bool, out_dir: Path) -> Graph:
-    graph = Graph(query=query)
+async def run_turn(flow: Flow, query: str, *, use_live: bool, out_dir: Path) -> Node:
+    graph = start(query=query)
     consumers = ConsumerGroup(
         [
             LiveTreeRenderer(clear=use_live),
@@ -105,8 +105,8 @@ async def run_turn(flow: Flow, query: str, *, use_live: bool, out_dir: Path) -> 
         ]
     )
     try:
-        async for event in flow.run_streaming(graph=graph):
-            consumers.handle(event, graph)
+        async for event in flow.run_streaming(graph):
+            consumers.handle(event)
     finally:
         consumers.close()
     return graph
@@ -171,11 +171,11 @@ def main() -> None:
                 out_dir=Path(args.out_dir),
             )
         )
-        print(graph.result())
+        print(graph.agent_result())
         save_example_graph(graph, "sandbox-modal", out_dir=args.out_dir)
     finally:
         log("closing Flow")
-        flow.close_repls()
+        flow.runtime.close_repls()
 
 
 if __name__ == "__main__":

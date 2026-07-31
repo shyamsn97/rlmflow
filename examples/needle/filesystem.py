@@ -23,16 +23,15 @@ import tempfile
 from pathlib import Path
 
 from rlmflow import (
-    ConsumerGroup,
     DockerRuntime,
     FILE_TOOLS,
     Flow,
-    Graph,
-    GraphCheckpointer,
-    LiveTreeRenderer,
     LocalRuntime,
     SubprocessRuntime,
+    start,
 )
+from rlmflow.consumers import ConsumerGroup, GraphCheckpointer
+from rlmflow.view import LiveTreeRenderer
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -41,9 +40,7 @@ if str(examples_dir) not in sys.path:
 from common import build_client  # noqa: E402
 
 
-def generate_haystack(
-    directory: Path, num_files: int = 500, lines_per_file: int = 200
-) -> str:
+def generate_haystack(directory: Path, num_files: int = 500, lines_per_file: int = 200) -> str:
     words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"]
     answer = "".join(random.choices(string.digits, k=7))
     needle_file = random.randint(0, num_files - 1)
@@ -64,9 +61,7 @@ def generate_haystack(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Needle in a haystack across many files"
-    )
+    parser = argparse.ArgumentParser(description="Needle in a haystack across many files")
     parser.add_argument("--num-files", type=int, default=500)
     parser.add_argument(
         "--viewer", action="store_true", help="Open the state viewer after finishing"
@@ -145,13 +140,13 @@ def main():
             max_iters=args.max_iters,
         )
 
-        graph = Graph(
+        graph = start(
             query=(
                 f"There are {args.num_files} text files in haystack/. "
                 "Exactly one line in one file matches the pattern "
                 "`The magic number is <number>`. Find and return the number. "
                 "There are too many files to search manually, so split the work "
-                "into batches and delegate the search to subagents."
+                "into batches."
             )
         )
 
@@ -161,25 +156,25 @@ def main():
 
         async def drive() -> None:
             try:
-                async for event in flow.run_streaming(graph=graph):
-                    consumers.handle(event, graph)
+                async for event in flow.run_streaming(graph):
+                    consumers.handle(event)
             finally:
                 consumers.close()
 
         asyncio.run(drive())
 
         print(f"\n{'=' * 40}")
-        print(f"Result:         {graph.result()}")
+        print(f"Result:         {graph.agent_result()}")
         print(f"Actual answer:  {answer}")
-        print(f"Correct:        {answer in graph.result()}")
+        print(f"Correct:        {answer in graph.agent_result()}")
 
         if args.out_dir:
-            print(f"Graph checkpointed to {Path(args.out_dir)}")
+            print(f"Node checkpointed to {Path(args.out_dir)}")
 
         if args.viewer:
             print("Viewer support is not part of the minimal example path.")
 
-        flow.close_repls(graph.graph_id)
+        flow.runtime.close_repls(graph.trajectory_id)
     finally:
         if tmp is not None:
             tmp.cleanup()

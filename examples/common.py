@@ -17,7 +17,7 @@ starts with a tiny bootstrap that puts the ``examples/`` directory on
 
 This module centralizes the bits every example was duplicating: building an LLM
 client from a model name, resolving a per-example ``_runs`` directory, saving a
-graph, and adding the common CLI flags. Run directories are anchored to this
+trajectory, and adding the common CLI flags. Run directories are anchored to this
 file's location, so callers pass a name only (never ``__file__``).
 """
 
@@ -26,7 +26,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rlmflow import Graph
+from rlmflow import Node, persistence
 from rlmflow.clients import AnthropicClient, OpenAIClient
 
 # The directory this module lives in, i.e. the repo's ``examples/`` folder.
@@ -46,14 +46,17 @@ def example_run_dir(name: str) -> Path:
 
 
 def save_example_graph(
-    graph: Graph,
+    graph: Node,
     name: str,
     *,
     out_dir: str | Path | None = None,
-    label: str = "Graph saved to",
+    label: str = "Node saved to",
 ) -> Path:
     """Save ``graph`` to ``out_dir`` (or the default ``_runs`` dir) and print the path."""
-    path = graph.save(Path(out_dir) if out_dir is not None else example_run_dir(name))
+    path = persistence.save(
+        graph,
+        Path(out_dir) if out_dir is not None else example_run_dir(name),
+    )
     print(f"{label} {path}")
     return path
 

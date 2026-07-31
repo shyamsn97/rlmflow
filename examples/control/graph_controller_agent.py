@@ -20,19 +20,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rlmflow import (
+    persistence,
     DoneOutput,
     ErrorOutput,
     ExecOutput,
     Flow,
-    Graph,
     LLMOutput,
     LocalRuntime,
+    Node,
     SupervisingOutput,
     SystemPromptBuilder,
-    UserQuery,
-    render_tree,
+    next_query,
+    surgery,
+    start,
     tool,
 )
+from rlmflow.view import render_tree
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -48,7 +51,7 @@ class WorkerRun:
     name: str
     approach: str
     worker: Flow
-    graph: Graph
+    graph: Node
 
 
 class WorkerPoolControl:
@@ -82,7 +85,7 @@ class WorkerPoolControl:
             self.worker_results,
         ]
 
-    def graphs(self) -> list[Graph]:
+    def graphs(self) -> list[Node]:
         return [run.graph for run in self.runs.values()]
 
     def _run(self, name: str) -> WorkerRun:
@@ -99,7 +102,7 @@ class WorkerPoolControl:
         if self.worker_factory is None:
             raise RuntimeError("this WorkerPoolControl was not configured to create workers")
         worker = self.worker_factory()
-        graph = Graph(query=worker_prompt(name, approach))
+        graph = start(query=worker_prompt(name, approach))
         self.runs[name] = WorkerRun(
             name=name,
             approach=approach,
@@ -125,7 +128,7 @@ class WorkerPoolControl:
         for run in self.runs.values():
             lines.append(f"worker={run.name!r}")
             lines.append(f"  approach={run.approach!r}")
-            self._append_snippet(lines, "query", run.graph.query)
+            self._append_snippet(lines, "query", run.graph.latest_query().content)
         return "\n".join(lines)
 
     @tool("Return compact graph-shape summaries for diversity checks.", proxy=True)
@@ -135,20 +138,20 @@ class WorkerPoolControl:
         lines = []
         for run in self.runs.values():
             graph = run.graph
-            node_types = [node.type for agent in graph.walk() for node in agent.nodes]
+            node_types = [node.type for node in graph.walk()]
             child_edges = [
-                f"{child.parent_agent_id}->{child.agent_id}"
-                for child in graph.walk()
-                if child.parent_agent_id is not None
+                f"{graph.parent_agent_id(agent_id)}->{agent_id}"
+                for agent_id in graph.agent_ids()
+                if graph.parent_agent_id(agent_id) is not None
             ]
             lines.append(f"worker={run.name!r}")
-            lines.append(f"  agents={list(graph.agents)}")
+            lines.append(f"  agents={list(graph.agent_ids())}")
             lines.append(f"  node_types={node_types}")
             lines.append(f"  child_edges={child_edges}")
             lines.append(
-                f"  unfinished={[agent.agent_id for agent in graph.walk() if not agent.finished]}"
+                f"  unfinished={[aid for aid in graph.agent_ids() if not graph.finished(aid)]}"
             )
-            lines.append(f"  finished={graph.finished}")
+            lines.append(f"  finished={graph.finished()}")
         return "\n".join(lines)
 
     @tool("Return a bounded summary of one worker graph.", proxy=True)
@@ -159,21 +162,16 @@ class WorkerPoolControl:
         graph = run.graph
         lines = [
             title,
-            f"finished={graph.finished}",
-            f"agents={list(graph.agents)}",
-            f"unfinished={[agent.agent_id for agent in graph.walk() if not agent.finished]}",
+            f"finished={graph.finished()}",
+            f"agents={list(graph.agent_ids())}",
+            f"unfinished={[aid for aid in graph.agent_ids() if not graph.finished(aid)]}",
             f"tokens={graph.tokens()}",
-            f"root_result={graph.result()!r}",
+            f"root_result={graph.agent_result()!r}",
         ]
-        for agent_id, subgraph in graph.agents.items():
-            current = subgraph.current()
-            in_tokens, out_tokens = subgraph.tokens(recursive=False)
-            current_type = current.type if current is not None else "<empty>"
-            lines.append(
-                f"{agent_id}: current={current_type} tokens=({in_tokens}, {out_tokens})"
-            )
-            if current is None:
-                continue
+        for agent_id in graph.agent_ids():
+            current = graph.tail(agent_id)
+            in_tokens, out_tokens = graph.tokens(agent_id, recursive=False)
+            lines.append(f"{agent_id}: current={current.type} tokens=({in_tokens}, {out_tokens})")
             if isinstance(current, SupervisingOutput):
                 lines.append(f"  waiting_on={current.waiting_on}")
                 self._append_snippet(lines, "output", current.output)
@@ -203,7 +201,7 @@ class WorkerPoolControl:
             if workers is not None
             else list(self.runs.values())
         )
-        active = [run for run in selected if not run.graph.finished]
+        active = [run for run in selected if not run.graph.finished()]
         if not active:
             return "no selected workers need advancement"
         await self._advance_runs(active)
@@ -212,7 +210,7 @@ class WorkerPoolControl:
     @staticmethod
     async def _advance_runs(runs: list[WorkerRun]) -> None:
         async def step(run: WorkerRun) -> None:
-            async for _event in run.worker.run_streaming(graph=run.graph, until="next"):
+            async for _event in run.worker.run_streaming(run.graph, until="next"):
                 pass
 
         await asyncio.gather(*(step(run) for run in runs))
@@ -220,8 +218,8 @@ class WorkerPoolControl:
     @tool("Inject controller feedback into one worker agent.", proxy=True)
     def inject_worker_note(self, *, worker: str, target: str, note: str) -> str:
         run = self._run(worker)
-        run.worker.append_node(
-            run.graph[target],
+        run.worker.append(
+            run.graph.tail(target),
             ExecOutput(
                 output=f"Controller note: {note}",
                 content=f"Controller note: {note}",
@@ -234,34 +232,37 @@ class WorkerPoolControl:
     def replace_worker_supervisor(self, *, worker: str, target: str, note: str) -> str:
         run = self._run(worker)
         matches = [
-            node
-            for node in run.graph[target].nodes
-            if isinstance(node, SupervisingOutput)
+            node for node in run.graph.transcript(target) if isinstance(node, SupervisingOutput)
         ]
         if not matches:
             return f"no supervising_output found for {target!r} in worker {worker!r}"
-        run.graph.replace(
-            matches[-1],
+        surgery.insert(
+            run.graph,
+            matches[-1].id,
             ExecOutput(
                 output=f"Controller replacement: {note}",
                 content=f"Controller replacement: {note}",
             ),
+            mode="replace",
             truncate="descendants",
         )
         return self.inspect_worker(worker=worker)
 
     @tool("Request final answers from one worker's agents.", proxy=True)
-    def terminate_worker(
-        self, *, worker: str, agent_ids: list[str] | None = None
-    ) -> str:
+    def terminate_worker(self, *, worker: str, agent_ids: list[str] | None = None) -> str:
         run = self._run(worker)
         targets = agent_ids or [
-            agent.agent_id for agent in run.graph.walk() if not agent.finished
+            agent_id for agent_id in run.graph.agent_ids() if not run.graph.finished(agent_id)
         ]
         for agent_id in targets:
-            run.worker.append_node(
-                run.graph[agent_id],
-                UserQuery(content="Controller stop request: finalize now."),
+            tail = run.graph.tail(agent_id)
+            run.worker.append(
+                tail,
+                next_query(
+                    tail.latest_query(),
+                    "Controller stop request: finalize now.",
+                    agent_id=agent_id,
+                ),
                 injected=True,
             )
         targets = "all unfinished agents" if agent_ids is None else ", ".join(agent_ids)
@@ -273,14 +274,14 @@ class WorkerPoolControl:
     @tool("Return one worker's final result if it is finished.", proxy=True)
     def worker_result(self, *, worker: str) -> str:
         graph = self._run(worker).graph
-        return graph.result() if graph.finished else "<worker not finished>"
+        return graph.agent_result() if graph.finished() else "<worker not finished>"
 
     @tool("Return final results for all finished workers.", proxy=True)
     def worker_results(self) -> dict[str, str]:
         return {
-            name: run.graph.result()
+            name: run.graph.agent_result()
             for name, run in self.runs.items()
-            if run.graph.finished
+            if run.graph.finished()
         }
 
     def _append_snippet(self, lines: list[str], label: str, value: str) -> None:
@@ -367,7 +368,7 @@ CONTROLLER_PROMPT_BUILDER = SystemPromptBuilder()
 CONTROLLER_PROMPT_BUILDER.sections.add(
     "graph_controller",
     CONTROLLER_POLICY_TEXT,
-    title="Graph Controller",
+    title="Node Controller",
     after="role",
 )
 
@@ -391,9 +392,7 @@ structure.
 """
 
 
-def make_worker(
-    llm, *, max_depth: int = 2, max_iters: int = 12
-) -> Flow:
+def make_worker(llm, *, max_depth: int = 2, max_iters: int = 12) -> Flow:
     return Flow(llm, max_depth=max_depth, max_iters=max_iters)
 
 
@@ -442,8 +441,7 @@ def _record_snapshot(
 
 def _worker_pool_text(control: WorkerPoolControl) -> str:
     return "\n\n".join(
-        f"[{run.name}] {run.approach}\n{render_tree(run.graph)}"
-        for run in control.runs.values()
+        f"[{run.name}] {run.approach}\n{render_tree(run.graph)}" for run in control.runs.values()
     )
 
 
@@ -460,38 +458,36 @@ def _print_worker_timeline(snapshots: list[tuple[str, list[WorkerRun]]]) -> None
         for run in runs:
             print(f"\n[{run.name}] {run.approach}")
             print(render_tree(run.graph))
-            if run.graph.result():
-                print("result:", run.graph.result())
+            if run.graph.agent_result():
+                print("result:", run.graph.agent_result())
 
 
-def _checkpoint(
-    control: WorkerPoolControl, controller_graph: Graph, out_dir: Path
-) -> None:
+def _checkpoint(control: WorkerPoolControl, controller_graph: Node, out_dir: Path) -> None:
     """Persist the controller graph and every worker graph in place."""
-    controller_graph.save(out_dir / "controller")
+    persistence.save(controller_graph, out_dir / "controller")
     for run in control.runs.values():
-        run.graph.save(out_dir / "workers" / run.name)
+        persistence.save(run.graph, out_dir / "workers" / run.name)
 
 
 async def _drive_controller(
     controller: Flow,
-    controller_graph: Graph,
+    controller_graph: Node,
     control: WorkerPoolControl,
     *,
     show_live: bool,
     delay: float,
     out_dir: Path,
-) -> tuple[Graph, list[tuple[str, list[WorkerRun]]]]:
+) -> tuple[Node, list[tuple[str, list[WorkerRun]]]]:
     snapshots: list[tuple[str, list[WorkerRun]]] = []
     _record_snapshot(snapshots, "workers start", control)
     step = 0
 
     async def step_controller() -> None:
-        async for _event in controller.run_streaming(graph=controller_graph, until="next"):
+        async for _event in controller.run_streaming(controller_graph, until="next"):
             pass
 
     if not show_live:
-        while not controller_graph.finished:
+        while not controller_graph.finished():
             await step_controller()
             step += 1
             _record_snapshot(snapshots, f"after controller step {step}", control)
@@ -509,7 +505,7 @@ async def _drive_controller(
         redirect_stderr=False,
     ) as live:
         await asyncio.sleep(delay)
-        while not controller_graph.finished:
+        while not controller_graph.finished():
             await step_controller()
             step += 1
             _record_snapshot(snapshots, f"after controller step {step}", control)
@@ -521,14 +517,14 @@ async def _drive_controller(
 
 def _save_worker_graphs(control: WorkerPoolControl, out_dir: Path) -> None:
     for run in control.runs.values():
-        path = run.graph.save(out_dir / "workers" / run.name)
-        print(f"Graph saved to {path}")
+        path = persistence.save(run.graph, out_dir / "workers" / run.name)
+        print(f"Node saved to {path}")
 
 
 def _best_finished_result(control: WorkerPoolControl) -> str:
     for run in control.runs.values():
-        if run.graph.finished and run.graph.result():
-            return run.graph.result()
+        if run.graph.finished() and run.graph.agent_result():
+            return run.graph.agent_result()
     return ""
 
 
@@ -560,7 +556,7 @@ def main() -> None:
         build_client(args.controller_model),
         max_iters=args.controller_max_iters,
     )
-    controller_graph = Graph(query=CONTROLLER_TASK)
+    controller_graph = start(query=CONTROLLER_TASK)
     out_dir = Path(args.out_dir)
     controller_graph, snapshots = asyncio.run(
         _drive_controller(
@@ -572,15 +568,15 @@ def main() -> None:
             out_dir=out_dir,
         )
     )
-    controller_answer = controller_graph.result()
+    controller_answer = controller_graph.agent_result()
 
     _print_worker_timeline(snapshots)
     print("controller answer:", controller_answer)
     print("best worker result:", _best_finished_result(control))
 
     _save_worker_graphs(control, out_dir)
-    path = controller_graph.save(out_dir / "controller")
-    print(f"Graph saved to {path}")
+    path = persistence.save(controller_graph, out_dir / "controller")
+    print(f"Node saved to {path}")
 
 
 if __name__ == "__main__":

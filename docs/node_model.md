@@ -38,8 +38,9 @@ All nodes share:
 - `type`: stable serialized discriminator, such as `"llm_output"`;
 - `id`: generated node ID;
 - `agent_id`: owning agent ID, such as `"root"` or `"root.search"`;
-- `seq`: per-agent sequence number;
-- `metadata`: free-form dict (e.g. `metadata["usage"]` holds token deltas).
+- `trajectory_id`: identity shared by the connected tree;
+- `parent` / `children`: recursive structure;
+- `metadata`: usage, prompt, and mutation provenance.
 
 `ObservationNode` subclasses add a `content` string. The concrete payloads are:
 
@@ -125,8 +126,8 @@ After the resume observation, the parent returns to normal LLM/exec flow.
 
 ## Streaming Semantics
 
-`flow.run_streaming(graph=graph, until=..., n=...)` advances the run and yields the
-`Event`s emitted; the graph is mutated in place. One logical reasoning turn is
+`flow.run_streaming(root, until=...)` advances the run and yields each changed
+Node; the tree is mutated in place. One logical reasoning turn is
 usually multiple node transitions:
 
 1. LLM half: `ObservationNode -> LLMOutput`.
@@ -149,21 +150,20 @@ The scheduler decides which agents are runnable:
 
 ## Persistence
 
-Node sequence numbers are assigned when nodes are appended. Callers populate
-payload fields; the engine assigns `agent_id`, `seq`, and `id`.
+Callers populate payload fields; attachment inherits `agent_id` and
+`trajectory_id`. Serialization derives stable `order` values from the tree.
 
 Saved run directories persist the per-agent trajectory under `agents/<agent-id>/`,
-while the recursive graph manifest links agents through `Graph.children`.
+while the recursive graph manifest links agents through Node children.
 Cross-agent edges are derived from the recursive structure and `SupervisingOutput`
 wait sets; there is no separate edge object to maintain by hand.
 
 Walk the tree and switch on `node.type` (or `isinstance`) when inspecting traces:
 
 ```python
-for agent in graph.walk():
-    for node in agent.nodes:
-        if node.type == "supervising_output":
-            print(node.agent_id, "waiting on", node.waiting_on)
-        elif node.type == "done_output":
-            print("result:", node.result)
+for node in root.walk():
+    if node.type == "supervising_output":
+        print(node.agent_id, "waiting on", node.waiting_on)
+    elif node.type == "done_output":
+        print("result:", node.result)
 ```

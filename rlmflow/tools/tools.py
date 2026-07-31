@@ -17,7 +17,7 @@ class ToolMetadata:
 
 
 def _default_tool_name(name: str) -> str:
-    return name[5:] if name.startswith("tool_") else name
+    return name.removeprefix("tool_")
 
 
 def tool(

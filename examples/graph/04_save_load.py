@@ -1,4 +1,4 @@
-"""Saving and loading a minimal Graph."""
+"""Saving and loading a minimal Node trajectory."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ import importlib.util
 import shutil
 from pathlib import Path
 
-from rlmflow import Graph
+from rlmflow import Node, persistence
 
 
-def build_graph() -> Graph:
+def build_graph() -> Node:
     spec = importlib.util.spec_from_file_location(
         "graph_01_query", Path(__file__).with_name("01_query.py")
     )
@@ -34,13 +34,13 @@ def main() -> None:
         shutil.rmtree(out_dir)
 
     graph = build_graph()
-    run_dir = graph.save(out_dir / "run")
-    loaded = Graph.load(run_dir)
+    run_dir = persistence.save(graph, out_dir / "run")
+    loaded = persistence.load(run_dir)
 
     print(f"saved: {run_dir}")
-    print("agents:", list(loaded.agents))
-    print("result:", loaded.result())
-    print("roundtrip:", graph.to_dict() == loaded.to_dict())
+    print("agents:", list(loaded.agent_ids()))
+    print("result:", loaded.agent_result())
+    print("roundtrip:", persistence.to_dict(graph) == persistence.to_dict(loaded))
 
 
 if __name__ == "__main__":

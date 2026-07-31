@@ -11,15 +11,15 @@ from typing import Any
 from rlmflow.prompts.messages import (
     PromptBuilder,
     UserPromptSource,
-    as_user_prompt,
     build_inputs_manifest,
 )
+from rlmflow.structured import system_prompt_hint
 from rlmflow.tools import format_tool_line, partition_repl_namespace
 
 SectionBody = str | Callable[[Any, Any], str]
 PROMPT_DOCUMENTED_TOOL_NAMES = frozenset({"done", "launch_subagents"})
 
-#: Ceiling for the statically rendered ``SYSTEM_PROMPT`` (no flow/graph bound).
+#: Ceiling for the statically rendered ``SYSTEM_PROMPT`` (no flow/agent bound).
 #: A regression guard so the default prompt stays lean; see the test suite.
 MAX_STATIC_PROMPT_CHARS = 10_000
 
@@ -41,11 +41,11 @@ class Section:
     def render(
         self,
         flow: Any = None,
-        graph: Any = None,
+        agent: Any = None,
         body_override: str | None = None,
     ) -> str:
         body = body_override if body_override is not None else self.body
-        text = body(flow, graph) if callable(body) else body
+        text = body(flow, agent) if callable(body) else body
         text = textwrap.dedent(text).strip()
         if not text:
             return ""
@@ -84,12 +84,15 @@ class Sections(list):
         existing = self._index(name)
         if existing is not None:
             self[existing] = new
-        elif before is not None and (i := self._index(before)) is not None:
-            self.insert(i, new)
-        elif after is not None and (i := self._index(after)) is not None:
-            self.insert(i + 1, new)
         else:
-            self.append(new)
+            before_index = self._index(before) if before is not None else None
+            after_index = self._index(after) if after is not None else None
+            if before_index is not None:
+                self.insert(before_index, new)
+            elif after_index is not None:
+                self.insert(after_index + 1, new)
+            else:
+                self.append(new)
         return self
 
     def update(self, name: str, body: SectionBody) -> Sections:
@@ -115,9 +118,9 @@ class Sections(list):
 class SystemPromptBuilder(PromptBuilder):
     """The system-prompt side, symmetric to ``UserPromptBuilder``.
 
-    As a ``PromptBuilder``, calling it with ``(flow, graph)`` returns the system
+    As a ``PromptBuilder``, calling it with ``(flow, agent)`` returns the system
     message (``[{"role": "system", "content": …}]``) so ``Flow.messages`` can
-    concatenate it with the user turns uniformly. ``render(flow, graph)`` gives
+    concatenate it with the user turns uniformly. ``render(flow, agent)`` gives
     the bare string when that's what's wanted (``build_system_prompt``, snapshots,
     the static ``SYSTEM_PROMPT``). ``self.sections`` is a mutable ``Sections``
     seeded from ``default_sections()`` — tweak it in place for small changes,
@@ -157,24 +160,24 @@ class SystemPromptBuilder(PromptBuilder):
             .add("first-turn", first_turn_section, title="First Turn")
         )
 
-    def render(self, flow: Any = None, graph: Any = None) -> str:
+    def render(self, flow: Any = None, agent: Any = None) -> str:
         """Render the sections into the bare system-prompt string."""
-        return self.build(self.sections, flow, graph)
+        return self.build(self.sections, flow, agent)
 
-    def __call__(self, flow: Any = None, graph: Any = None) -> list[dict[str, str]]:
-        return [{"role": "system", "content": self.render(flow, graph)}]
+    def __call__(self, flow: Any = None, agent: Any = None) -> list[dict[str, str]]:
+        return [{"role": "system", "content": self.render(flow, agent)}]
 
     def build(
         self,
         sections: list[Section],
         flow: Any = None,
-        graph: Any = None,
+        agent: Any = None,
         **overrides: str,
     ) -> str:
         """Render a section list into the prompt string."""
         parts = []
         for section in sections:
-            rendered = section.render(flow, graph, overrides.get(section.name))
+            rendered = section.render(flow, agent, overrides.get(section.name))
             if rendered.strip():
                 parts.append(rendered)
         text = re.sub(r"\n{3,}", "\n\n", "\n\n".join(parts)).strip()
@@ -185,7 +188,7 @@ class SystemPromptBuilder(PromptBuilder):
         return self.sections.names
 
 
-#: A system prompt is, at bottom, a function of the flow + graph. A plain string
+#: A system prompt is, at bottom, a function of the flow + agent. A plain string
 #: is a constant one and a ``SystemPromptBuilder`` is a callable one, so all three
 #: are accepted anywhere a system prompt source is expected.
 SystemPromptFn = Callable[[Any, Any], str]
@@ -193,17 +196,17 @@ SystemPromptSource = str | SystemPromptFn | SystemPromptBuilder
 
 
 def as_system_prompt_fn(source: Any) -> SystemPromptFn:
-    """Normalize any system-prompt source to a ``(flow, graph) -> str`` function.
+    """Normalize any system-prompt source to a ``(flow, agent) -> str`` function.
 
     A ``SystemPromptBuilder`` now returns a chat message from ``__call__``, so its
     string is produced via ``render`` here; a bare function is assumed to already
     return the string; a plain ``str`` is a constant.
     """
     if isinstance(source, str):
-        return lambda _flow=None, _graph=None: source
+        return lambda _flow=None, _agent=None: source
     if isinstance(source, SystemPromptBuilder):
         return source.render
-    if callable(source):  # a bare (flow, graph) -> str function
+    if callable(source):  # a bare (flow, agent) -> str function
         return source
     raise TypeError(f"unsupported system prompt source: {type(source)!r}")
 
@@ -221,21 +224,6 @@ class PromptProfile:
     system: SystemPromptSource | None = None
     user: UserPromptSource | None = None
     description: str = ""
-
-
-def as_prompt_profile(source: Any) -> PromptProfile:
-    """Normalize registry sugar into a ``PromptProfile``.
-
-    A bare string / function / ``SystemPromptBuilder`` is treated as a system-only
-    profile (user side inherits the flow default). A profile's ``user`` callable
-    is wrapped as ``UserPromptBuilder(build_fn=…)`` via ``as_user_prompt``.
-    """
-    if isinstance(source, PromptProfile):
-        user = as_user_prompt(source.user) if source.user is not None else None
-        return PromptProfile(
-            system=source.system, user=user, description=source.description
-        )
-    return PromptProfile(system=source)
 
 
 ROLE_TEXT = """
@@ -270,6 +258,13 @@ Act as an orchestrator, not a solver: delegate independent branches with
 integrating and verifying results, and the final `done(...)`. Your context window
 is small — push heavy reading/summarizing/verifying into subcalls. Verify a
 candidate answer before calling `done(...)`.
+
+Lean toward decomposition whenever the task splits into separable parts — several
+files or modules, independent sub-questions, or per-chunk scans. Give each part
+its own subagent instead of solving them one-by-one in the root: independent
+branches run concurrently and each child gets a fresh context budget, so the work
+is usually both faster and higher quality. Keep steps that depend on each other in
+the root (or chain them), and delegate one focused child per independent unit.
 """
 
 FORMAT_TEXT = """
@@ -363,30 +358,30 @@ placeholder or status value.
 """
 
 
-def examples_section(flow: Any = None, graph: Any = None) -> str:
+def examples_section(flow: Any = None, agent: Any = None) -> str:
     return EXAMPLES_TEXT.strip()
 
 
-def first_turn_section(flow: Any = None, graph: Any = None) -> str:
+def first_turn_section(flow: Any = None, agent: Any = None) -> str:
     # Bootstrap-only safeguard: rendered while the agent has produced no output
     # yet, then it drops out once the trajectory has an ``llm_output`` node.
-    if graph is None or any(node.type == "llm_output" for node in graph.nodes):
+    if agent is None or agent.llm_turns():
         return ""
-    text = FIRST_TURN_TEXT_INPUTS if graph.inputs else FIRST_TURN_TEXT_BARE
+    text = FIRST_TURN_TEXT_INPUTS if agent.config.inputs else FIRST_TURN_TEXT_BARE
     return text.strip()
 
 
-def inputs_section(flow: Any = None, graph: Any = None) -> str:
-    if graph is None:
+def inputs_section(flow: Any = None, agent: Any = None) -> str:
+    if agent is None:
         return ""
-    return build_inputs_manifest(dict(graph.inputs))
+    return build_inputs_manifest(dict(agent.config.inputs))
 
 
-def tools_section(flow: Any = None, graph: Any = None) -> str:
-    if flow is None or graph is None:
+def tools_section(flow: Any = None, agent: Any = None) -> str:
+    if flow is None or agent is None:
         return ""
     visible, _hidden = partition_repl_namespace(
-        flow.tool_namespace_for_prompt(graph),
+        flow.tool_namespace_for_prompt(agent),
         hidden_names=PROMPT_DOCUMENTED_TOOL_NAMES,
     )
     lines = []
@@ -411,58 +406,61 @@ def tools_section(flow: Any = None, graph: Any = None) -> str:
     )
 
 
-def structured_output_section(flow: Any = None, graph: Any = None) -> str:
-    if flow is None or graph is None or graph.output_schema is None:
+def structured_output_section(flow: Any = None, agent: Any = None) -> str:
+    schema = agent.config.output_schema if agent is not None else None
+    if flow is None or schema is None:
         return ""
-    hint = flow.output_parser.system_prompt_hint(graph.output_schema)
+    hint = system_prompt_hint(schema)
     return STRUCTURED_OUTPUT_TEXT.replace("{schema_hint}", hint).strip()
 
 
-def structured_output_option_section(flow: Any = None, graph: Any = None) -> str:
+def structured_output_option_section(flow: Any = None, agent: Any = None) -> str:
     # Independent of any required `output_schema`: this teaches the *capability*
     # of requesting structured output from subagents. Only useful when this agent
     # can actually spawn them.
-    if flow is None or graph is None:
+    if flow is None or agent is None:
         return ""
     if not getattr(flow, "enable_structured_output", True):
         return ""
     max_depth = getattr(flow, "max_depth", 0)
-    if max_depth == 0 or graph.depth >= max_depth:
+    if max_depth == 0 or agent.config.depth >= max_depth:
         return ""
     return STRUCTURED_OUTPUT_OPTION_TEXT.strip()
 
 
-def prompt_profiles_section(flow: Any = None, graph: Any = None) -> str:
+def prompt_profiles_section(flow: Any = None, agent: Any = None) -> str:
     """Advertise selectable prompt profiles so the orchestrator can choose one
-    per child (via a ``launch_subagents`` spec's ``prompt`` key).
+    per child (via a ``launch_subagents`` spec's ``prompt_profile`` key).
 
     Shown when the flow has a non-empty profile registry, the agent can still
-    spawn children, and ``prompt_router`` is ``"llm"`` (the default). ``"graph"``
-    and callable routers mean the host chooses, so listing names would be noise.
+    spawn children, and no custom ``prompt_router`` is installed. A callable
+    router means the host chooses, so listing names would be noise.
     """
-    if flow is None or graph is None:
+    if flow is None or agent is None:
         return ""
-    profiles = getattr(flow, "_prompts", {})
-    if not profiles or getattr(flow, "prompt_router", "llm") != "llm":
+    profiles = getattr(flow, "prompt_profiles", {})
+    if not profiles or getattr(flow, "prompt_router", None) is not None:
         return ""
     max_depth = getattr(flow, "max_depth", 0)
-    if max_depth == 0 or graph.depth >= max_depth:
+    if max_depth == 0 or agent.config.depth >= max_depth:
         return ""
-    lines = ["Available prompt profiles (pass `prompt` in a launch_subagents spec):"]
+    lines = [
+        "Available prompt profiles (pass `prompt_profile` in a launch_subagents spec):"
+    ]
     for name in sorted(profiles):
         desc = getattr(profiles[name], "description", "")
         lines.append(f"- `{name}`" + (f" — {desc}" if desc else ""))
     return "\n".join(lines)
 
 
-def status_section(flow: Any = None, graph: Any = None) -> str:
-    if flow is None or graph is None:
+def status_section(flow: Any = None, agent: Any = None) -> str:
+    if flow is None or agent is None:
         return ""
     max_depth = getattr(flow, "max_depth", 0)
     if max_depth == 0:
         return "Baseline mode: no sub-agents available."
-    note = f"You are at recursion depth **{graph.depth}** of max **{max_depth}**."
-    if graph.depth >= max_depth:
+    note = f"You are at recursion depth **{agent.config.depth}** of max **{max_depth}**."
+    if agent.config.depth >= max_depth:
         note += " You cannot spawn sub-agents."
     return note
 
@@ -486,6 +484,5 @@ __all__ = [
     "SystemPromptBuilder",
     "SystemPromptFn",
     "SystemPromptSource",
-    "as_prompt_profile",
     "as_system_prompt_fn",
 ]

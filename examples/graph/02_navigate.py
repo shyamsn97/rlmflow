@@ -1,11 +1,11 @@
-"""Navigating a minimal Graph."""
+"""Navigating a minimal Node trajectory."""
 
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
 
-from rlmflow import render_tree
+from rlmflow.view import render_tree
 
 
 def build_graph():
@@ -23,10 +23,11 @@ def main() -> None:
     graph = build_graph()
 
     print(render_tree(graph))
-    print("\nwalk:", [agent.agent_id for agent in graph.walk()])
-    print("children:", list(graph.children))
-    print("root.test result:", graph.children["root.test"].result())
-    print("len(root nodes):", len(graph.nodes))
+    print("\nwalk:", [node.id for node in graph.walk()])
+    print("agents:", list(graph.agent_ids()))
+    print("children:", list(graph.child_agents("root")))
+    print("root.test result:", graph.agent_result("root.test"))
+    print("len(root nodes):", len(graph.transcript("root")))
 
 
 if __name__ == "__main__":

@@ -45,10 +45,7 @@ def run_suite(config: SuiteConfig) -> list[Row]:
     config.root.mkdir(parents=True, exist_ok=True)
     logger = build_logger(config)
     rows = load_rows(config.root / "rows.jsonl") if config.resume else []
-    seen = {
-        (row.dataset, row.example_id, row.runner, row.model, row.seed)
-        for row in rows
-    }
+    seen = {(row.dataset, row.example_id, row.runner, row.model, row.seed) for row in rows}
     jobs = _build_jobs(config, seen=seen)
 
     logger.start(config.to_dict())
@@ -135,8 +132,7 @@ def _run_jobs(config: SuiteConfig, jobs: list[dict[str, Any]]) -> Iterable[Row]:
     results_by_index: dict[int, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=config.parallelism) as pool:
         futures = {
-            pool.submit(_run_job_payload, payload): index
-            for index, payload in enumerate(payloads)
+            pool.submit(_run_job_payload, payload): index for index, payload in enumerate(payloads)
         }
         for future in as_completed(futures):
             results_by_index[futures[future]] = future.result()
@@ -206,13 +202,7 @@ def _run_job_payload_inner(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         runner = RUNNERS.make(runner_spec.name, **runner_spec.params)
         model = MODELS.make(model_spec.provider, name=model_spec.name, **model_spec.params)
-        artifact_dir = (
-            Path(payload["root"])
-            / "artifacts"
-            / dataset_name
-            / example.id
-            / runner.name
-        )
+        artifact_dir = Path(payload["root"]) / "artifacts" / dataset_name / example.id / runner.name
         if best_of_n > 1:
             artifact_dir = artifact_dir / f"attempt_{attempt:02d}"
         ctx = RunContext(
@@ -542,17 +532,14 @@ def config_from_args(args: argparse.Namespace) -> SuiteConfig:
             model=model_spec.label,
         ),
         datasets=[
-            ComponentSpec(name=name, params=dataset_params.get(name, {}))
-            for name in dataset_names
+            ComponentSpec(name=name, params=dataset_params.get(name, {})) for name in dataset_names
         ],
         runners=[
-            ComponentSpec(name=name, params=runner_params.get(name, {}))
-            for name in runner_names
+            ComponentSpec(name=name, params=runner_params.get(name, {})) for name in runner_names
         ],
         model=model_spec,
         loggers=[
-            ComponentSpec(name=name, params=logger_params.get(name, {}))
-            for name in logger_names
+            ComponentSpec(name=name, params=logger_params.get(name, {})) for name in logger_names
         ],
         seeds=[args.seed] if args.seed is not None else parse_seed_spec(args.seeds),
         split=args.split,

@@ -1,14 +1,20 @@
-"""Mutating a minimal Graph."""
+"""Mutating a minimal Node trajectory."""
 
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
 
-from rlmflow import DoneOutput, Graph, UserQuery, render_tree
+from rlmflow import (
+    DoneOutput,
+    Node,
+    UserQuery,
+    surgery,
+)
+from rlmflow.view import render_tree
 
 
-def build_graph() -> Graph:
+def build_graph() -> Node:
     spec = importlib.util.spec_from_file_location(
         "graph_01_query", Path(__file__).with_name("01_query.py")
     )
@@ -23,18 +29,19 @@ def main() -> None:
     graph = build_graph()
     print("before:\n" + render_tree(graph))
 
-    graph.remove_child("root.test")
-    sibling = Graph(
-        agent_id="root.docs",
-        query="write docs",
-        depth=1,
-        parent_agent_id="root",
-    )
-    sibling.commit(UserQuery(content=sibling.query))
-    sibling.commit(DoneOutput(result="wrote README"))
-    graph.children[sibling.agent_id] = sibling
+    test_root = graph.transcript("root.test")[0]
+    assert test_root.parent is not None
+    parent = test_root.parent
+    surgery.remove(graph, test_root.id)
+    docs = parent.attach(UserQuery(agent_id="root.docs", content="write docs"))
+    docs.attach(DoneOutput(result="wrote README"))
 
-    graph.replace(graph.current().id, DoneOutput(result="package shipped with docs"))
+    surgery.insert(
+        graph,
+        graph.tail("root").id,
+        DoneOutput(result="package shipped with docs"),
+        mode="replace",
+    )
     print("\nafter:\n" + render_tree(graph))
 
 

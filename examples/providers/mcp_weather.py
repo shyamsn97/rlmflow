@@ -21,14 +21,14 @@ from typing import Any
 
 from rlmflow import (
     Flow,
-    Graph,
-    GraphCheckpointer,
-    LiveTreeRenderer,
     LocalRuntime,
+    Node,
     get_tool_metadata,
+    start,
     tool,
-    render_tree,
 )
+from rlmflow.consumers import GraphCheckpointer
+from rlmflow.view import LiveTreeRenderer, render_tree
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -48,9 +48,7 @@ class MCPStdioClient:
         self.args = args
         self._loop = asyncio.new_event_loop()
         self._ready = threading.Event()
-        self._thread = threading.Thread(
-            target=self._run_loop, name="mcp-weather", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run_loop, name="mcp-weather", daemon=True)
         self._queue: asyncio.Queue[tuple[str, Any, Future]] | None = None
         self._startup_error: BaseException | None = None
         self._session: Any = None
@@ -110,13 +108,9 @@ class MCPStdioClient:
                                 future.set_result(await session.list_tools())
                             elif op == "call_tool":
                                 name, arguments = payload
-                                future.set_result(
-                                    await session.call_tool(name, arguments)
-                                )
+                                future.set_result(await session.call_tool(name, arguments))
                             else:
-                                future.set_exception(
-                                    RuntimeError(f"Unknown MCP client op: {op}")
-                                )
+                                future.set_exception(RuntimeError(f"Unknown MCP client op: {op}"))
                         except BaseException as exc:  # noqa: BLE001
                             future.set_exception(exc)
                         finally:
@@ -219,9 +213,7 @@ def _signature_from_schema(schema: dict[str, Any]) -> inspect.Signature:
     required = set(schema.get("required") or [])
     params = []
     for name, prop in properties.items():
-        default = (
-            inspect.Parameter.empty if name in required else prop.get("default", None)
-        )
+        default = inspect.Parameter.empty if name in required else prop.get("default", None)
         params.append(
             inspect.Parameter(
                 name,
@@ -237,9 +229,7 @@ def _description_for(spec: Any) -> str:
     description = getattr(spec, "description", None) or f"Call MCP tool {spec.name}."
     schema = _schema_for(spec)
     if schema:
-        description += "\n\nMCP input schema:\n" + json.dumps(
-            schema, indent=2, sort_keys=True
-        )
+        description += "\n\nMCP input schema:\n" + json.dumps(schema, indent=2, sort_keys=True)
     return description
 
 
@@ -262,22 +252,19 @@ def mcp_tools(client: MCPStdioClient) -> dict[str, Any]:
     return tools
 
 
-async def run_until_done(
-    flow: Flow, graph: Graph, *, show_live: bool, out_dir: Path
-) -> Graph:
+async def run_until_done(flow: Flow, graph: Node, *, show_live: bool, out_dir: Path) -> Node:
     renderer = LiveTreeRenderer(clear=show_live)
     checkpointer = GraphCheckpointer(out_dir)
     try:
-        async for event in flow.run_streaming(graph=graph):
-            checkpointer.handle(event, graph)
+        async for event in flow.run_streaming(graph):
+            checkpointer.handle(event)
             if show_live:
-                renderer.handle(event, graph)
+                renderer.handle(event)
             else:
                 print(render_tree(graph))
     finally:
         checkpointer.close()
     return graph
-
 
 
 def main() -> None:
@@ -310,20 +297,18 @@ def main() -> None:
             max_depth=args.max_depth,
             max_iters=args.max_iters,
         )
-        graph = Graph(query=args.query)
+        graph = start(query=args.query)
         graph = asyncio.run(
-            run_until_done(
-                flow, graph, show_live=not args.no_viz, out_dir=Path(args.out_dir)
-            )
+            run_until_done(flow, graph, show_live=not args.no_viz, out_dir=Path(args.out_dir))
         )
 
         print(f"\n{'=' * 60}\nWEATHER PACKING RECOMMENDATION\n{'=' * 60}")
-        print(graph.result())
+        print(graph.agent_result())
 
         if args.out_dir:
             print(f"\nGraph checkpointed to {Path(args.out_dir)}")
 
-        flow.close_repls(graph.graph_id)
+        flow.runtime.close_repls(graph.trajectory_id)
     finally:
         mcp_client.close()
 

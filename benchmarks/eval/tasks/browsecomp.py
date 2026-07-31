@@ -69,7 +69,7 @@ class BrowseCompPlusDataset(Dataset):
         if not local.exists() and not self.allow_hf_download:
             raise FileNotFoundError(
                 f"BrowseComp-Plus is large and must be downloaded first to {local}. "
-                "Run: python -c \"from datasets import load_dataset; "
+                'Run: python -c "from datasets import load_dataset; '
                 "load_dataset('Tevatron/browsecomp-plus').save_to_disk('evals/data/browsecomp_plus')\" "
                 "or pass --dataset-param official_browsecomp.allow_hf_download=true."
             )
@@ -148,9 +148,7 @@ def _derive_key(password: str, length: int) -> bytes:
 
 def _normalize(value: str) -> str:
     decomposed = unicodedata.normalize("NFD", value)
-    without_accents = "".join(
-        char for char in decomposed if unicodedata.category(char) != "Mn"
-    )
+    without_accents = "".join(char for char in decomposed if unicodedata.category(char) != "Mn")
     return without_accents.strip().lower()
 
 

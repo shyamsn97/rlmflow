@@ -33,11 +33,13 @@ from pydantic import BaseModel
 from rlmflow import (
     ExecOutput,
     Flow,
-    Graph,
-    GraphCheckpointer,
+    Node,
     SupervisingOutput,
     parallel_stream,
+    persistence,
+    surgery,
 )
+from rlmflow.consumers import GraphCheckpointer
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -87,8 +89,6 @@ Instead of delegating to sub-agents, write a backtracking algorithm to find the 
 """
 
 
-
-
 def word_search_runs_dir() -> Path:
     return Path(__file__).resolve().parents[2] / "_runs" / "word-search"
 
@@ -97,17 +97,17 @@ def default_source() -> Path:
     return word_search_runs_dir() / "baseline"
 
 
-def summarize(label: str, graph: Graph) -> None:
-    current = graph.current()
+def summarize(label: str, graph: Node) -> None:
+    current = graph.tail()
     print(f"\n{label}")
     print("-" * len(label))
     print(f"root current: {current.type if current else '<empty>'}")
     if isinstance(current, SupervisingOutput):
         print(f"waiting_on: {', '.join(current.waiting_on)}")
-    print(f"children: {', '.join(graph.children) or '<none>'}")
-    if graph.finished:
+    print(f"children: {', '.join(graph.child_agents()) or '<none>'}")
+    if graph.finished():
         print("result:")
-        print(graph.result())
+        print(graph.agent_result())
 
 
 def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
@@ -121,12 +121,12 @@ def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
     )
 
 
-def validate_result(label: str, graph: Graph) -> None:
-    if not graph.finished:
+def validate_result(label: str, graph: Node) -> None:
+    if not graph.finished():
         print(f"\n{label} validation: skipped (graph is not finished)")
         return
 
-    result = WordSearchResult.model_validate_json(graph.result())
+    result = WordSearchResult.model_validate_json(graph.agent_result())
     actual = {_hit_key(hit) for hit in result.found}
     missing = set(result.missing)
     ok = actual == EXPECTED_HITS and missing == EXPECTED_MISSING
@@ -146,27 +146,25 @@ def validate_result(label: str, graph: Graph) -> None:
     assert ok
 
 
-def supervising_node(graph: Graph, agent_id: str) -> SupervisingOutput:
-    matches = [
-        node
-        for node in graph[agent_id].nodes
-        if isinstance(node, SupervisingOutput)
-    ]
+def supervising_node(graph: Node, agent_id: str) -> SupervisingOutput:
+    matches = [node for node in graph.transcript(agent_id) if isinstance(node, SupervisingOutput)]
     return matches[-1]
 
 
 def replace_supervisor_with_prompt(
-    graph: Graph,
+    graph: Node,
     agent_id: str,
     prompt: str,
-) -> Graph:
-    variant = graph.fork(session="isolated")
-    variant.replace(
-        supervising_node(variant, agent_id),
+) -> Node:
+    variant = surgery.fork(graph, session="isolated")
+    surgery.insert(
+        variant,
+        supervising_node(variant, agent_id).id,
         ExecOutput(
             output=prompt,
             content=f"REPL output for previous block:\n{prompt}",
         ),
+        mode="replace",
         truncate="descendants",
     )
     return variant
@@ -184,7 +182,7 @@ def main() -> None:
     parser.add_argument("--model", default="gpt-5-mini")
     args = parser.parse_args()
 
-    graph = Graph.load(args.source.resolve())
+    graph = persistence.load(args.source.resolve())
     summarize("Loaded real word-search run", graph)
 
     # Each edit starts from a fresh, independent graph value.
@@ -199,8 +197,7 @@ def main() -> None:
         ROOT_DIRECT_SCAN_PROMPT,
     )
 
-    # One Flow is the engine; it drives both variant graphs at once and merges
-    # their event streams (each event carries graph_id).
+    # One Flow drives both variants and merges their Node streams.
     flow = Flow(
         build_client(args.model),
         max_depth=2,
@@ -208,32 +205,30 @@ def main() -> None:
     )
 
     out = args.out.resolve()
-    # One checkpointer per variant, keyed by graph_id, since parallel_stream
-    # interleaves events for both graphs (each event carries graph_id).
-    graphs = {cols_graph.graph_id: cols_graph, root_graph.graph_id: root_graph}
+    # One checkpointer per variant, keyed by trajectory_id, since parallel_stream
+    # interleaves Nodes from both graphs (each Node carries trajectory_id).
     checkpointers = {
-        cols_graph.graph_id: GraphCheckpointer(out / "variant-cols"),
-        root_graph.graph_id: GraphCheckpointer(out / "variant-root"),
+        cols_graph.trajectory_id: GraphCheckpointer(out / "variant-cols"),
+        root_graph.trajectory_id: GraphCheckpointer(out / "variant-root"),
     }
 
     async def run_variants() -> None:
         try:
-            async for event in parallel_stream(flow, cols_graph, root_graph):
-                gid = event.graph_id
-                checkpointers[gid].handle(event, graphs[gid])
-                node_type = getattr(event, "node_type", event.type)
-                print(f"step: {gid} -> {node_type}")
+            async for node in parallel_stream(flow, cols_graph, root_graph):
+                gid = node.trajectory_id
+                checkpointers[gid].handle(node)
+                print(f"step: {gid} -> {node.type}")
         finally:
             for checkpointer in checkpointers.values():
                 checkpointer.close()
 
     asyncio.run(run_variants())
 
-    flow.close_repls(cols_graph.graph_id)
-    flow.close_repls(root_graph.graph_id)
+    flow.runtime.close_repls(cols_graph.trajectory_id)
+    flow.runtime.close_repls(root_graph.trajectory_id)
 
-    cols_dir = cols_graph.save(out / "variant-cols")
-    root_dir = root_graph.save(out / "variant-root")
+    cols_dir = persistence.save(cols_graph, out / "variant-cols")
+    root_dir = persistence.save(root_graph, out / "variant-root")
 
     summarize("Variation A: prompt root.cols to scan columns directly", cols_graph)
     validate_result("Variation A", cols_graph)

@@ -18,6 +18,9 @@ RLMFLOW_PARENT_AGENT_ID = "RLMFLOW_PARENT_AGENT_ID"
 RLMFLOW_MAX_DEPTH = "RLMFLOW_MAX_DEPTH"
 #: ``"1"`` for root, ``"0"`` otherwise.
 RLMFLOW_IS_ROOT = "RLMFLOW_IS_ROOT"
+#: ``"1"`` while recorded code is being re-run to rebuild a namespace, ``"0"`` during
+#: a live turn. Code that reads it can skip work it should not repeat.
+RLMFLOW_REPLAY = "RLMFLOW_REPLAY"
 
 
 def agent_process_env(
@@ -34,6 +37,7 @@ def agent_process_env(
         RLMFLOW_PARENT_AGENT_ID: parent_agent_id or "",
         RLMFLOW_MAX_DEPTH: str(max_depth),
         RLMFLOW_IS_ROOT: "1" if depth == 0 else "0",
+        RLMFLOW_REPLAY: "0",
     }
 
 
@@ -43,5 +47,6 @@ __all__ = [
     "RLMFLOW_IS_ROOT",
     "RLMFLOW_MAX_DEPTH",
     "RLMFLOW_PARENT_AGENT_ID",
+    "RLMFLOW_REPLAY",
     "agent_process_env",
 ]

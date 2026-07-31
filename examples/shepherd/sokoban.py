@@ -67,7 +67,7 @@ class Sokoban:
         self.step_frames: list[tuple[str, str]] = []
         # Just the *current* turn's sub-step renders, reset at the start of every
         # push/move and published to ``env["frames"]`` so the live grid can read it
-        # back (``flow.get_env_var``) and animate this turn's walk-and-shove.
+        # back (``flow.runtime.get_env_var``) and animate this turn's walk-and-shove.
         self.turn_frames: list[str] = []
         # Set when a requested push can't be applied: the cue that the myopic
         # worker has run into a wall and it is time to rewind.
@@ -197,20 +197,13 @@ class Sokoban:
         Legal pushes are harness-injected separately (see ``board_prompt``) —
         not something the agent should call for."""
         goals = ", ".join(f"({r},{c})" for r, c in sorted(self.targets))
-        around = [
-            f"  Player ({self.player[0]},{self.player[1]}): "
-            f"{self._neighbors(self.player)}"
-        ]
-        around += [
-            f"  {bid} ({p[0]},{p[1]}): {self._neighbors(p)}"
-            for bid, p in self.box_items()
-        ]
+        around = [f"  Player ({self.player[0]},{self.player[1]}): {self._neighbors(self.player)}"]
+        around += [f"  {bid} ({p[0]},{p[1]}): {self._neighbors(p)}" for bid, p in self.box_items()]
         return (
             f"Current Grid:\n{self.render()}\n\n"
             f"Player: ({self.player[0]},{self.player[1]})\n"
             f"Goals: {goals}\n"
-            f"Adjacency (what's up/down/left/right of each piece):\n"
-            + "\n".join(around)
+            f"Adjacency (what's up/down/left/right of each piece):\n" + "\n".join(around)
         )
 
     def _publish(self) -> None:
@@ -282,16 +275,12 @@ class Sokoban:
         exactly one cell, reporting why if blocked. Subject to the one-action guard
         during live play. Workers use ``push``; this exists for tests/primitives."""
         if self._armed and self._pushed:
-            raise RuntimeError(
-                "one push per turn — read the board, then act once next turn"
-            )
+            raise RuntimeError("one push per turn — read the board, then act once next turn")
         self._pushed = True
         self.turn_frames = []
         delta = _norm_dir(direction)
         if delta is None:
-            return self._reject(
-                f"UNKNOWN direction {direction!r} (use up/down/left/right)."
-            )
+            return self._reject(f"UNKNOWN direction {direction!r} (use up/down/left/right).")
         desc = self._apply(direction)
         if desc is None:
             return self._reject(f"ILLEGAL: can't move {direction} — nothing moved.")
@@ -307,16 +296,12 @@ class Sokoban:
         why and change nothing. ``direction`` is up/down/left/right; ``box`` is a
         ``B<n>`` id or an ``(r, c)`` coordinate."""
         if self._armed and self._pushed:
-            raise RuntimeError(
-                "one push per turn — read the board, then push once next turn"
-            )
+            raise RuntimeError("one push per turn — read the board, then push once next turn")
         self._pushed = True
         self.turn_frames = []
         delta = _norm_dir(direction)
         if delta is None:
-            return self._reject(
-                f"UNKNOWN direction {direction!r} (use up/down/left/right)."
-            )
+            return self._reject(f"UNKNOWN direction {direction!r} (use up/down/left/right).")
         pos = self._box_pos(box)
         if pos is None:
             return self._reject(f"NO box {box!r} on the board.")
@@ -325,9 +310,7 @@ class Sokoban:
         dest = (pos[0] + dr, pos[1] + dc)
         stand = (pos[0] - dr, pos[1] - dc)
         if dest in self.walls or dest in self.boxes:
-            return self._reject(
-                f"ILLEGAL: box {bid} can't go {direction} — blocked ahead."
-            )
+            return self._reject(f"ILLEGAL: box {bid} can't go {direction} — blocked ahead.")
         if stand in self.walls or stand in self.boxes:
             return self._reject(
                 f"ILLEGAL: no room to stand behind box {bid} to push it {direction}."

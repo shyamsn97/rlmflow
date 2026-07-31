@@ -1,11 +1,16 @@
 import asyncio
 import sys
 
+from helpers import (
+    StubLLM,
+    first_user,
+)
+
 from rlmflow import (
     Flow,
-    Graph,
     LocalRuntime,
     SubprocessRuntime,
+    start,
     tool,
 )
 from rlmflow.runtime import PopenConnection, build_docker_argv
@@ -21,11 +26,6 @@ from rlmflow.runtime.protocol import (
 from rlmflow.runtime.repl import DoneSignal
 from rlmflow.runtime.repl_client import RemoteRepl
 
-from helpers import (
-    StubLLM,
-    first_user,
-)
-
 
 def test_minimal_runtime_register_tools_are_prompted_and_executable():
     seen = {}
@@ -39,14 +39,12 @@ def test_minimal_runtime_register_tools_are_prompted_and_executable():
         return '```repl\nprint(double(3))\ndone("ok")\n```'
 
     runtime = LocalRuntime()
-    runtime.register_tools([double])
-    flow = Flow(StubLLM(reply), runtime=runtime)
-    graph = Graph(query="q")
+    flow = Flow(StubLLM(reply), runtime=runtime, tools=[double])
+    graph = start("q")
 
-    assert flow.run(graph=graph) == "ok"
+    assert flow.run(graph) == "ok"
     assert "`double" in seen["system"]
-    assert "6" in graph.nodes[-1].output
-
+    assert "6" in graph.tail().content
 
 
 def test_minimal_local_runtime_uses_working_directory(tmp_path):
@@ -62,11 +60,10 @@ def test_minimal_local_runtime_uses_working_directory(tmp_path):
         ),
         runtime=LocalRuntime(working_directory=tmp_path),
     )
-    graph = Graph(query="q")
+    graph = start("q")
 
-    assert flow.run(graph=graph) == "hello"
+    assert flow.run(graph) == "hello"
     assert (tmp_path / "note.txt").read_text() == "hello"
-
 
 
 def test_minimal_repl_client_uses_minimal_repl_server():
@@ -89,12 +86,11 @@ def test_minimal_repl_client_uses_minimal_repl_server():
         finally:
             repl.close()
 
-    output = asyncio.run(run())
+    result = asyncio.run(run())
 
-    assert "remote" in output
-    assert repl.done_result == "ok"
+    assert "remote" in result.output
+    assert (result.status, result.answer) == ("done", "ok")
     assert not repl.errored
-
 
 
 def test_minimal_local_repl_env_channel_round_trips():
@@ -111,10 +107,10 @@ def test_minimal_local_repl_env_channel_round_trips():
         )
 
     flow = Flow(StubLLM(reply))
-    graph = Graph(query="q")
+    graph = start("q")
 
-    assert flow.run(graph=graph) == "root"
-    published.update(flow.repl_for(graph).env)
+    assert flow.run(graph) == "root"
+    published.update(flow.runtime.repl_for(graph).env)
     assert published["solved"] is True
     assert published["RLMFLOW_AGENT_ID"] == "root"
 
@@ -130,8 +126,7 @@ def test_minimal_subprocess_runtime_exposes_env_metadata():
         max_depth=2,
     )
 
-    assert flow.run(graph=Graph(query="q")) == "root|1"
-
+    assert flow.run(start("q")) == "root|1"
 
 
 def test_minimal_repl_client_reads_back_published_env():
@@ -158,17 +153,16 @@ def test_minimal_repl_client_reads_back_published_env():
     assert env["RLMFLOW_AGENT_ID"] == "root.child"
 
 
-
 def test_minimal_flow_get_var_reads_local_repl_variable():
     # flow.get_var pulls a var the agent created out of its (in-process) REPL.
     def reply(_messages):
         return '```repl\nresult = {"n": 42}\ndone("ok")\n```'
 
     flow = Flow(StubLLM(reply))
-    graph = Graph(query="q")
+    graph = start("q")
 
-    assert flow.run(graph=graph) == "ok"
-    assert flow.get_var(graph, "result") == {"n": 42}
+    assert flow.run(graph) == "ok"
+    assert flow.runtime.get_var(graph, "result") == {"n": 42}
 
 
 def test_minimal_subprocess_injects_and_retrieves_live_object_by_value():
@@ -238,9 +232,7 @@ def test_minimal_repl_client_inject_rejects_unpicklable_without_capability():
 def test_minimal_remote_protocol_models_round_trip():
     run = parse_request(RunRequest(id="r1", code="print(1)").model_dump())
     response = parse_client_message(ReplResponse(id="r1", output="1").model_dump())
-    proxy = parse_client_message(
-        ProxyCall(id="p1", proxy="done", args=["ok"]).model_dump()
-    )
+    proxy = parse_client_message(ProxyCall(id="p1", proxy="done", args=["ok"]).model_dump())
 
     assert isinstance(run, RunRequest)
     assert run.code == "print(1)"
@@ -248,7 +240,6 @@ def test_minimal_remote_protocol_models_round_trip():
     assert response.output == "1"
     assert isinstance(proxy, ProxyCall)
     assert proxy.proxy == "done"
-
 
 
 def test_minimal_repl_server_supports_ping_and_capabilities():
@@ -267,8 +258,7 @@ def test_minimal_repl_server_supports_ping_and_capabilities():
 
     assert ping.ok
     assert capabilities.capabilities is not None
-    assert capabilities.capabilities.fork == "none"
-
+    assert not hasattr(capabilities.capabilities, "fork")
 
 
 def test_minimal_subprocess_runtime_executes_agent_code():
@@ -276,11 +266,10 @@ def test_minimal_subprocess_runtime_executes_agent_code():
         StubLLM(lambda _messages: '```repl\nprint("subproc")\ndone("ok")\n```'),
         runtime=SubprocessRuntime(),
     )
-    graph = Graph(query="q")
+    graph = start("q")
 
-    assert flow.run(graph=graph) == "ok"
-    assert "subproc" in graph.nodes[-1].output
-
+    assert flow.run(graph) == "ok"
+    assert "subproc" in graph.tail().content
 
 
 def test_minimal_subprocess_runtime_uses_working_directory(tmp_path):
@@ -296,11 +285,10 @@ def test_minimal_subprocess_runtime_uses_working_directory(tmp_path):
         ),
         runtime=SubprocessRuntime(working_directory=tmp_path),
     )
-    graph = Graph(query="q")
+    graph = start("q")
 
-    assert flow.run(graph=graph) == "hello"
+    assert flow.run(graph) == "hello"
     assert (tmp_path / "note.txt").read_text() == "hello"
-
 
 
 def test_minimal_docker_argv_uses_minimal_repl_server(tmp_path):
@@ -313,7 +301,6 @@ def test_minimal_docker_argv_uses_minimal_repl_server(tmp_path):
 
     assert "rlmflow.runtime.repl_server" in argv
     assert argv[:4] == ["docker", "run", "-i", "--rm"]
-
 
 
 def test_minimal_subprocess_runtime_supports_awaited_launch_subagents():
@@ -329,5 +316,4 @@ def test_minimal_subprocess_runtime_supports_awaited_launch_subagents():
 
     flow = Flow(StubLLM(reply), runtime=SubprocessRuntime(), max_depth=1)
 
-    assert flow.run(graph=Graph(query="parent")) == "child-done"
-
+    assert flow.run(start("parent")) == "child-done"

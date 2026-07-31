@@ -76,9 +76,17 @@ class SudokuExtremeDataset(Dataset):
 
     def _matches_rating(self, row: dict[str, Any]) -> bool:
         rating = row.get("rating")
-        if self.min_rating is not None and isinstance(rating, (int, float)) and rating < self.min_rating:
+        if (
+            self.min_rating is not None
+            and isinstance(rating, (int, float))
+            and rating < self.min_rating
+        ):
             return False
-        if self.max_rating is not None and isinstance(rating, (int, float)) and rating > self.max_rating:
+        if (
+            self.max_rating is not None
+            and isinstance(rating, (int, float))
+            and rating > self.max_rating
+        ):
             return False
         return True
 
@@ -104,7 +112,9 @@ class SudokuExtremeDataset(Dataset):
         )
 
 
-def _select_rows(rows: list[dict[str, Any]], *, limit: int | None, seed: int) -> list[dict[str, Any]]:
+def _select_rows(
+    rows: list[dict[str, Any]], *, limit: int | None, seed: int
+) -> list[dict[str, Any]]:
     import random
 
     count = limit or 1

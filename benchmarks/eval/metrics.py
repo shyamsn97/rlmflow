@@ -7,25 +7,22 @@ from statistics import mean
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from rlmflow import Graph
+    from rlmflow import Node
 
 from benchmarks.eval.types import Row
 
 
-def graph_metrics(graph: "Graph | None") -> dict[str, Any]:
+def graph_metrics(graph: "Node | None") -> dict[str, Any]:
     if graph is None:
         return {}
-    agents = list(graph.walk())
-    node_counts = [len(agent.nodes) for agent in agents]
-    child_counts = [len(agent.children) for agent in agents]
-    llm_turns = sum(
-        1 for agent in agents for node in agent.nodes if node.type == "llm_output"
-    )
+    nodes = list(graph.walk())
+    agents = graph.agent_ids()
+    child_counts = [len(graph.child_agents(agent_id)) for agent_id in agents]
     return {
         "agents": len(agents),
-        "nodes": sum(node_counts),
-        "llm_turns": llm_turns,
-        "max_depth": max((agent.depth for agent in agents), default=0),
+        "nodes": len(nodes),
+        "llm_turns": sum(node.type == "llm_output" for node in nodes),
+        "max_depth": max((graph.depth(agent_id) for agent_id in agents), default=0),
         "max_branching": max(child_counts, default=0),
     }
 
@@ -38,11 +35,11 @@ def summarize(rows: list[Row]) -> dict[str, Any]:
         graded = [row for row in items if row.score.correct is not None]
         correct = sum(1 for row in graded if row.score.correct is True)
         accuracy = correct / len(graded) if graded else None
-        graphs = [
-            graph
-            for row in items
-            if isinstance((graph := row.prediction.metrics.get("graph")), dict) and graph
-        ]
+        graphs = []
+        for row in items:
+            graph = row.prediction.metrics.get("graph")
+            if isinstance(graph, dict) and graph:
+                graphs.append(graph)
 
         def graph_mean(key: str) -> float | None:
             values = [graph.get(key) for graph in graphs]
@@ -87,9 +84,7 @@ def summarize(rows: list[Row]) -> dict[str, Any]:
         "overall": group(rows),
         "by_runner": {key: group(items) for key, items in sorted(by_runner.items())},
         "by_dataset": {key: group(items) for key, items in sorted(by_dataset.items())},
-        "by_runner_dataset": {
-            key: group(items) for key, items in sorted(by_pair.items())
-        },
+        "by_runner_dataset": {key: group(items) for key, items in sorted(by_pair.items())},
     }
 
 

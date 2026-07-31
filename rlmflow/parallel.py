@@ -1,8 +1,8 @@
-"""Drive several graphs on one :class:`~rlmflow.flow.Flow` at once.
+"""Drive several Node trajectories on one Flow at once.
 
 Free functions, not ``Flow`` methods: each graph is just a run the flow already
 knows how to stream (``run_streaming``); this only fans those runs out and merges
-their events. Keeping it off ``Flow`` keeps the class focused on single-graph
+their Nodes. Keeping it off ``Flow`` keeps the class focused on single-graph
 policy and makes the fan-out easy to read in one place.
 """
 
@@ -12,40 +12,35 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from rlmflow.graph import Graph
-from rlmflow.graph.events import Event, StepUntil
-from rlmflow.utils import graph_from_input
+from rlmflow.graph import AgentStart, Node
+from rlmflow.utils import node_from_input
 
 if TYPE_CHECKING:
-    from rlmflow.flow import Flow
+    from rlmflow.flow import Flow, StepUntil
 
 
 async def parallel_stream(
     flow: Flow,
-    *graphs: Graph | str,
+    *roots: AgentStart | str,
     until: StepUntil = "done",
-    n: int | None = None,
     close_repls: bool = False,
-) -> AsyncIterator[Event]:
-    """Drive several graphs on one flow, merging their events into one stream.
+) -> AsyncIterator[Node]:
+    """Drive several trajectories, merging their published Nodes.
 
-    Each graph gets its own run (keyed by ``graph_id``) with its own scheduler
-    and ``until`` boundary; every event carries ``graph_id`` so the merged stream
-    is self-describing. Graphs must be distinct — two entries for the same
-    ``graph_id`` would drive one run twice (``run_streaming`` rejects the second).
+    Each root gets its own stream boundary while sharing the Flow's Runtime.
+    Concurrent streams must have distinct trajectory identities.
     """
     streams = [
         aiter(
             flow.run_streaming(
-                graph=graph_from_input(g),
+                node_from_input(root),
                 until=until,
-                n=n,
                 close_repls=close_repls,
             )
         )
-        for g in graphs
+        for root in roots
     ]
-    # One in-flight "next event" task per live stream; whichever resolves first
+    # One in-flight "next Node" task per live stream; whichever resolves first
     # is yielded, then re-armed. No sentinels, no queue, no bound.
     pending = {asyncio.ensure_future(anext(it)): it for it in streams}
     try:
@@ -68,19 +63,18 @@ async def parallel_stream(
 
 async def parallel_run(
     flow: Flow,
-    *graphs: Graph | str,
+    *roots: AgentStart | str,
     until: StepUntil = "done",
-    n: int | None = None,
     close_repls: bool = False,
-) -> list[Graph]:
+) -> list[AgentStart]:
     """Drive several graphs to completion, returning them in argument order.
 
     String queries are coerced to graphs first so the caller gets back the live
     graphs (and their ``result()``) without holding them beforehand.
     """
-    coerced = [graph_from_input(g) for g in graphs]
+    coerced = [node_from_input(root) for root in roots]
     async for _event in parallel_stream(
-        flow, *coerced, until=until, n=n, close_repls=close_repls
+        flow, *coerced, until=until, close_repls=close_repls
     ):
         pass
     return coerced
