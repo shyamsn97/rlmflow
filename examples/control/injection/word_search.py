@@ -8,8 +8,8 @@ delegating direction-specific search to three child agents:
 - ``diagonals`` searches diagonals in all four diagonal directions.
 
 That route is intentionally plausible but more complicated than necessary. It
-creates a real root ``SupervisingOutput`` that ``inject_variants.py`` can later
-replace with a direct scanner route. The finished run is saved as a run
+creates a real delegating turn at the root, with each child agent hanging off
+the ``ExecAction`` that launched it. The finished run is saved as a run
 directory (``graph.json`` manifest plus per-agent logs nested under
 ``agents/``) that ``inject_variants.py`` loads with ``persistence.load``.
 
@@ -28,9 +28,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rlmflow import Flow, start, persistence
-from rlmflow.consumers import GraphCheckpointer
-from rlmflow.view import render_tree
+from rlmflow import AgentStart, Flow, Node, json_schema_for, start
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -108,32 +106,39 @@ def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
     )
 
 
+def print_tree(node: Node, depth: int = 0) -> None:
+    """One indented line per node, from ``node`` down."""
+    label = f"{node.type} [{node.config.path}]" if isinstance(node, AgentStart) else node.type
+    print(f"{'  ' * depth}{label}")
+    for child in node.children:
+        print_tree(child, depth + 1)
+
+
 def run(model: str, out_dir: Path) -> None:
-    flow = Flow(
-        build_client(model),
+    flow = Flow(build_client(model))
+
+    graph = start(
+        query=QUERY,
+        inputs={"grid": GRID},
+        output_schema=json_schema_for(WordSearchResult),
         max_depth=2,
     )
-
-    graph = start(query=QUERY)
-    print(render_tree(graph))
-    checkpointer = GraphCheckpointer(out_dir)
+    print_tree(graph)
 
     async def run_to_done() -> None:
-        try:
-            async for _event in flow.run_streaming(
-                graph,
-                inputs={"grid": GRID},
-                output_schema=WordSearchResult,
-            ):
-                checkpointer.handle(_event)
-                print(render_tree(graph))
-        finally:
-            checkpointer.close()
+        async for node in flow.run_streaming(graph):
+            # Checkpointing as nodes land keeps the run directory current.
+            graph.save(out_dir)
+            print(f"- {node.parent_agent.config.path}: {node.type}")
 
     asyncio.run(run_to_done())
-    flow.runtime.close_repls(graph.trajectory_id)
+    flow.runtime.close_repls()
 
-    result = WordSearchResult.model_validate_json(graph.agent_result())
+    print("=== TREE ===")
+    print_tree(graph)
+
+    # With an output_schema, done(...) records the parsed value, not raw text.
+    result = WordSearchResult.model_validate(graph.result())
     actual = {_hit_key(hit) for hit in result.found}
     missing = set(result.missing)
 
@@ -143,10 +148,11 @@ def run(model: str, out_dir: Path) -> None:
         raise SystemExit("agent returned word-search hits that do not match EXPECTED")
 
     print("agent returned the expected word-search hits!")
-    path = persistence.save(graph, out_dir)
+    path = graph.save(out_dir)
+    agents = sum(isinstance(node, AgentStart) for node in graph.walk())
     print(f"\nwrote baseline run: {path}")
     print(f"  manifest: {path / 'graph.json'}")
-    print(f"  agents:   {path / 'agents'} ({len(graph.agent_ids())} agents)")
+    print(f"  agents:   {path / 'agents'} ({agents} agents)")
     save_example_graph(graph, "injection-word-search")
 
 

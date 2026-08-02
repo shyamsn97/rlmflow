@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from rlmflow.flow import Flow
-from rlmflow.graph import LLMUsage, Node, start
+from rlmflow.graph.nodes import LLMUsage, Node, start
+
+if TYPE_CHECKING:  # the engine imports the prompt stack, which imports these nodes
+    from rlmflow.flow import Flow
 
 try:
     import dspy as _dspy
@@ -41,7 +43,7 @@ class FlowLLM:
         graph = start(messages_to_query(messages))
         result = self.flow.run(graph)
         self.last_graph = graph
-        self.last_usage = LLMUsage(*graph.tokens())
+        self.last_usage = graph.tokens()
         return result
 
     def completion(self, prompt: str, *args: Any, **kwargs: Any) -> str:

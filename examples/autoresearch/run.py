@@ -17,8 +17,9 @@ from pathlib import Path
 from typing import Any
 
 from rlmflow import (
-    DockerRuntime,
     FILE_TOOLS,
+    AgentStart,
+    DockerRuntime,
     Flow,
     LocalRuntime,
     SubprocessRuntime,
@@ -26,8 +27,7 @@ from rlmflow import (
     start,
     tool,
 )
-from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, WorkspaceSync
-from rlmflow.view import LiveTreeRenderer
+from rlmflow.consumers import WorkspaceSync
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -648,14 +648,11 @@ def run(args: argparse.Namespace) -> None:
     (args.out / "config.json").write_text(json.dumps(config, indent=2, sort_keys=True))
 
     runtime = build_runtime(args.agent_runtime, args.docker_image, args.out)
-    runtime.register_tools(FILE_TOOLS)
-    runtime.register_tools(build_autoresearch_tools(state))
 
     flow = Flow(
         build_client(args.model),
         runtime=runtime,
-        max_depth=args.max_depth,
-        max_iters=args.max_iters,
+        tools=[*FILE_TOOLS, *build_autoresearch_tools(state)],
         workers=args.parallel,
         system_prompt=build_prompt_builder(),
     )
@@ -679,48 +676,36 @@ new direction, not stop). After each wave, re-check submission_status() and
 launch the next one.
 """
     graph_dir = args.out / "graph"
-    graph = start(query=query)
-    graph.metadata.update(
-        {
-            "kind": "autoresearch",
-            "max_submissions": args.max_submissions,
-            "model": args.model,
-            "out": str(args.out),
-        }
-    )
-    inputs = {"task_instructions": (example_dir / "program.md").read_text()}
-    checkpointer = GraphCheckpointer(
-        graph_dir,
-        every_s=args.checkpoint_every_s,
-    )
-    consumers = ConsumerGroup(
-        [
-            checkpointer,
-            LiveTreeRenderer(clear=not args.no_live),
-        ]
+    root = start(
+        query,
+        inputs={"task_instructions": (example_dir / "program.md").read_text()},
+        max_depth=args.max_depth,
+        max_iters=args.max_iters,
     )
     sync = (
         WorkspaceSync(args.out, args.sync_dir, every_s=args.sync_every_s)
         if args.sync_dir is not None
         else None
     )
-    if sync is not None:
-        consumers.append(sync)
+
+    async def drive(root: AgentStart) -> None:
+        async for node in flow.run_streaming(root):
+            print(f"{node.parent_agent.config.path:<20} {node.type}", flush=True)
+            root.save(graph_dir)
+            if sync is not None:
+                sync.handle(node)
+
     try:
-        checkpointer.save(graph)
+        root.save(graph_dir)
         if sync is not None:
             sync.sync()
-
-        async def drive() -> None:
-            async for event in flow.run_streaming(graph, inputs=inputs):
-                consumers.handle(event)
-
-        asyncio.run(drive())
-        print(graph.agent_result())
+        asyncio.run(drive(root))
+        print(root.result())
         write_run_report(state, args.out, announce=True)
     finally:
-        consumers.close()
-        flow.runtime.close_repls(graph.trajectory_id)
+        if sync is not None:
+            sync.close()
+        flow.runtime.close_repls()
 
 
 def build_runtime(kind: str, docker_image: str, workdir: Path):
@@ -972,10 +957,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--docker-image", default="rlmflow:local")
     parser.add_argument("--out", type=Path, default=None)
-    parser.add_argument("--checkpoint-every-s", type=float, default=0.0)
     parser.add_argument("--sync-dir", type=Path, default=None)
     parser.add_argument("--sync-every-s", type=float, default=2.0)
-    parser.add_argument("--no-live", action="store_true")
     args = parser.parse_args()
     if args.out is None:
         args.out = default_out_dir()

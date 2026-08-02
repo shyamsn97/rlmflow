@@ -106,7 +106,7 @@ These are task-specific harnesses for coding agents with Docker sandboxes and be
 
 - **Not a product** — it's a library. You bring your own LLM keys, runtime, and UI.
 - **Not a sandbox** — `LocalRuntime` runs code in your process. Use `ModalRuntime` or a custom `Runtime` for isolation.
-- **Not an integration platform** — we don't ship 100 tool connectors. Register your own tools with `@tool` + `runtime.register_tool(...)`, or use the built-in filesystem tools.
+- **Not an integration platform** — we don't ship 100 tool connectors. Register your own tools with `@tool` + `Flow(tools=[...])`, or use the built-in filesystem tools.
 - **Not a prompt optimizer** — we provide sensible defaults, but prompt tuning is your job (or pair with DSPy).
 
 ## Who should use rlmflow

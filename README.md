@@ -9,8 +9,8 @@ Read the blog post: [rlmflow](https://shyamsn97.github.io/blog/rlmflow/).
 
 **rlmflow** is a Python library for building **recursive agents** — agents
 that spawn other agents — as live execution graphs. Every query, action,
-observation, child call, wait, resume, and result is a typed node you can
-inspect, step through, save, fork, and edit mid-run.
+observation, child agent, and result is a typed node you can inspect, step
+through, save, fork, and append to mid-run.
 
 It gives an LLM a stateful Python REPL and a graph-native way to spawn agents
 with fresh context.
@@ -69,32 +69,32 @@ results == ["not found", "decoy, no code", "candidate code 84721"]
 If `chunk_2` launched `candidate_a` and `candidate_b` internally, the parent can
 still receive `"candidate code 84721"` as its normal result. But for debugging,
 evaluation, supervision, or reuse, you also want the execution state that
-produced it: which agents ran, what they saw, where they waited, what failed,
-and where you could intervene.
+produced it: which agents ran, what they saw, what failed, and where you could
+intervene.
 
 **rlmflow** keeps that structure alive. Every recursive call is a child agent
 inside one typed `Node` tree:
 
 <p align="center">
-  <img src="docs/recursive_agents_graph.svg" alt="rlmflow graph showing root, child agents, grandchild agents, supervision, resume, and final result states" />
+  <img src="docs/recursive_agents_graph.svg" alt="rlmflow graph showing root, child agents, grandchild agents, and final result states" />
 </p>
 
 The graph is the run itself:
 
 ```python
-from rlmflow import Flow, render_tree, start
+from rlmflow import Flow, start
 
 flow = Flow(client)
 root = start(query)
 
 async for node in flow.run_streaming(root):
-    print(render_tree(node.root()))
+    print(node.parent_agent.config.path, node.type)
 ```
 
-`run_streaming` mutates the root in place and yields each changed Node, so the
-live tree is just `render_tree(root)`. The Node tree *is* the durable state: you
-can inspect a branch, save a checkpoint, fork from an old snapshot, inject
-controller feedback, replace a bad node, and continue from the edited graph.
+`run_streaming` mutates the root in place and yields each node as it lands, so
+the live tree is always just `root`. The Node tree *is* the durable state: you
+can inspect a branch, save a checkpoint, fork from an old node, append
+controller feedback, and continue from the edited graph.
 
 See [`docs/internals.md`](docs/internals.md), [`docs/node_model.md`](docs/node_model.md),
 and [`docs/control.md`](docs/control.md) for the full engine and graph API.
@@ -108,8 +108,6 @@ pip install rlmflow[anthropic]    # + Anthropic client
 pip install rlmflow[tinker]       # + Tinker inference client
 pip install rlmflow[dspy]         # + DSPy adapter
 pip install rlmflow[modal]        # + Modal runtime
-pip install rlmflow[viewer]       # + Gradio viewer (plotly)
-pip install rlmflow[image]        # + static image / GIF export (kaleido)
 pip install rlmflow[all]          # all of the above
 ```
 
@@ -142,26 +140,16 @@ full interactive version.
 ```python
 from pathlib import Path
 
-from rlmflow.clients import OpenAIClient
-from rlmflow import (
-    FILE_TOOLS,
-    Flow,
-    LocalRuntime,
-    open_viewer,
-    persistence,
-    render_tree,
-    start,
-)
+from rlmflow.llm import OpenAIClient
+from rlmflow import FILE_TOOLS, AgentConfig, Flow, LocalRuntime, start
 
 workdir = Path("examples/_runs/quickstart")
-runtime = LocalRuntime(working_directory=workdir)
-runtime.register_tools(FILE_TOOLS)
 
 flow = Flow(
     OpenAIClient(model="gpt-5"),
-    runtime=runtime,
-    max_depth=2,
-    max_iters=20,
+    runtime=LocalRuntime(working_directory=workdir),
+    tools=FILE_TOOLS,
+    config=AgentConfig(max_depth=2, max_iters=20),
     llm_clients={"fast": OpenAIClient(model="gpt-5-mini")},
 )
 
@@ -169,20 +157,20 @@ query = "Build a Python text-based adventure game with combat and inventory."
 root = start(query)
 
 async for node in flow.run_streaming(root):
-    print(render_tree(root))
+    print(node.parent_agent.config.path, node.type)
 
-print(root.agent_result())
-persistence.save(root, workdir / "graph")
-open_viewer(workdir / "graph", launch=False)
+print(root.result())
+root.save(workdir / "graph")
 ```
 
-Delegated children fan out as structured asyncio tasks. See
+Delegated children fan out as ordinary asyncio tasks that step alongside their
+parent. See
 [`examples/control/delegation/step_until.py`](./examples/control/delegation/step_until.py)
 for a deterministic demo of `Flow.run_streaming(..., until=...)` boundaries while
 child work runs concurrently.
 
 A saved run is a directory rooted at `graph.json` plus `agents/` logs. Reopen it
-later with `persistence.load(path)` or `open_viewer(path)`.
+later with `AgentStart.load(path)` and keep running it.
 
 ## Drop-in `LLMClient`
 
@@ -191,8 +179,8 @@ recursive agent run is a drop-in replacement for any raw LLM.
 
 ```python
 import rlmflow
-from rlmflow import FlowLLM
-from rlmflow.clients import LLMClient, OpenAIClient
+from rlmflow.llm import LLMClient, OpenAIClient
+from rlmflow.adapters import FlowLLM
 
 def ask(llm: LLMClient, q: str) -> str:
     return llm.chat([{"role": "user", "content": q}])
@@ -208,13 +196,13 @@ Nest agents by passing one `FlowLLM(inner_flow)` as another flow's `llm`. See
 
 `Flow` gives you three ways to drive the same durable Node tree:
 
-- `flow.run(query)` — run to completion and return the result string.
+- `flow.run(query)` — run to completion and return the result.
 - `await flow.arun(root)` — async completion.
-- `async for node in flow.run_streaming(root, until=...)` — stream changed
+- `async for node in flow.run_streaming(root, until=...)` — stream landed
   Nodes to a boundary.
 
 ```python
-from rlmflow import render_tree, start
+from rlmflow import start
 
 root = start(query)
 seen = 0
@@ -226,186 +214,85 @@ def two_steps(node, _root):
 
 async for node in flow.run_streaming(root, until=two_steps):
     pass
-print(render_tree(root))              # ...inspect...
+print(root.frontier.type)             # ...inspect...
 async for node in flow.run_streaming(root, until="done"):
     pass                              # ...then run to completion
-print(render_tree(root))
-```
-
-```text
-scan the repo for vulnerabilities
-└── root: done audited 3 modules (4 turns)
-    ├── root.scanner_auth: done found SQL injection in login.py (2 turns)
-    ├── root.scanner_api: waiting on 2 children (3 turns)
-    └── root.scanner_db: done no issues found (2 turns)
+print(root.result())
 ```
 
 Every transition follows the same obs → action → obs shape:
 
 ```text
-LLMOutput  -> ExecAction -> ExecOutput          (REPL output, normal continuation)
-                         -> DoneOutput          (code called done())
-                         -> ErrorOutput         (code raised / no code block)
-                         -> SupervisingOutput   (awaited a launcher — waiting on children)
-SupervisingOutput -> ResumeAction -> ...        (children settled — supervisor resumes)
+LLMOutput  -> ExecAction -> ExecOutput    (REPL output, normal continuation)
+                         -> DoneOutput    (code called done())
+                         -> ErrorOutput   (code raised, or the REPL died)
 ```
+
+A turn that delegates hangs its children off the `ExecAction` that launched
+them, and lands one `ExecOutput` when the block finishes — so a parent's
+transcript stays a single chain whether or not it spawned anyone.
 
 The graph is queryable in plain Python:
 
 ```python
-render_tree(root)                       # ASCII agent tree
-root.tail("root.scanner_api")           # current Node for one agent
-root.transcript("root.scanner_api")     # that agent's typed history
-root.child_agents("root")               # direct child agent ids
-root.agent_ids()                        # every agent id
+root.frontier                           # current Node for this agent
+root.transcript()                       # this agent's typed history
+root.sub_agents                         # the agents it launched
+root.leaves()                           # the frontier of every agent in the tree
 list(root.walk())                       # every Node, preorder
-root.agent_result()                     # root DoneOutput result
+root.result()                           # root DoneOutput result
 root.tokens()                           # recursive usage accounting
 persistence.to_dict(root)               # JSON-serializable payload
 ```
 
 ## Inject controller Nodes
 
-Because the root Node is the control surface, external controllers can edit it
-between streaming calls and continue. This is useful for human feedback, budget
-nudges, and forced finalization without losing traceability:
+Because the Node tree is the control surface, an external controller can append
+to any agent's frontier — as its node lands, or between streaming calls — and
+let the run continue. This is useful for human feedback, budget nudges, and
+forced finalization without losing traceability:
 
 ```python
-# nudge one agent, then continue from the edited tree
-flow.append(
-    root.tail("root.scanner_api"),
-    "Answer with the best current evidence.",
-    injected=True,
-)
-flow.run(root)
+from rlmflow import ExecOutput, UserQuery
+
+# nudge a worker the moment it comes up for air, then let the run continue
+async for node in flow.run_streaming(root):
+    agent = node.parent_agent
+    if agent is not root and isinstance(node, ExecOutput):
+        agent.frontier.append(UserQuery(content="Answer with the best evidence."))
 ```
 
-Injected nodes become ordinary graph nodes with the same shape as organic ones,
-stamped with ``metadata["injected"] = True``.
+Injected nodes become ordinary graph nodes with the same shape as organic ones.
+An append lands on an agent's frontier or it raises, so history stays
+append-only, and forking is how you change what an agent already did.
 See [`docs/injections.md`](docs/injections.md) and
-[`examples/control/controller_injection.py`](examples/control/controller_injection.py).
+[`examples/control/injection/`](examples/control/injection/).
 
 ## Save, load, and fork
 
-The Node tree is the durable run. Save and load it with `persistence`:
+The Node tree is the durable run:
 
 ```python
 root = rlmflow.start(query)
 flow.run(root)
-run_dir = rlmflow.persistence.save(root, "runs/deep_research")
+run_dir = root.save("runs/deep_research")
 
-latest = rlmflow.persistence.load(run_dir)
+latest = rlmflow.AgentStart.load(run_dir)
 ```
 
-Fork an independent branch from any point and continue it with a `Flow`:
+Fork an independent branch from any node and continue it with a `Flow`:
 
 ```python
-branch = await flow.fork(latest)
+branch = node.fork()
 flow.run(branch)
-rlmflow.persistence.save(branch, "runs/deep_research_repair")
+branch.save("runs/deep_research_repair")
 ```
 
-Controller edits use `Flow.append` and the operation-specific functions in
-`rlmflow.surgery`, then continue through `flow.run(root)` or
-`flow.run_streaming(root)`. See [`examples/showcase.py`](examples/showcase.py),
-[`docs/control.md`](docs/control.md), [`docs/injections.md`](docs/injections.md),
-and the live graph-controller pool example in
-[`examples/control/graph_controller_agent.py`](examples/control/graph_controller_agent.py).
-
-## Visualization
-
-Because the run is a typed Node tree, every view is a render of that tree. It
-all lives in `rlmflow.view` (re-exported from `rlmflow`) and works on a saved run
-directory, a root Node, or a list of step snapshots.
-
-### Live terminal tree
-
-`render_tree(root)` renders a compact ASCII tree of the whole agent tree from
-any snapshot — reprint it each tick to watch a run unfold:
-
-```python
-from rlmflow import render_tree
-
-async for node in flow.run_streaming(root):
-    print("\033[2J\033[H" + render_tree(root))  # clear + redraw
-```
-
-`LiveTreeRenderer` packages the same Node-consuming pattern.
-
-### Gradio viewer
-
-![](docs/static/gradio_ui.png)
-
-`open_viewer(source)` launches a small browser app with a step slider, an agent
-selector, and a per-agent transcript over a swimlane of the run:
-
-```python
-from rlmflow import open_viewer
-
-open_viewer("runs/deep_research")   # needs: pip install rlmflow[viewer]
-```
-
-### Full-screen TUI
-
-![rlmflow TUI showing chat, query/context inputs, and execution tree](docs/static/tui.png)
-
-`FlowTUI` is a stream consumer: feed it Nodes from your own
-`async for node in flow.run_streaming(...)` loop (or pass that loop as `drive`
-to `FlowTUI().run(drive)` for the interactive prompt UI). It shows separate
-query/context inputs, live chat bubbles, and side tabs for the execution tree,
-agents, counts, waiting supervisors, errors, and latest nodes. Ctrl+S sends,
-Ctrl+R continues a paused run, Ctrl+T steps once. See
-[`examples/coding/agent.py`](examples/coding/agent.py) for a runnable example.
-
-### Replay / render a saved run
-
-Point anything at a graph directory (or a root Node) and walk the sequence:
-
-```python
-from rlmflow import replay, render_steps, render_tree
-
-# Node-tree snapshots, one per visible step
-for snap in replay("runs/coding/graph"):
-    print(render_tree(snap))
-
-# Or just the ASCII frames
-for i, frame in enumerate(render_steps("runs/coding/graph"), 1):
-    print(f"=== step {i} ===\n{frame}")
-```
-
-Or from the shell (after `pip install -e .`):
-
-```bash
-rlmflow view runs/coding/graph              # print every ASCII step
-rlmflow view runs/coding/graph --step 3     # one step
-rlmflow view runs/coding/graph --browser    # Gradio stepper
-rlmflow view runs/coding/graph --frames out/  # PNG strip (needs [image])
-rlmflow view runs/coding/graph --gif run.gif
-```
-
-`python -m rlmflow view …` works the same.
-
-### Static frames for docs and blogs
-
-`save_image` writes one PNG/SVG/PDF of a run; `save_steps` writes one frame per
-execution step with a stable layout, ideal for GIFs or blog strips. Both accept
-a saved run directory, a root Node, or a list of snapshots, and need
-`pip install rlmflow[image]` (Plotly + kaleido):
-
-```python
-from rlmflow import save_image, save_steps
-
-save_image("runs/deep_research", "hero.png")
-save_steps(
-    "runs/deep_research",
-    "blog/frames/",           # writes step_000.png, step_001.png, ...
-    width=1600, height=1200, scale=2,
-    marker_mult=3.5,          # fatter node dots + edges
-    text_mult=2.2,            # shrink labels so they don't collide
-)
-```
-
-See [`examples/view_demo.py`](./examples/view_demo.py) for a runnable viewer demo.
+A `Flow` that has not run a tree — loaded, forked, or from another process —
+rebuilds each unfinished agent's REPL from its recorded code before stepping it,
+or with `Flow(restore="lazy")` tells the agent its variables are gone instead.
+See [`examples/showcase.py`](examples/showcase.py),
+[`docs/control.md`](docs/control.md), and [`docs/injections.md`](docs/injections.md).
 
 ## DSPy Adapter
 
@@ -415,10 +302,14 @@ every DSPy "LM call" becomes a full recursive agent run:
 ```python
 import dspy
 import rlmflow
-from rlmflow import DSPyFlow, FlowLLM
-from rlmflow.clients import OpenAIClient
+from rlmflow import AgentConfig
+from rlmflow.llm import OpenAIClient
+from rlmflow.adapters import DSPyFlow, FlowLLM
 
-flow = rlmflow.Flow(OpenAIClient(model="gpt-4o-mini"), max_depth=1, max_iters=5)
+flow = rlmflow.Flow(
+    OpenAIClient(model="gpt-4o-mini"),
+    config=AgentConfig(max_depth=1, max_iters=5),
+)
 
 dspy.configure(lm=DSPyFlow(FlowLLM(flow), model="rlmflow/gpt-4o-mini"))
 qa = dspy.ChainOfThought("question -> answer")
@@ -444,34 +335,32 @@ query-selected skills, child-only skills, and run-memory skills.
 
 Run the offline smoke suite with `python examples/run_examples.py`.
 Add `--include-optional`, `--include-live`, `--include-sandbox`, or
-`--include-manual` as needed. Most live examples share flags like `--no-viz`,
+`--include-manual` as needed. Most live examples share flags like
 `--docker-image rlmflow:local`, `--max-depth`, and `--max-iters`; see
 [`examples/README.md`](examples/README.md).
 
 | Example | What it shows |
 |---|---|
-| [`showcase.py`](examples/showcase.py) | Functional stepping, snapshots, save/load, and live terminal visualization. |
-| [`coding/agent.py`](examples/coding/agent.py) | Coding agent in the rich TUI (or `--cli` for the REPL + live tree). |
+| [`showcase.py`](examples/showcase.py) | Stepping to boundaries, save/load, and forking a run. |
+| [`coding/agent.py`](examples/coding/agent.py) | Coding agent over a working directory with `FILE_TOOLS`. |
 | [`structured_output.py`](examples/structured_output.py) | Root and child results validated with JSON Schema / Pydantic. |
 | [`drop_in_llm.py`](examples/drop_in_llm.py) | Minimal `FlowLLM` adapter, including nested flows. |
 | [`skills.py`](examples/skills.py) | On-disk skill files loaded through a dynamic prompt section. |
-| [`dspy_drop_in.py`](examples/providers/dspy_drop_in.py) | Use a minimal `Flow` agent as the LM behind a DSPy program. |
+| [`llm_query_batched.py`](examples/llm_query_batched.py) | Fan out one-shot model calls from agent code without spawning children. |
+| [`dspy_drop_in.py`](examples/providers/dspy_drop_in.py) | Use a `Flow` agent as the LM behind a DSPy program. |
 | [`mcp_weather.py`](examples/providers/mcp_weather.py) | Start a local MCP weather server, delegate city forecasts, and combine advice. |
-| [`tinker_agent.py`](examples/providers/tinker_agent.py) | Run the live terminal graph view with `TinkerClient` inference. |
+| [`tinker_agent.py`](examples/providers/tinker_agent.py) | Run an agent against `TinkerClient` inference. |
 | [`sandboxes/`](examples/sandboxes/) | Build a small web app while Python code runs inside Docker or Modal. |
 | [`needle/haystack.py`](examples/needle/haystack.py) | Needle-in-a-haystack over a massive in-memory `INPUTS["haystack"]`. |
 | [`needle/filesystem.py`](examples/needle/filesystem.py) | Needle-in-a-haystack across many files with `FILE_TOOLS` and runtime working directories. |
 | [`summarizer.py`](examples/summarizer.py) | Recursive map-reduce summarization over a long document. |
 | [`step_until.py`](examples/control/delegation/step_until.py) | Minimal `Flow.run_streaming(..., until=...)` boundaries while delegated child work fans out. |
-| [`graph_controller_agent.py`](examples/control/graph_controller_agent.py) | Live controller agent creates a diversified worker pool with `create_worker(...)`, inspects query/trajectory diversity, advances named worker roots, and saves all runs under `examples/_runs/graph_controller_runs/`. |
-| [`control/injection/`](examples/control/injection/) | Generate a baseline run, edit copies with graph injection/replacement, and continue variants. |
+| [`control/injection/`](examples/control/injection/) | Generate a baseline run, append controller Nodes to copies of it, and continue the variants. |
 | [`fork_repair.py`](examples/control/branching/fork_repair.py) | Fork graph/workdir snapshots into independent repair branches and compare results. |
 | [`best_of_n.py`](examples/control/branching/best_of_n.py) | Run N independent branches and pick the best result. |
 | [`autoresearch/`](examples/autoresearch/) | TinyStories autoresearch loop with custom `@tool`s, delegation, and Modal GPU trials. |
-| [`shepherd/`](examples/shepherd/) | Meta-agent recovers a jammed Sokoban worker: rewind + warm `launch_branches` children, `LiveGraphTree` + board panels, play-by-play GIF/JSON traces. |
-| [`graph/`](examples/graph/) | Offline tour of the Node API: query, navigate, mutate, save/load, rewind, fork, render. |
+| [`graph/`](examples/graph/) | Offline tour of the Node API: query, navigate, save/load, timing, fork. |
 | [`run_examples.py`](examples/run_examples.py) | Manifest-driven smoke runner for offline, optional, live, sandbox, and manual examples. |
-| [`view_demo.py`](examples/view_demo.py) | Build synthetic Node snapshots and launch the lightweight viewer. |
 
 ## Benchmarks
 
@@ -505,22 +394,24 @@ in [`docs/internals.md`](docs/internals.md). Research notes live under
 [`docs/research/`](docs/research/).
 
 - [**Internals**](docs/internals.md): Node structure, Flow transitions,
-  structured concurrency, publication, Runtime identity, surgery, and persistence.
+  the task queue and pools, Runtime identity, replay, forks, and persistence.
 - [Blog post](https://shyamsn97.github.io/blog/rlmflow/): long-form pitch —
   recursive agents, why graphs beat flat traces, and walkthroughs.
 - [Positioning](docs/positioning.md): when to use rlmflow vs
   rlm-minimal, ypi, LangGraph, CrewAI, AutoGen, SWE-agent, Aider.
-- [Control](docs/control.md): streaming loop, save/load resume, rewind,
-  forks, `INPUTS`, `launch_subagents`, inline-first strategy, custom tools.
+- [Control](docs/control.md): streaming loop, per-agent limits, multi-turn runs,
+  save/load resume, forks, `INPUTS`, `launch_subagents`, custom tools.
 - [Streaming and scheduling](docs/streaming.md): `run_streaming(..., until=...)`,
-  structured task ownership, boundaries, and delegation.
+  `TaskQueue`, transition diagrams, delegation, parallel roots, boundaries,
+  cancellation, and Pool/Runtime placement.
+- [Node model](docs/node_model.md): the seven node types, the transitions
+  between them, and how delegation is recorded.
 - [Skills](docs/skills.md): workspace `SKILL.md` files, query-selected
   skills, child-only skills, and run-memory skills.
 - [Node injection](docs/injections.md): append controller Nodes between
   streaming calls and continue the same root.
-- [Observability](docs/observability.md): querying the Node tree,
-  run layout, the live terminal tree, the Gradio viewer, and static
-  image/step exports.
+- [Observability](docs/observability.md): querying the Node tree, run
+  layout, stream consumers, and reading a saved run.
 - [Runtimes](docs/runtimes.md): `Runtime` protocol, shipped runtimes
   (Local / subprocess / Docker / Modal), writing your own.
 - [Prompt customization](docs/prompt_customization.md): `SystemPromptBuilder`
@@ -538,7 +429,7 @@ in [`docs/internals.md`](docs/internals.md). Research notes live under
   single-file reference rlmflow grew from.
 - [Tau](https://github.com/huggingface/tau): Hugging Face's minimalist
   coding-agent harness. rlmflow's separation of execution, durable state,
-  consumers, and rendering follows Tau's clean harness design.
+  and consumers follows Tau's clean harness design.
 - [Scaling Managed Agents: Decoupling the brain from the hands](https://www.anthropic.com/engineering/managed-agents):
   Anthropic's writeup on separating harness, session, and sandbox
   interfaces for long-horizon agents.

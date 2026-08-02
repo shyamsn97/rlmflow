@@ -5,13 +5,12 @@ This walks through the pieces that matter in the engine:
 1. Node-by-Node execution that advances a caller-owned trajectory.
 2. Persisting a run with ``persistence.save()`` / ``persistence.load()``.
 3. Latest-state inspection across agents.
-4. In-process history by keeping graph snapshots.
-5. Node summary helpers (``render_tree(graph)``, ``graph.tokens()``).
+4. In-process history by keeping tree snapshots.
+5. Node summary helpers (``root.walk()``, ``root.tokens()``).
 6. Gym-style stepping with a scalar reward.
 
 Usage:
     python examples/showcase.py
-    python examples/showcase.py --no-viz
 """
 
 from __future__ import annotations
@@ -25,6 +24,8 @@ from pathlib import Path
 
 from rlmflow import (
     FILE_TOOLS,
+    AgentConfig,
+    AgentStart,
     Flow,
     LLMUsage,
     LocalRuntime,
@@ -32,8 +33,6 @@ from rlmflow import (
     persistence,
     start,
 )
-from rlmflow.consumers import ConsumerGroup, GraphCheckpointer
-from rlmflow.view import LiveTreeRenderer, render_tree
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -74,11 +73,10 @@ class DemoLLM:
         return '```repl\ndone("ok")\n```'
 
 
-def file_flow(workdir: Path, **kwargs) -> Flow:
+def file_flow(workdir: Path, config: AgentConfig) -> Flow:
     """A Flow whose agents get the filesystem tools, running inside ``workdir``."""
     runtime = LocalRuntime(working_directory=workdir)
-    runtime.register_tools(FILE_TOOLS)
-    return Flow(DemoLLM(), runtime=runtime, **kwargs)
+    return Flow(DemoLLM(), runtime=runtime, tools=FILE_TOOLS, config=config)
 
 
 def banner(msg: str) -> None:
@@ -87,45 +85,35 @@ def banner(msg: str) -> None:
     print(f"{'=' * 60}{RESET}\n")
 
 
-def node_count(graph: Node) -> int:
-    return sum(1 for _node in graph.walk())
+def node_count(root: Node) -> int:
+    return sum(1 for _node in root.walk())
 
 
-async def run(flow: Flow, graph: Node, no_viz: bool, out_dir: Path) -> list[Node]:
-    history = [deepcopy(graph)]
-    consumers = ConsumerGroup(
-        [
-            LiveTreeRenderer(clear=not no_viz),
-            GraphCheckpointer(out_dir),
-        ]
-    )
-    step = 0
-    try:
-        async for event in flow.run_streaming(graph):
-            step += 1
-            history.append(deepcopy(graph))
-            if no_viz:
-                print(f"-- event {step}: {event.type} --")
-            consumers.handle(event)
-    finally:
-        consumers.close()
+def agents(root: Node) -> list[AgentStart]:
+    return [node for node in root.walk() if isinstance(node, AgentStart)]
+
+
+async def run(flow: Flow, root: AgentStart, out_dir: Path) -> list[AgentStart]:
+    """Stream the run, saving and snapshotting the tree after every node."""
+    history = [deepcopy(root)]
+    async for node in flow.run_streaming(root):
+        print(f"{node.parent_agent.config.path}  {node.type}")
+        root.save(out_dir)
+        history.append(deepcopy(root))
     return history
 
 
-async def gym_loop(flow: Flow, graph: Node, out_dir: Path) -> list[float]:
+async def gym_loop(flow: Flow, root: AgentStart, out_dir: Path) -> list[float]:
     rewards: list[float] = []
-    checkpointer = GraphCheckpointer(out_dir)
     step = 0
-    while not graph.finished():
-        async for _event in flow.run_streaming(graph, until="next"):
+    while not root.terminal:
+        async for _node in flow.run_streaming(root, until="next"):
             pass
-        checkpointer.save(graph)
+        root.save(out_dir)
         step += 1
-        current = graph.tail()
-        reward = 1.0 if graph.finished() else 0.0
+        reward = 1.0 if root.terminal else 0.0
         rewards.append(reward)
-        kind = current.type if current else "empty"
-        print(f"step {step}: state={kind} reward={reward}")
+        print(f"step {step}: state={root.frontier.type} reward={reward}")
     return rewards
 
 
@@ -133,7 +121,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--max-depth", type=int, default=2)
     parser.add_argument("--max-iters", type=int, default=8)
-    parser.add_argument("--no-viz", action="store_true")
     parser.add_argument(
         "--out-dir",
         default=str(example_run_dir("showcase")),
@@ -146,51 +133,58 @@ def main() -> None:
         shutil.rmtree(workdir)
     workdir.mkdir(parents=True)
 
-    flow = file_flow(workdir, max_depth=args.max_depth, max_iters=args.max_iters)
+    flow = file_flow(workdir, AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters))
 
     banner("1. Step-by-step execution")
-    graph = start(query="Create hello.py and goodbye.py. Delegate each file.")
-    history = asyncio.run(run(flow, graph, args.no_viz, workdir / "run"))
+    root = start(
+        "Create hello.py and goodbye.py. Delegate each file.",
+        max_depth=args.max_depth,
+        max_iters=args.max_iters,
+    )
+    history = asyncio.run(run(flow, root, workdir / "run"))
     final = history[-1]
-    print(f"\n{GREEN}Result:{RESET} {final.agent_result()}")
+    print(f"\n{GREEN}Result:{RESET} {final.result()}")
 
     banner("2. Persistence — persistence.save() / persistence.load()")
     path = persistence.save(final, workdir / "run")
     loaded = persistence.load(path)
     print(
-        f"Saved + reloaded {len(loaded.agent_ids())} agents and "
-        f"{node_count(loaded)} states from {path}"
+        f"Saved + reloaded {len(agents(loaded))} agents and {node_count(loaded)} states from {path}"
     )
-    print(render_tree(loaded))
 
     banner("3. Latest state per agent")
-    for agent_id in loaded.agent_ids():
-        print(f"  {agent_id}: {loaded.tail(agent_id).type}")
+    for agent in agents(loaded):
+        print(f"  {agent.config.path}: {agent.frontier.type}")
 
     banner("4. Time travel — kept snapshots")
     for idx, snapshot in enumerate(history):
-        current = snapshot.tail()
-        kind = current.type if current else "empty"
-        print(f"{CYAN}step {idx}{RESET}: root [{kind}]  agents={len(snapshot.agent_ids())}")
+        print(
+            f"{CYAN}step {idx}{RESET}: root [{snapshot.frontier.type}]  "
+            f"agents={len(agents(snapshot))}"
+        )
 
     banner("5. Node summary")
-    inp, out = final.tokens()
-    print(f"Agents:  {len(final.agent_ids())}")
+    usage = final.tokens()
+    print(f"Agents:  {len(agents(final))}")
     print(f"States:  {node_count(final)}")
-    print(f"Tokens:  {inp + out:,} ({inp:,} in / {out:,} out)")
-    print(f"Final:   {final.tail().type}")
+    print(f"Tokens:  {usage.total:,} ({usage.input_tokens:,} in / {usage.output_tokens:,} out)")
+    print(f"Final:   {final.frontier.type}")
 
     banner("6. Gym-style loop")
-    flow3 = file_flow(workdir, max_depth=0, max_iters=args.max_iters)
-    graph3 = start(query="Write a haiku about recursion to haiku.txt")
-    rewards = asyncio.run(gym_loop(flow3, graph3, workdir / "gym-run"))
-    print(f"{GREEN}Result:{RESET} {graph3.agent_result()}")
+    flow3 = file_flow(workdir, AgentConfig(max_depth=0, max_iters=args.max_iters))
+    root3 = start(
+        "Write a haiku about recursion to haiku.txt",
+        max_depth=0,
+        max_iters=args.max_iters,
+    )
+    rewards = asyncio.run(gym_loop(flow3, root3, workdir / "gym-run"))
+    print(f"{GREEN}Result:{RESET} {root3.result()}")
     print(f"Total reward: {sum(rewards):.1f}")
-    gym_path = persistence.save(graph3, workdir / "gym-run")
+    gym_path = persistence.save(root3, workdir / "gym-run")
     print(f"Gym run saved to {gym_path}")
 
-    flow.runtime.close_repls(final.trajectory_id)
-    flow3.runtime.close_repls(graph3.trajectory_id)
+    flow.runtime.close_repls()
+    flow3.runtime.close_repls()
 
     banner("Done")
 

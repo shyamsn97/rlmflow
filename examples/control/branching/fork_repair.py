@@ -22,7 +22,6 @@ from rlmflow import (
     LocalRuntime,
     start,
 )
-from rlmflow.consumers import GraphCheckpointer
 
 TASK = "Implement slugify(text) in slugify.py so tests/test_slugify.py passes."
 
@@ -111,21 +110,17 @@ def run_branch(root: Path, name: str, implementation: str, label: str):
     setup_project(workdir)
     # File tools run inside this branch's own working directory.
     runtime = LocalRuntime(working_directory=workdir)
-    runtime.register_tools(FILE_TOOLS)
-    flow = Flow(RepairLLM(implementation, label), runtime=runtime, max_depth=0, max_iters=3)
-    graph = start(query=TASK)
-    checkpointer = GraphCheckpointer(workdir / "graph")
+    flow = Flow(RepairLLM(implementation, label), tools=FILE_TOOLS, runtime=runtime)
+    graph = start(query=TASK, max_depth=0, max_iters=3)
 
     async def drive() -> None:
-        try:
-            async for event in flow.run_streaming(graph):
-                checkpointer.handle(event)
-        finally:
-            checkpointer.close()
+        # Checkpoint as nodes land, so the branch dir holds the run either way.
+        async for _node in flow.run_streaming(graph):
+            graph.save(workdir / "graph")
 
     asyncio.run(drive())
     passed, output = run_tests(workdir)
-    flow.runtime.close_repls(graph.trajectory_id)
+    flow.runtime.close_repls()
     return workdir, graph, passed, output
 
 
@@ -152,7 +147,7 @@ def main() -> None:
     for name, implementation, label in branches:
         workdir, graph, passed, output = run_branch(root, name, implementation, label)
         results.append((passed, workdir, graph, output))
-        print(f"{name}: tests={'PASS' if passed else 'FAIL'} result={graph.agent_result()!r}")
+        print(f"{name}: tests={'PASS' if passed else 'FAIL'} result={graph.result()!r}")
         print("  " + brief_test_output(output).replace("\n", "\n  "))
 
     winner = next((item for item in results if item[0]), results[0])

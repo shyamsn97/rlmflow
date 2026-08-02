@@ -7,7 +7,7 @@ import threading
 from collections import deque
 from contextlib import suppress
 
-from rlmflow.graph import Node
+from rlmflow.graph.nodes import Node
 from rlmflow.runtime.protocol import (
     ProxyCall,
     ReplResponse,

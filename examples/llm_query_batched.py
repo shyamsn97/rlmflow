@@ -15,19 +15,17 @@ import threading
 from pathlib import Path
 
 from rlmflow import (
+    AgentConfig,
     Flow,
     LLMUsage,
     start,
 )
-from rlmflow.consumers import GraphCheckpointer
-from rlmflow.view import render_tree
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
 from common import example_run_dir, save_example_graph  # noqa: E402
-
 
 REVIEWS = [
     "The new search UI is fast and surprisingly easy to use.",
@@ -83,29 +81,24 @@ def main() -> None:
     llm = GuidedLLM()
     flow = Flow(
         llm,
-        max_depth=0,
-        max_iters=3,
+        config=AgentConfig(max_depth=0, max_iters=3),
         workers=3,
         use_llm_query=True,
     )
 
-    graph = start(
-        query=(
-            "Classify the reviews. You must use `await "
-            "llm_query_batched(prompts)` for the per-review classifications, "
-            "then call done(...) with one line per review."
-        )
+    root = start(
+        "Classify the reviews. You must use `await "
+        "llm_query_batched(prompts)` for the per-review classifications, "
+        "then call done(...) with one line per review.",
+        max_depth=0,
+        max_iters=3,
     )
-
-    checkpointer = GraphCheckpointer(example_run_dir("llm-query-batched"))
+    out_dir = example_run_dir("llm-query-batched")
 
     async def drive() -> None:
-        try:
-            async for _event in flow.run_streaming(graph):
-                checkpointer.handle(_event)
-                print(render_tree(graph))
-        finally:
-            checkpointer.close()
+        async for node in flow.run_streaming(root):
+            print(f"{node.parent_agent.config.path}  {node.type}")
+            root.save(out_dir)
 
     asyncio.run(drive())
 
@@ -114,9 +107,9 @@ def main() -> None:
         print("-", prompt)
 
     print("\nFinal answer:")
-    print(graph.agent_result())
-    save_example_graph(graph, "llm-query-batched")
-    flow.runtime.close_repls(graph.trajectory_id)
+    print(root.result())
+    save_example_graph(root, "llm-query-batched")
+    flow.runtime.close_repls()
 
 
 if __name__ == "__main__":

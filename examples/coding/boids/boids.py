@@ -21,6 +21,7 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+
 from pydantic import BaseModel
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -110,54 +111,46 @@ def run_rlmflow(
     max_depth: int,
     max_iters: int,
     max_concurrency: int,
-    no_viz: bool,
 ) -> None:
     from rlmflow import (
         FILE_TOOLS,
+        AgentStart,
         Flow,
         LocalRuntime,
+        json_schema_for,
         start,
     )
-    from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveTreeRenderer
 
     reset_run_dir(run_dir, force=True)
     (run_dir / "task.txt").write_text(TASK)
 
     runtime = LocalRuntime(working_directory=run_dir)
-    runtime.register_tools(FILE_TOOLS)
     flow = Flow(
         build_rlmflow_llm(model),
         llm_clients={"fast": build_rlmflow_llm(fast_model)},
         runtime=runtime,
-        max_depth=max_depth,
-        max_iters=max_iters,
+        tools=FILE_TOOLS,
         workers=max_concurrency,
     )
 
     print(f"\n=== rlmflow run ===\nworkdir: {run_dir}\nmodel: {model}\n")
     try:
-        graph = start(query=TASK)
-        graph_dir = run_dir / "graph"
-        consumers = ConsumerGroup(
-            [
-                LiveTreeRenderer(clear=not no_viz),
-                GraphCheckpointer(graph_dir),
-            ]
+        root = start(
+            TASK,
+            output_schema=json_schema_for(BoidsSimulation),
+            max_depth=max_depth,
+            max_iters=max_iters,
         )
+        graph_dir = run_dir / "graph"
 
-        async def drive() -> None:
-            try:
-                async for event in flow.run_streaming(
-                    graph,
-                    output_schema=BoidsSimulation,
-                ):
-                    consumers.handle(event)
-            finally:
-                consumers.close()
+        async def drive(root: AgentStart) -> None:
+            async for node in flow.run_streaming(root):
+                print(f"{node.parent_agent.config.path:<20} {node.type}")
+                root.save(graph_dir)
 
-        asyncio.run(drive())
+        asyncio.run(drive(root))
 
-        result = graph.agent_result() or ""
+        result = root.result() or ""
         (run_dir / "response.txt").write_text(str(result))
         print("\nrlmflow response:")
         print(result or "(no result)")
@@ -248,7 +241,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument("--max-iters", type=int, default=30)
     parser.add_argument("--max-concurrency", type=int, default=8)
-    parser.add_argument("--no-viz", action="store_true", help="Disable rlmflow live tree.")
     parser.add_argument(
         "--rlm-quiet",
         action="store_true",
@@ -278,7 +270,6 @@ def main() -> None:
             max_depth=args.max_depth,
             max_iters=args.max_iters,
             max_concurrency=args.max_concurrency,
-            no_viz=args.no_viz,
         )
 
     if args.runner in ("rlm", "both"):

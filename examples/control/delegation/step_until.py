@@ -6,6 +6,11 @@ by the flow's worker pool. This example focuses on the caller-facing control
 surface instead: choosing how much of the Node stream to consume with
 ``until=...``.
 
+Known limitation: a parent halted part-way through a delegating block re-runs
+that block when the stream resumes, and a child it already launched is refused
+by name, so the root here usually lands on ``[max_iters exceeded]`` rather than
+a clean answer. The boundaries themselves are what this example is showing.
+
 Run:
     export OPENAI_API_KEY=...
     python examples/control/delegation/step_until.py
@@ -19,13 +24,11 @@ import sys
 from pathlib import Path
 
 from rlmflow import (
+    AgentStart,
     Flow,
     Node,
-    SupervisingOutput,
     start,
 )
-from rlmflow.consumers import GraphCheckpointer
-from rlmflow.view import render_tree
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -49,32 +52,34 @@ This example script is observing the Node stream, so keep the work small.
 
 
 def node_label(node: Node) -> str:
-    mutation = node.metadata.get("mutation", {}).get("type", "append")
-    return f"{node.agent_id}: {mutation} {node.type}"
+    return f"{node.parent_agent.config.path}: {node.type}"
+
+
+def print_tree(node: Node, depth: int = 0) -> None:
+    """One indented line per node, from ``node`` down."""
+    label = f"{node.type} [{node.config.path}]" if isinstance(node, AgentStart) else node.type
+    print(f"{'  ' * depth}{label}")
+    for child in node.children:
+        print_tree(child, depth + 1)
 
 
 def print_nodes(title: str, nodes: list[Node], graph: Node) -> None:
     print(f"\n=== {title} ===")
     for node in nodes:
         print(f"- {node_label(node)}")
-    print(render_tree(graph))
+    print_tree(graph)
 
 
-async def run_example(args: argparse.Namespace) -> Node:
-    flow = Flow(
-        build_client(args.model),
-        max_depth=args.max_depth,
-        max_iters=args.max_iters,
-        workers=args.max_concurrency,
-    )
-    graph = start(query=QUERY)
+async def run_example(args: argparse.Namespace) -> AgentStart:
+    flow = Flow(build_client(args.model), workers=args.max_concurrency)
+    graph = start(query=QUERY, max_depth=args.max_depth, max_iters=args.max_iters)
     observed: list[Node] = []
-    checkpointer = GraphCheckpointer(Path(args.out_dir))
+    out_dir = Path(args.out_dir)
 
-    async def collect(graph: Node, **flow_kwargs) -> list[Node]:
+    async def collect(graph: AgentStart, **flow_kwargs) -> list[Node]:
         nodes: list[Node] = []
         async for node in flow.run_streaming(graph, **flow_kwargs):
-            checkpointer.handle(node)
+            graph.save(out_dir)  # checkpoint as nodes land
             nodes.append(node)
         return nodes
 
@@ -82,15 +87,17 @@ async def run_example(args: argparse.Namespace) -> Node:
     observed.extend(events)
     print_nodes("until='next': first appended node", events, graph)
 
-    events = await collect(
-        graph,
-        until=lambda node, _root: isinstance(node, SupervisingOutput),
-    )
-    observed.extend(events)
-    print_nodes("until='supervising': parent has fanned out children", events, graph)
+    def child_launched(node: Node, root: Node) -> bool:
+        # A delegating turn hangs each child off the exec_action that launched it,
+        # so the first child AgentStart is the fan-out.
+        return isinstance(node, AgentStart) and node is not root
 
-    def first_child_done(node: Node, graph: Node) -> bool:
-        return node.agent_id != graph.agent_id and node.type == "done_output"
+    events = await collect(graph, until=child_launched)
+    observed.extend(events)
+    print_nodes("until=<callable>: parent has fanned out a child", events, graph)
+
+    def first_child_done(node: Node, root: Node) -> bool:
+        return node.parent_agent is not root and node.type == "done_output"
 
     events = await collect(graph, until=first_child_done)
     observed.extend(events)
@@ -98,26 +105,24 @@ async def run_example(args: argparse.Namespace) -> Node:
 
     seen = 0
 
-    def two_more_appends(node: Node, _graph: Node) -> bool:
+    def two_more_appends(_node: Node, _root: Node) -> bool:
         nonlocal seen
-        if node.metadata.get("mutation", {}).get("type") == "append":
-            seen += 1
+        seen += 1
         return seen >= 2
 
     events = await collect(graph, until=two_more_appends)
     observed.extend(events)
     print_nodes("callable boundary: consume two more global steps", events, graph)
 
-    while not graph.finished():
-        events = await collect(graph, until=lambda event, current: current.finished())
+    while not graph.terminal:
+        events = await collect(graph, until="finished")
+        print_nodes("until='finished': run to the end", events, graph)
         observed.extend(events)
-        print_nodes("until=<callable>: run is finished", events, graph)
 
     if observed:
         print(f"\nObserved {len(observed)} Nodes.")
 
-    checkpointer.close()
-    flow.runtime.close_repls(graph.trajectory_id)
+    flow.runtime.close_repls()
     return graph
 
 
@@ -140,7 +145,7 @@ def main() -> None:
     print("\n=== verdict ===")
     print("Delegated children fan out as independent scheduler tasks.")
     print("The caller chooses observation boundaries with run_streaming(..., until=...).")
-    print(f"Result: {graph.agent_result()}")
+    print(f"Result: {graph.result()}")
     save_example_graph(graph, "step-until", out_dir=args.out_dir)
 
 

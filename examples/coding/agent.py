@@ -1,13 +1,12 @@
 """Interactive coding agent.
 
-Opens the rich rlmflow TUI by default: query/context inputs, live chat bubbles,
-and side tabs for the execution tree, agents, counts, waiting supervisors,
-errors, and latest nodes. Pass ``--cli`` for the plain REPL + live tree.
+A plain REPL: type a query, watch one line stream past per node the run lands,
+then read the final answer. Every node checkpoints the tree under
+``<workdir>/graph``, and the agent's file edits land in ``<workdir>`` itself.
 
 Usage:
     python examples/coding/agent.py --workdir ./myproject
     python examples/coding/agent.py --workdir ./myproject --docker-image rlmflow:local
-    python examples/coding/agent.py --workdir ./myproject --cli
 """
 
 from __future__ import annotations
@@ -16,18 +15,15 @@ import argparse
 import asyncio
 import sys
 from pathlib import Path
-from typing import Any
 
 from rlmflow import (
-    DockerRuntime,
     FILE_TOOLS,
+    AgentStart,
+    DockerRuntime,
     Flow,
     LocalRuntime,
-    Node,
     start,
 )
-from rlmflow.consumers import ConsumerGroup, GraphCheckpointer
-from rlmflow.view import FlowTUI, LiveTreeRenderer
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -55,22 +51,10 @@ def main():
     parser.add_argument("--max-depth", type=int, default=3)
     parser.add_argument("--max-iters", type=int, default=30)
     parser.add_argument(
-        "--cli",
-        action="store_true",
-        help="Use the plain REPL + live tree instead of the full-screen TUI.",
-    )
-    parser.add_argument("--no-viz", action="store_true", help="CLI only: disable live tree.")
-    parser.add_argument(
         "--max-concurrency",
         type=int,
         default=8,
         help="Maximum number of concurrent tasks to run.",
-    )
-    parser.add_argument(
-        "--max-steps-per-turn",
-        type=int,
-        default=240,
-        help="TUI only: safety cap per submitted prompt before returning control.",
     )
     args = parser.parse_args()
 
@@ -87,72 +71,30 @@ def main():
         runtime = DockerRuntime(args.docker_image, working_directory=workdir)
     else:
         runtime = LocalRuntime(working_directory=workdir)
-    runtime.register_tools(FILE_TOOLS)
 
     flow = Flow(
         build_client(args.model),
         llm_clients={"fast": build_client(args.fast_model)},
         runtime=runtime,
-        max_depth=args.max_depth,
-        max_iters=args.max_iters,
+        tools=FILE_TOOLS,
         workers=args.max_concurrency,
     )
 
     try:
-        if args.cli:
-            _run_cli(flow, workdir, no_viz=args.no_viz)
-        else:
-            graph = _run_tui(flow, workdir, max_steps_per_turn=args.max_steps_per_turn)
-            if graph is not None:
-                print(f"\n{graph.agent_result() or '(no result)'}\n")
-                print(f"Node checkpointed under {workdir / 'graph'}")
-                print(f"Files written under {workdir}")
+        _run_cli(flow, workdir, max_depth=args.max_depth, max_iters=args.max_iters)
     finally:
         flow.runtime.close_repls()
 
 
-def _run_tui(flow: Flow, workdir: Path, *, max_steps_per_turn: int | None) -> Node | None:
-    ui = FlowTUI()
-    checkpointer = GraphCheckpointer(workdir / "graph")
-
-    async def drive(
-        graph: Node | None,
-        *,
-        query: str | None = None,
-        inputs: dict[str, str] | None = None,
-        until: Any = "done",
-    ) -> Node | None:
-        # FlowTUI seeds ``graph`` on the first Send; later turns pass ``query``.
-        if graph is None:
-            return None
-
-        boundary = until
-        if until == "done" and max_steps_per_turn is not None:
-            steps = 0
-
-            def until_cap(node, current) -> bool:
-                nonlocal steps
-                if node.metadata.get("mutation", {}).get("type") == "append":
-                    steps += 1
-                if current.finished():
-                    return True
-                return steps >= max_steps_per_turn
-
-            boundary = until_cap
-
-        async for event in flow.run_streaming(graph, query=query, inputs=inputs, until=boundary):
-            ui.handle(event)
-            checkpointer.handle(event)
-        return graph
-
-    try:
-        return ui.run(drive)
-    finally:
-        checkpointer.close()
-        ui.close()
+async def _stream(flow: Flow, root: AgentStart, graph_dir: Path) -> None:
+    """Drive one query to done, printing each node and checkpointing the tree."""
+    async for node in flow.run_streaming(root):
+        print(f"{node.parent_agent.config.path:<20} {node.type}")
+        root.save(graph_dir)
 
 
-def _run_cli(flow: Flow, workdir: Path, *, no_viz: bool) -> None:
+def _run_cli(flow: Flow, workdir: Path, *, max_depth: int, max_iters: int) -> None:
+    graph_dir = workdir / "graph"
     print("Agent ready. Type a query, or 'quit' to exit.\n")
     while True:
         try:
@@ -163,25 +105,11 @@ def _run_cli(flow: Flow, workdir: Path, *, no_viz: bool) -> None:
         if not query or query.lower() in ("quit", "exit", "q"):
             break
 
-        graph = start(query=query)
-        consumers = ConsumerGroup(
-            [
-                LiveTreeRenderer(clear=not no_viz),
-                GraphCheckpointer(workdir / "graph"),
-            ]
-        )
+        root = start(query, max_depth=max_depth, max_iters=max_iters)
+        asyncio.run(_stream(flow, root, graph_dir))
 
-        async def drive() -> None:
-            try:
-                async for event in flow.run_streaming(graph):
-                    consumers.handle(event)
-            finally:
-                consumers.close()
-
-        asyncio.run(drive())
-
-        print(f"\n{graph.agent_result() or '(no result)'}\n")
-        print(f"Node checkpointed to {workdir / 'graph'}")
+        print(f"\n{root.result() or '(no result)'}\n")
+        print(f"Run checkpointed to {graph_dir}")
         print(f"Files written under {workdir}")
 
 

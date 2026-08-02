@@ -22,18 +22,20 @@ import tempfile
 from pathlib import Path
 
 from rlmflow import (
+    AgentConfig,
     Flow,
     SystemPromptBuilder,
     start,
 )
-from rlmflow.consumers import GraphCheckpointer
-from rlmflow.clients import OpenAIClient
+from rlmflow.llm import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
 from common import example_run_dir, save_example_graph  # noqa: E402
+
+MAX_ITERS = 5
 
 
 NUMPY_LINEAR_ALGEBRA_SKILL = """\
@@ -93,7 +95,7 @@ def install_example_skill(skills_dir: Path) -> Path:
 def skills_section(skill_paths: list[Path]):
     """Return a callable prompt section that reads skill files dynamically."""
 
-    def render(flow, graph) -> str:
+    def render(flow, agent) -> str:
         sections: list[str] = []
         for path in skill_paths:
             if not path.exists():
@@ -113,7 +115,7 @@ def skills_section(skill_paths: list[Path]):
 def build_flow(skills_dir: Path, *, model: str) -> Flow:
     """Create a flow whose prompt includes the installed skill."""
     skill_path = install_example_skill(skills_dir)
-    flow = Flow(OpenAIClient(model=model), max_iters=5)
+    flow = Flow(OpenAIClient(model=model), config=AgentConfig(max_iters=MAX_ITERS))
     prompt = SystemPromptBuilder()
     prompt.sections.add("skills", skills_section([skill_path]), title="Skills", before="tools")
     flow.system_prompt = prompt
@@ -157,28 +159,24 @@ def main() -> None:
             "(0, 1), (1, 2), (2, 2), (3, 4), then report m, b, the "
             "predicted values, and the L2 residual norm."
         )
-        graph = start(query=query)
+        root = start(query, max_iters=MAX_ITERS)
 
         print(f"Wrote skill artifact under: {skills_dir}")
         print("- skills/numpy-linear-algebra/SKILL.md")
         if args.print_prompt:
             print("\n--- rendered system prompt ---\n")
-            print(flow.build_system_prompt(graph))
+            print(flow.system_prompt.render(flow, root))
             print("\n--- live run ---\n")
 
-        checkpointer = GraphCheckpointer(args.out_dir)
-
         async def drive() -> None:
-            try:
-                async for _event in flow.run_streaming(graph):
-                    checkpointer.handle(_event)
-            finally:
-                checkpointer.close()
+            async for node in flow.run_streaming(root):
+                print(f"{node.parent_agent.config.path}  {node.type}")
+                root.save(args.out_dir)
 
         asyncio.run(drive())
-        print(graph.agent_result())
-        save_example_graph(graph, "skills", out_dir=args.out_dir)
-        flow.runtime.close_repls(graph.trajectory_id)
+        print(root.result())
+        save_example_graph(root, "skills", out_dir=args.out_dir)
+        flow.runtime.close_repls()
     finally:
         if tmp is not None:
             tmp.cleanup()

@@ -1,8 +1,8 @@
 """Board-panel UI helpers for the shepherd example.
 
 :class:`PanelViewer` aggregates per-lane boards (terminal and/or Gradio via
-``sink``). The shepherd host calls it alongside :class:`rlmflow.LiveGraphTree`
-on each stream event.
+``sink``). The shepherd host hands it every node its streams publish, alongside
+the one-line-per-node trace it prints itself.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable
 
 from rlmflow import (
+    AgentStart,
     ExecOutput,
     Flow,
     Node,
@@ -49,9 +50,9 @@ def grid_of_blocks(labeled: list[tuple[str, str]], *, cols: int = 4) -> str:
     return "\n\n".join(row for row in rows if row)
 
 
-def panel_status(flow: Flow, graph: Node) -> str:
-    """Live one-line status for a board panel, read from the graph's REPL env."""
-    env = flow.runtime.repl_for(graph).env
+def panel_status(flow: Flow, agent: AgentStart) -> str:
+    """Live one-line status for a board panel, read from the agent's REPL env."""
+    env = flow.runtime.repl_for(agent).env
     pushes = env.get("pushes")
     step = f"push {pushes}" if pushes is not None else "push ?"
     if env.get("solved"):
@@ -66,14 +67,12 @@ def panel_status(flow: Flow, graph: Node) -> str:
 class PanelViewer(StreamConsumer):
     """Live side-by-side boards, one panel per **agent**, updated push-by-push.
 
-    One panel per agent, keyed by ``(trajectory_id, agent_id)`` in first-seen order.
-    On each Node the viewer walks its whole tree, so a root plus
-    its ``launch_subagents`` / ``launch_branches`` children — which all share the
-    root's ``trajectory_id`` — each get their own panel (keying by ``trajectory_id`` alone
-    would collapse them into one). Each panel shows that agent's board (via
+    One panel per agent, keyed by the agent's id in first-seen order. On each node
+    the viewer walks that node's whole tree, so a root and any children it
+    launched each get their own panel. Each panel shows that agent's board (via
     ``board_of``) or its latest ``ExecOutput`` grid, so the worker and every
     recovery branch animate as their streams advance. Safe to share across
-    concurrently-gathered streams: Node handling runs on one asyncio loop, so
+    concurrently-gathered streams: node handling runs on one asyncio loop, so
     updates never interleave.
     """
 
@@ -83,9 +82,9 @@ class PanelViewer(StreamConsumer):
         title: str = "",
         cols: int = 4,
         every_s: float = 0.1,
-        status_of: Callable[[Node], str] | None = None,
-        board_of: Callable[[Node], str] | None = None,
-        frames_of: Callable[[Node], list[str]] | None = None,
+        status_of: Callable[[AgentStart], str] | None = None,
+        board_of: Callable[[AgentStart], str] | None = None,
+        frames_of: Callable[[AgentStart], list[str]] | None = None,
         frame_ms: int = 70,
         sink: Callable[[list[tuple[str, str]]], None] | None = None,
         paint: bool = True,
@@ -106,56 +105,42 @@ class PanelViewer(StreamConsumer):
         self.frame_ms = frame_ms
         # Last frame-list drawn per lane, so a turn animates once (and a fork's
         # inherited frames are skipped on first sight — see ``_observe``).
-        self._last_frames: dict[tuple[str, str], list[str]] = {}
+        self._last_frames: dict[str, list[str]] = {}
         # When set, panels are routed here (e.g. a Gradio dashboard) in addition
         # to (or instead of, when paint=False) the terminal.
         self.sink = sink
         # When False, still aggregate + sink, but do not clear/print the TTY —
-        # use this when a sibling LiveGraphTree owns the terminal frame.
+        # use this when something else (a node trace, say) owns the terminal.
         self.paint = paint
-        # Panels are keyed per agent by ``(trajectory_id, agent_id)`` — agent_ids like
-        # "root" collide across the worker and shepherd graphs, so the trajectory_id is
-        # part of the key. ``_root_labels`` holds host-supplied names for a graph's
-        # root agent (children default to their short agent_id).
-        self._order: list[tuple[str, str]] = []
-        self._labels: dict[tuple[str, str], str] = {}
-        self._blocks: dict[tuple[str, str], str] = {}
-        self._graphs: dict[tuple[str, str], Node] = {}
+        # Panels are keyed per agent by the agent's own id, since every graph the
+        # host drives is a separate root whose config name is just "root".
+        # ``_root_labels`` holds host-supplied names for a graph's root agent
+        # (children default to their config name).
+        self._order: list[str] = []
+        self._labels: dict[str, str] = {}
+        self._blocks: dict[str, str] = {}
+        self._agents: dict[str, AgentStart] = {}
         self._root_labels: dict[str, str] = {}
         self._last_paint = 0.0
         self._closed = False
 
-    def label(self, trajectory_id: str, label: str) -> None:
+    def label(self, agent: AgentStart, label: str) -> None:
         """Name a graph's root-agent panel (e.g. "worker"/"shepherd")."""
-        self._root_labels[trajectory_id] = label
-        key = (trajectory_id, trajectory_id and self._root_agent_id(trajectory_id))
-        if key in self._labels:
-            self._labels[key] = label
+        self._root_labels[agent.id] = label
+        if agent.id in self._labels:
+            self._labels[agent.id] = label
 
-    def _root_agent_id(self, trajectory_id: str) -> str | None:
-        for gid, agent_id in self._order:
-            if gid == trajectory_id and self._graphs[(gid, agent_id)].parent_agent_id() is None:
-                return agent_id
-        return None
-
-    def _default_label(self, agent: Node) -> str:
-        if agent.parent_agent_id() is None:
-            return self._root_labels.get(agent.trajectory_id, agent.agent_id)
-        # A child lane: show its short id ("root.b0" -> "b0").
-        return agent.agent_id.rsplit(".", 1)[-1]
+    def _default_label(self, agent: AgentStart) -> str:
+        return self._root_labels.get(agent.id) or agent.config.name
 
     def handle(self, node: Node) -> None:
         if self._closed:
             return
-        graph = node.root()
-        # Fan out to every agent in this root's tree so children that share the
-        # root's trajectory_id (launch_branches) each animate in their own lane.
-        agents = [graph.tail(agent_id) for agent_id in graph.agent_ids()]
+        # Fan out to every agent in this root's tree, so children get their own
+        # lane rather than folding into the root's.
+        agents = [n for n in node.root.walk() if isinstance(n, AgentStart)]
         for agent in agents:
-            self._observe(
-                agent,
-                node if node.agent_id == agent.agent_id else None,
-            )
+            self._observe(agent, node if node.parent_agent is agent else None)
         # Play out this turn's per-sub-step frames so a box-level push visibly walks
         # the player around cell-by-cell instead of snapping (looking teleporty).
         if self.frames_of is not None:
@@ -166,18 +151,18 @@ class PanelViewer(StreamConsumer):
             return
         self._paint()
 
-    def _safe_frames(self, agent: Node) -> list[str]:
+    def _safe_frames(self, agent: AgentStart) -> list[str]:
         try:
             return list(self.frames_of(agent) or [])  # type: ignore[misc]
         except Exception:  # noqa: BLE001 - a viewer must never crash a run
             return []
 
-    def _animate(self, agent: Node) -> None:
+    def _animate(self, agent: AgentStart) -> None:
         """Paint this turn's sub-step frames for ``agent`` in sequence (short delay
         each) so the walk-around before each shove is visible. ``frames`` is the
         current turn only (replaced each turn), so we play it once — when it differs
         from what we last drew for this lane."""
-        key = (agent.trajectory_id, agent.agent_id)
+        key = agent.id
         frames = self._safe_frames(agent)
         if not frames or frames == self._last_frames.get(key):
             return
@@ -189,8 +174,8 @@ class PanelViewer(StreamConsumer):
             if delay and i < len(frames) - 1:
                 time.sleep(delay)
 
-    def _observe(self, agent: Node, changed: Node | None) -> None:
-        key = (agent.trajectory_id, agent.agent_id)
+    def _observe(self, agent: AgentStart, changed: Node | None) -> None:
+        key = agent.id
         if key not in self._order:
             self._order.append(key)
             self._labels.setdefault(key, self._default_label(agent))
@@ -198,7 +183,7 @@ class PanelViewer(StreamConsumer):
             # turn isn't re-animated on first sight — only turns from here play.
             if self.frames_of is not None:
                 self._last_frames[key] = self._safe_frames(agent)
-        self._graphs[key] = agent
+        self._agents[key] = agent
         if self.board_of is not None:
             try:
                 board = self.board_of(agent)
@@ -220,10 +205,10 @@ class PanelViewer(StreamConsumer):
                 # No board for this lane yet (e.g. the shepherd, which drives from
                 # its REPL and has no game) — don't render an empty panel.
                 continue
-            heading = self._labels.get(key) or key[1]
-            if self.status_of is not None and key in self._graphs:
+            heading = self._labels.get(key) or key
+            if self.status_of is not None and key in self._agents:
                 try:
-                    status = self.status_of(self._graphs[key])
+                    status = self.status_of(self._agents[key])
                 except Exception:  # noqa: BLE001 - a viewer must never crash a run
                     status = ""
                 if status:

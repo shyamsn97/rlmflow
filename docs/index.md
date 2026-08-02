@@ -11,20 +11,19 @@ Pick the doc that matches what you're trying to do.
 
 ## Use rlmflow
 
-- [Control](control.md) — streaming loop, save/load resume, rewind,
-  forks, `INPUTS`, cold `launch_subagents` and warm `launch_branches`, custom
-  tools.
+- [Control](control.md) — streaming loop, per-agent limits, multi-turn runs,
+  save/load resume, forks, `INPUTS`, `launch_subagents`, custom tools.
 - [Streaming and scheduling](streaming.md) — detailed guide to
-  `run_streaming(..., until=...)`, structured concurrency, boundaries, and delegation.
+  `run_streaming(..., until=...)`, `TaskQueue`, transitions, delegation,
+  parallel roots, boundaries, cancellation, and Pool/Runtime placement.
 - [Skills](skills.md) — workspace `SKILL.md` files, always-on skills,
   query-selected skills, child-only skills, run-memory skills.
 - [Node injection](injections.md) — append controller Nodes between streaming
   calls, then continue the same root.
-- [Observability](observability.md) — querying the Node tree,
-  run layout, `LiveGraphTree` / `LiveTreeRenderer`, the Gradio viewer, and static
-  image/step exports.
-- [Node model](node_model.md) — typed graph state taxonomy, action /
-  observation alternation, delegation wait/resume flow.
+- [Observability](observability.md) — querying the Node tree, run layout,
+  stream consumers, and reading a saved run.
+- [Node model](node_model.md) — the seven node types, the transitions between
+  them, and how delegation is recorded.
 - [Runtimes](runtimes.md) — `Runtime` protocol, shipped runtimes
   (Local / subprocess / Docker / Modal), writing your own.
 - [Prompt customization](prompt_customization.md) — `SystemPromptBuilder`
@@ -36,8 +35,8 @@ Pick the doc that matches what you're trying to do.
 
 ## Extend rlmflow
 
-- [**Internals**](internals.md) — Node structure, Flow transitions, structured
-  concurrency, publication, Runtime identity, surgery, and persistence.
+- [**Internals**](internals.md) — Node structure, Flow transitions, the task
+  queue and pools, Runtime identity, replay, forks, and persistence.
 
 ## Research Notes
 

@@ -49,8 +49,8 @@ Independent of the runtime:
 
 ## Proxied tools
 
-`runtime.register_tool(fn)` and `runtime.register_tools([...])` expose
-callables to the agent REPL. Tools marked `@tool(proxy=True)` execute on the
+`Flow(tools=[...])` and `flow.add_tool(fn)` expose callables to the agent
+REPL. Tools marked `@tool(proxy=True)` execute on the
 host when called from a remote sandbox; local tools are shipped into the sandbox
 when possible. Working-directory-aware tools run relative to
 `runtime.working_directory`.

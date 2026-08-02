@@ -36,7 +36,7 @@ from pathlib import Path
 
 import rlmflow
 from rlmflow import SystemPromptBuilder
-from rlmflow.clients import OpenAIClient
+from rlmflow.llm import OpenAIClient
 
 
 def project_skill(flow: rlmflow.Flow, node: rlmflow.Node) -> str:
@@ -58,7 +58,7 @@ from pathlib import Path
 
 import rlmflow
 from rlmflow import SystemPromptBuilder
-from rlmflow.clients import OpenAIClient
+from rlmflow.llm import OpenAIClient
 
 SKILL_DIR = Path("skills")
 
@@ -100,7 +100,7 @@ from pathlib import Path
 
 import rlmflow
 from rlmflow import SystemPromptBuilder
-from rlmflow.clients import OpenAIClient
+from rlmflow.llm import OpenAIClient
 
 
 def child_contract(flow: rlmflow.Flow, node: rlmflow.Node) -> str:
@@ -126,7 +126,7 @@ from pathlib import Path
 
 import rlmflow
 from rlmflow import SystemPromptBuilder
-from rlmflow.clients import OpenAIClient
+from rlmflow.llm import OpenAIClient
 
 MEMORY_DIR = Path("skills/run-memory")
 

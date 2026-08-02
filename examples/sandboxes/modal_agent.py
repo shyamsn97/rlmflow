@@ -25,17 +25,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from rlmflow.clients import OpenAIClient  # noqa: E402
+from examples.common import save_example_graph  # noqa: E402
 from rlmflow import (  # noqa: E402
+    AgentConfig,
+    AgentStart,
     Flow,
     ModalRuntime,
-    Node,
     start,
 )
-from rlmflow.consumers import ConsumerGroup, GraphCheckpointer  # noqa: E402
-from rlmflow.view import LiveTreeRenderer  # noqa: E402
-
-from examples.common import save_example_graph  # noqa: E402
+from rlmflow.llm import OpenAIClient  # noqa: E402
 
 REMOTE_REPO = "/opt/rlmflow"
 
@@ -84,11 +82,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repl-timeout", type=float, default=30)
     parser.add_argument("--remote-workdir", default="/workspace")
     parser.add_argument(
-        "--no-live",
-        action="store_true",
-        help="Disable the live terminal graph view.",
-    )
-    parser.add_argument(
         "--out-dir",
         default=str(REPO_ROOT / "examples" / "_runs" / "sandbox-modal"),
         help="Save the final run here (default: examples/_runs/sandbox-modal/).",
@@ -96,20 +89,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def run_turn(flow: Flow, query: str, *, use_live: bool, out_dir: Path) -> Node:
-    graph = start(query=query)
-    consumers = ConsumerGroup(
-        [
-            LiveTreeRenderer(clear=use_live),
-            GraphCheckpointer(out_dir / "graph"),
-        ]
-    )
-    try:
-        async for event in flow.run_streaming(graph):
-            consumers.handle(event)
-    finally:
-        consumers.close()
-    return graph
+async def run_turn(flow: Flow, root: AgentStart, out_dir: Path) -> AgentStart:
+    async for node in flow.run_streaming(root):
+        print(f"{node.parent_agent.config.path}  {node.type}")
+        root.save(out_dir / "graph")
+    return root
 
 
 def local_rlmflow_image():
@@ -158,21 +142,18 @@ def main() -> None:
         OpenAIClient(model=args.model),
         llm_clients={"fast": OpenAIClient(model=args.fast_model)},
         runtime=runtime,
+        config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
+    )
+    root = start(
+        PLATFORMER_QUERY,
         max_depth=args.max_depth,
         max_iters=args.max_iters,
     )
     log("running platformer task; first run may build/start Modal sandbox")
     try:
-        graph = asyncio.run(
-            run_turn(
-                flow,
-                PLATFORMER_QUERY,
-                use_live=not args.no_live,
-                out_dir=Path(args.out_dir),
-            )
-        )
-        print(graph.agent_result())
-        save_example_graph(graph, "sandbox-modal", out_dir=args.out_dir)
+        asyncio.run(run_turn(flow, root, Path(args.out_dir)))
+        print(root.result())
+        save_example_graph(root, "sandbox-modal", out_dir=args.out_dir)
     finally:
         log("closing Flow")
         flow.runtime.close_repls()

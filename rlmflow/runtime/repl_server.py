@@ -31,14 +31,14 @@ from rlmflow.runtime.protocol import (
     parse_request,
 )
 from rlmflow.runtime.repl import DoneSignal, LocalRepl
-from rlmflow.runtime.serial import (
+from rlmflow.tools import tool
+from rlmflow.utils.serial import (
     CLOUDPICKLE,
     cloudpickle_available,
     decode_object,
     encode_object,
     is_json_safe,
 )
-from rlmflow.tools import tool
 
 
 class ReplServer:

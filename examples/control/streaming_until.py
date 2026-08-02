@@ -12,12 +12,13 @@ from pathlib import Path
 from typing import Any
 
 from rlmflow import (
+    AgentStart,
     Flow,
     Node,
+    UserQuery,
     persistence,
     start,
 )
-from rlmflow.view import render_tree
 
 RUN_DIR = Path(__file__).resolve().parents[1] / "_runs" / "streaming-until"
 
@@ -52,27 +53,34 @@ async def collect(flow: Flow, root: Node, **kwargs: Any) -> list[Node]:
 
 
 def after_appends(count: int):
+    """Halt once ``count`` nodes have landed; every node in the stream is an append."""
     seen = 0
 
-    def halt(node: Node, _root: Node) -> bool:
+    def halt(_node: Node, _root: Node) -> bool:
         nonlocal seen
-        if node.metadata.get("mutation", {}).get("type") == "append":
-            seen += 1
+        seen += 1
         return seen >= count
 
     return halt
 
 
 def node_label(node: Node) -> str:
-    mutation = node.metadata.get("mutation", {}).get("type", "append")
-    return f"{node.agent_id}: {mutation} {node.type}"
+    return f"{node.parent_agent.config.path}: {node.type}"
+
+
+def print_tree(node: Node, depth: int = 0) -> None:
+    """One indented line per node, from ``node`` down."""
+    label = f"{node.type} [{node.config.path}]" if isinstance(node, AgentStart) else node.type
+    print(f"{'  ' * depth}{label}")
+    for child in node.children:
+        print_tree(child, depth + 1)
 
 
 def print_nodes(title: str, nodes: list[Node], graph: Node) -> None:
     print(f"\n=== {title} ===")
     for node in nodes:
         print(f"- {node_label(node)}")
-    print(render_tree(graph))
+    print_tree(graph)
 
 
 async def demo_next_idle_and_resume() -> None:
@@ -82,8 +90,8 @@ async def demo_next_idle_and_resume() -> None:
             return '```repl\ndone("stopped")\n```'
         return "```repl\nprint('working')\n```"
 
-    flow = Flow(ScriptedLLM(reply), max_iters=8)
-    graph = start(query="work until I inject a stop instruction")
+    flow = Flow(ScriptedLLM(reply))
+    graph = start(query="work until I inject a stop instruction", max_iters=8)
 
     events = await collect(flow, graph, until=after_appends(3))
     print_nodes("callable boundary: exactly three appended nodes", events, graph)
@@ -91,7 +99,8 @@ async def demo_next_idle_and_resume() -> None:
     events = await collect(flow, graph, until="idle")
     print_nodes("until='idle': settle at a clean exec_output", events, graph)
 
-    flow.append(graph.tail(), "STOP NOW", injected=True)
+    # Injecting a turn is appending a node to the agent's frontier yourself.
+    graph.frontier.append(UserQuery(content="STOP NOW"))
     events = await collect(flow, graph, until="done")
     print_nodes("resume after injection, until='done'", events, graph)
     persistence.save(graph, RUN_DIR / "next-idle-and-resume")
@@ -125,11 +134,11 @@ async def demo_callable_boundary_with_child() -> None:
             )
         return "```repl\ndone('child done')\n```"
 
-    flow = Flow(ScriptedLLM(reply), max_depth=1)
-    graph = start(query="parent")
+    flow = Flow(ScriptedLLM(reply))
+    graph = start(query="parent", max_depth=1)
 
-    def child_done(node: Node, current: Node) -> bool:
-        return node.agent_id != current.agent_id and node.type == "done_output"
+    def child_done(node: Node, root: Node) -> bool:
+        return node.parent_agent is not root and node.type == "done_output"
 
     events = await collect(flow, graph, until=child_done)
     print_nodes("until=<callable>: observe child done_output", events, graph)

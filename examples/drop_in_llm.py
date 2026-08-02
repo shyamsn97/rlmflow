@@ -25,10 +25,9 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow.clients import OpenAIClient
-from rlmflow import Flow, start
-from rlmflow.consumers import GraphCheckpointer
-from rlmflow.integrations import FlowLLM
+from rlmflow import AgentConfig, Flow, start
+from rlmflow.llm import OpenAIClient
+from rlmflow.adapters import FlowLLM
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -59,7 +58,7 @@ def demo_flow_as_llm():
     agent = FlowLLM(
         Flow(
             OpenAIClient(model="gpt-4o-mini"),
-            max_iters=5,
+            config=AgentConfig(max_iters=5),
         )
     )
     answer = ask(agent, "Compute 17 * 23 using a ```repl``` block, then call done().")
@@ -78,32 +77,26 @@ def demo_nested_flow():
     inner = FlowLLM(
         Flow(
             OpenAIClient(model="gpt-4o-mini"),
-            max_iters=3,
+            config=AgentConfig(max_iters=3),
         )
     )
-    outer = Flow(
-        inner,
-        max_iters=3,
-    )
-    graph = start(query="What's the 7th Fibonacci number? Use ```repl``` to compute.")
+    outer = Flow(inner)
+    root = start("What's the 7th Fibonacci number? Use ```repl``` to compute.", max_iters=3)
     run_dir = example_run_dir("drop-in-llm") / "nested-flow"
-    checkpointer = GraphCheckpointer(run_dir)
 
     async def drive() -> None:
-        try:
-            async for _event in outer.run_streaming(graph):
-                checkpointer.handle(_event)
-        finally:
-            checkpointer.close()
+        async for node in outer.run_streaming(root):
+            print(f"{node.parent_agent.config.path}  {node.type}")
+            root.save(run_dir)
 
     asyncio.run(drive())
-    print(graph.agent_result())
+    print(root.result())
     save_example_graph(
-        graph,
+        root,
         "drop-in-llm",
         out_dir=run_dir,
     )
-    outer.runtime.close_repls(graph.trajectory_id)
+    outer.runtime.close_repls()
     inner.close()
 
 

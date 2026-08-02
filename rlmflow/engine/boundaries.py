@@ -8,9 +8,7 @@ from typing import Literal, TypeAlias
 from rlmflow.graph.nodes import DoneOutput, ErrorOutput, ExecOutput, Node
 
 Boundary: TypeAlias = Callable[[Node, Node], bool]
-StepUntil: TypeAlias = (
-    Literal["next", "idle", "done", "finished", "error"] | Boundary
-)
+StepUntil: TypeAlias = Literal["next", "idle", "done", "finished", "error"] | Boundary
 
 _FULL_RUN = frozenset({"done", "finished"})
 _BOUNDARIES: dict[str, Boundary] = {

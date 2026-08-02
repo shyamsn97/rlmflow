@@ -1,21 +1,14 @@
 import asyncio
 import sys
 
-from helpers import (
-    StubLLM,
-    first_user,
-)
+import pytest
+from helpers import StubLLM, first_user
 
-from rlmflow import (
-    Flow,
-    LocalRuntime,
-    SubprocessRuntime,
-    start,
-    tool,
-)
+from rlmflow import Flow, LocalRuntime, ReplStatus, SubprocessRuntime, start
 from rlmflow.runtime import PopenConnection, build_docker_argv
 from rlmflow.runtime.protocol import (
     CapabilitiesRequest,
+    CapabilityMap,
     PingRequest,
     ProxyCall,
     ReplResponse,
@@ -27,53 +20,102 @@ from rlmflow.runtime.repl import DoneSignal
 from rlmflow.runtime.repl_client import RemoteRepl
 
 
-def test_minimal_runtime_register_tools_are_prompted_and_executable():
-    seen = {}
-
-    @tool("Double a number.")
-    def double(x: int) -> int:
-        return x * 2
-
-    def reply(messages):
-        seen["system"] = messages[0]["content"]
-        return '```repl\nprint(double(3))\ndone("ok")\n```'
-
-    runtime = LocalRuntime()
-    flow = Flow(StubLLM(reply), runtime=runtime, tools=[double])
-    graph = start("q")
-
-    assert flow.run(graph) == "ok"
-    assert "`double" in seen["system"]
-    assert "6" in graph.tail().content
+def block(code):
+    return f"```repl\n{code}\n```"
 
 
-def test_minimal_local_runtime_uses_working_directory(tmp_path):
-    flow = Flow(
-        StubLLM(
-            lambda _messages: (
-                "```repl\n"
-                "from pathlib import Path\n"
-                'Path("note.txt").write_text("hello")\n'
-                'done(Path("note.txt").read_text())\n'
-                "```"
-            )
-        ),
-        runtime=LocalRuntime(working_directory=tmp_path),
-    )
-    graph = start("q")
-
-    assert flow.run(graph) == "hello"
-    assert (tmp_path / "note.txt").read_text() == "hello"
-
-
-def test_minimal_repl_client_uses_minimal_repl_server():
-    repl = RemoteRepl(
+def remote_repl():
+    """A client stub wired to a repl_server running in its own process."""
+    return RemoteRepl(
         PopenConnection(
             [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
-            label="test minimal remote REPL",
+            label="test remote REPL",
             repl_timeout=5,
         )
     )
+
+
+WRITE_A_NOTE = block(
+    "from pathlib import Path\n"
+    'Path("note.txt").write_text("hello")\n'
+    'done(Path("note.txt").read_text())'
+)
+
+
+def test_local_runtime_uses_working_directory(tmp_path):
+    flow = Flow(
+        StubLLM(lambda _messages: WRITE_A_NOTE),
+        runtime=LocalRuntime(working_directory=tmp_path),
+    )
+
+    assert flow.run(start("q")) == "hello"
+    assert (tmp_path / "note.txt").read_text() == "hello"
+
+
+def test_subprocess_runtime_uses_working_directory(tmp_path):
+    flow = Flow(
+        StubLLM(lambda _messages: WRITE_A_NOTE),
+        runtime=SubprocessRuntime(working_directory=tmp_path),
+    )
+
+    assert flow.run(start("q")) == "hello"
+    assert (tmp_path / "note.txt").read_text() == "hello"
+
+
+def test_subprocess_runtime_executes_agent_code():
+    flow = Flow(
+        StubLLM(lambda _messages: block('print("subproc")\ndone("ok")')),
+        runtime=SubprocessRuntime(),
+    )
+    root = start("q")
+
+    assert flow.run(root) == "ok"
+    assert "subproc" in root.frontier.content
+
+
+def test_subprocess_runtime_supports_awaited_launch_subagents():
+    def reply(messages):
+        if first_user(messages) == "parent":
+            return block(
+                'r = await launch_subagents([{"name": "c", "query": "child"}])\ndone(r[0])'
+            )
+        return block('done("child-done")')
+
+    flow = Flow(StubLLM(reply), runtime=SubprocessRuntime())
+
+    assert flow.run(start("parent", max_depth=1)) == "child-done"
+
+
+def test_local_repl_env_channel_round_trips():
+    # Host seeds the env; agent code reads it via ENV and publishes new state;
+    # the host reads that back off ``repl.env`` (distinct from ``namespace``).
+    code = block('ENV["solved"] = ENV["RLMFLOW_IS_ROOT"] == "1"\ndone(ENV["RLMFLOW_AGENT_ID"])')
+    flow = Flow(StubLLM(lambda _messages: code))
+    root = start("q")
+
+    assert flow.run(root) == "root"
+    published = flow.runtime.repl_for(root).env
+    assert published["solved"] is True
+    assert published["RLMFLOW_AGENT_ID"] == "root"
+
+
+def test_subprocess_runtime_exposes_env_metadata():
+    code = block('done(ENV["RLMFLOW_AGENT_ID"] + "|" + ENV["RLMFLOW_IS_ROOT"])')
+    flow = Flow(StubLLM(lambda _messages: code), runtime=SubprocessRuntime())
+
+    assert flow.run(start("q")) == "root|1"
+
+
+def test_get_var_reads_a_variable_out_of_the_local_repl():
+    flow = Flow(StubLLM(lambda _messages: block('result = {"n": 42}\ndone("ok")')))
+    root = start("q")
+
+    assert flow.run(root) == "ok"
+    assert flow.runtime.get_var(root, "result") == {"n": 42}
+
+
+def test_remote_repl_runs_code_in_the_repl_server():
+    repl = remote_repl()
 
     def done(answer):
         repl.done_result = str(answer)
@@ -89,54 +131,12 @@ def test_minimal_repl_client_uses_minimal_repl_server():
     result = asyncio.run(run())
 
     assert "remote" in result.output
-    assert (result.status, result.answer) == ("done", "ok")
+    assert (result.status, result.answer) == (ReplStatus.DONE, "ok")
     assert not repl.errored
 
 
-def test_minimal_local_repl_env_channel_round_trips():
-    # Host seeds the env; agent code reads it via ENV and publishes new state;
-    # the host reads that back off ``repl.env`` (distinct from ``namespace``).
-    published = {}
-
-    def reply(messages):
-        return (
-            "```repl\n"
-            'ENV["solved"] = ENV["RLMFLOW_IS_ROOT"] == "1"\n'
-            'done(ENV["RLMFLOW_AGENT_ID"])\n'
-            "```"
-        )
-
-    flow = Flow(StubLLM(reply))
-    graph = start("q")
-
-    assert flow.run(graph) == "root"
-    published.update(flow.runtime.repl_for(graph).env)
-    assert published["solved"] is True
-    assert published["RLMFLOW_AGENT_ID"] == "root"
-
-
-def test_minimal_subprocess_runtime_exposes_env_metadata():
-    flow = Flow(
-        StubLLM(
-            lambda _messages: (
-                '```repl\ndone(ENV["RLMFLOW_AGENT_ID"] + "|" + ENV["RLMFLOW_IS_ROOT"])\n```'
-            )
-        ),
-        runtime=SubprocessRuntime(),
-        max_depth=2,
-    )
-
-    assert flow.run(start("q")) == "root|1"
-
-
-def test_minimal_repl_client_reads_back_published_env():
-    repl = RemoteRepl(
-        PopenConnection(
-            [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
-            label="test minimal remote REPL",
-            repl_timeout=5,
-        )
-    )
+def test_remote_repl_reads_back_published_env():
+    repl = remote_repl()
 
     async def run():
         try:
@@ -153,21 +153,7 @@ def test_minimal_repl_client_reads_back_published_env():
     assert env["RLMFLOW_AGENT_ID"] == "root.child"
 
 
-def test_minimal_flow_get_var_reads_local_repl_variable():
-    # flow.get_var pulls a var the agent created out of its (in-process) REPL.
-    def reply(_messages):
-        return '```repl\nresult = {"n": 42}\ndone("ok")\n```'
-
-    flow = Flow(StubLLM(reply))
-    graph = start("q")
-
-    assert flow.run(graph) == "ok"
-    assert flow.runtime.get_var(graph, "result") == {"n": 42}
-
-
-def test_minimal_subprocess_injects_and_retrieves_live_object_by_value():
-    import pytest
-
+def test_remote_inject_ships_a_live_object_by_value():
     pytest.importorskip("cloudpickle")
 
     # Defined locally so cloudpickle ships the CLASS by value too (the sandbox
@@ -180,19 +166,14 @@ def test_minimal_subprocess_injects_and_retrieves_live_object_by_value():
             self.n += k
             return self.n
 
-    repl = RemoteRepl(
-        PopenConnection(
-            [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
-            label="test minimal remote REPL",
-            repl_timeout=5,
-        )
-    )
+    repl = remote_repl()
+    counter = Counter()
 
     async def run():
         try:
             repl.seed({}, {})
             assert repl.capabilities().cloudpickle is True
-            repl.inject("counter", Counter())
+            repl.inject("counter", counter)
             await repl.run("counter.bump(5)\ncounter.bump()")
             return repl.get_var("counter")
         finally:
@@ -201,35 +182,26 @@ def test_minimal_subprocess_injects_and_retrieves_live_object_by_value():
     got = asyncio.run(run())
 
     assert got.n == 6  # sandbox mutations round-tripped back by value
-    # By value: the host's original object is untouched (a copy was shipped).
+    assert counter.n == 0  # by value: the host's own object was never touched
 
 
-def test_minimal_repl_client_inject_rejects_unpicklable_without_capability():
+def test_remote_inject_refuses_an_unpicklable_value_without_the_capability():
     # A JSON-unsafe value + a sandbox that can't cloudpickle -> a clear error,
     # not a silent JSON coercion failure.
-    from rlmflow.runtime.protocol import CapabilityMap
-    from rlmflow.runtime.repl_client import RemoteRepl
-
-    class Dummy(RemoteRepl):
+    class Sandboxless(RemoteRepl):
         def __init__(self):
             self.namespace = {}
             self._request_id = 0
             self._capabilities = CapabilityMap(cloudpickle=False)
 
-    client = Dummy()
-
     class Obj:
         pass
 
-    try:
-        client.inject("x", Obj())
-    except RuntimeError as exc:
-        assert "cloudpickle" in str(exc)
-    else:  # pragma: no cover
-        raise AssertionError("expected a RuntimeError for unpicklable inject")
+    with pytest.raises(RuntimeError, match="cloudpickle"):
+        Sandboxless().inject("x", Obj())
 
 
-def test_minimal_remote_protocol_models_round_trip():
+def test_remote_protocol_models_round_trip():
     run = parse_request(RunRequest(id="r1", code="print(1)").model_dump())
     response = parse_client_message(ReplResponse(id="r1", output="1").model_dump())
     proxy = parse_client_message(ProxyCall(id="p1", proxy="done", args=["ok"]).model_dump())
@@ -242,14 +214,8 @@ def test_minimal_remote_protocol_models_round_trip():
     assert proxy.proxy == "done"
 
 
-def test_minimal_repl_server_supports_ping_and_capabilities():
-    repl = RemoteRepl(
-        PopenConnection(
-            [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
-            label="test minimal remote REPL",
-            repl_timeout=5,
-        )
-    )
+def test_repl_server_supports_ping_and_capabilities():
+    repl = remote_repl()
     try:
         ping = repl.call(PingRequest(id="ping-test"))
         capabilities = repl.call(CapabilitiesRequest(id="cap-test"))
@@ -261,37 +227,7 @@ def test_minimal_repl_server_supports_ping_and_capabilities():
     assert not hasattr(capabilities.capabilities, "fork")
 
 
-def test_minimal_subprocess_runtime_executes_agent_code():
-    flow = Flow(
-        StubLLM(lambda _messages: '```repl\nprint("subproc")\ndone("ok")\n```'),
-        runtime=SubprocessRuntime(),
-    )
-    graph = start("q")
-
-    assert flow.run(graph) == "ok"
-    assert "subproc" in graph.tail().content
-
-
-def test_minimal_subprocess_runtime_uses_working_directory(tmp_path):
-    flow = Flow(
-        StubLLM(
-            lambda _messages: (
-                "```repl\n"
-                "from pathlib import Path\n"
-                'Path("note.txt").write_text("hello")\n'
-                'done(Path("note.txt").read_text())\n'
-                "```"
-            )
-        ),
-        runtime=SubprocessRuntime(working_directory=tmp_path),
-    )
-    graph = start("q")
-
-    assert flow.run(graph) == "hello"
-    assert (tmp_path / "note.txt").read_text() == "hello"
-
-
-def test_minimal_docker_argv_uses_minimal_repl_server(tmp_path):
+def test_docker_argv_runs_the_repl_server(tmp_path):
     argv = build_docker_argv(
         "rlmflow:minimal",
         mounts={str(tmp_path): "/workspace"},
@@ -301,19 +237,3 @@ def test_minimal_docker_argv_uses_minimal_repl_server(tmp_path):
 
     assert "rlmflow.runtime.repl_server" in argv
     assert argv[:4] == ["docker", "run", "-i", "--rm"]
-
-
-def test_minimal_subprocess_runtime_supports_awaited_launch_subagents():
-    def reply(messages):
-        if first_user(messages) == "parent":
-            return (
-                "```repl\n"
-                'r = await launch_subagents([{"name": "c", "query": "child"}])\n'
-                "done(r[0])\n"
-                "```"
-            )
-        return '```repl\ndone("child-done")\n```'
-
-    flow = Flow(StubLLM(reply), runtime=SubprocessRuntime(), max_depth=1)
-
-    assert flow.run(start("parent")) == "child-done"

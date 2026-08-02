@@ -1,23 +1,25 @@
-"""Inject alternate prompts into a minimal word-search supervisor trace.
+"""Steer a saved word-search run down two different routes.
 
 Prerequisite:
     python examples/control/injection/word_search.py
 
 That produces ``examples/_runs/word-search/baseline/`` — a run directory with
 ``graph.json`` (manifest) and per-agent logs under ``agents/``. This example
-loads that run and creates two edited copies, replacing real supervising nodes:
+loads that run, forks it twice at the turn where the root decided to delegate,
+and steers each copy with a different operator instruction:
 
-1. replace ``root.cols`` so it scans columns directly instead of delegating each
+1. scan the columns directly with a helper function, instead of one agent per
    column;
-2. replace the root supervising node so the parent writes one direct
-   all-direction scanner instead of reconciling direction children.
+2. write one direct all-direction scanner, instead of reconciling children.
 
-The replacements are operator prompts, not pre-written solution code or mocked
-results. Each edited graph is an isolated fork continued by its own minimal
-:class:`Flow`.
+A fork cuts everything after the node it is taken at, so the delegated children
+of that turn are gone from both copies and the model plans again from the same
+history with the new instruction in front of it. The instructions are prompts,
+not pre-written solution code or mocked results.
 
-Both finished variants are saved as run directories beside the baseline, at
-``examples/_runs/word-search/variant-cols/`` and ``.../variant-root/``.
+Both variants run in parallel on one :class:`Flow` and are saved beside the
+baseline, at ``examples/_runs/word-search/variant-cols/`` and
+``.../variant-root/``.
 """
 
 from __future__ import annotations
@@ -31,15 +33,14 @@ from typing import Literal
 from pydantic import BaseModel
 
 from rlmflow import (
-    ExecOutput,
+    AgentConfig,
+    AgentStart,
+    ExecAction,
     Flow,
-    Node,
-    SupervisingOutput,
+    UserQuery,
     parallel_stream,
     persistence,
-    surgery,
 )
-from rlmflow.consumers import GraphCheckpointer
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -70,16 +71,16 @@ EXPECTED_HITS = {("AGENT", 1, 8, 5, 8, "S")}
 EXPECTED_MISSING: set[str] = set()
 
 COLS_FUNCTION_PROMPT = """\
-Actually, change the column-agent route.
+Actually, change the column route.
 
-Instead of delegating each column, search the columns directly with a helper
-function.
+Instead of delegating each column to its own agent, search the columns directly
+with a helper function.
 
 In the next REPL block:
 
 1. define `find_column_hits(grid: list[str], target_words: list[str]) -> list[dict]`;
 2. scan every column in both S and N directions;
-2. run the helper and verify each returned coordinate range spells the claimed word;
+3. run the helper and verify each returned coordinate range spells the claimed word;
 """
 
 ROOT_DIRECT_SCAN_PROMPT = """\
@@ -97,17 +98,33 @@ def default_source() -> Path:
     return word_search_runs_dir() / "baseline"
 
 
-def summarize(label: str, graph: Node) -> None:
-    current = graph.tail()
+def delegating_action(agent: AgentStart) -> ExecAction:
+    """The most recent block this agent ran that launched sub-agents."""
+    for node in agent.frontier.walk(reverse=True):
+        launched = isinstance(node, ExecAction) and any(
+            isinstance(child, AgentStart) for child in node.children
+        )
+        if launched:
+            return node
+    raise SystemExit("the baseline run never delegated; regenerate it with word_search.py")
+
+
+def steer(root: AgentStart, prompt: str) -> AgentStart:
+    """Fork the run back to before it delegated, then hand it a new instruction."""
+    turn = delegating_action(root).prev  # the model turn that wrote that block
+    variant = (turn.prev or root).fork()
+    variant.frontier.append(UserQuery(content=prompt))
+    return variant
+
+
+def summarize(label: str, root: AgentStart) -> None:
     print(f"\n{label}")
     print("-" * len(label))
-    print(f"root current: {current.type if current else '<empty>'}")
-    if isinstance(current, SupervisingOutput):
-        print(f"waiting_on: {', '.join(current.waiting_on)}")
-    print(f"children: {', '.join(graph.child_agents()) or '<none>'}")
-    if graph.finished():
+    print(f"root frontier: {root.frontier.type}")
+    print(f"children: {', '.join(child.config.name for child in root.sub_agents) or '<none>'}")
+    if root.terminal:
         print("result:")
-        print(graph.agent_result())
+        print(root.result())
 
 
 def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
@@ -121,12 +138,18 @@ def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
     )
 
 
-def validate_result(label: str, graph: Node) -> None:
-    if not graph.finished():
-        print(f"\n{label} validation: skipped (graph is not finished)")
+def validate_result(label: str, root: AgentStart) -> None:
+    if not root.terminal:
+        print(f"\n{label} validation: skipped (the run did not finish)")
         return
 
-    result = WordSearchResult.model_validate_json(graph.agent_result())
+    answer = root.result()
+    # A structured answer comes back parsed; an unstructured one is still text.
+    result = (
+        WordSearchResult.model_validate(answer)
+        if isinstance(answer, dict)
+        else WordSearchResult.model_validate_json(answer)
+    )
     actual = {_hit_key(hit) for hit in result.found}
     missing = set(result.missing)
     ok = actual == EXPECTED_HITS and missing == EXPECTED_MISSING
@@ -146,30 +169,6 @@ def validate_result(label: str, graph: Node) -> None:
     assert ok
 
 
-def supervising_node(graph: Node, agent_id: str) -> SupervisingOutput:
-    matches = [node for node in graph.transcript(agent_id) if isinstance(node, SupervisingOutput)]
-    return matches[-1]
-
-
-def replace_supervisor_with_prompt(
-    graph: Node,
-    agent_id: str,
-    prompt: str,
-) -> Node:
-    variant = surgery.fork(graph, session="isolated")
-    surgery.insert(
-        variant,
-        supervising_node(variant, agent_id).id,
-        ExecOutput(
-            output=prompt,
-            content=f"REPL output for previous block:\n{prompt}",
-        ),
-        mode="replace",
-        truncate="descendants",
-    )
-    return variant
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, default=default_source())
@@ -182,66 +181,43 @@ def main() -> None:
     parser.add_argument("--model", default="gpt-5-mini")
     args = parser.parse_args()
 
-    graph = persistence.load(args.source.resolve())
-    summarize("Loaded real word-search run", graph)
+    baseline = persistence.load(args.source.resolve())
+    summarize("Loaded real word-search run", baseline)
 
-    # Each edit starts from a fresh, independent graph value.
-    cols_graph = replace_supervisor_with_prompt(
-        graph,
-        "root.cols",
-        COLS_FUNCTION_PROMPT,
-    )
-    root_graph = replace_supervisor_with_prompt(
-        graph,
-        "root",
-        ROOT_DIRECT_SCAN_PROMPT,
-    )
+    # Each fork is an independent copy with its own ids; the baseline is untouched.
+    cols_graph = steer(baseline, COLS_FUNCTION_PROMPT)
+    root_graph = steer(baseline, ROOT_DIRECT_SCAN_PROMPT)
 
     # One Flow drives both variants and merges their Node streams.
     flow = Flow(
         build_client(args.model),
-        max_depth=2,
-        max_iters=30,
+        config=AgentConfig(max_depth=2, max_iters=30),
     )
 
     out = args.out.resolve()
-    # One checkpointer per variant, keyed by trajectory_id, since parallel_stream
-    # interleaves Nodes from both graphs (each Node carries trajectory_id).
-    checkpointers = {
-        cols_graph.trajectory_id: GraphCheckpointer(out / "variant-cols"),
-        root_graph.trajectory_id: GraphCheckpointer(out / "variant-root"),
-    }
+    dirs = {id(cols_graph): out / "variant-cols", id(root_graph): out / "variant-root"}
 
     async def run_variants() -> None:
-        try:
-            async for node in parallel_stream(flow, cols_graph, root_graph):
-                gid = node.trajectory_id
-                checkpointers[gid].handle(node)
-                print(f"step: {gid} -> {node.type}")
-        finally:
-            for checkpointer in checkpointers.values():
-                checkpointer.close()
+        async for node in parallel_stream(flow, cols_graph, root_graph):
+            root = node.root
+            root.save(dirs[id(root)])  # checkpoint on every step, like the baseline
+            print(f"step: {dirs[id(root)].name} -> {node.type}")
 
     asyncio.run(run_variants())
+    flow.runtime.close_repls()
 
-    flow.runtime.close_repls(cols_graph.trajectory_id)
-    flow.runtime.close_repls(root_graph.trajectory_id)
-
-    cols_dir = persistence.save(cols_graph, out / "variant-cols")
-    root_dir = persistence.save(root_graph, out / "variant-root")
-
-    summarize("Variation A: prompt root.cols to scan columns directly", cols_graph)
+    summarize("Variation A: scan the columns directly", cols_graph)
     validate_result("Variation A", cols_graph)
-    print(f"saved -> {cols_dir}")
+    print(f"saved -> {cols_graph.save(dirs[id(cols_graph)])}")
     save_example_graph(
         cols_graph,
         "injection-variants",
         out_dir=example_run_dir("injection-variants") / "variant-cols",
     )
 
-    summarize("Variation B: prompt root to write a direct scanner", root_graph)
+    summarize("Variation B: write a direct scanner", root_graph)
     validate_result("Variation B", root_graph)
-    print(f"saved -> {root_dir}")
+    print(f"saved -> {root_graph.save(dirs[id(root_graph)])}")
     save_example_graph(
         root_graph,
         "injection-variants",

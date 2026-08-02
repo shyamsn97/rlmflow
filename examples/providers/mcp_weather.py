@@ -4,7 +4,7 @@ Requires MCP and a live LLM client:
 
     export OPENAI_API_KEY=...
     pip install -e ".[openai,mcp]"
-    python examples/providers/mcp_weather.py --no-viz
+    python examples/providers/mcp_weather.py
 """
 
 from __future__ import annotations
@@ -20,15 +20,13 @@ from pathlib import Path
 from typing import Any
 
 from rlmflow import (
+    AgentConfig,
+    AgentStart,
     Flow,
     LocalRuntime,
-    Node,
-    get_tool_metadata,
     start,
     tool,
 )
-from rlmflow.consumers import GraphCheckpointer
-from rlmflow.view import LiveTreeRenderer, render_tree
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -243,28 +241,16 @@ def make_mcp_tool(client: MCPStdioClient, spec: Any):
     return mcp_tool
 
 
-def mcp_tools(client: MCPStdioClient) -> dict[str, Any]:
-    """Build a name -> callable dict of the MCP server's tools."""
-    tools = {}
-    for spec in client.list_tools():
-        fn = make_mcp_tool(client, spec)
-        tools[get_tool_metadata(fn).name] = fn
-    return tools
+def mcp_tools(client: MCPStdioClient) -> list[Any]:
+    """Build the MCP server's tools as callables, each named by its MCP spec."""
+    return [make_mcp_tool(client, spec) for spec in client.list_tools()]
 
 
-async def run_until_done(flow: Flow, graph: Node, *, show_live: bool, out_dir: Path) -> Node:
-    renderer = LiveTreeRenderer(clear=show_live)
-    checkpointer = GraphCheckpointer(out_dir)
-    try:
-        async for event in flow.run_streaming(graph):
-            checkpointer.handle(event)
-            if show_live:
-                renderer.handle(event)
-            else:
-                print(render_tree(graph))
-    finally:
-        checkpointer.close()
-    return graph
+async def run_until_done(flow: Flow, root: AgentStart, out_dir: Path) -> AgentStart:
+    async for node in flow.run_streaming(root):
+        print(f"{node.parent_agent.config.path}  {node.type}")
+        root.save(out_dir)
+    return root
 
 
 def main() -> None:
@@ -272,7 +258,6 @@ def main() -> None:
     parser.add_argument("--model", default="gpt-5-mini")
     parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument("--max-iters", type=int, default=8)
-    parser.add_argument("--no-viz", action="store_true")
     parser.add_argument("--query", default=DEFAULT_QUERY)
     parser.add_argument(
         "--out-dir",
@@ -285,30 +270,23 @@ def main() -> None:
     mcp_client = MCPStdioClient(sys.executable, [str(server_script)]).start()
 
     try:
-        # Expose the MCP-backed tools to every agent by registering them on the
-        # runtime (each is already named by its MCP spec).
-        runtime = LocalRuntime()
-        for name, fn in mcp_tools(mcp_client).items():
-            runtime.register_tool(fn, name=name)
-
+        # Expose the MCP-backed tools to every agent by handing them to the Flow
+        # (each is already named by its MCP spec).
         flow = Flow(
             build_client(args.model),
-            runtime=runtime,
-            max_depth=args.max_depth,
-            max_iters=args.max_iters,
+            runtime=LocalRuntime(),
+            tools=mcp_tools(mcp_client),
+            config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
         )
-        graph = start(query=args.query)
-        graph = asyncio.run(
-            run_until_done(flow, graph, show_live=not args.no_viz, out_dir=Path(args.out_dir))
-        )
+        root = start(args.query, max_depth=args.max_depth, max_iters=args.max_iters)
+        out_dir = Path(args.out_dir)
+        asyncio.run(run_until_done(flow, root, out_dir))
 
         print(f"\n{'=' * 60}\nWEATHER PACKING RECOMMENDATION\n{'=' * 60}")
-        print(graph.agent_result())
+        print(root.result())
+        print(f"\nRun saved to {out_dir}")
 
-        if args.out_dir:
-            print(f"\nGraph checkpointed to {Path(args.out_dir)}")
-
-        flow.runtime.close_repls(graph.trajectory_id)
+        flow.runtime.close_repls()
     finally:
         mcp_client.close()
 

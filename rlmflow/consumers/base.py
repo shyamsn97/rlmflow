@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from contextlib import suppress
 
-from rlmflow.graph import Node
+from rlmflow.graph.nodes import Node
 
 
 class StreamConsumer:

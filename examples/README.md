@@ -7,18 +7,17 @@ named folders. Generated runs go under [`_runs/`](_runs/).
 
 | Script | What it shows |
 |---|---|
-| [`showcase.py`](showcase.py) | End-to-end `Flow` run + live terminal viz |
+| [`showcase.py`](showcase.py) | End-to-end `Flow` run, persistence, and gym-style stepping |
 | [`drop_in_llm.py`](drop_in_llm.py) | Minimal `FlowLLM` as a drop-in LLM |
 | [`llm_query_batched.py`](llm_query_batched.py) | `llm_query_batched` in the REPL |
 | [`skills.py`](skills.py) | On-disk skills + dynamic prompt section |
 | [`structured_output.py`](structured_output.py) | Root + child `output_schema` validation |
-| [`view_demo.py`](view_demo.py) | Lightweight viewer on synthetic minimal graphs |
 | [`summarizer.py`](summarizer.py) | Recursive map-reduce summarization |
 
 ```bash
-python examples/showcase.py --no-viz
+python examples/showcase.py
 python examples/skills.py --model gpt-4o-mini
-python examples/summarizer.py --sections 10 --no-viz
+python examples/summarizer.py --sections 10
 ```
 
 ## Tasks
@@ -28,13 +27,13 @@ python examples/summarizer.py --sections 10 --no-viz
 | [`needle/`](needle/) | Needle-in-haystack (in-memory + filesystem variants) |
 | [`coding/`](coding/) | Interactive file-editing agent |
 | [`autoresearch/`](autoresearch/) | TinyStories autoresearch loop with Modal GPU trials |
-| [`shepherd/`](shepherd/) | Meta-agent recovers a jammed Sokoban worker via rewind + `launch_branches` (warm children), with `LiveGraphTree` + board panels |
+| [`shepherd/`](shepherd/) | Meta-agent recovers a jammed Sokoban worker by forking its graph and replaying recovery branches in parallel, with board panels + a node trace |
 
 ## Tours & integrations
 
 | Folder | What it shows |
 |---|---|
-| [`graph/`](graph/) | Offline Node API (query, edit, save, fork, render) |
+| [`graph/`](graph/) | Offline Node API (query, navigate, save, fork) |
 | [`control/`](control/) | Delegation, branching, injection |
 | [`sandboxes/`](sandboxes/) | Docker and Modal remote execution |
 | [`providers/`](providers/) | DSPy, MCP, Tinker adapters |
@@ -51,7 +50,6 @@ Most compute examples (`summarizer.py`, `needle/haystack.py`, `showcase.py`,
 | `--docker-image IMAGE` | unset | If set, run agent code inside this Docker image via a `DockerRuntime`. Must have `rlmflow` installed. Leaving this unset uses the in-process `LocalRuntime`. |
 | `--max-depth N` | `3` | Max delegation depth. |
 | `--max-iters N` | `15` | Max LLM turns per agent. |
-| `--no-viz` | off | Disable the live terminal visualization. |
 | `--out-dir PATH` | `_runs/<example-name>/` | Save the final run here. Defaults use flat example names under [`_runs/`](_runs/). |
 
 ## Running under Docker
@@ -71,9 +69,9 @@ python examples/needle/filesystem.py          --docker-image rlmflow:local
 python examples/coding/agent.py --workdir ./proj --docker-image rlmflow:local
 ```
 
-Examples that use file tools register them on the runtime
-(`runtime.register_tools(FILE_TOOLS)`) and set `working_directory`, so relative
-paths resolve into that directory the same way in local and Docker modes.
+Examples that use file tools pass them to the flow (`Flow(tools=FILE_TOOLS)`) and
+set `working_directory` on the runtime, so relative paths resolve into that
+directory the same way in local and Docker modes.
 
 Each agent reads its `RLMFLOW_*` metadata from its own per-REPL `ENV` mapping
 (e.g. `ENV["RLMFLOW_AGENT_ID"]`), so that metadata is isolated per agent in every
@@ -83,20 +81,23 @@ cwd); `LocalRuntime` still serializes cwd changes inside the host process. Use
 `DockerRuntime` or a cloud sandbox runtime when you also need container-level
 isolation.
 
-A finished run is saved automatically under `_runs/`; reopen it with:
+A finished run is saved automatically under `_runs/`:
 
 ```bash
 python examples/summarizer.py        # saves to examples/_runs/summarizer/
 ```
 
+The saved directory holds `graph.json` plus per-agent logs under `agents/`. Read
+it back as the same tree the run held in memory:
+
 ```python
-from rlmflow.view import open_viewer, save_image
+from rlmflow import AgentStart
 
-open_viewer("examples/_runs/summarizer")            # interactive Gradio app
-save_image("examples/_runs/summarizer", "run.png")  # static PNG (rlmflow[image])
+root = AgentStart.load("examples/_runs/summarizer")
+print(root.result())
+for node in root.walk():
+    print(node.parent_agent.config.path, node.type)
 ```
-
-The saved directory holds `graph.json` plus per-agent logs under `agents/`.
 
 ## Docker And Modal
 
@@ -104,8 +105,8 @@ Remote sandbox examples live under [`sandboxes/`](sandboxes/). They run a small
 platformer-building task, so set `OPENAI_API_KEY` plus any provider credentials:
 
 ```bash
-python examples/sandboxes/docker_agent.py --docker-image rlmflow:local --no-live
-python examples/sandboxes/modal_agent.py --model gpt-5 --no-live
+python examples/sandboxes/docker_agent.py --docker-image rlmflow:local
+python examples/sandboxes/modal_agent.py --model gpt-5
 ```
 
 Install the matching extra first: `rlmflow[modal]` or `rlmflow[sandbox]`.
@@ -114,7 +115,7 @@ For fully locked-down local runs, pass a `DockerRuntime`:
 
 ```python
 from rlmflow import DockerRuntime, Flow
-from rlmflow.clients import OpenAIClient
+from rlmflow.llm import OpenAIClient
 
 runtime = DockerRuntime("rlmflow:local", working_directory="./proj")
 flow = Flow(OpenAIClient(model="gpt-4o"), runtime=runtime)

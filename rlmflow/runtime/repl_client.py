@@ -25,13 +25,13 @@ from rlmflow.runtime.protocol import (
     WireModel,
 )
 from rlmflow.runtime.repl import DoneSignal, MissingReplError, Repl, ReplRun, ReplStatus
-from rlmflow.runtime.serial import (
+from rlmflow.tools import get_tool_metadata
+from rlmflow.utils.serial import (
     CLOUDPICKLE,
     decode_object,
     encode_object,
     is_json_safe,
 )
-from rlmflow.tools import get_tool_metadata
 
 
 class ReplConnection(Protocol):

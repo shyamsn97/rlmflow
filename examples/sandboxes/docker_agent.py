@@ -21,17 +21,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from examples.common import build_client  # noqa: E402
 from rlmflow import (  # noqa: E402
+    AgentConfig,
+    AgentStart,
     DockerRuntime,
     Flow,
-    Node,
     start,
 )
-from rlmflow.consumers import ConsumerGroup, GraphCheckpointer  # noqa: E402
-from rlmflow.view import LiveTreeRenderer  # noqa: E402
-
-from examples.common import build_client  # noqa: E402
-
 
 PLATFORMER_QUERY = """\
 Build a simple 2D side-scrolling platformer in plain HTML/CSS/JS under output/.
@@ -53,7 +50,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--docker-image", default="rlmflow:local")
     parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument("--max-iters", type=int, default=5)
-    parser.add_argument("--no-live", action="store_true")
     parser.add_argument(
         "--out-dir",
         default=str(REPO_ROOT / "examples" / "_runs" / "sandbox-docker"),
@@ -62,20 +58,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def run_turn(flow: Flow, query: str, *, use_live: bool, out_dir: Path) -> Node:
-    graph = start(query=query)
-    consumers = ConsumerGroup(
-        [
-            LiveTreeRenderer(clear=use_live),
-            GraphCheckpointer(out_dir),
-        ]
-    )
-    try:
-        async for event in flow.run_streaming(graph):
-            consumers.handle(event)
-    finally:
-        consumers.close()
-    return graph
+async def run_turn(flow: Flow, root: AgentStart, out_dir: Path) -> AgentStart:
+    async for node in flow.run_streaming(root):
+        print(f"{node.parent_agent.config.path}  {node.type}")
+        root.save(out_dir)
+    return root
 
 
 def main() -> None:
@@ -85,20 +72,18 @@ def main() -> None:
         build_client(args.model),
         llm_clients={"fast": build_client(args.fast_model)},
         runtime=runtime,
+        config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
+    )
+    root = start(
+        PLATFORMER_QUERY,
         max_depth=args.max_depth,
         max_iters=args.max_iters,
     )
+    out_dir = Path(args.out_dir)
     try:
-        graph = asyncio.run(
-            run_turn(
-                flow,
-                PLATFORMER_QUERY,
-                use_live=not args.no_live,
-                out_dir=Path(args.out_dir),
-            )
-        )
-        print(graph.agent_result())
-        print(f"Node checkpointed to {Path(args.out_dir)}")
+        asyncio.run(run_turn(flow, root, out_dir))
+        print(root.result())
+        print(f"Run saved to {out_dir}")
     finally:
         flow.runtime.close_repls()
 

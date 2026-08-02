@@ -16,14 +16,13 @@ def graph_metrics(graph: "Node | None") -> dict[str, Any]:
     if graph is None:
         return {}
     nodes = list(graph.walk())
-    agents = graph.agent_ids()
-    child_counts = [len(graph.child_agents(agent_id)) for agent_id in agents]
+    agents = [node for node in nodes if node.type == "agent_start"]
     return {
         "agents": len(agents),
         "nodes": len(nodes),
         "llm_turns": sum(node.type == "llm_output" for node in nodes),
-        "max_depth": max((graph.depth(agent_id) for agent_id in agents), default=0),
-        "max_branching": max(child_counts, default=0),
+        "max_depth": max((agent.config.depth for agent in agents), default=0),
+        "max_branching": max((len(agent.sub_agents) for agent in agents), default=0),
     }
 
 

@@ -53,14 +53,8 @@ eval = [
     "python-docx>=1.1",
 ]
 sandbox = ["modal", "e2b", "daytona-sdk"]
-# Gradio viewer pulls plotly transitively (used by the interactive timeline).
-# `rich` powers the live terminal tree (`LiveView`) and `rlmflow view` output.
-viewer = ["gradio>=4.29", "plotly>=5.0", "rich>=13.0"]
+viewer = ["rich>=13.0"]
 tui = ["textual>=0.70", "rich>=13.0"]
-# Static image export of `node.plot()` (PNG/SVG/PDF) and GIFs. Used by
-# `save_image` / `save_steps` / `save_gif` and `node.save_image()`. Kaleido
-# ships native binaries; Pillow stitches step frames into a GIF.
-image = ["plotly>=5.0", "kaleido>=0.2.1", "pillow>=10.0"]
 all = [
     "openai>=1.0",
     "anthropic>=0.20",
@@ -81,11 +75,8 @@ all = [
     "openpyxl>=3.1",
     "PyPDF2>=3.0",
     "python-docx>=1.1",
-    "gradio>=4.29",
-    "plotly>=5.0",
-    "textual>=0.70",
-    "kaleido>=0.2.1",
     "rich>=13.0",
+    "textual>=0.70",
 ]
 dev = [
     "pytest>=7.0",

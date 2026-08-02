@@ -7,7 +7,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from rlmflow.graph import AgentStart, Node
+from rlmflow.graph.nodes import AgentStart, Node
 from rlmflow.runtime.connections import PopenConnection
 from rlmflow.runtime.env import agent_process_env
 from rlmflow.runtime.repl import LocalRepl, Repl, ReplRun, ReplStatus
@@ -24,7 +24,9 @@ class Runtime:
     """Own one live REPL per agent."""
 
     def __init__(self, working_directory: str | Path | None = None) -> None:
-        self.working_directory = Path(working_directory) if working_directory is not None else None
+        self.working_directory = (
+            Path(working_directory) if working_directory is not None else None
+        )
         self.repls: dict[str, Repl] = {}
 
     def open(self, agent: AgentStart) -> Repl:

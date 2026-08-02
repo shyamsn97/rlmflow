@@ -3,29 +3,41 @@
 from __future__ import annotations
 
 from rlmflow import (
+    AgentStart,
     DoneOutput,
     Node,
     start,
-    surgery,
 )
-from rlmflow.view import render_tree
 
 
-def seed_graph() -> Node:
+def seed_graph() -> AgentStart:
     return start(query="choose a release plan")
+
+
+def print_tree(node: Node, depth: int = 0) -> None:
+    """One indented line per node, from ``node`` down."""
+    label = f"{node.type} [{node.config.path}]" if isinstance(node, AgentStart) else node.type
+    print(f"{'  ' * depth}{label}")
+    for child in node.children:
+        print_tree(child, depth + 1)
 
 
 def main() -> None:
     base = seed_graph()
-    conservative = surgery.fork(base)
-    bold = surgery.fork(base)
+    # Each fork copies the tree and cuts everything after the forked node, so the
+    # two branches share this base and nothing else.
+    conservative = base.fork()
+    bold = base.fork()
 
-    conservative.tail().attach(DoneOutput(result="ship a small patch release"))
-    bold.tail().attach(DoneOutput(result="ship a major release candidate"))
+    conservative.frontier.append(DoneOutput(result="ship a small patch release"))
+    bold.frontier.append(DoneOutput(result="ship a major release candidate"))
 
-    print("base:\n" + render_tree(base))
-    print("\nconservative:\n" + render_tree(conservative))
-    print("\nbold:\n" + render_tree(bold))
+    print("base:")
+    print_tree(base)
+    print("\nconservative:")
+    print_tree(conservative)
+    print("\nbold:")
+    print_tree(bold)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,6 @@ parallel across batches.
 Usage:
     python examples/needle/filesystem.py
     python examples/needle/filesystem.py --no-viz
-    python examples/needle/filesystem.py --viewer
     python examples/needle/filesystem.py --in-process-local
     python examples/needle/filesystem.py --docker-image rlmflow:local
 """
@@ -23,21 +22,21 @@ import tempfile
 from pathlib import Path
 
 from rlmflow import (
-    DockerRuntime,
     FILE_TOOLS,
+    AgentConfig,
+    DockerRuntime,
     Flow,
     LocalRuntime,
     SubprocessRuntime,
     start,
 )
-from rlmflow.consumers import ConsumerGroup, GraphCheckpointer
-from rlmflow.view import LiveTreeRenderer
+from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
 
-examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+examples_dir = next(path for path in Path(__file__).resolve().parents if path.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import build_client  # noqa: E402
+from common import build_client  # noqa: E402, RUF100
 
 
 def generate_haystack(directory: Path, num_files: int = 500, lines_per_file: int = 200) -> str:
@@ -63,9 +62,6 @@ def generate_haystack(directory: Path, num_files: int = 500, lines_per_file: int
 def main():
     parser = argparse.ArgumentParser(description="Needle in a haystack across many files")
     parser.add_argument("--num-files", type=int, default=500)
-    parser.add_argument(
-        "--viewer", action="store_true", help="Open the state viewer after finishing"
-    )
     parser.add_argument("--model", default="gpt-5-mini")
     parser.add_argument("--fast-model", default="gpt-5-nano")
     parser.add_argument(
@@ -89,7 +85,7 @@ def main():
     )
     parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument("--max-iters", type=int, default=15)
-    parser.add_argument("--no-viz", action="store_true")
+    parser.add_argument("--no-viz", action="store_true", help="Disable the live agent tree")
     parser.add_argument(
         "--out-dir",
         default=str(Path(__file__).resolve().parents[1] / "_runs" / "needle-filesystem"),
@@ -126,7 +122,6 @@ def main():
             runtime = LocalRuntime(working_directory=workdir)
         else:
             runtime = SubprocessRuntime(working_directory=workdir)
-        runtime.register_tools(FILE_TOOLS)
 
         llm_clients = None
         if args.fast_model:
@@ -136,45 +131,42 @@ def main():
             build_client(args.model),
             llm_clients=llm_clients,
             runtime=runtime,
+            tools=FILE_TOOLS,
+            config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
+        )
+
+        root = start(
+            f"There are {args.num_files} text files in haystack/. "
+            "Exactly one line in one file matches the pattern "
+            "`The magic number is <number>`. Find and return the number. "
+            "There are too many files to search manually, so split the work "
+            "into batches.",
             max_depth=args.max_depth,
             max_iters=args.max_iters,
         )
-
-        graph = start(
-            query=(
-                f"There are {args.num_files} text files in haystack/. "
-                "Exactly one line in one file matches the pattern "
-                "`The magic number is <number>`. Find and return the number. "
-                "There are too many files to search manually, so split the work "
-                "into batches."
-            )
-        )
-
-        consumers = ConsumerGroup([LiveTreeRenderer(clear=not args.no_viz)])
+        out_dir = Path(args.out_dir)
+        consumers = ConsumerGroup()
+        if not args.no_viz:
+            consumers.append(LiveGraphTree(title="Needle filesystem search"))
         if args.out_dir:
-            consumers.append(GraphCheckpointer(Path(args.out_dir)))
+            consumers.append(GraphCheckpointer(out_dir))
 
         async def drive() -> None:
             try:
-                async for event in flow.run_streaming(graph):
-                    consumers.handle(event)
+                async for node in flow.run_streaming(root):
+                    consumers.handle(node)
             finally:
                 consumers.close()
 
         asyncio.run(drive())
 
         print(f"\n{'=' * 40}")
-        print(f"Result:         {graph.agent_result()}")
+        print(f"Result:         {root.result()}")
         print(f"Actual answer:  {answer}")
-        print(f"Correct:        {answer in graph.agent_result()}")
+        print(f"Correct:        {answer in root.result()}")
+        print(f"Run saved to    {out_dir}")
 
-        if args.out_dir:
-            print(f"Node checkpointed to {Path(args.out_dir)}")
-
-        if args.viewer:
-            print("Viewer support is not part of the minimal example path.")
-
-        flow.runtime.close_repls(graph.trajectory_id)
+        flow.runtime.close_repls()
     finally:
         if tmp is not None:
             tmp.cleanup()

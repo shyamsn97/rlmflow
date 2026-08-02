@@ -459,7 +459,9 @@ def status_section(flow: Any = None, agent: Any = None) -> str:
     max_depth = getattr(flow, "max_depth", 0)
     if max_depth == 0:
         return "Baseline mode: no sub-agents available."
-    note = f"You are at recursion depth **{agent.config.depth}** of max **{max_depth}**."
+    note = (
+        f"You are at recursion depth **{agent.config.depth}** of max **{max_depth}**."
+    )
     if agent.config.depth >= max_depth:
         note += " You cannot spawn sub-agents."
     return note

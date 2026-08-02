@@ -16,9 +16,9 @@ from pathlib import Path
 
 import dspy
 
-from rlmflow.clients import OpenAIClient
+from rlmflow.llm import OpenAIClient
 from rlmflow import Flow
-from rlmflow.integrations import DSPyFlow, FlowLLM
+from rlmflow.adapters import DSPyFlow, FlowLLM
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:

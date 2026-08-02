@@ -10,15 +10,33 @@ each one is called out under **Breaking** below.
 
 ### Breaking
 
-- **Node-only execution model.** `Graph`, `Agent`, run registries, Driver
-  objects, and the Event hierarchy are removed. Build a root with
-  `start(query, ...)`; `Flow` mutates that recursive Node tree directly.
+- **One engine, and it is the package.** The rewrite that lived under
+  `rlmflow.minimal` is now `rlmflow` itself: `rlmflow.graph` holds the tree and
+  its on-disk format (`nodes.py`, `persistence.py`), `rlmflow.flow` holds `Flow`,
+  and `rlmflow.engine` holds what it is built out of (`execution.py`,
+  `boundaries.py`, `parallel.py`).
+  The engine they replace is deleted along with the old `rlmflow.graph` and
+  `rlmflow.minimal`. Every name is still re-exported from `rlmflow` directly,
+  which is where callers should import it from. The node API it brings with it: `agent.frontier` for
+  `tail()`, `node.append(child)` for `attach`/`submit`/`spawn`, `agent.result()`
+  for `agent_result()`, `agent.terminal` for `finished()`, `agent.transcript()`
+  with no agent-id argument, and `node.walk(reverse=True)` for reading one
+  agent's chain backwards. `Flow` no longer takes `max_iters`, `max_depth`, or
+  `child_max_iters`: per-agent limits belong to `AgentConfig`, so pass them to
+  `start(query, ...)` or as `config=` for the flow's own defaults.
 - **Node streaming.** `run_streaming(root_or_query, until=...)` yields affected
-  Nodes, not Event wrappers. Mutation provenance lives in
-  `node.metadata["mutation"]`.
-- **Branch API simplified.** Merge and public `Flow.adopt` are removed.
-  `Flow.fork`, `Flow.rewind`, `Flow.launch_branches`, `Flow.discard`, and
-  `rlmflow.surgery` cover branch workflows.
+  Nodes, not Event wrappers.
+- **Forking is the whole branch API.** `node.fork()` copies the tree and cuts
+  everything after that node; `rlmflow.surgery` and its mid-transcript
+  `insert`/`remove` are gone, as are `Flow.rewind`, `Flow.launch_branches`, and
+  `Flow.discard`. An edit lands as an ordinary node appended to a frontier, which
+  `Node.append` enforces — there is no way to rewrite history in place.
+- **Deleted with no replacement.** The legacy Graph/Event viewer implementation,
+  both CLI entry points, `LLMChannel` (bounding concurrency is
+  `Flow(workers=...)` or a `Pool`), and the injection helpers `flow.next_query`,
+  `flow.inject_tools`, `flow.register_halt`, and `flow.append` — appending a
+  `UserQuery` to a frontier, `flow.add_tool`/`flow.inject`, and an `until`
+  callable cover what they did.
 - **A delegating step writes one node, like every other step.** Children hang off
   the `ExecAction` that launched them, so `SupervisingOutput` is gone from the node
   model and a delegating turn records a single `ExecOutput` holding everything its
@@ -40,6 +58,25 @@ each one is called out under **Breaking** below.
 
 ### Fixed
 
+- **Node-native visualization and stream consumers.** `LiveTreeRenderer` restores
+  compact terminal redraws, `LiveGraphTree` restores the Rich live forest, and
+  `FlowTUI` restores the Textual chat/dashboard with overview, tree, agent,
+  count, waiting, error, and latest-activity panels. `GraphCheckpointer` restores
+  periodic/final saving. They consume Nodes directly through
+  `ConsumerGroup.handle(node)` and are imported from `rlmflow.consumers`.
+- **`PromptProfile(user=fn)` takes a bare function again**, as `as_user_prompt`
+  always claimed it did. The flow normalized its own `user_prompt=` at
+  construction but handed a profile's straight to `.build()`, so a plain
+  `(flow, node) -> str | None` raised `AttributeError: 'function' object has no
+  attribute 'project'` on the first turn. Both call sites now resolve it through
+  `Flow.user_builder(agent)`.
+- **Two roots on one flow no longer deadlock.** `parallel_run`/`parallel_stream`
+  drive several `run_streaming` loops over one shared queue, and each loop took
+  whichever step had landed — including the other's, which then waited forever for a
+  step nothing was tracking any more. Both loops also queued behind a single wake
+  future, so only the last one to ask was ever woken. `TaskQueue.settle` now takes
+  the same predicate its caller filters pending work by, and every waiter is woken
+  to look.
 - **Resuming a saved run rebuilds its live REPL.** `persistence.load` followed by
   a run previously started with an empty namespace, so an agent's own variables
   raised `NameError` while its transcript said it had set them — and it retried
@@ -72,20 +109,43 @@ each one is called out under **Breaking** below.
   re-run, `"0"` during a live turn. `launch_subagents` reads it and returns the
   answers its children already gave rather than launching again; agent code can read
   it to skip downloads, writes, or anything else it should not repeat.
-- **Graph format version 3** — adds the limits recorded on `UserQuery`. Version 2
-  runs still load (`persistence.SUPPORTED_VERSIONS`).
-- **Long-running / multi-turn agents.** `flow.append_query(root, text, ...)`
-  appends a `UserQuery`; passing a finished root with `query=` appends and drives
-  the next turn while preserving history and the warm REPL.
-- **Warm child launch.** `flow.launch_branches(parent, children, *,
-  queries=None, names=None)` reparents prepared fork/rewind branches and runs
-  them as children through `launch_subagents`' warm path.
-- **`LiveGraphTree` stream consumer** — Rich live agent tree with
-  active/waiting status; compose with other consumers via `ConsumerGroup`.
+- **`AgentStart.save(path)` / `AgentStart.load(path)`** — the version 2 run
+  directory, unchanged: `graph.json` and `latest.json` beside an `agents/` tree of
+  `agent.json` + `session.jsonl`. A re-save prunes agent directories that are no
+  longer in the tree, timing is recorded per step, each turn's system prompt is
+  kept once per agent and referenced by id, and a structured answer is stored
+  parsed rather than as the string the model emitted.
+- **Long-running / multi-turn agents.** Append a `UserQuery` to a finished root's
+  frontier and stream it again: history and the warm REPL are still there.
+- **`node.tokens()`** — what every model call from a node down cost, as an
+  `LLMUsage` that adds and reports a `total`. The budget check reads it too.
 - **Named `PromptProfile`s** — `Flow(prompt_profiles=..., prompt_router=...)`
   plus per-agent `UserQuery.prompt_profile` / spawn-spec `prompt_profile`.
 - **Structured execution module.** `Pool`, `ThreadPool`, `SequentialPool`, and
-  the small structured-concurrency `TaskQueue` live in `rlmflow.execution`.
+  the small structured-concurrency `TaskQueue` live in `rlmflow.engine.execution`.
+- **One pooled leaf queue per driver.** `run_streaming` seeds one or more roots'
+  current leaves, yields each completed `Transition.created`, checks that root's
+  `until`, and resubmits the node when its agent is not terminal.
+  `parallel_stream` uses this same driver once for all roots rather than merging
+  competing stream consumers. Delegation submits children to the active queue and
+  uses one run-scoped condition for terminal wake-ups. Tree-wide diffs, `settle`,
+  `landing`, cross-root queue predicates, and repeated leaf scans are gone.
+- **`Flow.step` is a total transition.** It returns
+  `Transition(submitted, created, error)`, converting infrastructure failure into a
+  terminal graph node while allowing cancellation to unwind. `step_task` and
+  queue-side exception inspection are gone; a failed root is still re-raised to
+  its stream caller.
+- **Pool orchestration is separate from compute.** `Pool.run` drives lightweight
+  transition coroutines without consuming a bounded compute slot while a parent
+  awaits children; `Pool.call` continues to place and bound blocking compute.
+  `Flow(workers=...)` and custom pools retain their existing public meaning.
+- **`Flow(llm_request_timeout=...)`** — bounds every model call. The client's own
+  `timeout` is set too, where it takes one: cancelling a blocking call frees the
+  caller but not the thread, so only the client can end the request.
+- **`Flow(use_llm_query=True)`** — puts `llm_query_batched` in the agent's REPL for
+  independent one-shot prompts, which need no trajectory, no REPL, and no
+  delegation. Off by default, so an agent is never offered a tool its prompt did
+  not describe; `flow.llm_query_batched` calls it from host code either way.
 
 ### Changed
 
@@ -95,7 +155,7 @@ each one is called out under **Breaking** below.
 - **Runtime owns REPL lifecycle.** REPL lookup, replay, closure, and rebinding
   live on `Runtime`; warm branch attachment uses `Runtime.rebind_repl`.
 - **Persistence and consumers accept Nodes directly.** Save/load uses
-  `rlmflow.persistence`; stream consumers handle one Node at a time.
+  `rlmflow.graph.persistence`; stream consumers handle one Node at a time.
 
 ### Removed
 

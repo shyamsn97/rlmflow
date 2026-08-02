@@ -1,6 +1,6 @@
-"""In-memory agent transcripts and streaming boundaries."""
+"""The run itself: the node tree, and the format it is written to disk in."""
 
-from rlmflow.graph import boundaries
+from rlmflow.graph import persistence
 from rlmflow.graph.nodes import (
     DEFAULT_MAX_QUERY_CHARS,
     DEFAULT_QUERY,
@@ -13,10 +13,8 @@ from rlmflow.graph.nodes import (
     LLMOutput,
     LLMUsage,
     Node,
-    SupervisingOutput,
     UserQuery,
     start,
-    validate_agent_name,
 )
 
 __all__ = [
@@ -31,9 +29,7 @@ __all__ = [
     "LLMOutput",
     "LLMUsage",
     "Node",
-    "SupervisingOutput",
     "UserQuery",
-    "boundaries",
+    "persistence",
     "start",
-    "validate_agent_name",
 ]

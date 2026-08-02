@@ -1,117 +1,144 @@
 # Control
 
 The root Node is the control surface. Flow mutates that tree in place and
-`run_streaming` yields changed Nodes.
+`run_streaming` yields the nodes as they land.
 
 ## Run and step
 
 ```python
 import asyncio
-from rlmflow import Flow, render_tree, start
+from rlmflow import Flow, start
 
-flow = Flow(client, max_depth=2)
-root = start("Audit this repository.")
+flow = Flow(client)
+root = start("Audit this repository.", max_depth=2)
 
 async def drive():
     async for node in flow.run_streaming(root):
-        print(node.type)
-        print(render_tree(root))
+        print(node.parent_agent.config.path, node.type)
 
 asyncio.run(drive())
-print(root.agent_result())
+print(root.result())
 ```
 
 `flow.run("query")` and `await flow.arun("query")` return the root agent's final
-string result.
+result — a string, or the parsed value if the agent has an `output_schema`.
 
 Pass `until="next"` for one appended Node, `until="idle"` for a clean
 `ExecOutput`/`DoneOutput`, or a `(node, root) -> bool` callable. See
 [`streaming.md`](streaming.md).
 
-## Multi-turn runs
+## Per-agent limits
 
-Pass a finished root back with `query=`:
+Limits belong to the agent, not the flow. Set them on the root with `start(...)`:
 
 ```python
-flow.run(root, query="Now implement the fixes.")
-flow.run(
-    root,
-    query="Summarize the result.",
-    inputs={"format": "markdown"},
-    output_schema=Report,
+root = start(
+    "Audit this repository.",
+    inputs={"tree": listing},
+    model="fast",
+    max_depth=2,
+    max_iters=20,
+    max_budget=200_000,
+    keep_n_messages=8,
+    output_schema=schema,
 )
 ```
 
-The new `UserQuery` inherits unspecified model, prompt, inputs, and schema.
-Inputs merge by default; `merge_inputs=False` replaces them. An existing warm
-REPL receives the new `INPUTS`.
-
-Stage a turn without driving:
+Or give the flow a default `AgentConfig`, which it copies onto every root it
+builds from a bare query string:
 
 ```python
-flow.append_query(root, "Review one more file.")
+from rlmflow import AgentConfig, Flow
+
+flow = Flow(client, config=AgentConfig(max_depth=2, max_iters=20))
+flow.run("Audit this repository.")
+```
+
+A loaded run keeps its identity, inputs, model, prompt profile, and schema, but
+not its limits — those come back as `AgentConfig` defaults. Set them on the
+loaded root before resuming if they matter:
+
+```python
+from rlmflow import AgentStart
+
+loaded = AgentStart.load("runs/audit")
+loaded.config.max_iters = 40
+```
+
+Children inherit the parent's config through `config.child(name)`, with
+`child_max_iters` as the per-child override and the spec's `inputs`, `model`,
+`prompt_profile`, and `output_schema` layered on top.
+
+## Multi-turn runs
+
+An agent that answered is finished only because its frontier is a `DoneOutput`.
+Append a new query to that frontier and the same root runs again, with its REPL
+namespace and its whole history intact:
+
+```python
+from rlmflow import UserQuery
+
+flow.run(root)
+
+root.frontier.append(UserQuery(content="Now implement the fixes."))
+flow.run(root)
+```
+
+`max_iters` counts an agent's model turns across the whole transcript, so a root
+you intend to drive for several turns needs headroom for all of them.
+
+To change the inputs an agent sees, set them on its config and let the next
+step re-seed the REPL:
+
+```python
+root.config.inputs = {"format": "markdown"}
 ```
 
 ## Reactive edits
 
-Edit only after a streaming call returns, when its current round has settled:
+Edit after a streaming call returns, when its pass has settled:
 
 ```python
 async for _ in flow.run_streaming(root, until="idle"):
     pass
 
-flow.append(root.tail(), "Finalize with current evidence.", injected=True)
+root.frontier.append(UserQuery(content="Finalize with current evidence."))
 
 async for _ in flow.run_streaming(root):
     pass
 ```
 
-For structural edits:
+An append lands on the agent's frontier or it raises, so an edit cannot silently
+rewrite history: to change what an agent already did, fork the run at that point
+instead.
+
+Two rules keep this clean in a run that delegates. Stop on the agent's own output
+rather than on a child's, since closing a stream cancels the parent's block and
+resuming re-runs it, costing a turn. And to reach a worker while its parent is still inside that
+block, append from inside the loop as the worker's node lands. See
+[`injections.md`](injections.md).
+
+## Fork and selection
+
+`node.fork()` copies the whole run and cuts everything after that node. The copy
+is an independent root, with fresh ids by default, that any `Flow` can continue:
 
 ```python
-from rlmflow import ExecOutput, surgery
+from rlmflow import ExecAction
 
-surgery.insert(root, anchor_id, "Controller instruction", mode="after")
-surgery.insert(root, anchor_id, ExecOutput(output="replacement"), mode="replace")
-removed = surgery.remove(root, node_id)
-```
-
-Surgery returns the affected Node. Mutation provenance is available in
-`node.metadata["mutation"]`.
-
-## Checkpoint and revert
-
-```python
-checkpoint = surgery.checkpoint(root, agent_id="root.worker")
-
-# ...append or run more work...
-
-removed = surgery.revert(root, checkpoint)
-```
-
-A checkpoint binds to both Node ids and durable content. Rewriting the saved
-prefix makes it stale.
-
-## Fork, rewind, and selection
-
-Forks are independent root Nodes:
-
-```python
-branch = await flow.fork(root)
-repair = await flow.rewind(root, n=2, agent_id="root.worker")
+action = next(n for n in root.transcript() if isinstance(n, ExecAction))
+branch = action.fork()
 
 async for _ in flow.run_streaming(branch):
     pass
-
-flow.discard(repair)
 ```
 
-An isolated fork gets a new `trajectory_id` and may run concurrently with its
-source. A shared-session fork retains identity and cannot stream concurrently
-on the same Flow.
+The fork's agent is back at that node with the nodes below it gone, so the next
+step re-runs from there. A `Flow` that has not run the branch rebuilds its REPL
+first — see the restore modes below.
 
-There is no merge operation. Continue the selected branch, discard alternatives,
-or pass prepared single-agent branches to `flow.launch_branches(...)`.
+There is no merge operation. Continue the selected branch and discard the
+alternatives.
 
 ## Delegation
 
@@ -129,82 +156,79 @@ results = await launch_subagents([
 ```
 
 Specs run concurrently and results preserve spec order. Child `name` is one
-ASCII identifier segment containing only letters, digits, `_`, or `-`.
+ASCII identifier segment containing only letters, digits, `_`, or `-`, and is
+unique among its siblings. A spec may also carry `model`, `prompt_profile`, and
+`output_schema`. A spec deeper than `max_depth`, or with a query longer than
+`max_query_chars`, is answered with a refusal string in place of a child.
 
-Host code with prepared branches can use:
-
-```python
-await flow.launch_branches(
-    parent,
-    [fork_a, fork_b],
-    queries=["recover with plan A", "recover with plan B"],
-    names=["a", "b"],
-)
-```
-
-This attaches each branch below a `SupervisingOutput`, transfers warm REPL
-state, drives the children, and resumes the parent.
+Children hang off the `ExecAction` that launched them, so the parent's
+transcript stays a single chain: `root.sub_agents` is where the children are,
+and the launching step lands one `ExecOutput` when the block finishes.
 
 ## Save and load
 
 ```python
-from rlmflow import persistence
+from rlmflow import AgentStart
 
-persistence.save(root, "runs/audit")
-loaded = persistence.load("runs/audit")
+run_dir = root.save("runs/audit")
+loaded = AgentStart.load("runs/audit")
 
 async for _ in flow.run_streaming(loaded):
     pass
 ```
 
-Loading is a cold boundary: the Node tree is restored, but REPLs and suspended
-Python frames are not. Runtime state is rebuilt when execution needs it.
+Loading is a cold boundary: the tree is restored, but no REPL is. A tree handed
+to a `Flow` that has not run it — loaded, forked, or from another process — gets
+its namespaces back one of two ways:
 
-Use `GraphCheckpointer` for live snapshots:
+- `Flow(restore="replay")`, the default, re-runs each unfinished agent's
+  recorded code once before the run loop starts. Nothing is appended and no
+  child is relaunched; `ENV["RLMFLOW_REPLAY"]` is `"1"` while it happens, so
+  agent code can skip work it should not repeat.
+- `Flow(restore="lazy")` skips the rebuild and tells each unfinished agent, in
+  its own transcript, that its variables are gone.
+
+To checkpoint as a run goes, save from inside the streaming loop:
 
 ```python
-checkpointer = GraphCheckpointer("runs/audit")
-try:
-    async for node in flow.run_streaming(root):
-        checkpointer.handle(node)
-finally:
-    checkpointer.close()
+async for node in flow.run_streaming(root):
+    root.save("runs/audit")
 ```
 
 ## Tools
 
-Register fixed tools on Runtime before constructing Flow:
+Pass fixed tools to the flow, which describes them in the system prompt and
+seeds them into every REPL:
 
 ```python
-runtime = LocalRuntime(working_directory=".")
-runtime.register_tools(FILE_TOOLS)
-flow = Flow(client, runtime=runtime)
+from rlmflow import FILE_TOOLS, Flow, LocalRuntime
+
+flow = Flow(client, tools=FILE_TOOLS, runtime=LocalRuntime(working_directory="."))
 ```
 
-Inject Flow-wide or scoped/factory tools later with `inject_tools`. Runtime
-backfills rebuilt namespaces into already-open REPLs.
-
-Enable controller branch tools with:
+Add or remove them later; both reach REPLs that are already open:
 
 ```python
-enable_graph_ops(flow, controller=root)
+flow.add_tool(my_tool)
+flow.inject("LOOKUP", {"a": 1})   # any object, not just callables
+flow.remove_tool("my_tool")
 ```
 
-The injected operations are `fork`, `rewind`, `run`, `step`, and `discard`.
+`done`, `launch_subagents`, and `INPUTS` are reserved: they are rebuilt for each
+step and cannot be injected over.
 
-## Termination and cleanup
+`Flow(use_llm_query=True)` adds `llm_query_batched` to the REPL, for agents that
+want to fan out one-shot model calls without spawning children. It is available
+to host code as `flow.llm_query_batched(...)` either way.
 
-Request cooperative termination before selected agents' next transitions:
+## Cleanup
 
-```python
-flow.terminate(root, agent_ids=["root.worker"])
-```
-
-Close one trajectory automatically:
+Close one run's REPLs as the stream exits:
 
 ```python
 async for _ in flow.run_streaming(root, close_repls=True):
     pass
 ```
 
-Close all Flow resources with `await flow.aclose()`.
+Close all Flow resources — queued work, thread pool, and every REPL — with
+`await flow.aclose()`.

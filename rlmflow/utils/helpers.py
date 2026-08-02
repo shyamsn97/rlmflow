@@ -1,14 +1,11 @@
-"""Small, stateless helpers shared across the minimal package."""
+"""Small, stateless helpers shared across the package."""
 
 from __future__ import annotations
 
-import asyncio
-import functools
 import inspect
-from collections.abc import Callable
 from typing import Any
 
-from rlmflow.graph import AgentStart, LLMUsage, start
+from rlmflow.graph.nodes import AgentStart, LLMUsage, start
 from rlmflow.tools import get_tool_metadata
 from rlmflow.utils.code import find_code_blocks
 
@@ -36,19 +33,6 @@ def accepts_kwarg(fn: Any, name: str) -> bool:
     )
 
 
-async def call_sync_or_async(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Call a function that may be sync or async and return its result.
-
-    Coroutine functions are awaited directly. Plain functions run in a worker
-    thread so they never block the event loop; if such a function still returns
-    an awaitable (e.g. an async callable object), that is awaited too.
-    """
-    if inspect.iscoroutinefunction(fn):
-        return await fn(*args, **kwargs)
-    result = await asyncio.to_thread(functools.partial(fn, *args, **kwargs))
-    return await result if inspect.isawaitable(result) else result
-
-
 def tool_name(fn: Any) -> str:
     """Registered name of a tool callable, falling back to ``fn.__name__``."""
     meta = get_tool_metadata(fn)
@@ -63,9 +47,7 @@ def node_from_input(node_or_query: AgentStart | str) -> AgentStart:
     turns) lives in :meth:`Flow.resolve_run`, not here.
     """
     return (
-        node_or_query
-        if isinstance(node_or_query, AgentStart)
-        else start(node_or_query)
+        node_or_query if isinstance(node_or_query, AgentStart) else start(node_or_query)
     )
 
 
@@ -90,13 +72,6 @@ def truncate_output(output: str, limit: int) -> str:
     return output
 
 
-def iter_budget(depth: int, max_iters: int, child_max_iters: int | None) -> int:
-    """Iteration cap for one agent; children may use a tighter bound."""
-    if depth > 0 and child_max_iters is not None:
-        return child_max_iters
-    return max_iters
-
-
 def sampling_kwargs(
     *,
     temperature: float | None = None,
@@ -116,9 +91,7 @@ def sampling_kwargs(
 
 __all__ = [
     "accepts_kwarg",
-    "call_sync_or_async",
     "code_block",
-    "iter_budget",
     "node_from_input",
     "sampling_kwargs",
     "tool_name",

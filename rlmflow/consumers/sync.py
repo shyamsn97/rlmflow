@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from rlmflow.consumers.base import StreamConsumer
-from rlmflow.graph import Node
+from rlmflow.graph.nodes import Node
 
 DEFAULT_IGNORE = (".venv", "__pycache__", ".pytest_cache", ".git")
 

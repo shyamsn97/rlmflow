@@ -15,7 +15,6 @@ import shutil
 from pathlib import Path
 
 from rlmflow import (
-    persistence,
     Flow,
     LLMUsage,
     start,
@@ -75,13 +74,13 @@ def score(result: str) -> tuple[int, dict[str, str]]:
 
 def run_branch(root: Path, idx: int) -> tuple[str, int, dict[str, str], int]:
     llm = MockLLM(seed=idx)
-    flow = Flow(llm, max_depth=1, max_iters=10)
-    graph = start(query=QUERY)
+    flow = Flow(llm)
+    graph = start(query=QUERY, max_depth=1, max_iters=10)
     flow.run(graph)
     # Each branch persists to its own directory (graph.json).
-    persistence.save(graph, root / f"branch_{idx}")
-    flow.runtime.close_repls(graph.trajectory_id)
-    result = graph.agent_result()
+    graph.save(root / f"branch_{idx}")
+    flow.runtime.close_repls()
+    result = graph.result()
     correct, preds = score(result)
     return result, correct, preds, llm.call_count
 

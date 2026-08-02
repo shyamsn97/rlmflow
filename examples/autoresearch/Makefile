@@ -10,14 +10,12 @@ MAX_DEPTH ?= 1
 CHILD_ITERS ?= 8
 CREATED_TRIAL_TIMEOUT_S ?= 1800
 SUBMITTED_TRIAL_TIMEOUT_S ?=
-CHECKPOINT_EVERY_S ?= 0
 EAGER_CHILDREN ?= 1
 AGENT_RUNTIME ?= docker
 DOCKER_IMAGE ?= rlmflow:local
 OUT ?=
 SYNC_DIR ?=
 SYNC_EVERY_S ?= 2.0
-NO_LIVE ?=
 
 .PHONY: help sync prepare train run smoke lint
 
@@ -27,13 +25,13 @@ help:
 	@echo "  make prepare     Download/tokenize TinyStories"
 	@echo "  make train       Run one local train.py experiment"
 	@echo "  make run         Run rlmflow coordinator with Modal trials"
-	@echo "  make smoke       Run with MAX_SUBMISSIONS=1 and --no-live"
+	@echo "  make smoke       Run with MAX_SUBMISSIONS=1"
 	@echo "  make lint        Lint runner files"
 	@echo ""
 	@echo "Common overrides:"
 	@echo "  MODEL=$(MODEL) GPU=$(GPU) PARALLEL=$(PARALLEL) MAX_SUBMISSIONS=$(MAX_SUBMISSIONS) MAX_DEPTH=$(MAX_DEPTH)"
 	@echo "  CREATED_TRIAL_TIMEOUT_S=$(CREATED_TRIAL_TIMEOUT_S) SUBMITTED_TRIAL_TIMEOUT_S=$(SUBMITTED_TRIAL_TIMEOUT_S)"
-	@echo "  OUT=/path/to/run CHECKPOINT_EVERY_S=0 SYNC_DIR=/path/to/local-copy NO_LIVE=1"
+	@echo "  OUT=/path/to/run SYNC_DIR=/path/to/local-copy"
 	@echo "  AGENT_RUNTIME=docker DOCKER_IMAGE=rlmflow:local"
 
 sync:
@@ -54,16 +52,14 @@ run:
 		--max-iters "$(MAX_ITERS)" \
 		--max-depth "$(MAX_DEPTH)" \
 		--created-trial-timeout-s "$(CREATED_TRIAL_TIMEOUT_S)" \
-		--checkpoint-every-s "$(CHECKPOINT_EVERY_S)" \
 		--agent-runtime "$(AGENT_RUNTIME)" \
 		--docker-image "$(DOCKER_IMAGE)" \
 		$(if $(SUBMITTED_TRIAL_TIMEOUT_S),--submitted-trial-timeout-s "$(SUBMITTED_TRIAL_TIMEOUT_S)",) \
 		$(if $(OUT),--out "$(OUT)",) \
-		$(if $(SYNC_DIR),--sync-dir "$(SYNC_DIR)" --sync-every-s "$(SYNC_EVERY_S)",) \
-		$(if $(NO_LIVE),--no-live,)
+		$(if $(SYNC_DIR),--sync-dir "$(SYNC_DIR)" --sync-every-s "$(SYNC_EVERY_S)",)
 
 smoke:
-	$(MAKE) run MAX_SUBMISSIONS=1 NO_LIVE=1
+	$(MAKE) run MAX_SUBMISSIONS=1
 
 lint:
 	cd ../.. && $(PYTHON) -m ruff check examples/autoresearch/run.py examples/autoresearch/modal_runner.py examples/autoresearch/prepare.py examples/autoresearch/train.py

@@ -109,7 +109,9 @@ class Repl(ABC):
     def outcome(self, output: str) -> ReplRun:
         """Classify a finished run from the state it left behind."""
         if self.done_result is not None:
-            return ReplRun(output=output, status=ReplStatus.DONE, answer=self.done_result)
+            return ReplRun(
+                output=output, status=ReplStatus.DONE, answer=self.done_result
+            )
         status = ReplStatus.ERROR if self.errored else ReplStatus.OK
         return ReplRun(output=output, status=status)
 

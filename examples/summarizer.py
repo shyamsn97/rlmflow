@@ -8,9 +8,9 @@ summaries into one final summary (the *reduce* step).
 
 Usage:
     python examples/summarizer.py
-    python examples/summarizer.py --sections 40 --no-viz
+    python examples/summarizer.py --sections 40
     python examples/summarizer.py --input-file path/to/doc.txt
-    python examples/summarizer.py --docker-image rlmflow:local --viewer
+    python examples/summarizer.py --docker-image rlmflow:local
 """
 
 from __future__ import annotations
@@ -22,12 +22,11 @@ import sys
 from pathlib import Path
 
 from rlmflow import (
+    AgentConfig,
     DockerRuntime,
     Flow,
     start,
 )
-from rlmflow.consumers import ConsumerGroup, GraphCheckpointer
-from rlmflow.view import LiveTreeRenderer
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -124,13 +123,11 @@ def main() -> None:
     )
     parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument("--max-iters", type=int, default=15)
-    parser.add_argument("--no-viz", action="store_true")
     parser.add_argument(
         "--out-dir",
         default=str(example_run_dir("summarizer")),
         help="Save the final run here (default: examples/_runs/summarizer/).",
     )
-    parser.add_argument("--viewer", action="store_true", help="Open the viewer after finishing.")
     args = parser.parse_args()
 
     print(f">>> {'DOCKER' if args.docker_image else 'LOCAL'} RUNTIME")
@@ -151,35 +148,30 @@ def main() -> None:
         build_client(args.model),
         llm_clients=llm_clients,
         runtime=runtime,
+        config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
+    )
+
+    root = start(
+        SUMMARIZE_QUERY,
+        inputs={"document": document},
         max_depth=args.max_depth,
         max_iters=args.max_iters,
     )
-
-    graph = start(query=SUMMARIZE_QUERY)
-
-    consumers = ConsumerGroup([LiveTreeRenderer(clear=not args.no_viz)])
-    if args.out_dir:
-        consumers.append(GraphCheckpointer(Path(args.out_dir)))
+    out_dir = Path(args.out_dir)
 
     async def drive() -> None:
-        try:
-            async for event in flow.run_streaming(graph, inputs={"document": document}):
-                consumers.handle(event)
-        finally:
-            consumers.close()
+        async for node in flow.run_streaming(root):
+            print(f"{node.parent_agent.config.path}  {node.type}")
+            root.save(out_dir)
 
     asyncio.run(drive())
 
     print(f"\n{'=' * 60}\nFINAL SUMMARY\n{'=' * 60}")
-    print(graph.agent_result())
+    print(root.result())
 
-    if args.out_dir:
-        print(f"\nGraph checkpointed to {Path(args.out_dir)}")
+    print(f"\nRun saved to {out_dir}")
 
-    if args.viewer:
-        print("Viewer support is not part of the minimal example path.")
-
-    flow.runtime.close_repls(graph.trajectory_id)
+    flow.runtime.close_repls()
 
 
 if __name__ == "__main__":

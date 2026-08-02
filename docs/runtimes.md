@@ -3,8 +3,11 @@
 A `Runtime` is the user-facing object you pass to `Flow(runtime=...)`. It owns:
 
 - the `working_directory` where agent code runs;
-- tools registered with `register_tool(...)` / `register_tools(...)`;
-- the backend factory that mints one `Repl` per agent.
+- the backend factory that mints one `Repl` per agent;
+- the live REPLs themselves, and their replay and cleanup.
+
+Tools belong to the flow, not the runtime: pass `Flow(tools=[...])`, or add one
+later with `flow.add_tool(fn)`.
 
 The old `repl_factory` pattern is gone. The runtime is the factory.
 
@@ -38,14 +41,12 @@ instances that speak JSON with `python -m rlmflow.runtime.repl_server`.
 
 ```python
 import rlmflow
-from rlmflow.clients import OpenAIClient
-
-runtime = rlmflow.LocalRuntime(working_directory="./project")
-runtime.register_tools(rlmflow.FILE_TOOLS)
+from rlmflow.llm import OpenAIClient
 
 agent = rlmflow.Flow(
     OpenAIClient(model="gpt-5"),
-    runtime=runtime,
+    runtime=rlmflow.LocalRuntime(working_directory="./project"),
+    tools=rlmflow.FILE_TOOLS,
 )
 ```
 
@@ -66,7 +67,7 @@ Then pass a Docker runtime:
 from pathlib import Path
 
 import rlmflow
-from rlmflow.clients import OpenAIClient
+from rlmflow.llm import OpenAIClient
 
 host_project = Path("./project").resolve()
 runtime = rlmflow.DockerRuntime(
@@ -77,9 +78,10 @@ runtime = rlmflow.DockerRuntime(
     cpus=1.0,
     memory="512m",
 )
-runtime.register_tools(rlmflow.FILE_TOOLS)
 
-agent = rlmflow.Flow(OpenAIClient(model="gpt-5"), runtime=runtime)
+agent = rlmflow.Flow(
+    OpenAIClient(model="gpt-5"), runtime=runtime, tools=rlmflow.FILE_TOOLS
+)
 ```
 
 ## Modal
@@ -92,11 +94,13 @@ pip install rlmflow[modal]
 
 ```python
 import rlmflow
-from rlmflow.clients import OpenAIClient
+from rlmflow.llm import OpenAIClient
 
-runtime = rlmflow.ModalRuntime()
-runtime.register_tools(rlmflow.FILE_TOOLS)
-agent = rlmflow.Flow(OpenAIClient(model="gpt-5"), runtime=runtime)
+agent = rlmflow.Flow(
+    OpenAIClient(model="gpt-5"),
+    runtime=rlmflow.ModalRuntime(),
+    tools=rlmflow.FILE_TOOLS,
+)
 ```
 
 ## Writing your own

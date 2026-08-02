@@ -51,10 +51,24 @@ retry_transient = retry(
 
 @dataclass
 class LLMUsage:
-    """Token counts from a single LLM call."""
+    """Token counts for model calls: one call, or a whole subtree summed.
+
+    Lives with the clients because a client is what reports it; ``LLMOutput``
+    only carries what it was told.
+    """
 
     input_tokens: int = 0
     output_tokens: int = 0
+
+    @property
+    def total(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    def __add__(self, other: LLMUsage) -> LLMUsage:
+        return LLMUsage(
+            self.input_tokens + other.input_tokens,
+            self.output_tokens + other.output_tokens,
+        )
 
 
 class LLMClient(metaclass=abc.ABCMeta):

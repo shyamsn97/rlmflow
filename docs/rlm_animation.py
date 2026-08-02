@@ -37,7 +37,6 @@ from manim import (
     ReplacementTransform,
     RoundedRectangle,
     Scene,
-    Star,
     Text,
     TransformFromCopy,
     VGroup,
@@ -50,8 +49,7 @@ DIM = "#6E7681"
 Q_C = "#58A6FF"  # query
 LLM_C = "#BC8CFF"
 EXEC_C = "#FF9E64"
-S_C = "#FFD33D"  # supervising
-RESUME_C = "#56D4DD"
+OUT_C = "#56D4DD"  # exec output
 R_C = "#56D364"  # done
 HOT = "#FFD60A"  # focus only
 LABEL_C = "#3FB950"
@@ -81,17 +79,8 @@ def typed_node(kind, label="", *, r=0.30, fs=FS_BODY):
             fill_opacity=0.18,
             stroke_width=2,
         )
-    elif kind in {"S", "supervising"}:
-        shape = Star(
-            n=5,
-            outer_radius=r,
-            inner_radius=r * 0.45,
-            color=S_C,
-            fill_opacity=0.22,
-            stroke_width=2,
-        )
-    elif kind in {"T", "resume"}:
-        shape = RegularPolygon(n=3, color=RESUME_C, fill_opacity=0.20, stroke_width=2)
+    elif kind in {"O", "output"}:
+        shape = RegularPolygon(n=3, color=OUT_C, fill_opacity=0.20, stroke_width=2)
         shape.rotate(-1.5707963267948966).scale(r)
     elif kind in {"R", "done"}:
         shape = RegularPolygon(n=6, color=R_C, fill_opacity=0.22, stroke_width=2)
@@ -201,10 +190,7 @@ def restore_typed_node_fills(graph):
     """Re-apply translucent fills after animations that flatten node styling."""
     for mob in graph.get_family():
         mob.set_opacity(1)
-        if isinstance(mob, Star):
-            mob.set_fill(color=S_C, opacity=0.22)
-            mob.set_stroke(opacity=1)
-        elif isinstance(mob, RoundedRectangle):
+        if isinstance(mob, RoundedRectangle):
             mob.set_fill(opacity=0.18)
             mob.set_stroke(opacity=1)
         elif isinstance(mob, Circle):
@@ -218,7 +204,7 @@ def restore_typed_node_fills(graph):
 
 
 def agent_stack(label, kinds, *, x, top_y, r=0.10, dy=0.30, fs=FS_TINY):
-    """Renderer-style vertical stack for one agent trajectory."""
+    """Renderer-style vertical stack for one agent transcript."""
 
     if label:
         label_mob = Text(label, font=CODE_FONT, font_size=fs, color=LABEL_C)
@@ -275,7 +261,7 @@ def rendered_style_graph():
             tree[parent]["children"].append(idx)
         if depth < len(branching):
             for i in range(branching[depth]):
-                # Match rlmflow agent_ids: root.a, root.a.b, ...
+                # Match rlmflow agent paths: root.a, root.a.b, ...
                 child_label = f"{label}.{chr(ord('a') + i)}"
                 add(child_label, depth + 1, idx)
         return idx
@@ -308,8 +294,9 @@ def rendered_style_graph():
         d = node["depth"]
         st = level_style[d]
         is_leaf = not node["children"]
-        middle = "llm" if d % 2 == 0 else "exec"
-        kinds = ["query", middle, "done" if is_leaf else "supervising"]
+        # A leaf answers; a parent's last node is the block that launched its
+        # children, which is what they hang off.
+        kinds = ["query", "llm", "done" if is_leaf else "exec"]
         show_label = d <= 1
         _stack, nodes, edges, label = agent_stack(
             node["label"] if show_label else "",
@@ -348,8 +335,7 @@ def node_type_legend(*, font_size=8, icon_r=0.062):
         ("query", "query"),
         ("llm", "llm"),
         ("exec", "exec"),
-        ("supervising", "wait"),
-        ("resume", "resume"),
+        ("output", "output"),
         ("done", "done"),
     ]
     legend = VGroup()
@@ -362,8 +348,8 @@ def node_type_legend(*, font_size=8, icon_r=0.062):
     return legend
 
 
-def fork_supervising_graph(x_center):
-    """Multitree at a supervising wait: root fans out to child agents."""
+def fork_delegation_graph(x_center):
+    """Multitree at a delegating block: root fans out to child agents."""
 
     r_root = 0.20
     r_child = 0.16
@@ -372,28 +358,28 @@ def fork_supervising_graph(x_center):
 
     root, root_nodes, root_edges, root_label = agent_stack(
         "root",
-        ["query", "llm", "exec", "supervising"],
+        ["query", "llm", "exec"],
         x=x_center,
         top_y=1.55,
         r=r_root,
         dy=dy_root,
         fs=FS_CAP,
     )
-    wait_y = root_nodes[3].get_center()[1] - dy_root * 1.55
+    fan_y = root_nodes[2].get_center()[1] - dy_root * 1.55
     agent0, agent0_nodes, agent0_edges, agent0_label = agent_stack(
         "root.a",
-        ["query", "llm", "exec"],
+        ["query", "llm", "done"],
         x=x_center - 0.95,
-        top_y=wait_y,
+        top_y=fan_y,
         r=r_child,
         dy=dy_child,
         fs=FS_CAP,
     )
     agent1, agent1_nodes, agent1_edges, agent1_label = agent_stack(
         "root.b",
-        ["query", "llm", "exec"],
+        ["query", "llm", "done"],
         x=x_center,
-        top_y=wait_y,
+        top_y=fan_y,
         r=r_child,
         dy=dy_child,
         fs=FS_CAP,
@@ -402,7 +388,7 @@ def fork_supervising_graph(x_center):
         "root.c",
         ["query", "llm", "done"],
         x=x_center + 0.95,
-        top_y=wait_y,
+        top_y=fan_y,
         r=r_child,
         dy=dy_child,
         fs=FS_CAP,
@@ -410,7 +396,7 @@ def fork_supervising_graph(x_center):
     fanout = VGroup(
         *[
             Line(
-                root_nodes[3].get_center(),
+                root_nodes[2].get_center(),
                 child.get_center(),
                 color=DIM,
                 stroke_width=1.1,
@@ -421,7 +407,6 @@ def fork_supervising_graph(x_center):
     root_query = VGroup(root_label, root_nodes[0])
     root_llm = VGroup(root_edges[0], root_nodes[1])
     root_exec = VGroup(root_edges[1], root_nodes[2])
-    root_wait = VGroup(root_edges[2], root_nodes[3])
     child_query = VGroup(
         fanout,
         agent0_label,
@@ -451,7 +436,6 @@ def fork_supervising_graph(x_center):
         root_query,
         root_llm,
         root_exec,
-        root_wait,
         child_query,
         child_llm,
         child_tail,
@@ -460,15 +444,12 @@ def fork_supervising_graph(x_center):
         root_query,
         root_llm,
         root_exec,
-        root_wait,
         child_query,
         child_llm,
         child_tail,
     ]
     refs = {
-        "supervising": root_nodes[3],
-        "exec_node": root_nodes[2],
-        "exec_edge": root_edges[2],
+        "exec": root_nodes[2],
         "children": VGroup(agent0, agent1, agent2, fanout),
         "root_nodes": root_nodes,
         "root_edges": root_edges,
@@ -478,10 +459,10 @@ def fork_supervising_graph(x_center):
 
 
 def fork_graph_refs(graph):
-    """Resolve inject/fork refs from a fork_supervising_graph instance."""
+    """Resolve fork/append refs from a fork_delegation_graph instance."""
     return {
-        "supervising": graph[3][1],
-        "children": VGroup(graph[4], graph[5], graph[6]),
+        "exec": graph[2][1],
+        "children": VGroup(graph[3], graph[4], graph[5]),
         "root_label": graph[0][0],
     }
 
@@ -494,7 +475,7 @@ def simplified_style_graph(*, with_labels=True):
 
     root, root_nodes, root_edges, root_label = agent_stack(
         lbl("root"),
-        ["query", "llm", "exec", "supervising"],
+        ["query", "llm", "exec"],
         x=0.0,
         top_y=2.05,
         r=0.13,
@@ -507,11 +488,10 @@ def simplified_style_graph(*, with_labels=True):
     child_query = VGroup()
     child_llm = VGroup()
     child_exec = VGroup()
-    child_wait = VGroup()
     for name, ax in agent_defs:
         _stack, a_nodes, a_edges, a_label = agent_stack(
             lbl(name),
-            ["query", "llm", "exec", "supervising"],
+            ["query", "llm", "exec"],
             x=ax,
             top_y=0.52,
             r=0.11,
@@ -520,7 +500,7 @@ def simplified_style_graph(*, with_labels=True):
         agents.append(a_nodes)
         fanout_edges.add(
             Line(
-                root_nodes[3].get_center(),
+                root_nodes[2].get_center(),
                 a_nodes[0].get_center(),
                 color=DIM,
                 stroke_width=0.62,
@@ -529,7 +509,6 @@ def simplified_style_graph(*, with_labels=True):
         child_query.add(a_label, a_nodes[0])
         child_llm.add(a_edges[0], a_nodes[1])
         child_exec.add(a_edges[1], a_nodes[2])
-        child_wait.add(a_edges[2], a_nodes[3])
     child_query.add(fanout_edges)
 
     leaf_offsets = [-0.66, 0.66]
@@ -550,7 +529,7 @@ def simplified_style_graph(*, with_labels=True):
                 fs=6,
             )
             fan_line = Line(
-                a_nodes[3].get_center(),
+                a_nodes[2].get_center(),
                 nodes[0].get_center(),
                 color=DIM,
                 stroke_width=0.42,
@@ -563,16 +542,13 @@ def simplified_style_graph(*, with_labels=True):
     root_query = VGroup(root_label, root_nodes[0])
     root_llm = VGroup(root_edges[0], root_nodes[1])
     root_exec = VGroup(root_edges[1], root_nodes[2])
-    root_wait = VGroup(root_edges[2], root_nodes[3])
     graph = VGroup(
         root_query,
         root_llm,
         root_exec,
-        root_wait,
         child_query,
         child_llm,
         child_exec,
-        child_wait,
         leaf_queries,
         leaf_llm,
         leaf_exec,
@@ -584,11 +560,9 @@ def simplified_style_graph(*, with_labels=True):
         root_query,
         root_llm,
         root_exec,
-        root_wait,
         child_query,
         child_llm,
         child_exec,
-        child_wait,
         leaf_queries,
         leaf_llm,
         leaf_exec,
@@ -649,21 +623,21 @@ class RecursiveFlowHero(Scene):
 
         self.play(
             LaggedStart(
-                *[reveal_stage(stage) for stage in p1_stages[:4]],
+                *[reveal_stage(stage) for stage in p1_stages[:3]],
                 lag_ratio=0.35,
             ),
             run_time=2.00,
         )
         self.play(
             LaggedStart(
-                *[reveal_stage(stage) for stage in p1_stages[4:8]],
+                *[reveal_stage(stage) for stage in p1_stages[3:6]],
                 lag_ratio=0.30,
             ),
             run_time=1.60,
         )
         self.play(
             LaggedStart(
-                *[reveal_stage(stage) for stage in p1_stages[8:]],
+                *[reveal_stage(stage) for stage in p1_stages[6:]],
                 lag_ratio=0.25,
             ),
             run_time=1.80,
@@ -690,48 +664,45 @@ class RecursiveFlowHero(Scene):
                 [
                     ("query", "query", [1]),
                     ("llm", "llm", [2]),
-                    ("exec", "exec", [3]),
-                    ("wait", "supervising", []),
+                    ("exec", "exec", []),
                 ],
-                "execution pauses at a wait",
+                "the engine runs the block",
             ),
             (
                 [
                     ("query", "query", [1]),
                     ("llm", "llm", [2]),
-                    ("exec", "exec", [3]),
-                    ("wait", "supervising", [4, 7, 10]),
-                    ("root.a", "query", [5]),
-                    ("llm", "llm", [6]),
+                    ("exec", "exec", [3, 6, 9]),
+                    ("root.a", "query", [4]),
+                    ("llm", "llm", [5]),
                     ("done", "done", []),
-                    ("root.b", "query", [8]),
-                    ("llm", "llm", [9]),
+                    ("root.b", "query", [7]),
+                    ("llm", "llm", [8]),
                     ("done", "done", []),
-                    ("root.c", "query", [11]),
-                    ("llm", "llm", [12]),
+                    ("root.c", "query", [10]),
+                    ("llm", "llm", [11]),
                     ("done", "done", []),
                 ],
-                "children run in parallel",
+                "the block launches children, which run in parallel",
             ),
             (
                 [
                     ("query", "query", [1]),
                     ("llm", "llm", [2]),
-                    ("exec", "exec", [3]),
-                    ("wait", "supervising", [4, 7, 10, 13]),
-                    ("root.a", "query", [5]),
-                    ("llm", "llm", [6]),
+                    ("exec", "exec", [3, 6, 9, 12]),
+                    ("root.a", "query", [4]),
+                    ("llm", "llm", [5]),
                     ("done", "done", []),
-                    ("root.b", "query", [8]),
-                    ("llm", "llm", [9]),
+                    ("root.b", "query", [7]),
+                    ("llm", "llm", [8]),
                     ("done", "done", []),
-                    ("root.c", "query", [11]),
-                    ("llm", "llm", [12]),
+                    ("root.c", "query", [10]),
+                    ("llm", "llm", [11]),
                     ("done", "done", []),
-                    ("resume", "resume", [14]),
+                    ("output", "output", [13]),
                     ("done", "done", []),
                 ],
-                "the parent resumes with their results",
+                "the block returns their results, and the parent answers",
             ),
         ]
 
@@ -793,15 +764,14 @@ class RecursiveFlowHero(Scene):
             run_time=0.55,
         )
 
-        # Phase 3 — multitree at supervising, fork, replace with straight path.
+        # Phase 3 — multitree at a delegating block, fork it, steer the copy.
         fork_code = code_card(
             [
-                ("branch = await flow.fork(root)", DIM),
-                ("sup = next(n for n in branch.walk()", DIM),
-                ("    if isinstance(n, SupervisingOutput))", DIM),
-                ("surgery.insert(branch, sup.id,", DIM),
-                ("    ExecOutput(output=prompt),", DIM),
-                ('    mode="replace", truncate="descendants")', DIM),
+                ("action = next(n for n in root.transcript()", DIM),
+                ("    if isinstance(n, ExecAction))", DIM),
+                ("branch = action.fork()", DIM),
+                ("branch.frontier.append(", DIM),
+                ('    UserQuery(content="try it another way"))', DIM),
                 ("async for node in flow.run_streaming(", DIM),
                 ('    branch, until="done"):', DIM),
             ],
@@ -838,14 +808,13 @@ class RecursiveFlowHero(Scene):
                 stroke_width=0.65,
             ).set_opacity(0.62)
 
-        orig, tree_stages, _ = fork_supervising_graph(x_center=0)
+        orig, tree_stages, _ = fork_delegation_graph(x_center=0)
         fork_tree = orig.copy()
         graph_anchor = UP * 0.15
         orig.move_to(graph_anchor)
         fork_tree.move_to(RIGHT * fork_x + graph_anchor)
-        fork_refs = fork_graph_refs(fork_tree)
 
-        # Step 1 — a supervising multitree with child agents (graph only, no code).
+        # Step 1 — a delegating multitree with child agents (graph only, no code).
         multitree_title = center_head("Every recursive run is an editable graph")
         self.play(ReplacementTransform(head, multitree_title), run_time=0.55)
         head = multitree_title
@@ -853,7 +822,7 @@ class RecursiveFlowHero(Scene):
             self.play(reveal_stage(stage), run_time=0.50)
         self.wait(0.45)
 
-        # Step 2 — fork copies the multitree; code appears, original dims and slides left.
+        # Step 2 — fork copies the multitree; code appears, original slides left.
         self.play(ReplacementTransform(head, fork_title), run_time=0.45)
         head = fork_title
         fork_badge = VGroup(
@@ -879,10 +848,10 @@ class RecursiveFlowHero(Scene):
         self.wait(0.45)
         fork_refs = fork_graph_refs(fork_tree)
 
-        # Step 3 — on the fork, replace supervising + children with a straight path.
-        inject_title = center_head("Perform surgery on the graph")
-        supervising = fork_refs["supervising"]
-        child_stages = VGroup(fork_tree[4], fork_tree[5], fork_tree[6])
+        # Step 3 — the fork cuts everything after the block; append a new query.
+        inject_title = center_head("Fork at a node, cut what came after")
+        exec_node = fork_refs["exec"]
+        child_stages = VGroup(fork_tree[3], fork_tree[4], fork_tree[5])
         hi_box = RoundedRectangle(
             corner_radius=0.06,
             width=0.52,
@@ -890,31 +859,41 @@ class RecursiveFlowHero(Scene):
             color=HOT,
             stroke_width=2.4,
             fill_opacity=0.0,
-        ).move_to(supervising)
+        ).move_to(exec_node)
         self.play(
             ReplacementTransform(head, inject_title),
-            *fork_light(3),
+            *fork_light(2),
             Create(hi_box),
             run_time=0.65,
         )
         head = inject_title
         self.wait(0.25)
-        inj = fnode("llm", supervising.get_center())
-        inj_pos = supervising.get_center()
         self.play(FadeOut(child_stages, shift=DOWN * 0.22), run_time=0.55)
-        fork_tree.remove(fork_tree[6], fork_tree[5], fork_tree[4])
+        fork_tree.remove(fork_tree[5], fork_tree[4], fork_tree[3])
         self.remove(child_stages)
-        self.play(ReplacementTransform(supervising, inj), run_time=0.65)
         restore_typed_node_fills(fork_tree)
+        self.wait(0.25)
+
+        append_title = center_head("Append to the frontier")
+        inj_pos = exec_node.get_center() + DOWN * fdy
+        inj = fnode("query", inj_pos)
+        e_ei = graph_edge(exec_node, inj)
+        self.play(
+            ReplacementTransform(head, append_title),
+            *fork_light(3),
+            run_time=0.55,
+        )
+        head = append_title
+        self.play(FadeIn(VGroup(e_ei, inj), shift=DOWN * 0.05), run_time=0.55)
         restore_typed_node_fills(inj)
-        self.play(Flash(inj, color=LLM_C, flash_radius=0.32), run_time=0.38)
+        self.play(Flash(inj, color=Q_C, flash_radius=0.32), run_time=0.38)
         self.wait(0.35)
 
-        # Step 4 — continue the fork: exec, then done.
+        # Step 4 — continue the fork: the model answers, and the run finishes.
         cont_title = center_head("Continue from the fork")
         _, tail_nodes, tail_edges, _ = agent_stack(
             "",
-            ["exec", "done"],
+            ["llm", "done"],
             x=inj_pos[0],
             top_y=inj_pos[1] - fdy,
             r=fr,
@@ -925,10 +904,10 @@ class RecursiveFlowHero(Scene):
         e_ir = graph_edge(inj, cr)
         e_rd = tail_edges[0]
         fork_tail = VGroup(e_ir, cr, e_rd, cd)
-        fork_rhs = VGroup(fork_tree, fork_badge, inj, fork_tail)
+        fork_rhs = VGroup(fork_tree, fork_badge, e_ei, inj, fork_tail)
         self.play(
             ReplacementTransform(head, cont_title),
-            *fork_light(6),
+            *fork_light(5),
             FadeOut(hi_box),
             run_time=0.60,
         )

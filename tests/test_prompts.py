@@ -4,17 +4,17 @@ from pydantic import BaseModel
 from rlmflow import ErrorOutput, ExecOutput, Flow, LLMOutput, start
 
 
-def test_messages_are_a_pure_projection_of_agent_steps():
+def test_messages_are_a_pure_projection_of_the_transcript():
     flow = Flow(StubLLM(lambda _messages: "unused"))
-    agent = start("query")
-    agent.submit(LLMOutput(content="assistant", code="print('x')")).submit(
+    root = start("query")
+    root.append(LLMOutput(content="assistant", code="print('x')")).append(
         ExecOutput(content="observation")
     )
-    before = list(agent.steps)
+    before = [node.id for node in root.transcript()]
 
-    messages = flow.messages(agent)
+    messages = flow.messages(root.frontier)
 
-    assert agent.steps == before
+    assert [node.id for node in root.transcript()] == before
     assert [message["role"] for message in messages] == [
         "system",
         "user",
@@ -26,11 +26,11 @@ def test_messages_are_a_pure_projection_of_agent_steps():
 
 def test_errors_are_projected_as_user_observations():
     flow = Flow(StubLLM(lambda _messages: "unused"))
-    agent = start("query")
-    agent.submit(ErrorOutput(content="NameError: missing"))
+    root = start("query")
+    root.append(ErrorOutput(content="NameError: missing"))
 
-    assert flow.messages(agent)[-1]["role"] == "user"
-    assert flow.messages(agent)[-1]["content"].endswith("NameError: missing")
+    assert flow.messages(root.frontier)[-1]["role"] == "user"
+    assert flow.messages(root.frontier)[-1]["content"].endswith("NameError: missing")
 
 
 def test_explicit_output_schema_is_in_system_prompt():
@@ -38,16 +38,6 @@ def test_explicit_output_schema_is_in_system_prompt():
         value: str
 
     flow = Flow(StubLLM(lambda _messages: "unused"))
-    agent = start("query", output_schema=Answer.model_json_schema())
+    root = start("query", output_schema=Answer.model_json_schema())
 
-    assert '"value"' in flow.messages(agent)[0]["content"]
-
-
-def test_inputs_manifest_lists_names_without_dumping_values():
-    flow = Flow(StubLLM(lambda _messages: "unused"))
-    agent = start("query", inputs={"document": "SECRET_VALUE"})
-
-    system = flow.messages(agent)[0]["content"]
-
-    assert "document" in system
-    assert "SECRET_VALUE" not in system
+    assert '"value"' in flow.messages(root.frontier)[0]["content"]

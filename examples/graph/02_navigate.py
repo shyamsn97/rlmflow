@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from rlmflow.view import render_tree
+from rlmflow import AgentStart, Node
 
 
 def build_graph():
@@ -19,15 +19,24 @@ def build_graph():
     return module.build_graph()
 
 
+def print_tree(node: Node, depth: int = 0) -> None:
+    """One indented line per node, from ``node`` down."""
+    label = f"{node.type} [{node.config.path}]" if isinstance(node, AgentStart) else node.type
+    print(f"{'  ' * depth}{label}")
+    for child in node.children:
+        print_tree(child, depth + 1)
+
+
 def main() -> None:
     graph = build_graph()
 
-    print(render_tree(graph))
+    print_tree(graph)
     print("\nwalk:", [node.id for node in graph.walk()])
-    print("agents:", list(graph.agent_ids()))
-    print("children:", list(graph.child_agents("root")))
-    print("root.test result:", graph.agent_result("root.test"))
-    print("len(root nodes):", len(graph.transcript("root")))
+    print("agents:", [node.config.path for node in graph.walk() if isinstance(node, AgentStart)])
+    print("children:", [child.config.path for child in graph.sub_agents])
+    for child in graph.sub_agents:
+        print(f"{child.config.path} result:", child.result())
+    print("len(root nodes):", len(graph.transcript()))
 
 
 if __name__ == "__main__":

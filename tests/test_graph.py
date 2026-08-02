@@ -1,65 +1,49 @@
+import pytest
+
 from rlmflow import (
     AgentStart,
     DoneOutput,
+    ExecAction,
     ExecOutput,
-    SupervisingOutput,
     start,
 )
 
 
-def test_agent_owns_an_ordered_step_list():
+def test_agent_owns_an_ordered_transcript():
     agent = start("query")
-    first = agent.submit(ExecOutput(content="one"))
-    second = first.submit(DoneOutput(result="ok"))
+    first = agent.append(ExecOutput(content="one"))
+    second = first.append(DoneOutput(result="ok"))
 
-    assert agent.transcript() == (agent, first, second)
-    assert agent.tail() is second
-    assert first.agent is agent
+    assert agent.transcript() == [agent, first, second]
+    assert [node.seq for node in agent.transcript()] == [0, 1, 2]
+    assert agent.frontier is second
+    assert first.parent_agent is agent
     assert agent.root is agent
-    assert agent.finished()
+    assert agent.terminal
     assert agent.result() == "ok"
 
 
-def test_only_supervisors_own_child_agents():
+def test_a_child_agent_branches_off_the_node_that_launched_it():
     root = start("parent")
-    supervisor = root.submit(SupervisingOutput())
-    assert isinstance(supervisor, SupervisingOutput)
-    child = AgentStart(
-        content="child",
-        config=root.config.child("worker"),
-    )
+    action = root.append(ExecAction(code="launch"))
+    child = AgentStart(content="child", config=root.config.child("worker"))
 
-    supervisor.spawn(child)
+    action.append(child)
 
-    assert child.supervisor is supervisor
+    assert child.parent is action
     assert child.root is root
-    assert supervisor.children == [child]
-    assert [agent.config.path for agent in root.agents()] == ["root", "root.worker"]
+    assert child.parent_agent is child  # a child starts a transcript of its own
+    assert root.sub_agents == [child]
+    assert [agent.config.path for agent in (root, *root.sub_agents)] == ["root", "root.worker"]
+    # Launching moved neither agent on: the parent is still mid-step at the action,
+    # and the child has nothing but its own start.
+    assert root.frontier is action and action.next is None
+    assert child.transcript() == [child]
 
 
 def test_duplicate_child_names_are_rejected():
     root = start("parent")
-    supervisor = root.submit(SupervisingOutput())
-    assert isinstance(supervisor, SupervisingOutput)
-    supervisor.spawn(AgentStart(config=root.config.child("worker")))
+    root.append(AgentStart(config=root.config.child("worker")))
 
-    try:
-        supervisor.spawn(AgentStart(config=root.config.child("worker")))
-    except ValueError as exc:
-        assert "duplicate child name" in str(exc)
-    else:
-        raise AssertionError("duplicate child name was accepted")
-
-
-def test_detached_nodes_cannot_be_attached_twice():
-    first = start("first")
-    second = start("second")
-    node = ExecOutput(content="output")
-    first.submit(node)
-
-    try:
-        second.submit(node)
-    except ValueError as exc:
-        assert "already attached" in str(exc)
-    else:
-        raise AssertionError("attached node was reused")
+    with pytest.raises(ValueError, match="duplicate child name"):
+        root.append(AgentStart(config=root.config.child("worker")))

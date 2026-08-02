@@ -14,10 +14,8 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow.clients import TinkerClient
-from rlmflow import Flow, start
-from rlmflow.consumers import ConsumerGroup, GraphCheckpointer
-from rlmflow.view import LiveTreeRenderer
+from rlmflow import AgentConfig, Flow, start
+from rlmflow.llm import TinkerClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -57,27 +55,20 @@ def main() -> None:
         renderer=args.renderer,
         max_tokens=args.max_tokens,
     )
-    flow = Flow(llm, max_iters=args.max_iters)
+    flow = Flow(llm, config=AgentConfig(max_iters=args.max_iters))
     print(f"Query: {args.query}\n")
-    graph = start(query=args.query)
-    consumers = ConsumerGroup(
-        [
-            LiveTreeRenderer(),
-            GraphCheckpointer(example_run_dir("tinker-agent")),
-        ]
-    )
+    root = start(args.query, max_iters=args.max_iters)
+    out_dir = example_run_dir("tinker-agent")
 
     async def drive() -> None:
-        try:
-            async for event in flow.run_streaming(graph):
-                consumers.handle(event)
-        finally:
-            consumers.close()
+        async for node in flow.run_streaming(root):
+            print(f"{node.parent_agent.config.path}  {node.type}")
+            root.save(out_dir)
 
     asyncio.run(drive())
-    print(graph.agent_result())
-    save_example_graph(graph, "tinker-agent")
-    flow.runtime.close_repls(graph.trajectory_id)
+    print(root.result())
+    save_example_graph(root, "tinker-agent")
+    flow.runtime.close_repls()
 
 
 if __name__ == "__main__":

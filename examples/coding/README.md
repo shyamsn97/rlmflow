@@ -1,16 +1,14 @@
 # Coding agent
 
-Interactive coding agent with the full-screen `FlowTUI` consumer (query/context
-inputs, live chat bubbles, and side tabs for the execution tree / agents /
-counts / waiting / errors / latest). The example owns the
-`flow.run_streaming(...)` loop and feeds Nodes into the TUI.
+Interactive coding agent as a plain REPL. The example owns the
+`flow.run_streaming(...)` loop: it prints one line per node the run lands
+(agent path and node type), checkpoints the tree under `<workdir>/graph` as it
+goes, and prints the final answer when the root is done.
 
 ```bash
-pip install -e ".[openai,tui]"
+pip install -e ".[openai]"
 python examples/coding/agent.py --workdir ./myproject
 python examples/coding/agent.py --workdir ./myproject --docker-image rlmflow:local
 ```
-
-Pass `--cli` for the plain REPL + live tree instead of the TUI.
 
 Default working directory: `examples/_runs/coding/`.

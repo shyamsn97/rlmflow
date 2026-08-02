@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rlmflow import (
-    persistence,
+    AgentConfig,
     Flow,
     LLMUsage,
     SystemPromptBuilder,
@@ -152,7 +152,11 @@ class ScriptedLLM:
 
 
 def build_flow(library: SkillLibrary, llm, *, max_iters: int) -> Flow:
-    flow = Flow(llm, max_iters=max_iters, tools=[make_add_skill(library)])
+    flow = Flow(
+        llm,
+        config=AgentConfig(max_iters=max_iters),
+        tools=[make_add_skill(library)],
+    )
     prompt = SystemPromptBuilder()
     prompt.sections.add(
         "skills", lambda flow, graph: library.render(), title="Skills", before="tools"
@@ -192,7 +196,7 @@ def main() -> None:
         print(f"Using live client ({args.model}).")
     flow = build_flow(library, llm, max_iters=args.max_iters)
 
-    graph = start(query=QUERY)
+    graph = start(query=QUERY, max_iters=args.max_iters)
     if args.print_prompt:
         print("\n--- Skills section BEFORE run (empty) ---\n")
         print(library.render())
@@ -205,10 +209,9 @@ def main() -> None:
         print("\n--- Skills section AFTER run (grown by the agent) ---\n")
         print(library.render())
 
-    print("\nresult:", graph.agent_result())
-    path = persistence.save(graph, args.out_dir)
-    print(f"Node saved to {path}")
-    flow.runtime.close_repls(graph.trajectory_id)
+    print("\nresult:", graph.result())
+    print(f"Node saved to {graph.save(args.out_dir)}")
+    flow.runtime.close_repls()
 
 
 if __name__ == "__main__":

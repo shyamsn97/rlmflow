@@ -6,12 +6,13 @@ import asyncio
 import time
 
 from rlmflow import (
+    AgentConfig,
     Flow,
     LocalRuntime,
     persistence,
     start,
 )
-from rlmflow.clients.llm import LLMClient, LLMUsage
+from rlmflow.llm import LLMClient, LLMUsage
 
 from benchmarks.eval import runner
 from benchmarks.eval.metrics import graph_metrics
@@ -40,8 +41,7 @@ class RLMFlowLocalRunner(Runner):
         work_dir.mkdir(parents=True, exist_ok=True)
         flow = Flow(
             _ModelClient(model),
-            max_iters=self.max_iters,
-            max_depth=self.max_depth,
+            config=AgentConfig(max_iters=self.max_iters, max_depth=self.max_depth),
             runtime=LocalRuntime(working_directory=work_dir),
             enable_structured_output=False,
             use_llm_query=self.use_llm_query,
@@ -49,7 +49,12 @@ class RLMFlowLocalRunner(Runner):
         started_at = time.perf_counter()
         # Seed the durable graph; `run_streaming` then drives the whole tree,
         # mutating that graph in place and publishing each changed Node.
-        graph = start(query=example.prompt, inputs=example.inputs() or {})
+        graph = start(
+            query=example.prompt,
+            inputs=example.inputs() or {},
+            max_iters=self.max_iters,
+            max_depth=self.max_depth,
+        )
         cap = self.max_steps or max(200, self.max_iters * max(1, self.max_depth + 1) * 25)
         steps = 0
         error = None
@@ -73,10 +78,13 @@ class RLMFlowLocalRunner(Runner):
             flow.runtime.close_repls()
             persistence.save(graph, graph_dir)
 
-        input_tokens, output_tokens = graph.tokens()
+        spent = graph.tokens()
         return Prediction(
-            answer=graph.agent_result(),
-            usage={"input_tokens": input_tokens, "output_tokens": output_tokens},
+            answer=graph.result(),
+            usage={
+                "input_tokens": spent.input_tokens,
+                "output_tokens": spent.output_tokens,
+            },
             metrics={
                 "time_seconds": time.perf_counter() - started_at,
                 "iterations": steps,

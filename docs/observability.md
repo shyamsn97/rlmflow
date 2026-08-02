@@ -5,20 +5,31 @@ Everything needed to inspect a run lives in its Node tree.
 ## Query the tree
 
 ```python
-from rlmflow import ErrorOutput, render_tree
+from rlmflow import AgentStart, ErrorOutput
 
-print(render_tree(root))
+root.result()                 # the root agent's answer, or None
+root.terminal                 # has it answered?
+root.transcript()             # this agent's own nodes, start to frontier
+root.frontier                 # where it is now
+root.sub_agents               # the agents it launched
+root.leaves()                 # the frontier of every agent in the tree
+root.llm_turns()              # how many model turns this agent has taken
+root.tokens()                 # usage summed over the whole subtree
 
-root.agent_ids()
-root.child_agents("root")
-root.tail("root.worker")
-root.transcript("root.worker")
-root.latest_query("root.worker")
-root.agent_result("root.worker")
-root.tokens("root.worker")
-root.finished()
+list(root.walk())             # every node, preorder
+[a for a in root.walk() if isinstance(a, AgentStart)]   # every agent
+errors = [n for n in root.walk() if isinstance(n, ErrorOutput)]
+```
 
-errors = [node for node in root.walk() if isinstance(node, ErrorOutput)]
+Those accessors belong to an agent rather than to the run, and every
+`AgentStart` is an agent — so to ask about a worker, hold the worker:
+
+```python
+worker = root.sub_agents[0]
+worker.config.path            # "root.worker"
+worker.transcript()
+worker.result()
+worker.tokens()
 ```
 
 Each Node carries:
@@ -26,37 +37,41 @@ Each Node carries:
 ```python
 node.type
 node.id
-node.agent_id
-node.trajectory_id
-node.parent
-node.children
-node.metadata
+node.content
+node.seq                      # position in its own agent's transcript
+node.parent / node.children
+node.parent_agent             # the AgentStart it belongs to
+node.root                     # the top of the run
+node.next / node.prev         # the same agent's neighbours
 ```
 
-`step_child` is the same-agent continuation. `spawn_children` are child-agent
-roots. Mutation provenance is under `metadata["mutation"]`; LLM usage and the
-actual system prompt are stored on `LLMOutput.metadata`.
+`node.next` is the same-agent continuation; the children of an `ExecAction` that
+delegated are the agents it launched. LLM usage is on `LLMOutput.usage`, and the
+system prompt a turn ran under is `agent.system_prompt_for(node)` — the text is
+stored once per distinct prompt in `agent.system_prompts` and each turn keeps
+only its id.
 
-Nodes produced by `Flow.step()` also carry host-measured transition timing:
+Nodes produced by a step also carry host-measured timing:
 
 ```python
-node.metadata["timing"]
+node.timing()
 # {"started_at": "...+00:00", "finished_at": "...+00:00", "duration_ms": 123.4}
 ```
 
-Overlapping child intervals demonstrate wall-clock concurrency. Timing is
-measured on the Flow host, so local, subprocess, Docker, and Modal runs share one
-clock.
+A node written from inside a step rather than by one — a nudge, a child's
+`AgentStart` — has no timing and returns `{}`. Overlapping child intervals
+demonstrate wall-clock concurrency. Timing is measured on the Flow host, so
+local, subprocess, Docker, and Modal runs share one clock.
 
 See [`node_model.md`](node_model.md) for the concrete Node classes.
 
 ## Persistence
 
 ```python
-from rlmflow import persistence
+from rlmflow import AgentStart
 
-run_dir = persistence.save(root, "runs/deep_research")
-loaded = persistence.load(run_dir)
+run_dir = root.save("runs/deep_research")
+loaded = AgentStart.load(run_dir)
 ```
 
 The directory contains:
@@ -74,20 +89,44 @@ run/
         ...
 ```
 
-`graph.json` is the complete recursive tree. Per-agent files are stable
-projections for tools and external readers. Loading restores Nodes and parent
-links but no REPL or suspended task.
+`graph.json` is the complete recursive tree, and is what `load` reads. The
+per-agent files are stable projections for tools and external readers:
+`agent.json` is that agent's identity, query, inputs, and system prompts,
+`session.jsonl` is its own transcript one node per line, and `latest.json` is
+its frontier. `latest.json` at the top is the run summary — agent ids, node
+count, whether it finished, and its result.
+
+Loading restores nodes and parent links but no REPL; see the restore modes in
+[`control.md`](control.md).
 
 ## Live consumers
 
-Consumers receive published Nodes directly:
+`run_streaming` hands you each node as it lands, which is all a consumer needs.
+`rlmflow.consumers` is the small protocol for fanning that out:
 
 ```python
-from rlmflow import ConsumerGroup, GraphCheckpointer, LiveGraphTree
+from rlmflow.consumers import (
+    ConsumerGroup,
+    FlowTUI,
+    GraphCheckpointer,
+    LiveGraphTree,
+    LiveTreeRenderer,
+    StreamConsumer,
+)
+
+
+class Progress(StreamConsumer):
+    def handle(self, node):
+        print(node.parent_agent.config.path, node.type, node.timing().get("duration_ms"))
+
+    def close(self):
+        print("done")
+
 
 consumers = ConsumerGroup([
+    LiveTreeRenderer(),
+    Progress(),
     GraphCheckpointer("runs/deep_research"),
-    LiveGraphTree(title="run"),
 ])
 
 try:
@@ -97,28 +136,98 @@ finally:
     consumers.close()
 ```
 
-Every consumer can recover the current root with `node.root()`.
+`handle(node)` is the whole contract; `close()` is optional and defaults to
+doing nothing. `ConsumerGroup` fans a node out to each consumer in turn and
+closes them in reverse, suppressing errors from a close so one failing consumer
+cannot strand the others.
 
-`LiveTreeRenderer` is a simple redraw-on-each-Node renderer. `FlowTUI` provides
-the full-screen dashboard.
+Every consumer can recover the whole run from `node.root`.
 
-## Saved-run viewers
+The shipped consumers are:
+
+- `LiveTreeRenderer`: clears and redraws a compact recursive agent tree;
+- `LiveGraphTree`: Rich live forest with status colors and active spinners;
+- `FlowTUI`: Textual chat/dashboard with overview, tree, agents, counts,
+  waiting, errors, and latest-activity panels;
+- `GraphCheckpointer`: periodically saves `node.root`, then flushes on close;
+- `WorkspaceSync`: mirrors a sandbox working directory into a local copy.
+
+## Watching a run go by
+
+`LiveTreeRenderer` displays agent status and child progress:
 
 ```python
-from rlmflow import open_viewer, render_steps, replay, save_image, save_steps
-
-open_viewer("runs/deep_research")
-
-for snapshot in replay("runs/deep_research"):
-    print(render_tree(snapshot))
-
-for frame in render_steps("runs/deep_research"):
-    print(frame)
-
-save_image("runs/deep_research", "final.png")
-save_steps("runs/deep_research", "frames/")
+viewer = LiveTreeRenderer()
+try:
+    async for node in flow.run_streaming(root):
+        viewer.handle(node)
+finally:
+    viewer.close()
 ```
 
-Viewer functions accept a saved run directory or a root Node. Browser viewing
-uses the optional viewer dependencies; static image export uses the image
-dependencies.
+For a Rich live display:
+
+```python
+viewer = LiveGraphTree(title="research run")
+try:
+    async for node in flow.run_streaming(root):
+        viewer.handle(node)
+finally:
+    viewer.close()
+```
+
+Install `rlmflow[viewer]` for Rich output. `LiveGraphTree` falls back to the
+plain renderer when Rich is unavailable or stdout is not a terminal.
+
+`FlowTUI` is a `StreamConsumer` plus an interactive Textual shell. Install
+`rlmflow[tui]`, then pass it a drive callback that streams Nodes through
+`ui.handle(node)`:
+
+```python
+from rlmflow import UserQuery, start
+from rlmflow.consumers import FlowTUI
+
+ui = FlowTUI()
+
+async def drive(root, *, query=None, inputs=None, until="done"):
+    root = root or start(query, inputs=inputs)
+    if query is not None and root.content != query:
+        root.frontier.append(UserQuery(content=query))
+    async for node in flow.run_streaming(root, until=until):
+        ui.handle(node)
+    return root
+
+ui.run(drive)
+```
+
+```text
+Find the needle across 500 files.
+└── root: children running 2/2 (1 turns)
+    ├── root.batch_0: running code (1 turns)
+    └── root.batch_1: planning (1 turns)
+```
+
+...and once the children answer and the root composes them:
+
+```text
+root: audited 2 modules (2 turns)
+  root.scanner_auth: found SQL injection in login.py (1 turns)
+  root.scanner_db: no issues found (1 turns)
+```
+
+## Reading a saved run
+
+A saved run reloads into the same tree, so every query above works on it
+offline:
+
+```python
+loaded = AgentStart.load("runs/deep_research")
+
+print(loaded.result(), loaded.tokens())
+for node in loaded.walk():
+    print(node.seq, node.type, node.timing().get("duration_ms", ""))
+```
+
+For anything else — a timeline, a diff between two runs, an export —
+`persistence.to_dict(root)` is the whole run as JSON-serializable data, and
+`persistence.summary(root)` is the one-line version.

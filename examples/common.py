@@ -27,7 +27,7 @@ import argparse
 from pathlib import Path
 
 from rlmflow import Node, persistence
-from rlmflow.clients import AnthropicClient, OpenAIClient
+from rlmflow.llm import AnthropicClient, OpenAIClient
 
 # The directory this module lives in, i.e. the repo's ``examples/`` folder.
 EXAMPLES_DIR = Path(__file__).resolve().parent
@@ -86,13 +86,6 @@ def add_flow_args(
     parser.add_argument("--max-iters", type=int, default=max_iters)
 
 
-def add_viz_arg(parser: argparse.ArgumentParser) -> None:
-    """Add the common ``--no-viz`` flag."""
-    parser.add_argument(
-        "--no-viz", action="store_true", help="Disable the live terminal graph view."
-    )
-
-
 def add_out_dir_arg(
     parser: argparse.ArgumentParser,
     name: str,
@@ -113,7 +106,6 @@ __all__ = [
     "add_flow_args",
     "add_model_args",
     "add_out_dir_arg",
-    "add_viz_arg",
     "build_client",
     "example_run_dir",
     "save_example_graph",

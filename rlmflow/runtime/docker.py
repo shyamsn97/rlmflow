@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from rlmflow.graph import Node
+from rlmflow.graph.nodes import Node
 from rlmflow.runtime.connections import PopenConnection
 from rlmflow.runtime.repl import Repl
 from rlmflow.runtime.repl_client import RemoteRepl

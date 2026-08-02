@@ -6,7 +6,7 @@ import asyncio
 
 from benchmarks.eval import model
 from benchmarks.eval.types import Model
-from rlmflow.clients.llm import OpenAIClient
+from rlmflow.llm import OpenAIClient
 
 
 @model("openai")

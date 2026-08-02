@@ -4,78 +4,71 @@ import threading
 import pytest
 from helpers import first_user
 
-from rlmflow import Flow, start
+from rlmflow import Flow, SequentialPool, start
 
 
-class BlockingLLM:
-    def __init__(self, reply, *, parties=0):
-        self.reply = reply
-        self.barrier = threading.Barrier(parties) if parties else None
-        self.lock = threading.Lock()
-        self.active = 0
-        self.peak = 0
-
-    def chat(self, messages, **_kwargs):
-        query = first_user(messages)
-        with self.lock:
-            self.active += 1
-            self.peak = max(self.peak, self.active)
-        try:
-            if query == "child" and self.barrier is not None:
-                self.barrier.wait(timeout=5)
-            return self.reply(messages)
-        finally:
-            with self.lock:
-                self.active -= 1
+def block(code):
+    return f"```python\n{code}\n```"
 
 
-def fanout_reply(messages):
-    if first_user(messages) == "parent":
-        return (
-            "```repl\n"
-            "r = await launch_subagents(["
-            "{'name':'a','query':'child'},"
-            "{'name':'b','query':'child'}])\n"
-            "done(','.join(r))\n"
-            "```"
-        )
-    return "```repl\ndone('c')\n```"
+def fanout(*names):
+    specs = ", ".join(f"{{'name': {name!r}, 'query': {name!r}}}" for name in names)
+    return block(f"answers = await launch_subagents([{specs}])\ndone(','.join(answers))")
 
 
-def test_children_execute_in_parallel_through_task_queue():
-    llm = BlockingLLM(fanout_reply, parties=2)
-    flow = Flow(llm, max_depth=1, workers=2)
+class BarrierLLM:
+    """A blocking client that holds each child until every sibling has called it."""
+
+    def __init__(self, parties):
+        self.barrier = threading.Barrier(parties)
+
+    def chat(self, messages):
+        if first_user(messages) == "parent":
+            return fanout("a", "b")
+        self.barrier.wait(timeout=5)
+        return block("done('c')")
+
+
+def test_blocking_children_get_a_thread_each():
     root = start("parent", max_depth=1)
+    # A pool that ran the children in turn would never clear the barrier, and the
+    # first child through would break it rather than hang the suite.
+    assert Flow(BarrierLLM(2), workers=2).run(root) == "c,c"
 
-    assert flow.run(root) == "c,c"
-    assert llm.peak == 2
 
+def test_sequential_pool_does_not_hold_its_slot_while_parent_awaits_children():
+    class LLM:
+        def chat(self, messages):
+            query = first_user(messages)
+            if query == "parent":
+                return fanout("a", "b")
+            return block(f"done({query!r})")
 
-def test_child_failure_is_a_value_and_does_not_cancel_sibling():
-    async def reply(messages):
-        query = first_user(messages)
-        if query == "parent":
-            return (
-                "```repl\n"
-                "r = await launch_subagents(["
-                "{'name':'good','query':'good'},"
-                "{'name':'bad','query':'bad'}])\n"
-                "done('|'.join(r))\n"
-                "```"
-            )
-        await asyncio.sleep(0)
-        if query == "bad":
-            raise RuntimeError("exploded")
-        return "```repl\ndone('good')\n```"
-
-    flow = Flow(type("LLM", (), {"chat": staticmethod(reply)})(), max_depth=1)
     root = start("parent", max_depth=1)
+    assert Flow(LLM(), pool=SequentialPool()).run(root) == "a,b"
 
-    assert flow.run(root) == "good|[child failed: RuntimeError: exploded]"
+
+def test_a_failing_child_does_not_cancel_its_sibling():
+    class HalfBrokenLLM:
+        async def chat(self, messages):
+            query = first_user(messages)
+            if query == "parent":
+                return fanout("good", "bad")
+            await asyncio.sleep(0)  # both children are in flight when one raises
+            if query == "bad":
+                raise RuntimeError("exploded")
+            return block("done('good')")
+
+    root = start("parent", max_depth=1)
+    failed = "[child failed: RuntimeError: exploded]"
+    assert Flow(HalfBrokenLLM()).run(root) == f"good,{failed}"
+    assert [child.result() for child in root.sub_agents] == ["good", failed]
 
 
-def test_cancelling_parent_cancels_running_children():
+def test_cancelling_a_run_cancels_the_children_it_launched():
     class Probe:
+        """Answers the parent, then parks every child until it is cancelled."""
+
         def __init__(self):
             self.started = set()
             self.cancelled = set()
@@ -85,14 +78,7 @@ def test_cancelling_parent_cancels_running_children():
         async def chat(self, messages):
             query = first_user(messages)
             if query == "parent":
-                return (
-                    "```repl\n"
-                    "r = await launch_subagents(["
-                    "{'name':'a','query':'a'},"
-                    "{'name':'b','query':'b'}])\n"
-                    "done(','.join(r))\n"
-                    "```"
-                )
+                return fanout("a", "b")
             self.started.add(query)
             if len(self.started) == 2:
                 self.ready.set()
@@ -101,20 +87,18 @@ def test_cancelling_parent_cancels_running_children():
             except asyncio.CancelledError:
                 self.cancelled.add(query)
                 raise
-            return "```repl\ndone('unexpected')\n```"
+            return block("done('unexpected')")
 
     async def main():
         llm = Probe()
-        flow = Flow(llm, max_depth=1)
-        root = start("parent", max_depth=1)
-        task = asyncio.create_task(flow.arun(root))
+        flow = Flow(llm)
+        run = asyncio.create_task(flow.arun(start("parent", max_depth=1)))
         await asyncio.wait_for(llm.ready.wait(), timeout=5)
-        task.cancel()
+        run.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await run
         return llm, flow
 
     llm, flow = asyncio.run(main())
-
     assert llm.cancelled == {"a", "b"}
-    assert not flow.tasks.tasks
+    assert flow.queue is None

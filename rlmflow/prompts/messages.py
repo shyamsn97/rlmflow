@@ -13,13 +13,12 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from rlmflow.graph import (
+from rlmflow.graph.nodes import (
     AgentStart,
     ErrorOutput,
     ExecOutput,
     LLMOutput,
     Node,
-    SupervisingOutput,
     UserQuery,
 )
 
@@ -113,7 +112,9 @@ class UserPromptBuilder(PromptBuilder):
             return self._build_fn(flow, agent)
         return None
 
-    def project(self, flow: Any, node: Node, keep: int | None = None) -> list[dict[str, str]]:
+    def project(
+        self, flow: Any, node: Node, keep: int | None = None
+    ) -> list[dict[str, str]]:
         """The conversation as of ``node``: its own agent's nodes, as turns.
 
         Walks backwards, so with ``keep`` the work is the size of the prompt rather
@@ -143,8 +144,6 @@ class UserPromptBuilder(PromptBuilder):
             return self.render_exec_output(node)
         if isinstance(node, ErrorOutput):
             return self.render_error_output(node)
-        if isinstance(node, SupervisingOutput):
-            return self.render_supervising_output(node)
         return None
 
     def render_user_query(self, node: UserQuery) -> dict[str, str] | None:
@@ -157,11 +156,6 @@ class UserPromptBuilder(PromptBuilder):
         return {"role": "user", "content": node.content}
 
     def render_error_output(self, node: ErrorOutput) -> dict[str, str] | None:
-        return {"role": "user", "content": node.content}
-
-    def render_supervising_output(
-        self, node: SupervisingOutput
-    ) -> dict[str, str] | None:
         return {"role": "user", "content": node.content}
 
 

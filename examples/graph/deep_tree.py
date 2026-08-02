@@ -1,9 +1,9 @@
-"""Build a deep agent tree with ``rlmflow.minimal.nodes`` and plot it.
+"""Build a deep agent tree by hand and plot it.
 
-No Flow, no LLM — just the graph API:
+No Flow, no LLM — just the node API:
 
-    python examples/minimal/deep_tree.py
-    python examples/minimal/deep_tree.py --depth 3 --branch 2 --show
+    python examples/graph/deep_tree.py
+    python examples/graph/deep_tree.py --depth 3 --branch 2 --show
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rlmflow.minimal.nodes import (
+from rlmflow import (
     AgentStart,
     DoneOutput,
     ExecAction,
@@ -23,7 +23,7 @@ from rlmflow.minimal.nodes import (
 )
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1]
-OUT_DIR = EXAMPLES_DIR / "_runs" / "minimal-deep-tree"
+OUT_DIR = EXAMPLES_DIR / "_runs" / "deep-tree"
 
 
 def grow(agent: AgentStart, *, depth: int, branch: int) -> None:
@@ -280,7 +280,7 @@ def main() -> None:
     plot_path = plot_tree(
         root,
         args.out_dir / "deep_tree.png",
-        title=f"minimal deep tree (depth={args.depth}, branch={args.branch})",
+        title=f"deep tree (depth={args.depth}, branch={args.branch})",
         show=args.show,
     )
     print()
