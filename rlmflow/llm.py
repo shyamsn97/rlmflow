@@ -98,6 +98,9 @@ class LLMClient(metaclass=abc.ABCMeta):
         text = "".join(self.stream(messages, *args, **kwargs))
         return text, self.last_usage or LLMUsage()
 
+    async def aclose(self) -> None:
+        """Release any async transport owned by this client."""
+
 
 class OpenAIClient(LLMClient):
     """OpenAI-compatible client. Requires `pip install openai`."""
@@ -118,6 +121,9 @@ class OpenAIClient(LLMClient):
     async def chat(self, messages: list[dict[str, str]], *args, **kwargs) -> str:
         text, _usage = await self.completion(messages, *args, **kwargs)
         return text
+
+    async def aclose(self) -> None:
+        await self.client.close()
 
     @retry_transient
     async def completion(
@@ -205,6 +211,9 @@ class AnthropicClient(LLMClient):
     async def chat(self, messages: list[dict[str, str]], *args, **kwargs) -> str:
         text, _usage = await self.completion(messages, *args, **kwargs)
         return text
+
+    async def aclose(self) -> None:
+        await self.client.close()
 
     @retry_transient
     async def completion(

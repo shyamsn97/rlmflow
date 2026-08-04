@@ -29,8 +29,25 @@ _GLYPH = {
     "@": "player",
     "+": "player_on_target",
 }
-_BOARD_CHARS = frozenset(_GLYPH)
 _TILE_NAMES = frozenset(_GLYPH.values())
+
+# Sokoban.render(ids=True) numbers each box instead of drawing a shared "$"/"*"
+# (see BOX_GLYPHS / BOX_ON_GOAL_GLYPHS there). Same two crate tiles, recoloured
+# per box, so a viewer can follow B1 from its start square to the goal it takes.
+_BOX_IDS = "123456789"
+_BOX_ON_GOAL_IDS = "ABCDEFGHI"
+_BOX_COLORS = (
+    (255, 190, 60),    # B1 amber
+    (90, 190, 255),    # B2 sky
+    (185, 130, 255),   # B3 violet
+    (120, 225, 130),   # B4 green
+    (255, 120, 170),   # B5 pink
+    (90, 220, 205),    # B6 teal
+    (255, 130, 80),    # B7 ember
+    (205, 205, 235),   # B8 pale
+    (210, 230, 90),    # B9 lime
+)
+_BOARD_CHARS = frozenset(_GLYPH) | frozenset(_BOX_IDS) | frozenset(_BOX_ON_GOAL_IDS)
 
 
 def available() -> bool:
@@ -48,6 +65,37 @@ def _tile(name: str, size: int):
 
     im = Image.open(_ASSETS / f"{name}.png").convert("RGB")
     return im if im.size == (size, size) else im.resize((size, size), Image.NEAREST)
+
+
+@lru_cache(maxsize=None)
+def _tinted(name: str, size: int, rgb: tuple[int, int, int], locked: bool):
+    """``name``'s tile recoloured towards ``rgb``, keeping the crate's shading."""
+    from PIL import ImageDraw, ImageOps
+
+    shadow = tuple(channel // 4 for channel in rgb)
+    im = ImageOps.colorize(_tile(name, size).convert("L"), black=shadow, white=rgb)
+    if locked:
+        # The stock on-target tile marks the goal with a red border that the tint
+        # flattens into the crate, so redraw it: a locked box has to stay legible
+        # as locked whatever colour it carries.
+        edge = max(1, size // 16)
+        ImageDraw.Draw(im).rectangle(
+            [0, 0, size - 1, size - 1], outline=(255, 255, 255), width=edge
+        )
+    return im
+
+
+def _glyph_tile(ch: str, size: int):
+    name = _GLYPH.get(ch)
+    if name is not None:
+        return _tile(name, size)
+    index = _BOX_IDS.find(ch)
+    if index >= 0:
+        return _tinted("box", size, _BOX_COLORS[index % len(_BOX_COLORS)], False)
+    index = _BOX_ON_GOAL_IDS.find(ch)
+    if index >= 0:
+        return _tinted("box_on_target", size, _BOX_COLORS[index % len(_BOX_COLORS)], True)
+    return _tile("floor", size)
 
 
 def _board_lines(text: str) -> list[str]:
@@ -74,7 +122,7 @@ def render_image(board_text: str, tile: int = 32):
     for r, line in enumerate(rows):
         for c in range(width):
             ch = line[c] if c < len(line) else " "
-            img.paste(_tile(_GLYPH.get(ch, "floor"), tile), (c * tile, r * tile))
+            img.paste(_glyph_tile(ch, tile), (c * tile, r * tile))
     return img
 
 

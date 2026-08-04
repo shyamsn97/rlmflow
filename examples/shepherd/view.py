@@ -7,14 +7,19 @@ the one-line-per-node trace it prints itself.
 
 from __future__ import annotations
 
+import json
 import sys
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 from rlmflow import (
     AgentStart,
+    DoneOutput,
+    ExecAction,
     ExecOutput,
     Flow,
+    LLMOutput,
     Node,
 )
 from rlmflow.consumers import StreamConsumer
@@ -62,6 +67,38 @@ def panel_status(flow: Flow, agent: AgentStart) -> str:
         return f"{step} · illegal push (try another)"
     dist = env.get("dist")
     return f"{step} · dist {dist}" if pushes is not None else ""
+
+
+def trace_line(node: Node, labels: dict[str, str]) -> str:
+    """One compact line for the streamed node."""
+    if isinstance(node, ExecAction):
+        return ""
+    agent = node.parent_agent
+    lane = labels.get(agent.id, agent.config.name)
+    if isinstance(node, LLMOutput):
+        detail = node.code
+    elif isinstance(node, DoneOutput):
+        detail = f"done({node.result!r})"
+    else:
+        detail = node.content
+    head = next((line for line in (detail or "").splitlines() if line.strip()), "")
+    return f"[{lane:>9}] {node.type:<13} {head.strip()[:88]}"
+
+
+def export_run_traces(root: Path, named_games: list[tuple[str, object]]) -> None:
+    """Write frame JSON and optional GIFs for each game."""
+    import sprites
+
+    out = root / "traces"
+    out.mkdir(parents=True, exist_ok=True)
+    have_tiles = sprites.available()
+    for name, game in named_games:
+        steps = list(getattr(game, "step_frames", []))
+        trace = [{"label": label, "board": board} for label, board in steps]
+        (out / f"{name}.json").write_text(json.dumps(trace, indent=2))
+        renders = [board for _label, board in steps]
+        if have_tiles:
+            sprites.save_gif(renders, out / f"{name}.gif")
 
 
 class PanelViewer(StreamConsumer):
@@ -249,4 +286,11 @@ class PanelViewer(StreamConsumer):
         self._closed = True
 
 
-__all__ = ["PanelViewer", "grid_of_blocks", "panel_status", "side_by_side"]
+__all__ = [
+    "PanelViewer",
+    "export_run_traces",
+    "grid_of_blocks",
+    "panel_status",
+    "side_by_side",
+    "trace_line",
+]

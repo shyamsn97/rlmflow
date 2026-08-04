@@ -8,6 +8,7 @@ import pytest
 
 from rlmflow import (
     AgentStart,
+    AppendChild,
     DoneOutput,
     ErrorOutput,
     ExecAction,
@@ -23,6 +24,7 @@ from rlmflow.prompts import PromptProfile
 from rlmflow.prompts.messages import UserPromptBuilder
 from rlmflow.runtime import LocalRuntime
 from rlmflow.tools import tool
+from rlmflow.utils.helpers import truncate_output
 
 
 class ScriptedLLM:
@@ -45,6 +47,16 @@ class ScriptedLLM:
 
 def block(code):
     return f"thinking\n```python\n{code}\n```"
+
+
+def test_truncate_output_preserves_traceback_tail():
+    output = "printed preview data\n" + "x" * 100 + "\nValueError: boxes has no items"
+
+    truncated = truncate_output(output, 40)
+
+    assert truncated.startswith("printed preview data")
+    assert "truncated" in truncated
+    assert truncated.endswith("boxes has no items")
 
 
 def _walk(node):
@@ -152,6 +164,7 @@ def test_children_run_in_parallel():
     # Children branch off the action that launched them, so the parent's frontier
     # stayed on that action for the whole step, and its sequel is the step's output.
     action = next(n for n in root.transcript() if isinstance(n, ExecAction))
+    assert not isinstance(action, AppendChild)
     assert action.children[:2] == root.sub_agents
     assert action.next is action.children[-1]
     assert isinstance(action.next, ExecOutput)
@@ -323,6 +336,99 @@ def test_replay_reads_recorded_child_answers_instead_of_relaunching(tmp_path):
     assert len(resumed.calls) == 1
 
 
+def test_append_child_runs_a_prebuilt_subtree():
+    root = start("parent", max_depth=1)
+    branch = start("child")
+    root.append_child(branch, name="branch0")
+    action = root.frontier
+
+    flow = Flow(
+        ScriptedLLM(
+            [
+                ("child", block("done('finished')")),
+                ("['finished']", block("done('finished')")),
+            ]
+        )
+    )
+
+    assert flow.run(root) == "finished"
+    assert isinstance(action, AppendChild)
+    assert action.child_agents == [branch]
+    assert branch.config.path == "root.branch0"
+
+
+def test_controller_attaches_multiple_subtrees_between_streams():
+    llm = ScriptedLLM(
+        [
+            ("['A', 'B']", block("done('AB')")),
+            ("prepare", block("print('prepared')")),
+            ("child a", block("done(value)")),
+            ("child b", block("done(value)")),
+        ]
+    )
+    flow = Flow(llm)
+    root = start("prepare", max_depth=1)
+
+    async def main():
+        async for _node in flow.run_streaming(root, until="idle"):
+            pass
+
+        anchor = root.frontier
+        child_a = start("child a")
+        child_a.append(ExecAction(code="value = 'A'")).append(
+            ExecOutput(content="child a")
+        )
+        child_b = start("child b")
+        child_b.append(ExecAction(code="value = 'B'")).append(
+            ExecOutput(content="child b")
+        )
+        anchor.append_child(child_a, name="a")
+        anchor.append_child(child_b, name="b")
+
+        async for _node in flow.run_streaming(root):
+            pass
+
+    asyncio.run(main())
+
+    action = next(node for node in root.transcript() if isinstance(node, AppendChild))
+    assert root.result() == "AB"
+    assert [child.config.name for child in action.child_agents] == ["a", "b"]
+    assert action.code == (
+        "print(await launch_subagents([{'name': 'a'}, {'name': 'b'}]))"
+    )
+
+
+def test_resume_uses_an_unfinished_subtree_already_on_the_launch_action():
+    root = start("parent", max_depth=1)
+    child = start("child")
+    root.append_child(child, name="kid")
+
+    llm = ScriptedLLM(
+        [
+            ("['finished child']", block("done('parent saw finished child')")),
+            ("child", block("done('finished child')")),
+        ]
+    )
+    assert Flow(llm).run(root) == "parent saw finished child"
+    assert child.result() == "finished child"
+    assert len(llm.calls) == 2
+
+
+def test_append_child_type_survives_save_load(tmp_path):
+    root = start("parent")
+    branch = start("child")
+    root.append_child(branch, name="branch0")
+    action = root.frontier
+    branch.append(DoneOutput(result="finished"))
+    action.append(ExecOutput(content="['finished']"))
+
+    loaded = AgentStart.load(root.save(tmp_path / "run"))
+    loaded_action = next(node for node in loaded.transcript() if isinstance(node, AppendChild))
+
+    assert loaded_action.code == action.code
+    assert [child.config.name for child in loaded_action.child_agents] == ["branch0"]
+
+
 def test_replaying_agents_can_skip_their_own_unrepeatable_work(tmp_path):
     trace: list[str] = []
     code = block("if ENV['RLMFLOW_REPLAY'] == '0':\n    log('live')\nprint('set up')")
@@ -385,7 +491,7 @@ def test_a_dead_repl_is_an_observation_and_is_replaced():
     assert errors[0].to_dict()["payload"]["error"] == "repl"
 
 
-def test_a_live_launch_still_refuses_a_reused_child_name():
+def test_repeated_launch_on_one_action_reuses_its_direct_child():
     parent = block(
         "await launch_subagents([{'name': 'kid', 'query': 'do it'}])\n"
         "print(await launch_subagents([{'name': 'kid', 'query': 'again'}]))"
@@ -393,12 +499,12 @@ def test_a_live_launch_still_refuses_a_reused_child_name():
     llm = ScriptedLLM(
         [
             ("delegate", parent),
+            ("['once']", block("done('reused')")),
             ("do it", block("done('once')")),
-            ("duplicate child name", block("done('caught')")),
         ]
     )
     root = start("delegate", max_depth=2)
-    assert Flow(llm).run(root) == "caught"
+    assert Flow(llm).run(root) == "reused"
     assert [child.config.name for child in root.sub_agents] == ["kid"]
 
 
@@ -512,12 +618,14 @@ def test_step_failure_reaches_the_caller():
         def chat(self, messages):
             raise RuntimeError("model is down")
 
+    root = start("anything")
     try:
-        Flow(BrokenLLM()).run("anything")
+        Flow(BrokenLLM()).run(root)
     except RuntimeError as exc:
         assert str(exc) == "model is down"
     else:
         raise AssertionError("expected the step failure to propagate")
+    assert root.result() == "[run failed: RuntimeError: model is down]"
 
 
 def test_custom_tool_is_injected_and_documented():
@@ -624,7 +732,13 @@ def test_child_failure_reaches_the_parent():
 
 
 def test_aclose_drops_the_work_and_the_repls():
-    llm = ScriptedLLM([("count", block("done('six')"))])
+    class ClosingLLM(ScriptedLLM):
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    llm = ClosingLLM([("count", block("done('six')"))])
     flow = Flow(llm)
 
     async def run_then_close():
@@ -633,6 +747,7 @@ def test_aclose_drops_the_work_and_the_repls():
         await flow.aclose()
 
     asyncio.run(run_then_close())
+    assert llm.closed
     assert not flow.repls
     assert flow.queue is None
 

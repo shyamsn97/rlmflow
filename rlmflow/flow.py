@@ -246,11 +246,15 @@ class Flow:
                 Exception
             ) as exc:  # noqa: BLE001 - infrastructure failure is a transition
                 error = exc
-                text = f"{type(exc).__name__}: {exc}"
+                detail = str(exc)
+                text = (
+                    f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+                )
+                scope = "run" if node.parent_agent is node.root else "child"
                 landed = node.parent_agent.frontier.append(
                     DoneOutput(
                         content=text,
-                        result=f"[child failed: {text}]",
+                        result=f"[{scope} failed: {text}]",
                     )
                 )
 
@@ -327,7 +331,7 @@ class Flow:
         return {
             **self.tools,
             "done": self.done_tool(node, repl),
-            "launch_subagents": self.launch_tool(node, repl),
+            "launch_subagents": self.launch_tool(node),
             "INPUTS": node.parent_agent.config.inputs,
         }
 
@@ -346,69 +350,96 @@ class Flow:
 
         return done
 
-    def launch_tool(self, node: Node, repl: Repl):
-        agent = node.parent_agent
-
-        @tool("Spawn child agents from specs and await their results.", proxy=True)
+    def launch_tool(self, node: Node):
+        @tool(
+            "Spawn or resume child agents and await their results.",
+            proxy=True,
+        )
         async def launch_subagents(specs: list[dict[str, Any]]) -> list[Any]:
-            answers: list[Any] = [None] * len(specs)
-            accepted: list[tuple[int, str, dict[str, Any]]] = []
-            names = {child.config.name for child in agent.sub_agents}
-            answered = self.recorded_answers(agent, repl)
-            for index, spec in enumerate(specs):
-                name = spec.get("name") or f"child{index}"
-                validate_agent_name(name)
-                if name in answered:
-                    answers[index] = answered[name]  # this launch already happened
-                    continue
-                if name in names:
-                    raise ValueError(f"duplicate child name {name!r}")
-                names.add(name)
-                query = spec.get("query", "")
-                if agent.config.depth >= agent.config.max_depth:
-                    answers[index] = f"[refused: max depth {agent.config.max_depth}]"
-                elif len(query) > agent.config.max_query_chars:
-                    answers[index] = f"[refused: query too long ({len(query)} chars)]"
-                else:
-                    accepted.append((index, name, spec))
-            if not accepted:
-                return answers
+            if not isinstance(node, ExecAction):
+                raise TypeError("launch_subagents requires an ExecAction")
 
-            # Children hang off the action that launched them, which keeps the
-            # parent's frontier where it was: this step has not landed yet.
-            children = [
-                (index, self.new_child(node, name, spec))
-                for index, name, spec in accepted
+            names = [
+                spec.get("name") or f"child{index}" for index, spec in enumerate(specs)
             ]
-            queue = self.queue
-            if queue is None:
-                raise RuntimeError("launch_subagents requires an active stream")
-            for _index, child in children:
-                queue.submit(child, self.step, publish=True)
-            values = await asyncio.gather(
-                *(queue.join(child) for _index, child in children)
-            )
-            for (index, _child), value in zip(children, values, strict=True):
-                answers[index] = value
-            return answers
+            if len(names) != len(set(names)):
+                raise ValueError("duplicate child names in one launch_subagents call")
+
+            existing = {
+                id(child) for child in node.children if isinstance(child, AgentStart)
+            }
+            resolved = [
+                self.resolve_child(node, spec, index)
+                for index, spec in enumerate(specs)
+            ]
+            children = [value for value in resolved if isinstance(value, AgentStart)]
+            created = [child for child in children if id(child) not in existing]
+            await self.run_children(children, submit=created)
+            return [
+                value.result() if isinstance(value, AgentStart) else value
+                for value in resolved
+            ]
 
         return launch_subagents
 
-    def recorded_answers(self, agent: AgentStart, repl: Repl) -> dict[str, Any]:
-        """What this agent's children already answered, by name — replay only.
+    def resolve_child(
+        self,
+        action: ExecAction,
+        spec: dict[str, Any],
+        index: int,
+    ) -> AgentStart | str:
+        """Resolve one launch spec to a direct child or refusal."""
+        name = spec.get("name") or f"child{index}"
+        validate_agent_name(name)
 
-        A finished child *is* its answer, so a replay of the code that launched it
-        needs no cache: it reads the same value back through the same accessor the
-        live run used. Empty during a live turn, where relaunching a name is an error
-        rather than a repeat.
-        """
-        if repl.env.get(RLMFLOW_REPLAY) != "1":
-            return {}
-        return {
-            child.config.name: child.result()
-            for child in agent.sub_agents
-            if child.terminal
-        }
+        existing = next(
+            (
+                child
+                for child in action.children
+                if isinstance(child, AgentStart) and child.config.name == name
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
+
+        parent = action.parent_agent
+        if any(child.config.name == name for child in parent.sub_agents):
+            raise ValueError(f"duplicate child name {name!r}")
+
+        query = spec.get("query", "")
+        if parent.config.depth >= parent.config.max_depth:
+            return f"[refused: max depth {parent.config.max_depth}]"
+        if len(query) > parent.config.max_query_chars:
+            return f"[refused: query too long ({len(query)} chars)]"
+        return self.new_child(action, name, spec)
+
+    async def run_children(
+        self,
+        children: list[AgentStart],
+        *,
+        submit: list[AgentStart],
+    ) -> None:
+        """Submit newly created children and await every unfinished child."""
+        unfinished = [child for child in children if not child.terminal]
+        if not unfinished:
+            return
+
+        queue = self.queue
+        if queue is None:
+            raise RuntimeError("launch_subagents requires an active stream")
+        for child in submit:
+            if child.terminal:
+                continue
+            for leaf in child.leaves():
+                owner = leaf.parent_agent
+                if owner is not None and not owner.terminal:
+                    queue.submit(
+                        leaf,
+                        self.step,
+                        publish=isinstance(leaf, AgentStart),
+                    )
+        await asyncio.gather(*(queue.join(child) for child in unfinished))
 
     def new_child(self, node: Node, name: str, spec: dict[str, Any]) -> AgentStart:
         """Open a child agent of ``node``'s agent, attached to ``node``."""
@@ -436,8 +467,8 @@ class Flow:
     async def replay(self, root: AgentStart) -> None:
         """Rebuild the namespaces of a graph we did not run, from its recorded code.
 
-        Appends nothing: ``launch_subagents`` reads recorded answers while
-        ``RLMFLOW_REPLAY`` is set, so no child is launched and no node lands. A block
+        Appends nothing: ``launch_subagents`` resolves the children already attached
+        to each action and reads finished results from their terminal nodes. A block
         that failed the first time fails the same way here, leaving the same partial
         bindings, which is why output and errors are discarded.
         """
@@ -488,6 +519,18 @@ class Flow:
                     if self.restore == "replay"
                     else self.note_cold(agent)
                 )
+            else:
+                for node in agent.walk():
+                    if (
+                        isinstance(node, AgentStart)
+                        and not node.terminal
+                        and self.runtime.get(node) is None
+                    ):
+                        (
+                            await self.replay(node)
+                            if self.restore == "replay"
+                            else self.note_cold(node)
+                        )
 
         queue = TaskQueue(self.pool)
         self.queue = queue
@@ -555,8 +598,20 @@ class Flow:
         if self.queue is not None:
             await self.queue.cancel()
             self.queue = None
-        self.pool.close()
-        self.runtime.close()
+        closed: set[int] = set()
+        clients = []
+        for client in self._llm_clients.values():
+            if id(client) in closed:
+                continue
+            closed.add(id(client))
+            close = getattr(client, "aclose", None)
+            if close is not None:
+                clients.append(close())
+        try:
+            await asyncio.gather(*clients)
+        finally:
+            self.pool.close()
+            self.runtime.close()
 
 
 __all__ = ["Flow", "StepUntil", "code_block", "start"]

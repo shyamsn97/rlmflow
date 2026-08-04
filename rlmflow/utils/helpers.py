@@ -63,11 +63,15 @@ def usage_from_client(client: Any) -> LLMUsage:
 
 
 def truncate_output(output: str, limit: int) -> str:
-    """Cap an exec observation at ``limit`` chars (0 disables); note the omission."""
+    """Keep the start and end of a long observation (0 disables truncation)."""
     if limit and len(output) > limit:
         omitted = len(output) - limit
-        return output[:limit] + (
-            f"\n...<truncated {omitted} chars; keep full data in variables>"
+        head = limit // 2
+        tail = limit - head
+        return (
+            output[:head]
+            + f"\n...<truncated {omitted} chars; keep full data in variables>...\n"
+            + output[-tail:]
         )
     return output
 

@@ -14,7 +14,7 @@ from uuid import uuid4
 from rlmflow.llm import LLMUsage
 
 DEFAULT_QUERY = (
-    "Please read through the context and answer any queries or respond to any "
+    "Please read through the provided INPUTS if present and answer any queries or respond to any "
     "instructions contained within it."
 )
 DEFAULT_MAX_QUERY_CHARS = 2_000
@@ -120,6 +120,28 @@ class Node:
         node.seq = self.seq + 1  # a sub-agent keeps its own 0-based sequence
         agent.frontier = node
         return node
+
+    def append_child(
+        self,
+        subtree: AgentStart,
+        *,
+        name: str | None = None,
+    ) -> AgentStart:
+        """Create or reuse one launch action and attach a subtree beneath it."""
+        agent = self.parent_agent
+        if agent is None:
+            raise RuntimeError("node is detached")
+
+        if isinstance(self, AppendChild):
+            action = self
+        elif isinstance(self.next, AppendChild) and self.next is agent.frontier:
+            action = self.next
+        elif self is agent.frontier:
+            action = self.append(AppendChild())
+        else:
+            raise ValueError(f"{self.id} cannot append children from a stale frontier")
+
+        return action.attach(subtree, name=name)
 
     @property
     def next(self) -> Node | None:
@@ -333,6 +355,71 @@ class ExecAction(Node):
 
 
 @dataclass
+class AppendChild(ExecAction):
+    """A controller-injected action that launches attached agent subtrees."""
+
+    type: ClassVar[str] = "append_child"
+
+    @property
+    def child_agents(self) -> list[AgentStart]:
+        return [child for child in self.children if isinstance(child, AgentStart)]
+
+    def child(self, name: str) -> AgentStart | None:
+        return next(
+            (child for child in self.child_agents if child.config.name == name),
+            None,
+        )
+
+    def append(self, node: Node) -> Node:
+        child = super().append(node)
+        if isinstance(node, AgentStart):
+            self._refresh_code()
+        return child
+
+    def attach(
+        self,
+        subtree: AgentStart,
+        *,
+        name: str | None = None,
+    ) -> AgentStart:
+        """Rehome a standalone subtree beneath this launch action."""
+        parent_agent = self.parent_agent
+        if parent_agent is None:
+            raise RuntimeError("node is detached")
+        if subtree.parent is not None or subtree.root is not subtree:
+            raise ValueError("child must be a standalone agent root")
+
+        child_name = name or (
+            subtree.config.name
+            if subtree.config.name != "root"
+            else f"child{len(self.child_agents)}"
+        )
+        validate_agent_name(child_name)
+        if any(child.config.name == child_name for child in parent_agent.sub_agents):
+            raise ValueError(f"duplicate child name {child_name!r}")
+
+        old_path = subtree.config.path
+        new_path = f"{parent_agent.config.path}.{child_name}"
+        depth_delta = parent_agent.config.depth + 1 - subtree.config.depth
+        for node in subtree.walk():
+            node.root = parent_agent.root
+            if isinstance(node, AgentStart):
+                suffix = node.config.path.removeprefix(old_path)
+                node.config = replace(
+                    node.config,
+                    name=child_name if node is subtree else node.config.name,
+                    path=new_path + suffix,
+                    depth=node.config.depth + depth_delta,
+                )
+
+        return self.append(subtree)
+
+    def _refresh_code(self) -> None:
+        specs = [{"name": child.config.name} for child in self.child_agents]
+        self.code = f"print(await launch_subagents({specs!r}))"
+
+
+@dataclass
 class ExecOutput(Node):
     type: ClassVar[str] = "exec_output"
 
@@ -423,6 +510,7 @@ __all__ = [
     "DEFAULT_QUERY",
     "AgentConfig",
     "AgentStart",
+    "AppendChild",
     "DoneOutput",
     "ErrorOutput",
     "ExecAction",

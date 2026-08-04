@@ -1,9 +1,10 @@
 """The Sokoban game env for the shepherd demo — pure logic, no LLM or graph.
 
 Injected into every REPL as ``Sokoban``. The worker acts at the *strategic* layer:
-``push(box_id, direction)`` shoves one box one cell, but it plays *real* Sokoban
-underneath — it walks the player cell-by-cell to the far side of the box (BFS over
-floor, boxes are obstacles) and then steps in to shove it, honestly, no teleport.
+``push(box_id, direction)`` shoves one box one cell using ordinary Sokoban
+movement underneath — it walks the player cell-by-cell to the far side of the box
+(BFS over floor, boxes are obstacles) and then steps in to shove it, with no
+teleport. This demo adds one simplifying rule: a box locks once it reaches a goal.
 Every sub-step is played out and recorded (``step_frames``) so exports can animate
 the man walking. It still commits exactly one push per turn, so rewind granularity
 is one decision per turn, rewind anchors on the box-*pushes* (the irreversible
@@ -18,6 +19,11 @@ Board glyphs:  ``#`` wall · (space) floor · ``@`` player · ``$`` box ·
 from __future__ import annotations
 
 DIRS = {"up": (-1, 0), "down": (1, 0), "left": (0, -1), "right": (0, 1)}
+
+# Glyphs for ``render(ids=True)``: box ``Bn`` draws as the nth character, so a
+# viewer can tell the boxes apart. ``sprites`` maps these to per-box colours.
+BOX_GLYPHS = "123456789"
+BOX_ON_GOAL_GLYPHS = "ABCDEFGHI"
 
 
 def _norm_dir(d: str) -> tuple[int, int] | None:
@@ -78,12 +84,28 @@ class Sokoban:
         # it. During live play a second push in the same turn raises.
         self._armed = False
         self._pushed = False
+        # Filled on first use by ``dead_cells``; depends only on walls and goals.
+        self._dead: set[tuple[int, int]] | None = None
         self._publish()
 
     # --- ids -------------------------------------------------------------
     def box_items(self) -> list[tuple[str, tuple[int, int]]]:
         """``[("B1", (r,c)), ...]`` in stable id order (current positions)."""
         return [(f"B{i + 1}", pos) for i, pos in enumerate(self._pos_by_id)]
+
+    def goal_items(self) -> list[tuple[str, tuple[int, int]]]:
+        """``[("G1", (r,c)), ...]`` in stable id order.
+
+        Same ordering the planner sees, so a strategy naming ``G3`` and a worker
+        reading the board mean the same square.
+        """
+        return [(f"G{i + 1}", pos) for i, pos in enumerate(sorted(self.targets))]
+
+    def _goal_at(self, cell: tuple[int, int]) -> str:
+        for gid, pos in self.goal_items():
+            if pos == cell:
+                return gid
+        return "?"
 
     def _box_pos(self, box) -> tuple[int, int] | None:
         if isinstance(box, str) and box[:1] in "Bb" and box[1:].isdigit():
@@ -119,6 +141,8 @@ class Sokoban:
             if ahead in self.walls:
                 continue
             if ahead in self.boxes:
+                if ahead in self.targets:
+                    continue
                 beyond = (r + 2 * dr, c + 2 * dc)
                 if beyond in self.walls or beyond in self.boxes:
                     continue
@@ -148,12 +172,49 @@ class Sokoban:
                 queue.append((nxt, path + [name]))
         return None
 
+    def dead_cells(self) -> set[tuple[int, int]]:
+        """Squares a box can never leave alive.
+
+        Derived from the walls alone: pull each goal backwards as far as a box
+        could have come from, and whatever is never reached is a square from
+        which no goal is reachable. Board geometry never changes, so this is
+        computed once. It is a property of the maze, not a solver — it says
+        nothing about whether *this* position is winnable.
+
+        For host-side analysis only, e.g. telling why a branch failed. Never put
+        it in a prompt: working out which pushes are safe is the worker's job,
+        and handing over the answer is what the task is asking for.
+        """
+        if self._dead is None:
+            from collections import deque
+
+            floor = {
+                (r, c)
+                for r, row in enumerate(self.board)
+                for c in range(len(row))
+                if (r, c) not in self.walls
+            }
+            live = set(self.targets)
+            queue = deque(self.targets)
+            while queue:
+                r, c = queue.popleft()
+                for dr, dc in DIRS.values():
+                    back = (r - dr, c - dc)
+                    stand = (r - 2 * dr, c - 2 * dc)
+                    if back in floor and stand in floor and back not in live:
+                        live.add(back)
+                        queue.append(back)
+            self._dead = floor - live
+        return self._dead
+
     def legal_pushes(self) -> list[str]:
         """``["B1 right", "B2 up", ...]`` — pushes physically possible right now:
         the box's landing cell is free and the player can walk to the far side.
         State derivation, never a solver or a plan."""
         out = []
         for bid, pos in self.box_items():
+            if pos in self.targets:
+                continue
             for name, (dr, dc) in DIRS.items():
                 dest = (pos[0] + dr, pos[1] + dc)
                 stand = (pos[0] - dr, pos[1] - dc)
@@ -180,9 +241,11 @@ class Sokoban:
             return "player"
         if cell in self.boxes:
             bid = self._id_at(cell)
-            return f"box-on-target {bid}" if cell in self.targets else f"box {bid}"
+            if cell in self.targets:
+                return f"box-on-target {bid} on {self._goal_at(cell)}"
+            return f"box {bid}"
         if cell in self.targets:
-            return "target"
+            return f"target {self._goal_at(cell)}"
         return "empty"
 
     def _neighbors(self, cell: tuple[int, int]) -> str:
@@ -192,15 +255,32 @@ class Sokoban:
             for name, (dr, dc) in DIRS.items()
         )
 
+    def grid(self) -> str:
+        """The board with row and column numbers down the side and across the top.
+
+        Adds nothing the board does not already say, but the wall that decides a
+        push is often two rows up and ten columns across from the piece being
+        moved, and counting that far along an unlabelled row is where a reader
+        slips. Viewers keep the bare ``render`` — this is the model's copy.
+        """
+        rows = self.render().splitlines()
+        width = max(len(row) for row in rows)
+        pad = len(str(len(rows) - 1))
+        head = " " * (pad + 1)
+        tens = "".join(str(c // 10) if c >= 10 else " " for c in range(width))
+        units = "".join(str(c % 10) for c in range(width))
+        body = [f"{r:>{pad}} {row}" for r, row in enumerate(rows)]
+        return "\n".join([f"{head}{tens}", f"{head}{units}", *body])
+
     def status(self) -> str:
         """Board observation: grid, coords, per-direction adjacency.
         Legal pushes are harness-injected separately (see ``board_prompt``) —
         not something the agent should call for."""
-        goals = ", ".join(f"({r},{c})" for r, c in sorted(self.targets))
+        goals = ", ".join(f"{gid} ({r},{c})" for gid, (r, c) in self.goal_items())
         around = [f"  Player ({self.player[0]},{self.player[1]}): {self._neighbors(self.player)}"]
         around += [f"  {bid} ({p[0]},{p[1]}): {self._neighbors(p)}" for bid, p in self.box_items()]
         return (
-            f"Current Grid:\n{self.render()}\n\n"
+            f"Current Grid:\n{self.grid()}\n\n"
             f"Player: ({self.player[0]},{self.player[1]})\n"
             f"Goals: {goals}\n"
             f"Adjacency (what's up/down/left/right of each piece):\n" + "\n".join(around)
@@ -232,8 +312,9 @@ class Sokoban:
 
     def _record(self, label: str) -> None:
         """Snapshot the board after a sub-step: append to the full trace (disk +
-        GIF) and this turn's frames (the live per-turn ``env["frames"]``)."""
-        render = self.render()
+        GIF) and this turn's frames (the live per-turn ``env["frames"]``). These
+        are viewer-only, so they use the per-box identity glyphs."""
+        render = self.render(ids=True)
         self.step_frames.append((label, render))
         self.turn_frames.append(render)
 
@@ -251,6 +332,8 @@ class Sokoban:
         if ahead in self.walls:
             return None
         if ahead in self.boxes:
+            if ahead in self.targets:
+                return None
             beyond = (r + 2 * dr, c + 2 * dc)
             if beyond in self.walls or beyond in self.boxes:
                 return None
@@ -306,6 +389,8 @@ class Sokoban:
         if pos is None:
             return self._reject(f"NO box {box!r} on the board.")
         bid = self._id_at(pos)
+        if pos in self.targets:
+            return self._reject(f"LOCKED: box {bid} is already on a goal.")
         dr, dc = delta
         dest = (pos[0] + dr, pos[1] + dc)
         stand = (pos[0] - dr, pos[1] - dc)
@@ -331,7 +416,19 @@ class Sokoban:
             out += "\n  SOLVED!"
         return out
 
-    def render(self) -> str:
+    def render(self, ids: bool = False) -> str:
+        """The board as ASCII.
+
+        ``ids=True`` draws each box as its own number (``1``..``9`` off a goal,
+        ``A``..``I`` on one) instead of the shared ``$``/``*``, so viewers can
+        follow an individual box and colour it. The model-facing board keeps the
+        standard glyphs, so this never changes what a worker reads.
+        """
+        numbered = (
+            {pos: index for index, pos in enumerate(self._pos_by_id) if index < len(BOX_GLYPHS)}
+            if ids
+            else {}
+        )
         rows = []
         for r, row in enumerate(self.board):
             line = []
@@ -342,7 +439,13 @@ class Sokoban:
                 elif p == self.player:
                     line.append("+" if p in self.targets else "@")
                 elif p in self.boxes:
-                    line.append("*" if p in self.targets else "$")
+                    index = numbered.get(p)
+                    if index is None:
+                        line.append("*" if p in self.targets else "$")
+                    elif p in self.targets:
+                        line.append(BOX_ON_GOAL_GLYPHS[index])
+                    else:
+                        line.append(BOX_GLYPHS[index])
                 elif p in self.targets:
                     line.append(".")
                 else:
@@ -351,4 +454,4 @@ class Sokoban:
         return "\n".join(rows)
 
 
-__all__ = ["Sokoban"]
+__all__ = ["BOX_GLYPHS", "BOX_ON_GOAL_GLYPHS", "Sokoban"]

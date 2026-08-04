@@ -2,6 +2,7 @@ import pytest
 
 from rlmflow import (
     AgentStart,
+    AppendChild,
     DoneOutput,
     ExecAction,
     ExecOutput,
@@ -47,3 +48,39 @@ def test_duplicate_child_names_are_rejected():
 
     with pytest.raises(ValueError, match="duplicate child name"):
         root.append(AgentStart(config=root.config.child("worker")))
+
+
+def test_append_child_rehomes_a_complete_subtree():
+    subtree = start("copied worker")
+    nested_action = subtree.append(ExecAction(code="launch"))
+    nested = nested_action.append(
+        AgentStart(content="nested", config=subtree.config.child("nested"))
+    )
+    nested.append(DoneOutput(result="done"))
+
+    root = start("shepherd")
+    root.append_child(subtree, name="branch0")
+    action = root.frontier
+
+    assert isinstance(action, AppendChild)
+    assert action.child_agents == [subtree]
+    assert subtree.parent is action
+    assert root.sub_agents == [subtree]
+    assert all(node.root is root for node in subtree.walk())
+    assert subtree.config.path == "root.branch0"
+    assert nested.config.path == "root.branch0.nested"
+    assert action.code == "print(await launch_subagents([{'name': 'branch0'}]))"
+
+
+def test_append_child_reuses_one_launch_action():
+    root = start("shepherd")
+
+    first = root.append_child(start("one"), name="one")
+    action = root.frontier
+    second = root.append_child(start("two"), name="two")
+
+    assert isinstance(action, AppendChild)
+    assert action.child_agents == [first, second]
+    assert action.code == (
+        "print(await launch_subagents([{'name': 'one'}, {'name': 'two'}]))"
+    )

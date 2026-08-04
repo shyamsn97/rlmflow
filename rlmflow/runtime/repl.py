@@ -143,10 +143,6 @@ def has_top_level_await(tree: ast.AST) -> bool:
         ast.AsyncFunctionDef,
         ast.Lambda,
         ast.ClassDef,
-        ast.ListComp,
-        ast.SetComp,
-        ast.DictComp,
-        ast.GeneratorExp,
     )
     stack = [tree]
     while stack:

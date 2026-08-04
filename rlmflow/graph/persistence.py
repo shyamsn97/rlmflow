@@ -11,6 +11,7 @@ from typing import Any
 from rlmflow.graph.nodes import (
     AgentConfig,
     AgentStart,
+    AppendChild,
     DoneOutput,
     ErrorOutput,
     ExecAction,
@@ -30,6 +31,7 @@ NODE_TYPES: dict[str, type[Node]] = {
         UserQuery,
         LLMOutput,
         ExecAction,
+        AppendChild,
         ExecOutput,
         ErrorOutput,
         DoneOutput,

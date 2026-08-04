@@ -31,7 +31,7 @@ class Dashboard:
 
     status: str = "starting…"
     panels: list[tuple[str, str]] = field(default_factory=list)
-    proposals: list[tuple[int, str, str]] = field(default_factory=list)
+    proposals: list[tuple[int, str]] = field(default_factory=list)
     picked: str = ""
     log_lines: list[str] = field(default_factory=list)
     done: bool = False
@@ -46,7 +46,7 @@ class Dashboard:
         with self._lock:
             self.panels = list(panels)
 
-    def set_proposals(self, proposals: list[tuple[int, str, str]]) -> None:
+    def set_proposals(self, proposals: list[tuple[int, str]]) -> None:
         with self._lock:
             self.proposals = list(proposals)
 
@@ -123,16 +123,13 @@ def _panels_html(panels: list[tuple[str, str]], picked: str) -> str:
     return "<div style='white-space:nowrap;overflow-x:auto'>" + "".join(cells) + "</div>"
 
 
-def _proposals_md(proposals: list[tuple[int, str, str]]) -> str:
+def _proposals_md(proposals: list[tuple[int, str]]) -> str:
     if not proposals:
         return "_the shepherd has not proposed yet…_"
-    blocks = []
-    for i, (rewind, description, strategy) in enumerate(proposals):
-        plan = strategy.replace("\n", "<br>")
-        blocks.append(
-            f"**branch {i}** · rewind {rewind}\n\n{description}\n\n"
-            f"<details><summary>plan</summary>\n\n{plan}\n\n</details>"
-        )
+    blocks = [
+        f"**branch {i}** · rewind {rewind}\n\n{order}"
+        for i, (rewind, order) in enumerate(proposals)
+    ]
     return "\n\n---\n\n".join(blocks)
 
 

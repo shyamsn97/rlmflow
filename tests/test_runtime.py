@@ -1,3 +1,4 @@
+import ast
 import asyncio
 import sys
 
@@ -16,7 +17,7 @@ from rlmflow.runtime.protocol import (
     parse_client_message,
     parse_request,
 )
-from rlmflow.runtime.repl import DoneSignal
+from rlmflow.runtime.repl import DoneSignal, LocalRepl, has_top_level_await
 from rlmflow.runtime.repl_client import RemoteRepl
 
 
@@ -97,6 +98,47 @@ def test_local_repl_env_channel_round_trips():
     published = flow.runtime.repl_for(root).env
     assert published["solved"] is True
     assert published["RLMFLOW_AGENT_ID"] == "root"
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "[await fetch(i) for i in items]",
+        "{await fetch(i) for i in items}",
+        "{i: await fetch(i) for i in items}",
+        "(await fetch(i) for i in items)",
+    ],
+)
+def test_top_level_await_detector_traverses_comprehensions(expression):
+    assert has_top_level_await(ast.parse(f"result = {expression}"))
+
+
+def test_top_level_await_detector_ignores_nested_function_scope():
+    tree = ast.parse("async def fetch():\n    return await other()\n")
+    assert not has_top_level_await(tree)
+
+
+def test_local_repl_executes_await_in_comprehensions():
+    repl = LocalRepl()
+
+    async def double(value):
+        await asyncio.sleep(0)
+        return value * 2
+
+    async def run():
+        try:
+            repl.seed({"double": double}, {})
+            return await repl.run(
+                "by_key = {i: await double(i) for i in range(3)}\n"
+                "values = [await double(i) for i in range(3)]"
+            )
+        finally:
+            repl.close()
+
+    result = asyncio.run(run())
+    assert result.status is ReplStatus.OK
+    assert repl.get_var("by_key") == {0: 0, 1: 2, 2: 4}
+    assert repl.get_var("values") == [0, 2, 4]
 
 
 def test_subprocess_runtime_exposes_env_metadata():
