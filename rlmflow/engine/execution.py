@@ -133,9 +133,7 @@ class TaskQueue:
     async def _run(self, node: Node, fn: Callable[[Node], Any]) -> None:
         transition = await self.pool.run(fn, node)
         if not isinstance(transition, Transition):
-            raise TypeError(
-                f"task returned {type(transition).__name__}, expected Transition"
-            )
+            raise TypeError(f"task returned {type(transition).__name__}, expected Transition")
 
         # Publish before waking a parent, so a child boundary gets first refusal.
         self.done.put_nowait(transition)

@@ -78,9 +78,7 @@ class Repl(ABC):
     errored: bool
 
     @abstractmethod
-    def seed(
-        self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]
-    ) -> None: ...
+    def seed(self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]) -> None: ...
 
     @abstractmethod
     def inject(self, name: str, fn: Any) -> None: ...
@@ -109,9 +107,7 @@ class Repl(ABC):
     def outcome(self, output: str) -> ReplRun:
         """Classify a finished run from the state it left behind."""
         if self.done_result is not None:
-            return ReplRun(
-                output=output, status=ReplStatus.DONE, answer=self.done_result
-            )
+            return ReplRun(output=output, status=ReplStatus.DONE, answer=self.done_result)
         status = ReplStatus.ERROR if self.errored else ReplStatus.OK
         return ReplRun(output=output, status=status)
 
@@ -150,9 +146,7 @@ def has_top_level_await(tree: ast.AST) -> bool:
         if isinstance(node, ast.Await):
             return True
         stack.extend(
-            child
-            for child in ast.iter_child_nodes(node)
-            if not isinstance(child, boundaries)
+            child for child in ast.iter_child_nodes(node) if not isinstance(child, boundaries)
         )
     return False
 
@@ -197,9 +191,7 @@ class LocalRepl(Repl):
             _stdout_buf.set(self._buf)
         return output
 
-    def seed(
-        self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]
-    ) -> None:
+    def seed(self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]) -> None:
         self.namespace.update(tools)
         self.namespace["INPUTS"] = dict(inputs)
 

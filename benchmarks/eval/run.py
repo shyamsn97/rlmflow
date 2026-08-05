@@ -177,7 +177,7 @@ def _run_job_payload_with_timeout(payload: dict[str, Any], timeout: int) -> dict
 def _run_job_payload_child(payload: dict[str, Any], output: mp.Queue) -> None:
     try:
         output.put(_run_job_payload_inner(payload))
-    except BaseException as exc:
+    except BaseException as exc:  # noqa: BLE001 - the child must report every exit
         output.put(_error_payload_result(payload, error=f"{type(exc).__name__}: {exc}"))
 
 
@@ -224,7 +224,7 @@ def _run_job_payload_inner(payload: dict[str, Any]) -> dict[str, Any]:
             "attempt": attempt,
             "best_of_n": best_of_n,
         }
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - one row's failure is a result, not a crash
         return _error_payload_result(payload, error=f"{type(exc).__name__}: {exc}")
 
 
@@ -315,7 +315,7 @@ def _row_from_result(job: dict[str, Any], result: dict[str, Any]) -> Row:
     else:
         try:
             score = dataset.score(example, prediction)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - a scorer that raises scores zero
             prediction = Prediction(
                 answer=prediction.answer,
                 usage=prediction.usage,
@@ -392,12 +392,11 @@ def _run_jobs_modal(config: SuiteConfig, payloads: list[dict[str, Any]]):
 
     with modal.enable_output():
         with app.run():
-            for result in run_benchmark_row.map(
+            yield from run_benchmark_row.map(
                 payloads,
                 order_outputs=False,
                 return_exceptions=False,
-            ):
-                yield result
+            )
 
 
 def _modal_image(modal):

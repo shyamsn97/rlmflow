@@ -26,7 +26,7 @@ class VanillaRunner(Runner):
         try:
             answer = model.complete(messages)
             error = None
-        except Exception as exc:  # benchmark rows should record failures
+        except Exception as exc:  # noqa: BLE001 - benchmark rows should record failures
             answer = ""
             error = f"{type(exc).__name__}: {exc}"
         return Prediction(

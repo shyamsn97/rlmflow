@@ -109,7 +109,9 @@ class LongBenchV2Dataset(Dataset):
 def _load_hf_rows(dataset_name: str, split: str, data_dir: Path) -> list[dict[str, Any]]:
     try:
         from datasets import load_dataset, load_from_disk  # pyright: ignore[reportMissingImports]
-        from datasets.utils.logging import disable_progress_bar  # pyright: ignore[reportMissingImports]
+        from datasets.utils.logging import (  # pyright: ignore[reportMissingImports]
+            disable_progress_bar,
+        )
     except ImportError as exc:
         raise RuntimeError(
             "These benchmarks require the eval extra: pip install -e '.[eval]'"

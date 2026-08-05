@@ -207,9 +207,10 @@ You are a Python REPL agent.
 """,
 )
 
-# or a function of (flow, node)
-def prompt_for(flow, node):
-    tail = "Return an executive summary." if node.depth() == 0 else "Return findings only."
+# or a function of (flow, agent)
+def prompt_for(flow, agent):
+    depth = agent.config.depth
+    tail = "Return an executive summary." if depth == 0 else "Return findings only."
     return f"You are an auditor. {tail}"
 
 agent = rlmflow.Flow(llm, system_prompt=prompt_for)
@@ -223,9 +224,10 @@ rule means the model will not reliably use those features — prefer a
 
 When the prompt should depend on the current agent, depth, query, available
 tools, or project state, override `render` on a `SystemPromptBuilder` subclass.
-It receives `(flow, node)`, assembles `Sections`, and renders them with
-`self.build(...)`. Active query/model/input settings are available through
-`node.latest_query()`.
+It receives `(flow, agent)` — the `AgentStart` whose prompt is being built —
+assembles `Sections`, and renders them with `self.build(...)`. The agent's query
+is `agent.content`, and its model, inputs, depth, and output schema are on
+`agent.config`.
 
 ```python
 import rlmflow
@@ -233,15 +235,15 @@ from rlmflow import SystemPromptBuilder
 
 
 class AuditPrompt(SystemPromptBuilder):
-    def render(self, flow=None, node=None) -> str:
+    def render(self, flow=None, agent=None) -> str:
         sections = self.default_sections()
         extra = (
             "At root depth, produce an executive summary after verification."
-            if node is None or node.depth() == 0
+            if agent is None or agent.config.depth == 0
             else "As a child call, return only structured findings."
         )
         sections.add("audit_depth_rules", extra, title="Depth Rules", after="strategy")
-        return self.build(sections, flow, node)
+        return self.build(sections, flow, agent)
 
 
 agent = rlmflow.Flow(llm, system_prompt=AuditPrompt())
@@ -347,7 +349,7 @@ dynamically. A custom router also suppresses profile advertising:
 flow = rlmflow.Flow(
     llm,
     prompt_profiles={"coder": CODER},
-    prompt_router=lambda flow, node: "coder" if node.depth() > 0 else "default",
+    prompt_router=lambda flow, agent: "coder" if agent.config.depth > 0 else "default",
 )
 ```
 

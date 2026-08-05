@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 from benchmarks.eval.types import Row
 
 
-def graph_metrics(graph: "Node | None") -> dict[str, Any]:
+def graph_metrics(graph: Node | None) -> dict[str, Any]:
     if graph is None:
         return {}
     nodes = list(graph.walk())

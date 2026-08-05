@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 
 @dataclass
@@ -150,7 +151,8 @@ def launch(
         import gradio as gr
     except ImportError as exc:  # pragma: no cover - optional extra.
         raise ImportError(
-            'The --gradio viewer needs the viewer extra: `pip install -e ".[viewer]"`.'
+            "The --gradio viewer needs gradio: `pip install gradio`. No extra ships it — "
+            "this example is the only thing in the repo that uses it."
         ) from exc
 
     dashboard = Dashboard()
@@ -158,7 +160,7 @@ def launch(
     def _run() -> None:
         try:
             asyncio.run(run_factory(dashboard))
-        except Exception as exc:  # surface crashes into the UI, don't die silently.
+        except Exception as exc:  # noqa: BLE001 - surface crashes into the UI, don't die silently
             dashboard.finish("crashed", error=f"{type(exc).__name__}: {exc}")
 
     threading.Thread(target=_run, daemon=True).start()

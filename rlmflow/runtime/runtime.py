@@ -24,9 +24,7 @@ class Runtime:
     """Own one live REPL per agent."""
 
     def __init__(self, working_directory: str | Path | None = None) -> None:
-        self.working_directory = (
-            Path(working_directory) if working_directory is not None else None
-        )
+        self.working_directory = Path(working_directory) if working_directory is not None else None
         self.repls: dict[str, Repl] = {}
 
     def open(self, agent: AgentStart) -> Repl:

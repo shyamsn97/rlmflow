@@ -8,11 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from rlmflow.prompts.messages import (
-    PromptBuilder,
-    UserPromptSource,
-    build_inputs_manifest,
-)
+from rlmflow.prompts.messages import PromptBuilder, UserPromptSource, build_inputs_manifest
 from rlmflow.structured import system_prompt_hint
 from rlmflow.tools import format_tool_line, partition_repl_namespace
 
@@ -444,9 +440,7 @@ def prompt_profiles_section(flow: Any = None, agent: Any = None) -> str:
     max_depth = getattr(flow, "max_depth", 0)
     if max_depth == 0 or agent.config.depth >= max_depth:
         return ""
-    lines = [
-        "Available prompt profiles (pass `prompt_profile` in a launch_subagents spec):"
-    ]
+    lines = ["Available prompt profiles (pass `prompt_profile` in a launch_subagents spec):"]
     for name in sorted(profiles):
         desc = getattr(profiles[name], "description", "")
         lines.append(f"- `{name}`" + (f" — {desc}" if desc else ""))
@@ -459,9 +453,7 @@ def status_section(flow: Any = None, agent: Any = None) -> str:
     max_depth = getattr(flow, "max_depth", 0)
     if max_depth == 0:
         return "Baseline mode: no sub-agents available."
-    note = (
-        f"You are at recursion depth **{agent.config.depth}** of max **{max_depth}**."
-    )
+    note = f"You are at recursion depth **{agent.config.depth}** of max **{max_depth}**."
     if agent.config.depth >= max_depth:
         note += " You cannot spawn sub-agents."
     return note

@@ -18,9 +18,9 @@ import inspect
 import os
 import shutil
 import sys
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 from pydantic import BaseModel
 

@@ -333,9 +333,10 @@ query-selected skills, child-only skills, and run-memory skills.
 
 ## Examples
 
-Run the offline smoke suite with `python examples/run_examples.py`.
-Add `--include-optional`, `--include-live`, `--include-sandbox`, or
-`--include-manual` as needed. Most live examples share flags like
+Run the offline smoke suite with `python examples/run_examples.py`. Every run
+writes a pass/fail/skip report to `examples/_runs/examples_report.md`. Add
+`--include-optional`, `--include-live`, `--include-sandbox`, `--include-manual`,
+or `--include-slow` as needed. Most live examples share flags like
 `--docker-image rlmflow:local`, `--max-depth`, and `--max-iters`; see
 [`examples/README.md`](examples/README.md).
 
@@ -360,7 +361,7 @@ Add `--include-optional`, `--include-live`, `--include-sandbox`, or
 | [`best_of_n.py`](examples/control/branching/best_of_n.py) | Run N independent branches and pick the best result. |
 | [`autoresearch/`](examples/autoresearch/) | TinyStories autoresearch loop with custom `@tool`s, delegation, and Modal GPU trials. |
 | [`graph/`](examples/graph/) | Offline tour of the Node API: query, navigate, save/load, timing, fork. |
-| [`run_examples.py`](examples/run_examples.py) | Manifest-driven smoke runner for offline, optional, live, sandbox, and manual examples. |
+| [`run_examples.py`](examples/run_examples.py) | Manifest-driven smoke runner for offline, optional, live, sandbox, manual, and slow examples. |
 
 ## Benchmarks
 

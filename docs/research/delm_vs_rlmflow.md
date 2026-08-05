@@ -99,18 +99,19 @@ The architecture evaluated when this note was written centered on a recursive
 execution graph. The current implementation represents the same tree directly
 with `Node`; see `docs/internals.md` for the live design.
 
-One recursive Node tree contains every agent trajectory. `agent_id` identifies a
-trajectory, while `node.latest_query()` provides its query, inputs, model,
+One recursive Node tree contains every agent trajectory. An agent is the
+`AgentStart` node that opened it, `node.parent_agent` says which trajectory a
+node belongs to, and that agent's `config` carries its query, inputs, model,
 prompt profile, and output schema.
 
 The node trajectory is typed:
 
+- `AgentStart`
 - `UserQuery`
 - `LLMOutput`
 - `ExecAction`
 - `ExecOutput`
-- `SupervisingOutput`
-- `ResumeAction`
+- `AppendChild`
 - `ErrorOutput`
 - `DoneOutput`
 
@@ -124,9 +125,9 @@ results = await launch_subagents([
 done(combine(results))
 ```
 
-That await is the central supervision point. The parent suspends at a
-`SupervisingOutput`, the engine runs the named children, and then the parent
-resumes with the child results.
+That await is the central supervision point. The children hang off the
+`ExecAction` that launched them, the engine runs them, and the delegating turn
+lands as a single `ExecOutput` carrying their results.
 
 The engine loop is explicit and inspectable:
 
@@ -135,7 +136,7 @@ The engine loop is explicit and inspectable:
 - Transitions append and publish the affected Node directly.
 - Consumers and `persistence` write durable per-agent logs and `graph.json`.
 - Runtime executes REPL code locally, in a subprocess, Docker, or Modal.
-- Fork, replay, continuation, injection, and surgery operate on the same tree.
+- Fork, replay, continuation, and injection operate on the same tree.
 
 This is not just an agent harness. It is an execution trace system.
 
@@ -280,9 +281,9 @@ Make the engine itself no longer tree-first. Every agent becomes a peer worker
 over a global queue and shared memory.
 
 This is not recommended. It would fight the current design, weaken graph
-clarity, and blur the meaning of `Node.children`, `SupervisingOutput`,
-`ResumeAction`, replay, and injection. It would also force DeLM semantics onto
-tasks where a recursive supervisor is the clearer model.
+clarity, and blur the meaning of `Node.children`, `AgentStart`, `ExecAction`,
+replay, and injection. It would also force DeLM semantics onto tasks where a
+recursive supervisor is the clearer model.
 
 Effort: very high.
 

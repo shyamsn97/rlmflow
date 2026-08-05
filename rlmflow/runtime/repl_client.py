@@ -26,12 +26,7 @@ from rlmflow.runtime.protocol import (
 )
 from rlmflow.runtime.repl import DoneSignal, MissingReplError, Repl, ReplRun, ReplStatus
 from rlmflow.tools import get_tool_metadata
-from rlmflow.utils.serial import (
-    CLOUDPICKLE,
-    decode_object,
-    encode_object,
-    is_json_safe,
-)
+from rlmflow.utils.serial import CLOUDPICKLE, decode_object, encode_object, is_json_safe
 
 
 class ReplConnection(Protocol):
@@ -89,9 +84,7 @@ class RemoteRepl(Repl):
     ) -> None:
         self.namespace = dict(tools)
         self.namespace["INPUTS"] = dict(inputs)
-        self.call(
-            InjectRequest(id=self._next_id("inject"), name="INPUTS", value=dict(inputs))
-        )
+        self.call(InjectRequest(id=self._next_id("inject"), name="INPUTS", value=dict(inputs)))
         for name, fn in tools.items():
             if name == "INPUTS":
                 continue
@@ -190,9 +183,7 @@ class RemoteRepl(Repl):
             text = f"{MissingReplError.__name__}: missing ```repl``` block"
             return ReplRun(output=text, status=ReplStatus.ERROR)
         self._loop = asyncio.get_running_loop()
-        resp = await asyncio.to_thread(
-            self.call, RunRequest(id=self._next_id("run"), code=code)
-        )
+        resp = await asyncio.to_thread(self.call, RunRequest(id=self._next_id("run"), code=code))
         self.errored = resp.errored
         if resp.env is not None:
             self.env = resp.env
@@ -209,9 +200,7 @@ class RemoteRepl(Repl):
     ) -> None:
         self.proxied[name] = fn
         self.call(
-            InjectProxyRequest(
-                id=self._next_id("inject_proxy"), name=name, is_async=is_async
-            )
+            InjectProxyRequest(id=self._next_id("inject_proxy"), name=name, is_async=is_async)
         )
 
     def _inject_local_tool(self, name: str, fn: Callable[..., object]) -> None:

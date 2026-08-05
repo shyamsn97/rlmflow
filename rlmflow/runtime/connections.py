@@ -88,9 +88,7 @@ class PopenConnection(ReplConnection):
             selector.close()
         if not events:
             self.close(force=True)
-            raise TimeoutError(
-                f"{self.label} did not respond within {self.repl_timeout}s"
-            )
+            raise TimeoutError(f"{self.label} did not respond within {self.repl_timeout}s")
 
     def _exited_error(self) -> RuntimeError:
         proc = self._process()

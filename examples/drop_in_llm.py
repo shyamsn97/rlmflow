@@ -26,8 +26,8 @@ import sys
 from pathlib import Path
 
 from rlmflow import AgentConfig, Flow, start
-from rlmflow.llm import OpenAIClient
 from rlmflow.adapters import FlowLLM
+from rlmflow.llm import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:

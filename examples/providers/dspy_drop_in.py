@@ -16,9 +16,9 @@ from pathlib import Path
 
 import dspy
 
-from rlmflow.llm import OpenAIClient
-from rlmflow import Flow
+from rlmflow import AgentConfig, Flow
 from rlmflow.adapters import DSPyFlow, FlowLLM
+from rlmflow.llm import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -31,8 +31,7 @@ def main() -> None:
     agent = FlowLLM(
         Flow(
             OpenAIClient(model="gpt-4o-mini"),
-            max_depth=1,
-            max_iters=5,
+            config=AgentConfig(max_depth=1, max_iters=5),
         )
     )
 

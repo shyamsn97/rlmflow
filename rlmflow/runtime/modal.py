@@ -55,9 +55,7 @@ class ModalConnection(ReplConnection):
                 "Modal remote REPL requires the optional `modal` dependency."
             ) from exc
         app = modal.App.lookup(self.app_name, create_if_missing=True)
-        image = self.image or modal.Image.debian_slim().pip_install(
-            "rlmflow", "cloudpickle>=2.2"
-        )
+        image = self.image or modal.Image.debian_slim().pip_install("rlmflow", "cloudpickle>=2.2")
         self.container = modal.Sandbox.create(
             "python",
             "-u",

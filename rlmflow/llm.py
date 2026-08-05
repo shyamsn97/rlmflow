@@ -86,9 +86,7 @@ class LLMClient(metaclass=abc.ABCMeta):
         """
         yield self.chat(messages, *args, **kwargs)
 
-    def completion(
-        self, messages: list[dict[str, str]], *args, **kwargs
-    ) -> tuple[str, LLMUsage]:
+    def completion(self, messages: list[dict[str, str]], *args, **kwargs) -> tuple[str, LLMUsage]:
         """Return response text and usage for one request.
 
         The default adapter preserves the existing ``stream`` / ``last_usage``
@@ -149,9 +147,7 @@ class OpenAIClient(LLMClient):
             self.last_usage = usage
         return resp.choices[0].message.content or "", usage
 
-    async def stream(
-        self, messages: list[dict[str, str]], *args, **kwargs
-    ) -> AsyncIterator[str]:
+    async def stream(self, messages: list[dict[str, str]], *args, **kwargs) -> AsyncIterator[str]:
         # Buffer until the stream is fully consumed before yielding any
         # tokens, so tenacity can safely retry transient mid-stream
         # drops without double-emitting partial output. Real-time
@@ -243,9 +239,7 @@ class AnthropicClient(LLMClient):
         self.last_usage = usage
         return resp.content[0].text, usage
 
-    async def stream(
-        self, messages: list[dict[str, str]], *args, **kwargs
-    ) -> AsyncIterator[str]:
+    async def stream(self, messages: list[dict[str, str]], *args, **kwargs) -> AsyncIterator[str]:
         for chunk in await self.collect_stream(messages):
             yield chunk
 
@@ -315,9 +309,7 @@ class TinkerClient(LLMClient):
                     "TinkerClient requires tinker-cookbook for chat rendering. Install it with "
                     "`pip install tinker-cookbook` or `pip install rlmflow[tinker]`."
                 ) from exc
-            renderer_obj = renderers.get_renderer(
-                renderer, sampling_client.get_tokenizer()
-            )
+            renderer_obj = renderers.get_renderer(renderer, sampling_client.get_tokenizer())
 
         self.sampling_client = sampling_client
         self.renderer = renderer_obj
@@ -333,9 +325,7 @@ class TinkerClient(LLMClient):
         return text
 
     @retry_transient
-    def completion(
-        self, messages: list[dict[str, str]], *args, **kwargs
-    ) -> tuple[str, LLMUsage]:
+    def completion(self, messages: list[dict[str, str]], *args, **kwargs) -> tuple[str, LLMUsage]:
         try:
             from tinker import types  # type: ignore[import-not-found]
         except ImportError as exc:  # pragma: no cover - exercised by optional deps

@@ -47,7 +47,10 @@ class OolongDataset(Dataset):
         if self._dataset is not None:
             return self._dataset
         try:
-            from datasets import load_dataset, load_from_disk  # pyright: ignore[reportMissingImports]
+            from datasets import (  # pyright: ignore[reportMissingImports]
+                load_dataset,
+                load_from_disk,
+            )
         except ImportError as exc:
             raise RuntimeError("OOLONG requires the eval extra: pip install -e '.[eval]'") from exc
 

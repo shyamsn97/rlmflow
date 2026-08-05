@@ -1,7 +1,6 @@
 """Textual dashboard for live Node streams."""
 
 # Textual's compose DSL is clearer as nested container contexts.
-# ruff: noqa: SIM117
 
 from __future__ import annotations
 
@@ -89,9 +88,7 @@ class FlowTUI(StreamConsumer):
             BINDINGS: ClassVar[list[Any]] = [
                 ("ctrl+c", "quit", "Quit"),
                 Binding("ctrl+s", "submit_prompt", "Send", priority=True),
-                Binding(
-                    "ctrl+enter", "submit_prompt", "Send", priority=True, show=False
-                ),
+                Binding("ctrl+enter", "submit_prompt", "Send", priority=True, show=False),
                 ("ctrl+r", "run_until_done", "Run"),
                 ("ctrl+t", "step_once", "Step"),
             ]
@@ -104,9 +101,7 @@ class FlowTUI(StreamConsumer):
                 yield Header(show_clock=True)
                 with Horizontal(id="main"):
                     with Vertical(id="chat-column"):
-                        yield RichLog(
-                            id="chat", wrap=True, markup=False, highlight=True
-                        )
+                        yield RichLog(id="chat", wrap=True, markup=False, highlight=True)
                         yield TextArea(
                             id="prompt",
                             soft_wrap=True,
@@ -168,12 +163,8 @@ class FlowTUI(StreamConsumer):
                         self.query_one(selector, Static).update("No run yet.")
                     return
 
-                self.query_one("#overview", Static).update(
-                    overview_table(root, consumer.busy)
-                )
-                self.query_one("#tree", Static).update(
-                    Panel(render_tree(root), border_style="dim")
-                )
+                self.query_one("#overview", Static).update(overview_table(root, consumer.busy))
+                self.query_one("#tree", Static).update(Panel(render_tree(root), border_style="dim"))
                 self.query_one("#agents", Static).update(agent_table(root))
                 self.query_one("#counts", Static).update(node_counts_table(root))
                 self.query_one("#waiting", Static).update(waiting_table(root))
@@ -187,9 +178,7 @@ class FlowTUI(StreamConsumer):
                     if node.id in self.seen:
                         continue
                     self.seen.add(node.id)
-                    if isinstance(
-                        node, (UserQuery, LLMOutput, ErrorOutput, DoneOutput)
-                    ):
+                    if isinstance(node, (UserQuery, LLMOutput, ErrorOutput, DoneOutput)):
                         log.write(node_panel(node))
 
             def action_submit_prompt(self) -> None:
@@ -199,9 +188,7 @@ class FlowTUI(StreamConsumer):
                 if not query:
                     return
                 prompt.text = ""
-                inputs = (
-                    {"context": context.text.strip()} if context.text.strip() else None
-                )
+                inputs = {"context": context.text.strip()} if context.text.strip() else None
                 self._drive(query=query, inputs=inputs, until="done")
 
             def action_run_until_done(self) -> None:
@@ -260,9 +247,7 @@ def overview_table(root: AgentStart, busy: bool = False):
     table = Table.grid(expand=True)
     table.add_column(style="dim")
     table.add_column(justify="right")
-    table.add_row(
-        "status", "running" if busy else ("done" if root.terminal else "ready")
-    )
+    table.add_row("status", "running" if busy else ("done" if root.terminal else "ready"))
     table.add_row("agents", str(len(agents)))
     table.add_row("nodes", str(sum(1 for _node in root.walk())))
     table.add_row("max depth", str(max(agent.config.depth for agent in agents)))
@@ -312,9 +297,7 @@ def waiting_table(root: AgentStart):
         frontier = agent.frontier
         if not isinstance(frontier, ExecAction):
             continue
-        children = [
-            child for child in frontier.children if isinstance(child, AgentStart)
-        ]
+        children = [child for child in frontier.children if isinstance(child, AgentStart)]
         if not children:
             continue
         active = sum(not child.terminal for child in children)

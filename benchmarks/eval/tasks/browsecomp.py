@@ -75,8 +75,13 @@ class BrowseCompPlusDataset(Dataset):
             )
 
         try:
-            from datasets import load_dataset, load_from_disk  # pyright: ignore[reportMissingImports]
-            from datasets.utils.logging import disable_progress_bar  # pyright: ignore[reportMissingImports]
+            from datasets import (  # pyright: ignore[reportMissingImports]
+                load_dataset,
+                load_from_disk,
+            )
+            from datasets.utils.logging import (  # pyright: ignore[reportMissingImports]
+                disable_progress_bar,
+            )
         except ImportError as exc:
             raise RuntimeError(
                 "BrowseComp-Plus requires the eval extra: pip install -e '.[eval]'"
@@ -137,7 +142,7 @@ def _decrypt(ciphertext_b64: str, password: str) -> str:
         key = _derive_key(password, len(encrypted))
         decrypted = bytes(a ^ b for a, b in zip(encrypted, key))
         return decrypted.decode("utf-8")
-    except Exception:
+    except Exception:  # noqa: BLE001 - a row that will not decrypt is used verbatim
         return ciphertext_b64
 
 

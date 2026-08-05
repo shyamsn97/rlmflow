@@ -117,9 +117,7 @@ def _write_agent(agent: AgentStart, path: Path) -> None:
         json.dumps(node.to_dict(nested=False), default=str, ensure_ascii=False)
         for node in agent.transcript()
     ]
-    (path / "session.jsonl").write_text(
-        "".join(line + "\n" for line in session), encoding="utf-8"
-    )
+    (path / "session.jsonl").write_text("".join(line + "\n" for line in session), encoding="utf-8")
     for sub in agent.sub_agents:
         _write_agent(sub, path / sub.config.name)
     _prune(path, {sub.config.name for sub in agent.sub_agents})
@@ -128,20 +126,14 @@ def _write_agent(agent: AgentStart, path: Path) -> None:
 def _prune(path: Path, keep: set[str]) -> None:
     """Drop agent directories left behind by an earlier, larger save."""
     for entry in path.iterdir():
-        if (
-            entry.is_dir()
-            and entry.name not in keep
-            and (entry / "agent.json").is_file()
-        ):
+        if entry.is_dir() and entry.name not in keep and (entry / "agent.json").is_file():
             shutil.rmtree(entry)
 
 
 def _attach(node: Node, data: dict[str, Any]) -> None:
     # Sub-agents branch off before the sequel, so they have to attach while the
     # agent's frontier is still this node.
-    children = sorted(
-        data["children"], key=lambda child: child["type"] != AgentStart.type
-    )
+    children = sorted(data["children"], key=lambda child: child["type"] != AgentStart.type)
     for child_data in children:
         child = node.append(_new_node(child_data, data.get("agent_id")))
         _attach(child, child_data)
@@ -167,11 +159,7 @@ def _new_node(data: dict[str, Any], parent_agent: str | None = None) -> Node:
             system_prompts=dict(payload.get("system_prompts") or {}),
             **ran,
         )
-    fields = {
-        name: value
-        for name, value in payload.items()
-        if name in cls.__dataclass_fields__
-    }
+    fields = {name: value for name, value in payload.items() if name in cls.__dataclass_fields__}
     if cls is LLMOutput:
         fields["usage"] = LLMUsage(**(metadata.get("usage") or {}))
         fields["prompt_id"] = metadata.get("system_prompt", "")

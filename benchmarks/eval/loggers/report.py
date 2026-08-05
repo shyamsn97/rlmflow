@@ -87,7 +87,7 @@ def _examples_section(rows: list[Row]) -> list[str]:
     """Per-example answer-vs-expected comparison across every runner."""
     if not rows:
         return []
-    grouped: "OrderedDict[tuple, list[Row]]" = OrderedDict()
+    grouped: OrderedDict[tuple, list[Row]] = OrderedDict()
     for row in rows:
         grouped.setdefault((row.dataset, row.example_id, row.seed), []).append(row)
 

@@ -68,9 +68,7 @@ class ReplServer:
     def make_proxy(self, name: str, *, is_async: bool = False):
         def proxy(*args: object, **kwargs: object) -> object:
             proxy_id = self._proxy_id(name)
-            self.write(
-                ProxyCall(id=proxy_id, proxy=name, args=list(args), kwargs=kwargs)
-            )
+            self.write(ProxyCall(id=proxy_id, proxy=name, args=list(args), kwargs=kwargs))
             resp = ProxyResponse.model_validate_json(self._in.readline())
             if resp.done:
                 if name == "done" and args:
@@ -106,23 +104,17 @@ class ReplServer:
                 env=dict(self.repl.env),
             )
         if isinstance(msg, InjectRequest):
-            value = (
-                decode_object(msg.value) if msg.encoding == CLOUDPICKLE else msg.value
-            )
+            value = decode_object(msg.value) if msg.encoding == CLOUDPICKLE else msg.value
             self.repl.namespace[msg.name] = value
             return ReplResponse(id=msg.id)
         if isinstance(msg, RetrieveRequest):
             if msg.name not in self.repl.namespace:
-                return ReplResponse(
-                    id=msg.id, ok=False, error=f"no variable named {msg.name!r}"
-                )
+                return ReplResponse(id=msg.id, ok=False, error=f"no variable named {msg.name!r}")
             value = self.repl.namespace[msg.name]
             # Send plain data as JSON; wrap anything else as a cloudpickle blob.
             if is_json_safe(value):
                 return ReplResponse(id=msg.id, value=value)
-            return ReplResponse(
-                id=msg.id, value=encode_object(value), value_encoding=CLOUDPICKLE
-            )
+            return ReplResponse(id=msg.id, value=encode_object(value), value_encoding=CLOUDPICKLE)
         if isinstance(msg, RemoveRequest):
             self.repl.namespace.pop(msg.name, None)
             return ReplResponse(id=msg.id)
@@ -130,9 +122,7 @@ class ReplServer:
             self.repl.env.update(msg.values)
             return ReplResponse(id=msg.id)
         if isinstance(msg, InjectProxyRequest):
-            self.repl.namespace[msg.name] = self.make_proxy(
-                msg.name, is_async=msg.is_async
-            )
+            self.repl.namespace[msg.name] = self.make_proxy(msg.name, is_async=msg.is_async)
             return ReplResponse(id=msg.id)
         if isinstance(msg, InjectImportRequest):
             target = importlib.import_module(msg.module)

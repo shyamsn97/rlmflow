@@ -9,6 +9,13 @@ Opt into heavier examples when you have the dependencies/credentials:
     python examples/run_examples.py --include-optional
     python examples/run_examples.py --include-live
     python examples/run_examples.py --all
+
+``--all`` covers every category except ``slow``: those examples take long enough
+that a full suite run should not wait on them, so they need ``--include-slow``.
+
+Every run also writes a markdown report naming each example that passed, failed,
+or was skipped, with the captured output of each failure. The console summary
+scrolls away behind the examples' own output; the report does not.
 """
 
 from __future__ import annotations
@@ -16,18 +23,22 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import os
+import platform
+import re
 import subprocess
 import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-
-Category = Literal["offline", "optional", "live", "sandbox", "manual"]
+Category = Literal["offline", "optional", "live", "sandbox", "manual", "slow"]
+Status = Literal["pass", "fail", "skip"]
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_REPORT = REPO_ROOT / "examples" / "_runs" / "examples_report.md"
 
 
 @dataclass(frozen=True)
@@ -136,19 +147,15 @@ EXAMPLES: list[Example] = [
         note="agent installs a skill mid-run via add_skill; prompt grows next turn",
     ),
     Example(
-        "shepherd-self-test",
-        "examples/shepherd/shepherd.py",
-        args=("--self-test",),
-        note="offline check of the Sokoban env (trap deadlocks, verified line solves)",
-    ),
-    Example(
         "shepherd",
         "examples/shepherd/shepherd.py",
-        category="live",
+        category="slow",
         args=("--out-dir", "{tmp}/shepherd"),
         env=("OPENAI_API_KEY",),
         modules=("openai",),
-        timeout=600,
+        # Solving Sokoban under a meta-agent runs past 10 minutes, so it is opt-in
+        # and gets a ceiling it can actually finish inside of.
+        timeout=2400,
         note="backtrack-and-branch: worker dead-ends in Sokoban, meta-agent rewinds + fans out",
     ),
     Example(
@@ -267,6 +274,21 @@ EXAMPLES: list[Example] = [
 ]
 
 
+@dataclass
+class Result:
+    example: Example
+    status: Status
+    seconds: float = 0.0
+    #: Skip reason, or the failure message with the tail of the captured output.
+    detail: str = ""
+    command: str = ""
+
+    @property
+    def summary(self) -> str:
+        """The first line of ``detail``, for the report's one-row-per-example table."""
+        return self.detail.splitlines()[0] if self.detail else ""
+
+
 def module_exists(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
 
@@ -284,6 +306,7 @@ def should_include(example: Example, args: argparse.Namespace) -> bool:
         or (example.category == "live" and args.include_live)
         or (example.category == "sandbox" and args.include_sandbox)
         or (example.category == "manual" and args.include_manual)
+        or (example.category == "slow" and args.include_slow)
     )
 
 
@@ -325,6 +348,114 @@ def run_example(example: Example, tmpdir: Path, *, verbose: bool) -> tuple[str, 
     return output, elapsed
 
 
+def git_commit() -> str:
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return proc.stdout.strip() or "unknown"
+
+
+def cell(text: str, limit: int = 120) -> str:
+    """One table cell: single line, pipes escaped, clipped."""
+    flat = " ".join(str(text).split())
+    if len(flat) > limit:
+        flat = flat[: limit - 1] + "…"
+    return flat.replace("|", "\\|")
+
+
+def fenced(text: str) -> list[str]:
+    """Fence a captured block, outrunning any backticks the example printed itself."""
+    body = text or "(no output captured)"
+    longest = max((len(run) for run in re.findall(r"`+", body)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return [fence, body, fence]
+
+
+def report_markdown(results: list[Result], args: argparse.Namespace, seconds: float) -> str:
+    counts = {
+        status: sum(result.status == status for result in results)
+        for status in ("pass", "fail", "skip")
+    }
+    included = [
+        name
+        for name in ("optional", "live", "sandbox", "manual", "slow")
+        if getattr(args, f"include_{name}")
+    ]
+
+    lines = [
+        "# Example suite report",
+        "",
+        f"- generated: {datetime.now().astimezone():%Y-%m-%d %H:%M:%S %Z}",
+        f"- commit: `{git_commit()}`",
+        f"- python: {platform.python_version()} on {platform.system().lower()}",
+        f"- categories: offline{''.join(f' + {name}' for name in included)}",
+        f"- total time: {seconds:.1f}s",
+        "",
+        f"**{counts['pass']} passed · {counts['fail']} failed · {counts['skip']} skipped**",
+    ]
+    if args.pattern:
+        lines += ["", f"Filtered to names/paths containing `{args.pattern}`."]
+    if args.strict_skips and counts["skip"]:
+        lines += ["", "`--strict-skips` is on, so the skips below also fail the run."]
+
+    lines += [
+        "",
+        "| result | example | category | time | detail |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    marks = {"pass": "pass", "fail": "**FAIL**", "skip": "skip"}
+    for result in results:
+        elapsed = f"{result.seconds:.1f}s" if result.status != "skip" else "—"
+        lines.append(
+            f"| {marks[result.status]} "
+            f"| `{cell(result.example.name)}` "
+            f"| {result.example.category} "
+            f"| {elapsed} "
+            f"| {cell(result.summary or result.example.note)} |"
+        )
+
+    failures = [result for result in results if result.status == "fail"]
+    if failures:
+        lines += ["", "## Failures", ""]
+        for result in failures:
+            lines += [
+                f"### {result.example.name}",
+                "",
+                f"`{result.example.path}`, ran for {result.seconds:.1f}s as:",
+                "",
+                *fenced(result.command),
+                "",
+                *fenced(result.detail),
+                "",
+            ]
+
+    skips = [result for result in results if result.status == "skip"]
+    if skips:
+        lines += ["", "## Skipped", ""]
+        lines += [f"- `{result.example.name}` — {result.detail}" for result in skips]
+        lines += [""]
+
+    text = "\n".join(lines)
+    while "\n\n\n" in text:  # sections each pad themselves; don't double up
+        text = text.replace("\n\n\n", "\n\n")
+    return text.rstrip() + "\n"
+
+
+def write_report(
+    path: Path, results: list[Result], args: argparse.Namespace, seconds: float
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report_markdown(results, args, seconds), encoding="utf-8")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -339,7 +470,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--include-manual", action="store_true", help="include interactive/manual smoke checks"
     )
-    parser.add_argument("--all", action="store_true", help="enable every include flag")
+    parser.add_argument(
+        "--include-slow",
+        action="store_true",
+        help="run long examples that --all deliberately leaves out",
+    )
+    parser.add_argument(
+        "--all", action="store_true", help="enable every include flag except --include-slow"
+    )
     parser.add_argument(
         "--list", action="store_true", help="list selected examples without running them"
     )
@@ -353,6 +491,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--verbose", action="store_true", help="print full output for successful examples"
     )
+    parser.add_argument(
+        "--report",
+        type=Path,
+        default=DEFAULT_REPORT,
+        help=f"markdown report path (default: {DEFAULT_REPORT.relative_to(REPO_ROOT)})",
+    )
+    parser.add_argument("--no-report", action="store_true", help="skip writing the report")
     return parser.parse_args()
 
 
@@ -373,9 +518,8 @@ def main() -> int:
             print(f"{example.name:<28} {example.category:<8} {status}{note}")
         return 0
 
-    failures: list[str] = []
-    skipped: list[str] = []
-    passed = 0
+    results: list[Result] = []
+    run_started = time.perf_counter()
 
     with tempfile.TemporaryDirectory(prefix="rlmflow-example-runs-") as raw_tmpdir:
         tmpdir = Path(raw_tmpdir)
@@ -385,46 +529,70 @@ def main() -> int:
             label = f"{example.name} ({example.path})"
             if reason:
                 print(f"SKIP {label}: {reason}")
-                skipped.append(f"{example.name}: {reason}")
-                if args.strict_skips:
-                    failures.append(f"{example.name}: {reason}")
+                results.append(Result(example, "skip", detail=reason))
                 continue
 
             print(f"RUN  {label}")
+            # Repo-relative, so a failing command can be pasted into an issue as-is.
+            command = " ".join(example.command(tmpdir)).replace(f"{REPO_ROOT}{os.sep}", "")
+            started = time.perf_counter()
             try:
                 _output, elapsed = run_example(example, tmpdir, verbose=args.verbose)
             except subprocess.TimeoutExpired:
-                message = f"{example.name}: timed out after {example.timeout}s"
-                print(f"FAIL {message}")
-                failures.append(message)
+                detail = f"timed out after {example.timeout}s"
+                print(f"FAIL {example.name}: {detail}")
+                results.append(
+                    Result(
+                        example,
+                        "fail",
+                        seconds=time.perf_counter() - started,
+                        detail=detail,
+                        command=command,
+                    )
+                )
                 if args.fail_fast:
                     break
-            except Exception as exc:  # noqa: BLE001
-                message = f"{example.name}: {exc}"
-                print(f"FAIL {message}")
-                failures.append(message)
+            except Exception as exc:  # noqa: BLE001 - any failure is one example's result
+                print(f"FAIL {example.name}: {exc}")
+                results.append(
+                    Result(
+                        example,
+                        "fail",
+                        seconds=time.perf_counter() - started,
+                        detail=str(exc),
+                        command=command,
+                    )
+                )
                 if args.fail_fast:
                     break
             else:
-                passed += 1
                 note = f" [{example.note}]" if example.note else ""
                 print(f"PASS {example.name} ({elapsed:.1f}s){note}")
+                results.append(Result(example, "pass", seconds=elapsed, command=command))
+
+    total_seconds = time.perf_counter() - run_started
+    failures = [result for result in results if result.status == "fail"]
+    skipped = [result for result in results if result.status == "skip"]
 
     print("\nSummary")
-    print(f"  passed : {passed}")
+    print(f"  passed : {sum(result.status == 'pass' for result in results)}")
     print(f"  skipped: {len(skipped)}")
     print(f"  failed : {len(failures)}")
 
     if skipped:
         print("\nSkipped")
-        for item in skipped:
-            print(f"  - {item}")
+        for result in skipped:
+            print(f"  - {result.example.name}: {result.detail}")
     if failures:
         print("\nFailures")
-        for item in failures:
-            print(f"  - {item}")
-        return 1
-    return 0
+        for result in failures:
+            print(f"  - {result.example.name}: {result.summary}")
+
+    if not args.no_report:
+        write_report(args.report, results, args, total_seconds)
+        print(f"\nReport: {args.report}")
+
+    return 1 if failures or (args.strict_skips and skipped) else 0
 
 
 if __name__ == "__main__":

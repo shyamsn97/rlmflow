@@ -132,10 +132,7 @@ class LiveGraphTree(StreamConsumer):
         from rich.live import Live
         from rich.panel import Panel
 
-        trees = [
-            self._rich_tree(root, self.labels.get(key))
-            for key, root in self.roots.items()
-        ]
+        trees = [self._rich_tree(root, self.labels.get(key)) for key, root in self.roots.items()]
         body: Any = trees[0] if len(trees) == 1 else Group(*trees)
         footer = self._footer_text()
         if footer:
@@ -232,9 +229,7 @@ def _status(agent: AgentStart) -> str:
     if isinstance(frontier, ErrorOutput):
         return f"{agent.config.path}: error {_clip(frontier.content, limit=64)}{suffix}"
     if isinstance(frontier, ExecAction):
-        children = [
-            child for child in frontier.children if isinstance(child, AgentStart)
-        ]
+        children = [child for child in frontier.children if isinstance(child, AgentStart)]
         if children:
             active = sum(not child.terminal for child in children)
             return f"{agent.config.path}: children running {active}/{len(children)}{suffix}"

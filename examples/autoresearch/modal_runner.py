@@ -229,7 +229,7 @@ def submit(
                     }
                 try:
                     cache_volume.commit()
-                except Exception:
+                except Exception:  # noqa: BLE001 - the cache commit is best effort
                     pass
 
             try:

@@ -81,7 +81,7 @@ class OfficialRLMRunner(Runner):
                     "log_file_path": str(data.get("log_file_path") or ""),
                 },
             )
-        except Exception as exc:  # benchmark rows should record failures
+        except Exception as exc:  # noqa: BLE001 - benchmark rows should record failures
             return Prediction(
                 answer="",
                 metrics={"time_seconds": time.perf_counter() - start, "iterations": 0},

@@ -129,4 +129,15 @@ deterministic/offline examples; use `--include-optional`, `--include-live`,
 the suite. Notebooks are documented separately and are not executed by this
 runner.
 
+`--all` covers every category except `slow`. Those examples (currently
+`shepherd`, which lets a meta-agent shepherd a worker through Sokoban) run for
+long enough that a full-suite run should not block on them, so they need an
+explicit `--include-slow` — `make examples-slow` or
+`make examples-list` to see them.
+
+Each run writes a markdown report to `examples/_runs/examples_report.md`
+(`--report PATH` to move it, `--no-report` to skip it) listing every example as
+pass/fail/skip, with the command and captured output of each failure — useful
+when a long live run scrolls its own summary off screen.
+
 See each subdirectory README for the examples in that group.

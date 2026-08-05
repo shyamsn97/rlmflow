@@ -36,7 +36,6 @@ if str(examples_dir) not in sys.path:
 
 from common import build_client, save_example_graph  # noqa: E402
 
-
 QUERY = """\
 Show minimal `Flow.run_streaming(..., until=...)` boundaries with delegated child agents.
 

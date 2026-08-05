@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import base64
 import io
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
 
 _ASSETS = Path(__file__).with_name("assets") / "sokoban"
@@ -59,7 +59,7 @@ def available() -> bool:
     return _ASSETS.is_dir() and all((_ASSETS / f"{n}.png").exists() for n in _TILE_NAMES)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _tile(name: str, size: int):
     from PIL import Image
 
@@ -67,7 +67,7 @@ def _tile(name: str, size: int):
     return im if im.size == (size, size) else im.resize((size, size), Image.NEAREST)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _tinted(name: str, size: int, rgb: tuple[int, int, int], locked: bool):
     """``name``'s tile recoloured towards ``rgb``, keeping the crate's shading."""
     from PIL import ImageDraw, ImageOps

@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import time
 
+from benchmarks.eval import runner
+from benchmarks.eval.metrics import graph_metrics
+from benchmarks.eval.types import Example, Model, Prediction, RunContext, Runner
 from rlmflow import (
     AgentConfig,
     Flow,
@@ -13,10 +16,6 @@ from rlmflow import (
     start,
 )
 from rlmflow.llm import LLMClient, LLMUsage
-
-from benchmarks.eval import runner
-from benchmarks.eval.metrics import graph_metrics
-from benchmarks.eval.types import Example, Model, Prediction, RunContext, Runner
 
 
 @runner("rlmflow-local", aliases=["rlmflow"])
@@ -72,7 +71,7 @@ class RLMFlowLocalRunner(Runner):
             if self.live_save:
                 persistence.save(graph, graph_dir)
             asyncio.run(drive())
-        except Exception as exc:  # benchmark rows should record failures
+        except Exception as exc:  # noqa: BLE001 - benchmark rows should record failures
             error = f"{type(exc).__name__}: {exc}"
         finally:
             flow.runtime.close_repls()

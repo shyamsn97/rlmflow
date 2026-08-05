@@ -116,15 +116,47 @@ exclude_lines = [
     "if __name__ == .__main__.:",
 ]
 
+# `make lint` runs isort, then black, then ruff over the same files, so all three
+# need the same column limit. Black defaults to 88, which used to re-wrap lines
+# ruff considered fine — and a re-wrapped `except` moves a trailing `# noqa` off
+# the line it suppresses.
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100
 extend-exclude = [
     "examples/_data",
     "examples/_runs",
-    "examples/autoresearch_mini/prepare.py",
-    "examples/autoresearch_mini/train.py",
+    "examples/autoresearch/prepare.py",
+    "examples/autoresearch/train.py",
+    # Fixing a notebook rewrites the whole .ipynb JSON, so a one-import fix lands
+    # as a several-hundred-line diff. Not worth linting them for that.
+    "*.ipynb",
+]
+
+# Selected explicitly rather than left to ruff's defaults, which have widened
+# across releases: CI installs ruff unpinned, so an implicit rule set means a
+# green branch can go red without a code change. Anything added here has to be
+# paired with a pin bump in .github/workflows/ci.yml.
+[tool.ruff.lint]
+select = [
+    "E4",     # import placement (E402 is what the `from common import ...` noqas suppress)
+    "E7",
+    "E9",
+    "F",      # pyflakes
+    "I",      # import sorting, matching the isort pass in `make lint`
+    "UP",     # pyupgrade, floored at py311
+    "BLE",    # blind except — deliberate ones are annotated with a reason
+    "S102",   # exec(), allowed only where the REPL needs it
+    "RUF100", # keep the noqa list above honest
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"examples/autoresearch_mini/train.py" = ["E402"]
+"examples/autoresearch/train.py" = ["E402"]

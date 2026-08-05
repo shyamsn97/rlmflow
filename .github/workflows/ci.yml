@@ -26,7 +26,8 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - run: pip install ruff
+      # Pinned: the rule set in pyproject.toml is chosen against this version.
+      - run: pip install ruff==0.16.0
       - run: ruff check .
 
   test:

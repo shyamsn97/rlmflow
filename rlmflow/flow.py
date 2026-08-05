@@ -29,12 +29,7 @@ from rlmflow.graph.nodes import (
     start,
     validate_agent_name,
 )
-from rlmflow.prompts import (
-    DEFAULT_BUILDER,
-    PromptProfile,
-    SystemPromptSource,
-    as_system_prompt_fn,
-)
+from rlmflow.prompts import DEFAULT_BUILDER, PromptProfile, SystemPromptSource, as_system_prompt_fn
 from rlmflow.prompts.messages import (
     COLD_REPL_NOTE,
     CONTINUE_NUDGE,
@@ -112,9 +107,7 @@ class Flow:
         self.llm_request_timeout = llm_request_timeout
         self.system_prompt = system_prompt or DEFAULT_BUILDER
         self.user_prompt = (
-            as_user_prompt(user_prompt)
-            if user_prompt is not None
-            else UserPromptBuilder()
+            as_user_prompt(user_prompt) if user_prompt is not None else UserPromptBuilder()
         )
         self.prompt_profiles = dict(prompt_profiles or {})
         self.prompt_router = prompt_router
@@ -242,14 +235,10 @@ class Flow:
                     raise TypeError(f"cannot step {type(node).__name__}")
             except asyncio.CancelledError:
                 raise
-            except (
-                Exception
-            ) as exc:  # noqa: BLE001 - infrastructure failure is a transition
+            except Exception as exc:  # noqa: BLE001 - a failed step is a transition
                 error = exc
                 detail = str(exc)
-                text = (
-                    f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
-                )
+                text = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
                 scope = "run" if node.parent_agent is node.root else "child"
                 landed = node.parent_agent.frontier.append(
                     DoneOutput(
@@ -273,9 +262,7 @@ class Flow:
             key=agent.id,
         )
         return turn.append(
-            LLMOutput(
-                content=reply, code=code_block(reply), usage=usage, prompt_id=prompt_id
-            )
+            LLMOutput(content=reply, code=code_block(reply), usage=usage, prompt_id=prompt_id)
         )
 
     async def exec_step(self, action: ExecAction) -> Node:
@@ -359,25 +346,17 @@ class Flow:
             if not isinstance(node, ExecAction):
                 raise TypeError("launch_subagents requires an ExecAction")
 
-            names = [
-                spec.get("name") or f"child{index}" for index, spec in enumerate(specs)
-            ]
+            names = [spec.get("name") or f"child{index}" for index, spec in enumerate(specs)]
             if len(names) != len(set(names)):
                 raise ValueError("duplicate child names in one launch_subagents call")
 
-            existing = {
-                id(child) for child in node.children if isinstance(child, AgentStart)
-            }
-            resolved = [
-                self.resolve_child(node, spec, index)
-                for index, spec in enumerate(specs)
-            ]
+            existing = {id(child) for child in node.children if isinstance(child, AgentStart)}
+            resolved = [self.resolve_child(node, spec, index) for index, spec in enumerate(specs)]
             children = [value for value in resolved if isinstance(value, AgentStart)]
             created = [child for child in children if id(child) not in existing]
             await self.run_children(children, submit=created)
             return [
-                value.result() if isinstance(value, AgentStart) else value
-                for value in resolved
+                value.result() if isinstance(value, AgentStart) else value for value in resolved
             ]
 
         return launch_subagents
@@ -450,9 +429,7 @@ class Flow:
                 "inputs": dict(spec.get("inputs") or {}),
                 "model": spec.get("model"),
                 "prompt_profile": spec.get("prompt_profile"),
-                "output_schema": (
-                    json_schema_for(schema) if schema is not None else None
-                ),
+                "output_schema": (json_schema_for(schema) if schema is not None else None),
             }.items()
             if value is not None
         }
@@ -502,10 +479,7 @@ class Flow:
         close_repls: bool = False,
     ) -> AsyncIterator[Node]:
         """Drive one or more roots through one graph-agnostic queue."""
-        agents = [
-            self.new_root(item) if isinstance(item, str) else item
-            for item in (root, *roots)
-        ]
+        agents = [self.new_root(item) if isinstance(item, str) else item for item in (root, *roots)]
         if self.queue is not None:
             raise RuntimeError("this Flow is already driving a stream")
         if len({id(agent) for agent in agents}) != len(agents):
@@ -514,11 +488,7 @@ class Flow:
         boundary = boundaries.resolve(until)
         for agent in agents:
             if self.runtime.get(agent) is None:  # a graph this Flow has not run
-                (
-                    await self.replay(agent)
-                    if self.restore == "replay"
-                    else self.note_cold(agent)
-                )
+                (await self.replay(agent) if self.restore == "replay" else self.note_cold(agent))
             else:
                 for node in agent.walk():
                     if (
@@ -590,9 +560,7 @@ class Flow:
         return asyncio.run(self.arun(root))
 
     def new_root(self, query: str) -> AgentStart:
-        return AgentStart(
-            content=query or DEFAULT_QUERY, config=deepcopy(self.defaults)
-        )
+        return AgentStart(content=query or DEFAULT_QUERY, config=deepcopy(self.defaults))
 
     async def aclose(self) -> None:
         if self.queue is not None:

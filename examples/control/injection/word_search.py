@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 from typing import Literal
@@ -38,24 +39,23 @@ from common import build_client, save_example_graph  # noqa: E402
 
 TARGET_WORD = "AGENT"
 
-GRID = f"""Word Search Grid:
+GRID_ROWS = [
+    "TYPHONQWER",
+    "LMNOPQRSAT",
+    "ZGXYZLMNGO",
+    "ABDDEFGHEI",
+    "QRSATUVWNY",
+    "JKLMPQRSTF",
+    "ABCDEPFGOI",
+    "UVWXYZARBC",
+    "MNOPQRKSTU",
+    "ABCDECARTZ",
+]
 
-TYPHONQWER
-LMNOPQRSAT
-ZGXYZLMNGO
-ABDDEFGHEI
-QRSATUVWNY
-JKLMPQRSTF
-ABCDEPFGOI
-UVWXYZARBC
-MNOPQRKSTU
-ABCDECARTZ
-
-Target Word:
-{TARGET_WORD}
-
-Row and Column indices start at 0.
-"""
+# One self-contained input: the root forwards it to the children verbatim, so the
+# word and the grid have to travel together. Data only — indices or instructions
+# mixed in here come back as coordinate errors or as invented target words.
+PUZZLE = json.dumps({"target_word": TARGET_WORD, "grid": GRID_ROWS}, indent=2)
 
 
 class WordHit(BaseModel):
@@ -82,14 +82,29 @@ EXPECTED_HITS = {
 EXPECTED_MISSING: set[str] = set()
 
 QUERY = """\
-Solve the word search puzzle in `INPUTS["grid"]`.
+Solve the word search puzzle in `INPUTS["puzzle"]`.
 
-You can aproach this problem with the following strategy:
+`json.loads(INPUTS["puzzle"])` gives `{"target_word": str, "grid": [str, ...]}`,
+one string per grid row, so `grid[row][col]` is the letter at that coordinate.
+Pass `INPUTS["puzzle"]` through unchanged to every sub-agent you create — a
+sub-agent that does not get it cannot see the grid or the word to look for.
+
+Rules for the coordinates you report:
+- rows and columns are 0-indexed, counting from the top-left cell;
+- `start_row`/`start_col` and `end_row`/`end_col` are inclusive, so an N-letter
+  word covers N cells and its start and end are N-1 apart along its direction;
+- before answering, slice the grid along the coordinates you are about to
+  report and confirm they spell the target word.
+
+`missing` lists target words you could not find anywhere in the grid — nothing
+else, so leave it empty if you found the target word.
+
+You can approach this problem with the following strategy:
 1. The root should first delegate to three child agents: `rows`, `cols`,
     and `diagonals`.
 2. Inside row and column agents, subdelegate the actual line searches:
-    - `rows` should search rows for the target words and delegate each row in parallel to its own sub-agent (rows.<row_number>);
-    - `cols` should search columns for the target words and delegate each column in parallel to its own sub-agent (cols.<column_number>).
+    - `rows` should search rows for the target word and delegate each row in parallel to its own sub-agent (rows.<row_number>);
+    - `cols` should search columns for the target word and delegate each column in parallel to its own sub-agent (cols.<column_number>).
 3. `diagonals` should search diagonals by itself directly without delegating.
 4. Each child agent should return a list of tuples, each containing the word found and its inclusive coordinates.
 """
@@ -119,7 +134,7 @@ def run(model: str, out_dir: Path) -> None:
 
     graph = start(
         query=QUERY,
-        inputs={"grid": GRID},
+        inputs={"puzzle": PUZZLE},
         output_schema=json_schema_for(WordSearchResult),
         max_depth=2,
     )

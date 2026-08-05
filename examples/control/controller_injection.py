@@ -32,7 +32,6 @@ if str(examples_dir) not in sys.path:
 
 from common import example_run_dir, save_example_graph  # noqa: E402
 
-
 OBSERVATION = "Injected controller observation: finalize using this note."
 
 

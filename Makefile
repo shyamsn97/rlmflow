@@ -131,13 +131,17 @@ test-all: build-docker-image ## Run all tests, including Docker-gated integratio
 test-html: test
 	$(BROWSER) tests/cov-report/index.html
 
+# Every examples target writes a pass/fail/skip report to
+# examples/_runs/examples_report.md (with the output of each failure). Override
+# the path or add flags with EXAMPLES_ARGS, e.g.
+#   make examples-live EXAMPLES_ARGS="--report /tmp/live.md --fail-fast"
 EXAMPLES_ARGS ?=
 
-examples: ## Run deterministic/offline examples.
+examples: ## Run deterministic/offline examples (report: examples/_runs/examples_report.md).
 	python examples/run_examples.py $(EXAMPLES_ARGS)
 
 examples-list: ## List all examples and skip reasons.
-	python examples/run_examples.py --all --list $(EXAMPLES_ARGS)
+	python examples/run_examples.py --all --include-slow --list $(EXAMPLES_ARGS)
 
 examples-optional: ## Run offline + optional-dependency examples.
 	python examples/run_examples.py --include-optional $(EXAMPLES_ARGS)
@@ -148,7 +152,10 @@ examples-live: ## Run offline + live LLM examples.
 examples-sandbox: ## Run offline + sandbox runtime examples.
 	python examples/run_examples.py --include-sandbox $(EXAMPLES_ARGS)
 
-examples-all: ## Run every example category.
+examples-slow: ## Run offline + the long opt-in examples that --all skips.
+	python examples/run_examples.py --include-slow $(EXAMPLES_ARGS)
+
+examples-all: ## Run every example category except the slow opt-in ones.
 	python examples/run_examples.py --all $(EXAMPLES_ARGS)
 
 build-docker-image:

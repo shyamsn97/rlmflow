@@ -6,13 +6,7 @@ and ``parallel`` drives several roots through one flow at once.
 """
 
 from rlmflow.engine import boundaries
-from rlmflow.engine.execution import (
-    Pool,
-    SequentialPool,
-    TaskQueue,
-    ThreadPool,
-    Transition,
-)
+from rlmflow.engine.execution import Pool, SequentialPool, TaskQueue, ThreadPool, Transition
 from rlmflow.engine.parallel import parallel_run, parallel_stream
 
 __all__ = [

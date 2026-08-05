@@ -3,12 +3,7 @@
 from rlmflow.consumers.base import ConsumerGroup, StreamConsumer
 from rlmflow.consumers.checkpoint import GraphCheckpointer
 from rlmflow.consumers.sync import WorkspaceSync
-from rlmflow.consumers.ui import (
-    LiveGraphTree,
-    LiveTreeRenderer,
-    render_forest,
-    render_tree,
-)
+from rlmflow.consumers.ui import LiveGraphTree, LiveTreeRenderer, render_forest, render_tree
 
 __all__ = [
     "ConsumerGroup",

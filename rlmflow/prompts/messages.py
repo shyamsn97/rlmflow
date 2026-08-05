@@ -13,14 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from rlmflow.graph.nodes import (
-    AgentStart,
-    ErrorOutput,
-    ExecOutput,
-    LLMOutput,
-    Node,
-    UserQuery,
-)
+from rlmflow.graph.nodes import AgentStart, ErrorOutput, ExecOutput, LLMOutput, Node, UserQuery
 
 FINAL_ANSWER_ACTION = (
     "You have used the full iteration budget without calling done(). Based on the "
@@ -93,9 +86,7 @@ class UserPromptBuilder(PromptBuilder):
     ``render_node`` to change dispatch wholesale.
     """
 
-    def __init__(
-        self, build_fn: Callable[[Any, Node], str | None] | None = None
-    ) -> None:
+    def __init__(self, build_fn: Callable[[Any, Node], str | None] | None = None) -> None:
         self._build_fn = build_fn
 
     def __call__(self, flow: Any, node: Node) -> list[dict[str, str]]:
@@ -112,9 +103,7 @@ class UserPromptBuilder(PromptBuilder):
             return self._build_fn(flow, agent)
         return None
 
-    def project(
-        self, flow: Any, node: Node, keep: int | None = None
-    ) -> list[dict[str, str]]:
+    def project(self, flow: Any, node: Node, keep: int | None = None) -> list[dict[str, str]]:
         """The conversation as of ``node``: its own agent's nodes, as turns.
 
         Walks backwards, so with ``keep`` the work is the size of the prompt rather

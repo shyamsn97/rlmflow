@@ -71,13 +71,13 @@ def _read_skill(name: str) -> str:
     return f"### {name}\n{body}"
 
 
-def workspace_skills(flow: rlmflow.Flow, node: rlmflow.Node) -> str:
-    query = node.latest_query().content.lower()
+def workspace_skills(flow: rlmflow.Flow, agent: rlmflow.AgentStart) -> str:
+    query = agent.content.lower()
     skills = [_read_skill("project-style")]
 
     if "numpy" in query or "linear algebra" in query:
         skills.append(_read_skill("numpy-linear-algebra"))
-    if node.depth() > 0:
+    if agent.config.depth > 0:
         skills.append(_read_skill("child-agent-contract"))
 
     return "\n\n".join(skill for skill in skills if skill)
@@ -103,8 +103,8 @@ from rlmflow import SystemPromptBuilder
 from rlmflow.llm import OpenAIClient
 
 
-def child_contract(flow: rlmflow.Flow, node: rlmflow.Node) -> str:
-    if node.depth() == 0:
+def child_contract(flow: rlmflow.Flow, agent: rlmflow.AgentStart) -> str:
+    if agent.config.depth == 0:
         return ""
     return Path("skills/child-agent-contract/SKILL.md").read_text(encoding="utf-8")
 

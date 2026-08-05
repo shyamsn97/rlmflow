@@ -46,9 +46,7 @@ def node_from_input(node_or_query: AgentStart | str) -> AgentStart:
     that accept either shape. State resolution (inputs, output_schema, new
     turns) lives in :meth:`Flow.resolve_run`, not here.
     """
-    return (
-        node_or_query if isinstance(node_or_query, AgentStart) else start(node_or_query)
-    )
+    return node_or_query if isinstance(node_or_query, AgentStart) else start(node_or_query)
 
 
 def usage_from_client(client: Any) -> LLMUsage:

@@ -47,9 +47,7 @@ async def parallel_run(
     graphs (and their ``result()``) without holding them beforehand.
     """
     coerced = [node_from_input(root) for root in roots]
-    async for _event in parallel_stream(
-        flow, *coerced, until=until, close_repls=close_repls
-    ):
+    async for _event in parallel_stream(flow, *coerced, until=until, close_repls=close_repls):
         pass
     return coerced
 
