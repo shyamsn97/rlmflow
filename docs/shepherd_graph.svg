@@ -1,79 +1,623 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1210" height="548" viewBox="0 0 1210 548">
+<svg xmlns="http://www.w3.org/2000/svg" width="1306" height="726" viewBox="0 0 1306 726">
 <defs>
 <marker id="tip" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-<path d="M 0 0 L 10 5 L 0 10 z" fill="#b3bdcc"/>
+<path d="M 0 0 L 10 5 L 0 10 z" fill="#b9c2d0"/>
 </marker>
 </defs>
-<rect width="1210" height="548" fill="#ffffff"/>
-<text x="28.0" y="30.0" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="600" fill="#1b2330">shepherd — one jam, eight rewinds, one winner</text>
-<text x="1182.0" y="30.0" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" fill="#6b7789">8 branches · 526 nodes in one tree</text>
-<rect x="440.0" y="64.0" width="330.0" height="62.0" rx="8" fill="#fde7e7" stroke="#e06d6d" stroke-width="1.4"/>
-<text x="605.0" y="88.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1b2330">worker</text>
-<text x="605.0" y="108.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" fill="#6b7789">jammed after 8 pushes · 9 turns</text>
-<path d="M 605.0 130.0 V 172.0" fill="none" stroke="#b3bdcc" stroke-width="1.6" marker-end="url(#tip)" stroke-dasharray="4 3"/>
-<text x="613.0" y="155.0" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">stuck transcript</text>
-<rect x="390.0" y="178.0" width="430.0" height="62.0" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.4"/>
-<text x="605.0" y="202.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1b2330">shepherd</text>
-<text x="605.0" y="222.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" fill="#6b7789">previewed 8 rewind depths, wrote 8 plans · 2 turns</text>
-<path d="M 605.0 240.0 V 270.0 H 94.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
-<rect x="28.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#dcf5e3" stroke="#4caf7d" stroke-width="1.4"/>
-<text x="94.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch0</text>
-<text x="94.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 2</text>
-<text x="94.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 6 pushes</text>
-<text x="94.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f9254">solved</text>
-<text x="94.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">16 turns</text>
-<path d="M 605.0 240.0 V 270.0 H 240.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
-<rect x="174.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#dcf5e3" stroke="#4caf7d" stroke-width="1.4"/>
-<text x="240.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch1</text>
-<text x="240.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 1</text>
-<text x="240.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 7 pushes</text>
-<text x="240.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f9254">solved</text>
-<text x="240.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">27 turns</text>
-<path d="M 605.0 240.0 V 270.0 H 386.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
-<rect x="320.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#dcf5e3" stroke="#4caf7d" stroke-width="1.4"/>
-<text x="386.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch2</text>
-<text x="386.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 3</text>
-<text x="386.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 5 pushes</text>
-<text x="386.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f9254">solved</text>
-<text x="386.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">20 turns</text>
-<path d="M 605.0 240.0 V 270.0 H 532.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
-<rect x="466.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#dcf5e3" stroke="#4caf7d" stroke-width="1.4"/>
-<text x="532.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch3</text>
-<text x="532.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 4</text>
-<text x="532.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 4 pushes</text>
-<text x="532.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f9254">solved</text>
-<text x="532.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">15 turns</text>
-<path d="M 605.0 240.0 V 270.0 H 678.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
-<rect x="612.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#dcf5e3" stroke="#4caf7d" stroke-width="1.4"/>
-<text x="678.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch4</text>
-<text x="678.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 5</text>
-<text x="678.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 3 pushes</text>
-<text x="678.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f9254">solved</text>
-<text x="678.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">14 turns</text>
-<path d="M 605.0 240.0 V 270.0 H 824.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
-<rect x="758.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#dcf5e3" stroke="#4caf7d" stroke-width="1.4"/>
-<text x="824.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch5</text>
-<text x="824.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 6</text>
-<text x="824.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 2 pushes</text>
-<text x="824.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f9254">solved</text>
-<text x="824.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">14 turns</text>
-<path d="M 605.0 240.0 V 270.0 H 970.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
-<rect x="904.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#dcf5e3" stroke="#1f9254" stroke-width="2.6"/>
-<text x="970.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch6</text>
-<text x="970.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 8</text>
-<text x="970.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">fresh board</text>
-<text x="970.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f9254">solved</text>
-<text x="970.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">13 turns</text>
-<text x="970.0" y="290.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#1f9254">picked</text>
-<path d="M 605.0 240.0 V 270.0 H 1116.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
-<rect x="1050.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#eceff3" stroke="#aab4c2" stroke-width="1.4"/>
-<text x="1116.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch7</text>
-<text x="1116.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 7</text>
-<text x="1116.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 1 push</text>
-<text x="1116.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#6b7789">stuck</text>
-<text x="1116.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">15 turns</text>
-<path d="M 970.0 418.0 V 442.5 H 605.0 V 467.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
-<path d="M 605.0 452.0 V 469.0" fill="none" stroke="#b3bdcc" stroke-width="1.6" marker-end="url(#tip)"/>
-<rect x="416.3" y="474.0" width="377.4" height="46.0" rx="8" fill="#ffffff" stroke="#1f9254" stroke-width="2.0"/>
-<text x="605.0" y="503.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#1b2330">Picked branch6: solved=True, score=989.0, pushes=11</text>
+<rect width="1306" height="726" fill="#ffffff"/>
+<text x="28.0" y="32.0" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16.0" font-weight="600" fill="#1b2330">shepherd — one jam, eight rewinds, one winner</text>
+<text x="1278.0" y="32.0" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="normal" fill="#6b7789">8 branches · 526 nodes in one tree</text>
+<rect x="503.0" y="52.0" width="300.0" height="192.0" rx="9" fill="#fdf1f0" stroke="#d93b30" stroke-width="2.0"/>
+<text x="653.0" y="75.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.0" font-weight="600" fill="#1b2330">worker</text>
+<text x="653.0" y="93.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" fill="#6b7789">jammed after 8 pushes · 9 turns</text>
+<rect x="569.00" y="104.00" width="168.00" height="126.00" fill="#151515" rx="2"/>
+<rect x="569.00" y="104.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="583.00" y="104.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="597.00" y="104.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="611.00" y="104.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="625.00" y="104.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="639.00" y="104.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="653.00" y="104.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="667.00" y="104.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="681.00" y="104.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="695.00" y="104.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="709.00" y="104.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="723.00" y="104.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="569.00" y="118.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<path d="M 618.00 120.80 L 622.20 125.00 L 618.00 129.20 L 613.80 125.00 Z" fill="#e2483c"/>
+<path d="M 674.00 120.80 L 678.20 125.00 L 674.00 129.20 L 669.80 125.00 Z" fill="#e2483c"/>
+<rect x="709.00" y="118.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="723.00" y="118.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="569.00" y="132.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="583.00" y="132.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="597.00" y="132.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="625.00" y="132.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="653.00" y="132.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="681.00" y="132.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="709.00" y="132.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="723.00" y="132.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="569.00" y="146.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<circle cx="702.00" cy="153.00" r="4.76" fill="#5ec95e"/>
+<rect x="711.80" y="148.80" width="8.40" height="8.40" fill="#ffbe3c" rx="1" stroke="#d93b30" stroke-width="1.9600000000000002"/>
+<rect x="723.00" y="146.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="569.00" y="160.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="625.00" y="160.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="653.00" y="160.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="681.00" y="160.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<path d="M 716.00 162.80 L 720.20 167.00 L 716.00 171.20 L 711.80 167.00 Z" fill="#e2483c"/>
+<rect x="723.00" y="160.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="569.00" y="174.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="613.80" y="176.80" width="8.40" height="8.40" fill="#5abeff" rx="1" stroke="#d93b30" stroke-width="1.9600000000000002"/>
+<rect x="697.80" y="176.80" width="8.40" height="8.40" fill="#b982ff" rx="1" stroke="#d93b30" stroke-width="1.9600000000000002"/>
+<rect x="723.00" y="174.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="569.00" y="188.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="611.00" y="188.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="625.00" y="188.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="653.00" y="188.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="681.00" y="188.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="723.00" y="188.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="569.00" y="202.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<path d="M 604.00 204.80 L 608.20 209.00 L 604.00 213.20 L 599.80 209.00 Z" fill="#e2483c"/>
+<path d="M 688.00 204.80 L 692.20 209.00 L 688.00 213.20 L 683.80 209.00 Z" fill="#e2483c"/>
+<rect x="723.00" y="202.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="569.00" y="216.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="583.00" y="216.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="597.00" y="216.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="611.00" y="216.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="625.00" y="216.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="639.00" y="216.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="653.00" y="216.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="667.00" y="216.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="681.00" y="216.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="695.00" y="216.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="709.00" y="216.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<rect x="723.00" y="216.00" width="14.00" height="14.00" fill="#7c4a3a"/>
+<path d="M 653.0 248.0 V 284.0" fill="none" stroke="#b9c2d0" stroke-width="1.6" marker-end="url(#tip)" stroke-dasharray="4 3"/>
+<text x="662.0" y="270.0" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.0" font-weight="normal" fill="#6b7789">stuck transcript</text>
+<rect x="438.0" y="290.0" width="430.0" height="62.0" rx="9" fill="#e8f0fe" stroke="#4285f4" stroke-width="1.4"/>
+<text x="653.0" y="315.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.0" font-weight="600" fill="#1b2330">shepherd</text>
+<text x="653.0" y="334.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" fill="#6b7789">previewed 8 rewind depths, wrote 8 plans · 2 turns</text>
+<path d="M 653.0 352.0 V 378.0 H 100.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
+<rect x="28.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#f1faf4" stroke="#34a853" stroke-width="1.6"/>
+<text x="100.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch0</text>
+<text x="100.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 2</text>
+<text x="100.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 6 pushes</text>
+<rect x="40.00" y="468.00" width="120.00" height="90.00" fill="#151515" rx="2"/>
+<rect x="40.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="50.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="60.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="70.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="80.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="90.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="100.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="110.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="120.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="130.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="140.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="150.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="40.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<path d="M 75.00 480.00 L 78.00 483.00 L 75.00 486.00 L 72.00 483.00 Z" fill="#e2483c"/>
+<rect x="111.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="140.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="150.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="40.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="50.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="60.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="80.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="100.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<circle cx="115.00" cy="493.00" r="3.40" fill="#5ec95e"/>
+<rect x="120.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="140.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="150.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="40.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="150.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="40.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="80.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="100.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="120.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="141.20" y="509.20" width="7.60" height="7.60" fill="#b982ff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="150.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="40.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="150.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="40.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="70.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="80.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="100.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="120.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="150.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="40.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="61.20" y="539.20" width="7.60" height="7.60" fill="#5abeff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<path d="M 125.00 540.00 L 128.00 543.00 L 125.00 546.00 L 122.00 543.00 Z" fill="#e2483c"/>
+<rect x="150.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="40.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="50.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="60.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="70.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="80.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="90.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="100.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="110.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="120.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="130.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="140.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="150.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<text x="100.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#137a3c">solved</text>
+<text x="100.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">16 turns</text>
+<path d="M 653.0 352.0 V 378.0 H 258.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
+<rect x="186.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#f1faf4" stroke="#34a853" stroke-width="1.6"/>
+<text x="258.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch1</text>
+<text x="258.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 1</text>
+<text x="258.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 7 pushes</text>
+<rect x="198.00" y="468.00" width="120.00" height="90.00" fill="#151515" rx="2"/>
+<rect x="198.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="208.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="218.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="228.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="238.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="248.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="258.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="268.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="278.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="288.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="298.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="308.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="198.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="229.20" y="479.20" width="7.60" height="7.60" fill="#5abeff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="269.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="298.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="308.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="198.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="208.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="218.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="238.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="258.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<circle cx="273.00" cy="493.00" r="3.40" fill="#5ec95e"/>
+<rect x="278.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="298.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="308.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="198.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="308.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="198.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="238.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="258.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="278.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="299.20" y="509.20" width="7.60" height="7.60" fill="#b982ff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="308.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="198.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="308.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="198.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="228.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="238.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="258.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="278.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="308.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="198.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<path d="M 223.00 540.00 L 226.00 543.00 L 223.00 546.00 L 220.00 543.00 Z" fill="#e2483c"/>
+<path d="M 283.00 540.00 L 286.00 543.00 L 283.00 546.00 L 280.00 543.00 Z" fill="#e2483c"/>
+<rect x="308.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="198.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="208.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="218.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="228.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="238.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="248.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="258.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="268.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="278.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="288.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="298.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="308.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<text x="258.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#137a3c">solved</text>
+<text x="258.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">27 turns</text>
+<path d="M 653.0 352.0 V 378.0 H 416.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
+<rect x="344.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#f1faf4" stroke="#34a853" stroke-width="1.6"/>
+<text x="416.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch2</text>
+<text x="416.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 3</text>
+<text x="416.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 5 pushes</text>
+<rect x="356.00" y="468.00" width="120.00" height="90.00" fill="#151515" rx="2"/>
+<rect x="356.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="366.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="376.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="386.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="396.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="406.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="416.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="426.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="436.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="446.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="456.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="466.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="356.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="387.20" y="479.20" width="7.60" height="7.60" fill="#5abeff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="427.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="456.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="466.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="356.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="366.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="376.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="396.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="416.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<circle cx="431.00" cy="493.00" r="3.40" fill="#5ec95e"/>
+<rect x="436.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="456.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="466.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="356.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="466.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="356.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="396.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="416.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="436.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<path d="M 461.00 510.00 L 464.00 513.00 L 461.00 516.00 L 458.00 513.00 Z" fill="#e2483c"/>
+<rect x="466.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="356.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="466.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="356.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="386.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="396.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="416.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="436.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="466.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="356.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<path d="M 381.00 540.00 L 384.00 543.00 L 381.00 546.00 L 378.00 543.00 Z" fill="#e2483c"/>
+<rect x="437.20" y="539.20" width="7.60" height="7.60" fill="#b982ff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="466.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="356.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="366.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="376.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="386.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="396.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="406.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="416.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="426.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="436.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="446.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="456.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="466.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<text x="416.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#137a3c">solved</text>
+<text x="416.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">20 turns</text>
+<path d="M 653.0 352.0 V 378.0 H 574.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
+<rect x="502.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#f1faf4" stroke="#34a853" stroke-width="1.6"/>
+<text x="574.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch3</text>
+<text x="574.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 4</text>
+<text x="574.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 4 pushes</text>
+<rect x="514.00" y="468.00" width="120.00" height="90.00" fill="#151515" rx="2"/>
+<rect x="514.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="524.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="534.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="544.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="554.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="564.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="574.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="584.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="594.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="604.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="614.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="624.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="514.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<path d="M 549.00 480.00 L 552.00 483.00 L 549.00 486.00 L 546.00 483.00 Z" fill="#e2483c"/>
+<rect x="585.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="614.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="624.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="514.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="524.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="534.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="554.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="574.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<circle cx="589.00" cy="493.00" r="3.40" fill="#5ec95e"/>
+<rect x="594.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="614.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="624.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="514.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="624.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="514.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="554.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="574.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="594.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<path d="M 619.00 510.00 L 622.00 513.00 L 619.00 516.00 L 616.00 513.00 Z" fill="#e2483c"/>
+<rect x="624.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="514.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="624.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="514.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="544.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="554.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="574.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="594.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="624.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="514.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="535.20" y="539.20" width="7.60" height="7.60" fill="#5abeff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="595.20" y="539.20" width="7.60" height="7.60" fill="#b982ff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="624.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="514.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="524.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="534.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="544.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="554.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="564.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="574.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="584.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="594.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="604.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="614.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="624.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<text x="574.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#137a3c">solved</text>
+<text x="574.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">15 turns</text>
+<path d="M 653.0 352.0 V 378.0 H 732.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
+<rect x="660.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#f1faf4" stroke="#34a853" stroke-width="1.6"/>
+<text x="732.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch4</text>
+<text x="732.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 5</text>
+<text x="732.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 3 pushes</text>
+<rect x="672.00" y="468.00" width="120.00" height="90.00" fill="#151515" rx="2"/>
+<rect x="672.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="682.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="692.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="702.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="712.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="722.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="732.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="742.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="752.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="762.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="772.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="782.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="672.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<path d="M 707.00 480.00 L 710.00 483.00 L 707.00 486.00 L 704.00 483.00 Z" fill="#e2483c"/>
+<rect x="743.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="772.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="782.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="672.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="682.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="692.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="712.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="732.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="752.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="772.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="782.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="672.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="782.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="672.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="712.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="732.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="752.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="773.20" y="509.20" width="7.60" height="7.60" fill="#b982ff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="782.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="672.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="782.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="672.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<circle cx="697.00" cy="533.00" r="3.40" fill="#5ec95e"/>
+<rect x="702.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="712.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="732.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="752.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="782.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="672.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="693.20" y="539.20" width="7.60" height="7.60" fill="#5abeff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<path d="M 757.00 540.00 L 760.00 543.00 L 757.00 546.00 L 754.00 543.00 Z" fill="#e2483c"/>
+<rect x="782.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="672.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="682.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="692.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="702.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="712.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="722.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="732.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="742.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="752.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="762.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="772.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="782.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<text x="732.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#137a3c">solved</text>
+<text x="732.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">14 turns</text>
+<path d="M 653.0 352.0 V 378.0 H 890.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
+<rect x="818.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#f1faf4" stroke="#34a853" stroke-width="1.6"/>
+<text x="890.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch5</text>
+<text x="890.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 6</text>
+<text x="890.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 2 pushes</text>
+<rect x="830.00" y="468.00" width="120.00" height="90.00" fill="#151515" rx="2"/>
+<rect x="830.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="840.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="850.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="860.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="870.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="880.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="890.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="900.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="910.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="920.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="930.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="940.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="830.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<path d="M 865.00 480.00 L 868.00 483.00 L 865.00 486.00 L 862.00 483.00 Z" fill="#e2483c"/>
+<rect x="901.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="930.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="940.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="830.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="840.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="850.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="870.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="890.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="910.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="930.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="940.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="830.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="940.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="830.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="870.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="890.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="910.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="931.20" y="509.20" width="7.60" height="7.60" fill="#b982ff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="940.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="830.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<circle cx="935.00" cy="523.00" r="3.40" fill="#5ec95e"/>
+<rect x="940.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="830.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="860.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="870.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="890.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="910.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="940.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="830.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="851.20" y="539.20" width="7.60" height="7.60" fill="#5abeff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<path d="M 915.00 540.00 L 918.00 543.00 L 915.00 546.00 L 912.00 543.00 Z" fill="#e2483c"/>
+<rect x="940.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="830.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="840.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="850.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="860.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="870.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="880.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="890.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="900.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="910.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="920.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="930.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="940.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<text x="890.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#137a3c">solved</text>
+<text x="890.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">14 turns</text>
+<path d="M 653.0 352.0 V 378.0 H 1048.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
+<rect x="976.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#f1faf4" stroke="#137a3c" stroke-width="2.8"/>
+<text x="1048.0" y="395.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.0" font-weight="600" fill="#137a3c">picked</text>
+<text x="1048.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch6</text>
+<text x="1048.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 8</text>
+<text x="1048.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">fresh board</text>
+<rect x="988.00" y="468.00" width="120.00" height="90.00" fill="#151515" rx="2"/>
+<rect x="988.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="998.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1008.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1018.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1028.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1038.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1048.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1058.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1068.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1078.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1088.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1098.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="988.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1019.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<path d="M 1063.00 480.00 L 1066.00 483.00 L 1063.00 486.00 L 1060.00 483.00 Z" fill="#e2483c"/>
+<rect x="1088.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1098.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="988.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="998.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1008.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1028.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1048.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1068.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1088.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1098.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="988.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1098.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="988.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1028.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1048.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1068.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<path d="M 1093.00 510.00 L 1096.00 513.00 L 1093.00 516.00 L 1090.00 513.00 Z" fill="#e2483c"/>
+<rect x="1098.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="988.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1098.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="988.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<circle cx="1013.00" cy="533.00" r="3.40" fill="#5ec95e"/>
+<rect x="1018.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1028.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1048.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1068.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1098.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="988.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1009.20" y="539.20" width="7.60" height="7.60" fill="#5abeff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="1069.20" y="539.20" width="7.60" height="7.60" fill="#b982ff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="1098.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="988.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="998.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1008.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1018.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1028.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1038.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1048.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1058.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1068.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1078.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1088.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1098.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<text x="1048.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#137a3c">solved</text>
+<text x="1048.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">13 turns</text>
+<path d="M 653.0 352.0 V 378.0 H 1206.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
+<rect x="1134.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#fdf1f0" stroke="#d93b30" stroke-width="1.6"/>
+<text x="1206.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch7</text>
+<text x="1206.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 7</text>
+<text x="1206.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 1 push</text>
+<rect x="1146.00" y="468.00" width="120.00" height="90.00" fill="#151515" rx="2"/>
+<rect x="1146.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1156.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1166.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1176.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1186.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1196.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1206.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1216.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1226.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1236.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1246.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1256.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1146.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1177.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<path d="M 1221.00 480.00 L 1224.00 483.00 L 1221.00 486.00 L 1218.00 483.00 Z" fill="#e2483c"/>
+<rect x="1246.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1256.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1146.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1156.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1166.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1186.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1206.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1226.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1246.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1256.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1146.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1158.00" y="500.00" width="6.00" height="6.00" fill="#5abeff" rx="1" stroke="#d93b30" stroke-width="1.4000000000000001"/>
+<rect x="1256.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1146.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1186.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1206.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1226.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1247.20" y="509.20" width="7.60" height="7.60" fill="#b982ff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="1256.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1146.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<circle cx="1251.00" cy="523.00" r="3.40" fill="#5ec95e"/>
+<rect x="1256.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1146.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1176.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1186.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1206.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1226.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1256.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1146.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<path d="M 1171.00 540.00 L 1174.00 543.00 L 1171.00 546.00 L 1168.00 543.00 Z" fill="#e2483c"/>
+<path d="M 1231.00 540.00 L 1234.00 543.00 L 1231.00 546.00 L 1228.00 543.00 Z" fill="#e2483c"/>
+<rect x="1256.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1146.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1156.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1166.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1176.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1186.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1196.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1206.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1216.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1226.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1236.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1246.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="1256.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<text x="1206.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#d93b30">stuck</text>
+<text x="1206.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">15 turns</text>
+<path d="M 1048.0 600.0 V 616.0 H 653.0 V 632.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
+<path d="M 653.0 632.0 V 647.0" fill="none" stroke="#b9c2d0" stroke-width="1.6" marker-end="url(#tip)"/>
+<rect x="423.5" y="652.0" width="459.1" height="46.0" rx="9" fill="#ffffff" stroke="#137a3c" stroke-width="2.0"/>
+<text x="653.0" y="681.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.0" font-weight="600" fill="#1b2330">Picked branch6: solved=True, score=989.0, pushes=11</text>
+<rect x="28.00" y="667.00" width="21.00" height="21.00" fill="#151515" rx="2"/>
+<rect x="30.52" y="669.52" width="15.96" height="15.96" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="2.9400000000000004"/>
+<text x="56.0" y="685.0" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">box on a goal, locked</text>
+<rect x="184.28" y="667.00" width="21.00" height="21.00" fill="#151515" rx="2"/>
+<rect x="188.47" y="671.20" width="12.60" height="12.60" fill="#ffbe3c" rx="1" stroke="#d93b30" stroke-width="2.9400000000000004"/>
+<text x="212.3" y="685.0" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">box still loose</text>
+<rect x="305.90" y="667.00" width="21.00" height="21.00" fill="#151515" rx="2"/>
+<path d="M 316.40 671.20 L 322.70 677.50 L 316.40 683.80 L 310.10 677.50 Z" fill="#e2483c"/>
+<text x="333.9" y="685.0" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">empty goal</text>
 </svg>

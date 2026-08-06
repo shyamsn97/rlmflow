@@ -294,30 +294,31 @@ See [`examples/showcase.py`](examples/showcase.py),
 
 ## Rewind a stuck agent, then branch
 
-[`examples/shepherd/`](examples/shepherd/) is the graph API doing something return
-values cannot. A small model plays Sokoban one push at a time and walks into the
-classic irreversible mistake — it shoves a box against a wall, where nothing can
-stand behind it to push it again. No sequence of moves solves that board now, so
-every turn it has left is wasted:
+[`examples/shepherd/`](examples/shepherd/) runs that fork API on a real failure. A
+small model plays Sokoban one push at a time and shoves a box flat against the
+wall. You push a box by standing on the opposite side, and there is nowhere to
+stand inside a wall, so that box can never move again. It never reached a goal,
+so nothing the worker does from here solves the board:
 
 <p align="center">
   <img src="docs/shepherd_jam.gif" alt="Sokoban worker shoving a box east until it sits against the wall, unpushable" width="340" />
 </p>
 
-That board is finished, but the *transcript* is not. A larger model reads the
+The board cannot be recovered, but the transcript can. A larger model reads the
 stuck worker, previews what the board looked like at each earlier push, and forks
 it into eight recovery branches — each rewound to a different depth and handed a
 different box-to-goal plan. They run in parallel under one root, and the best
-scoring branch is kept:
+scoring branch is kept. Every box below is one agent, showing the board it
+stopped on:
 
 <p align="center">
-  <img src="docs/shepherd_graph.svg" alt="Agent graph: a jammed worker, a shepherd that rewound it, eight recovery branches with their rewind depths and outcomes, and the picked winner" />
+  <img src="docs/shepherd_graph.svg" alt="Agent graph of one shepherd run: the jammed worker's final board, the shepherd that rewound it, and eight recovery branches each drawn with its rewind depth, final Sokoban board, and solved or stuck outcome, with the picked winner highlighted" />
 </p>
 
-How far to rewind is the real decision. A shallow rewind keeps finished work but
-leaves the bad plan in the worker's visible history, where it tends to imitate
-it: `branch1` kept seven of the eight jammed pushes and needed 27 turns to dig
-out. The winner threw all eight away and solved the board in 11 pushes:
+Rewind depth is a trade-off. A shallow rewind keeps finished work but leaves the
+bad plan in the worker's visible history, where it tends to imitate it: `branch1`
+kept seven of the eight jammed pushes and needed 27 turns to dig out. The winner
+threw all eight away and solved the board in 11 pushes:
 
 <p align="center">
   <img src="docs/shepherd_recovery.gif" alt="The winning branch solving the same Sokoban board, locking every box on a goal" width="340" />
