@@ -7,7 +7,6 @@ import json
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
-from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any, Literal
 
@@ -45,6 +44,7 @@ from rlmflow.runtime.env import RLMFLOW_REPLAY
 from rlmflow.runtime.repl import DoneSignal, Repl, ReplStatus
 from rlmflow.structured import json_schema_for, parse_structured_output
 from rlmflow.tools import RESERVED_TOOLS, tool
+from rlmflow.tools.agents import AgentDirectory, build_agent_directory
 from rlmflow.tools.llm_query import llm_query_batched
 from rlmflow.utils.helpers import (
     accepts_kwarg,
@@ -95,6 +95,7 @@ class Flow:
         workers: int | None = None,
         pool: Pool | None = None,
         use_llm_query: bool = False,
+        use_agent_tree: bool = False,
         enable_structured_output: bool = True,
     ) -> None:
         if restore not in ("replay", "lazy"):
@@ -111,6 +112,7 @@ class Flow:
         )
         self.prompt_profiles = dict(prompt_profiles or {})
         self.prompt_router = prompt_router
+        self.use_agent_tree = use_agent_tree
         self.enable_structured_output = enable_structured_output
         self.runtime = runtime or LocalRuntime()
         self.pool = pool or ThreadPool(workers)
@@ -312,15 +314,27 @@ class Flow:
         namespace = self.runtime.namespace_for(node)
         return namespace if namespace is not None else self.build_tools(node)
 
+    def agent_directory(self, viewer: AgentStart) -> AgentDirectory:
+        """Return a read-only snapshot of ``viewer``'s recursive agent tree."""
+        running = (
+            tuple(node for node, _task in self.queue.running.values())
+            if self.queue is not None
+            else ()
+        )
+        return build_agent_directory(viewer, running_nodes=running)
+
     def build_tools(self, node: Node, repl: Repl | None = None) -> dict[str, Any]:
         # Called without a repl to describe the tools in a prompt.
         repl = repl or SimpleNamespace(done_result=None)
-        return {
+        namespace = {
             **self.tools,
             "done": self.done_tool(node, repl),
             "launch_subagents": self.launch_tool(node),
             "INPUTS": node.parent_agent.config.inputs,
         }
+        if self.use_agent_tree:
+            namespace["AGENTS"] = self.agent_directory(node.parent_agent)
+        return namespace
 
     def done_tool(self, node: Node, repl: Repl):
         schema = node.parent_agent.config.output_schema
@@ -479,7 +493,7 @@ class Flow:
         close_repls: bool = False,
     ) -> AsyncIterator[Node]:
         """Drive one or more roots through one graph-agnostic queue."""
-        agents = [self.new_root(item) if isinstance(item, str) else item for item in (root, *roots)]
+        agents = [self.start(item) if isinstance(item, str) else item for item in (root, *roots)]
         if self.queue is not None:
             raise RuntimeError("this Flow is already driving a stream")
         if len({id(agent) for agent in agents}) != len(agents):
@@ -551,7 +565,7 @@ class Flow:
                             self.runtime.close_repl(node)
 
     async def arun(self, root: AgentStart | str) -> Any:
-        agent = self.new_root(root) if isinstance(root, str) else root
+        agent = self.start(root) if isinstance(root, str) else root
         async for _node in self.run_streaming(agent):
             pass
         return agent.result()
@@ -559,8 +573,14 @@ class Flow:
     def run(self, root: AgentStart | str) -> Any:
         return asyncio.run(self.arun(root))
 
-    def new_root(self, query: str) -> AgentStart:
-        return AgentStart(content=query or DEFAULT_QUERY, config=deepcopy(self.defaults))
+    def start(self, query: str = "", **overrides: Any) -> AgentStart:
+        """A root agent carrying this flow's defaults, which keyword overrides win against.
+
+        The module-level ``start`` does the building; this only supplies the defaults
+        the flow was constructed with, so ``Flow(config=...)`` reaches the roots you
+        run on it.
+        """
+        return start(query, config=self.defaults, **overrides)
 
     async def aclose(self) -> None:
         if self.queue is not None:

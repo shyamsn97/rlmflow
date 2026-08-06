@@ -25,7 +25,6 @@ from rlmflow import (
     AgentConfig,
     DockerRuntime,
     Flow,
-    start,
 )
 from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
 
@@ -104,13 +103,11 @@ def main():
         config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
     )
 
-    root = start(
+    root = flow.start(
         "I'm looking for a magic number buried somewhere in the haystack in "
         "INPUTS['haystack']. What is it? Chunk the string and search the "
         "pieces in parallel.",
         inputs={"haystack": haystack},
-        max_depth=args.max_depth,
-        max_iters=args.max_iters,
     )
     out_dir = Path(args.out_dir)
     consumers = ConsumerGroup()

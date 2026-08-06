@@ -34,7 +34,6 @@ from rlmflow import (
     Flow,
     LLMUsage,
     SystemPromptBuilder,
-    start,
 )
 from rlmflow.tools import tool
 
@@ -196,7 +195,7 @@ def main() -> None:
         print(f"Using live client ({args.model}).")
     flow = build_flow(library, llm, max_iters=args.max_iters)
 
-    graph = start(query=QUERY, max_iters=args.max_iters)
+    graph = flow.start(QUERY)
     if args.print_prompt:
         print("\n--- Skills section BEFORE run (empty) ---\n")
         print(library.render())

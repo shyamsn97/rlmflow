@@ -22,7 +22,6 @@ from rlmflow import (
     DockerRuntime,
     Flow,
     LocalRuntime,
-    start,
 )
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -105,7 +104,7 @@ def _run_cli(flow: Flow, workdir: Path, *, max_depth: int, max_iters: int) -> No
         if not query or query.lower() in ("quit", "exit", "q"):
             break
 
-        root = start(query, max_depth=max_depth, max_iters=max_iters)
+        root = flow.start(query, max_depth=max_depth, max_iters=max_iters)
         asyncio.run(_stream(flow, root, graph_dir))
 
         print(f"\n{root.result() or '(no result)'}\n")

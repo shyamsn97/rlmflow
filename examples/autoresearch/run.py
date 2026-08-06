@@ -24,7 +24,6 @@ from rlmflow import (
     LocalRuntime,
     SubprocessRuntime,
     SystemPromptBuilder,
-    start,
     tool,
 )
 from rlmflow.consumers import WorkspaceSync
@@ -676,7 +675,7 @@ new direction, not stop). After each wave, re-check submission_status() and
 launch the next one.
 """
     graph_dir = args.out / "graph"
-    root = start(
+    root = flow.start(
         query,
         inputs={"task_instructions": (example_dir / "program.md").read_text()},
         max_depth=args.max_depth,

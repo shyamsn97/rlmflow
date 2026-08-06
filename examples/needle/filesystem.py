@@ -28,7 +28,6 @@ from rlmflow import (
     Flow,
     LocalRuntime,
     SubprocessRuntime,
-    start,
 )
 from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
 
@@ -135,14 +134,12 @@ def main():
             config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
         )
 
-        root = start(
+        root = flow.start(
             f"There are {args.num_files} text files in haystack/. "
             "Exactly one line in one file matches the pattern "
             "`The magic number is <number>`. Find and return the number. "
             "There are too many files to search manually, so split the work "
-            "into batches.",
-            max_depth=args.max_depth,
-            max_iters=args.max_iters,
+            "into batches."
         )
         out_dir = Path(args.out_dir)
         consumers = ConsumerGroup()

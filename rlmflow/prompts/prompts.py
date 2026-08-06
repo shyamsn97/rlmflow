@@ -152,6 +152,7 @@ class SystemPromptBuilder(PromptBuilder):
                 title="Prompt Profiles",
             )
             .add("inputs", inputs_section, title="Inputs")
+            .add("agents", agents_section, title="Agents")
             .add("status", status_section, title="Status")
             .add("first-turn", first_turn_section, title="First Turn")
         )
@@ -335,6 +336,21 @@ total = results[0]["total"]  # already parsed, not a string
 ```
 """
 
+AGENTS_TEXT = """
+`AGENTS` is a read-only snapshot of this run's recursive agent tree:
+
+- `AGENTS.get()` returns you; `AGENTS.get(id_or_path_or_name)` finds another agent.
+- `AGENTS.get_parent()`, `.get_siblings()`, and `.get_children()` return
+  `AgentInfo` objects relative to you (or pass an agent selector).
+- `AgentInfo.status` is `running`, `waiting`, `idle`, or `completed`; call
+  `.get_result()` for a completed agent's result.
+- `AGENTS.print_graph(show_results=True)` prints the whole tree with statuses and
+  bounded result previews.
+
+The snapshot is refreshed before each REPL action. It does not wait, message,
+cancel, or steer agents, and repeated queries within one action are not fresher.
+"""
+
 
 FIRST_TURN_TEXT_INPUTS = """
 You have not run any code or seen your inputs yet. Start with an inspection turn:
@@ -371,6 +387,12 @@ def inputs_section(flow: Any = None, agent: Any = None) -> str:
     if agent is None:
         return ""
     return build_inputs_manifest(dict(agent.config.inputs))
+
+
+def agents_section(flow: Any = None, agent: Any = None) -> str:
+    if flow is None or agent is None or not getattr(flow, "use_agent_tree", False):
+        return ""
+    return AGENTS_TEXT.strip()
 
 
 def tools_section(flow: Any = None, agent: Any = None) -> str:

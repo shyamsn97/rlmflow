@@ -24,7 +24,6 @@ from rlmflow import (
     AgentStart,
     Flow,
     LocalRuntime,
-    start,
     tool,
 )
 
@@ -278,7 +277,7 @@ def main() -> None:
             tools=mcp_tools(mcp_client),
             config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
         )
-        root = start(args.query, max_depth=args.max_depth, max_iters=args.max_iters)
+        root = flow.start(args.query)
         out_dir = Path(args.out_dir)
         asyncio.run(run_until_done(flow, root, out_dir))
 

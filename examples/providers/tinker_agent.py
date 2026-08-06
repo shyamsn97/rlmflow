@@ -14,7 +14,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import AgentConfig, Flow, start
+from rlmflow import AgentConfig, Flow
 from rlmflow.llm import TinkerClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -57,7 +57,7 @@ def main() -> None:
     )
     flow = Flow(llm, config=AgentConfig(max_iters=args.max_iters))
     print(f"Query: {args.query}\n")
-    root = start(args.query, max_iters=args.max_iters)
+    root = flow.start(args.query)
     out_dir = example_run_dir("tinker-agent")
 
     async def drive() -> None:

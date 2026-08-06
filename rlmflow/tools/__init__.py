@@ -1,5 +1,6 @@
 """Tool metadata, prompt formatting, and built-in file tools."""
 
+from rlmflow.tools.agents import AgentDirectory, AgentFrontier, AgentInfo, AgentStatus
 from rlmflow.tools.filesystem import (
     FILE_TOOLS,
     append_file,
@@ -19,9 +20,13 @@ from rlmflow.tools.tools import (
     tool,
 )
 
-RESERVED_TOOLS = frozenset({"done", "launch_subagents", "INPUTS"})
+RESERVED_TOOLS = frozenset({"done", "launch_subagents", "INPUTS", "AGENTS"})
 
 __all__ = [
+    "AgentDirectory",
+    "AgentFrontier",
+    "AgentInfo",
+    "AgentStatus",
     "FILE_TOOLS",
     "RESERVED_TOOLS",
     "ToolMetadata",

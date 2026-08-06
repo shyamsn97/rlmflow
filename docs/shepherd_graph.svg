@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1210" height="548" viewBox="0 0 1210 548">
+<defs>
+<marker id="tip" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+<path d="M 0 0 L 10 5 L 0 10 z" fill="#b3bdcc"/>
+</marker>
+</defs>
+<rect width="1210" height="548" fill="#ffffff"/>
+<text x="28.0" y="30.0" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="600" fill="#1b2330">shepherd — one jam, eight rewinds, one winner</text>
+<text x="1182.0" y="30.0" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="normal" fill="#6b7789">8 branches · 526 nodes in one tree</text>
+<rect x="440.0" y="64.0" width="330.0" height="62.0" rx="8" fill="#fde7e7" stroke="#e06d6d" stroke-width="1.4"/>
+<text x="605.0" y="88.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1b2330">worker</text>
+<text x="605.0" y="108.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" fill="#6b7789">jammed after 8 pushes · 9 turns</text>
+<path d="M 605.0 130.0 V 172.0" fill="none" stroke="#b3bdcc" stroke-width="1.6" marker-end="url(#tip)" stroke-dasharray="4 3"/>
+<text x="613.0" y="155.0" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">stuck transcript</text>
+<rect x="390.0" y="178.0" width="430.0" height="62.0" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.4"/>
+<text x="605.0" y="202.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="600" fill="#1b2330">shepherd</text>
+<text x="605.0" y="222.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" fill="#6b7789">previewed 8 rewind depths, wrote 8 plans · 2 turns</text>
+<path d="M 605.0 240.0 V 270.0 H 94.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
+<rect x="28.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#dcf5e3" stroke="#4caf7d" stroke-width="1.4"/>
+<text x="94.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch0</text>
+<text x="94.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 2</text>
+<text x="94.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 6 pushes</text>
+<text x="94.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f9254">solved</text>
+<text x="94.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">16 turns</text>
+<path d="M 605.0 240.0 V 270.0 H 240.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
+<rect x="174.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#dcf5e3" stroke="#4caf7d" stroke-width="1.4"/>
+<text x="240.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch1</text>
+<text x="240.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 1</text>
+<text x="240.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 7 pushes</text>
+<text x="240.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f9254">solved</text>
+<text x="240.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">27 turns</text>
+<path d="M 605.0 240.0 V 270.0 H 386.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
+<rect x="320.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#dcf5e3" stroke="#4caf7d" stroke-width="1.4"/>
+<text x="386.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch2</text>
+<text x="386.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 3</text>
+<text x="386.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 5 pushes</text>
+<text x="386.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f9254">solved</text>
+<text x="386.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">20 turns</text>
+<path d="M 605.0 240.0 V 270.0 H 532.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
+<rect x="466.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#dcf5e3" stroke="#4caf7d" stroke-width="1.4"/>
+<text x="532.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch3</text>
+<text x="532.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 4</text>
+<text x="532.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 4 pushes</text>
+<text x="532.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f9254">solved</text>
+<text x="532.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">15 turns</text>
+<path d="M 605.0 240.0 V 270.0 H 678.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
+<rect x="612.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#dcf5e3" stroke="#4caf7d" stroke-width="1.4"/>
+<text x="678.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch4</text>
+<text x="678.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 5</text>
+<text x="678.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 3 pushes</text>
+<text x="678.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f9254">solved</text>
+<text x="678.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">14 turns</text>
+<path d="M 605.0 240.0 V 270.0 H 824.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
+<rect x="758.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#dcf5e3" stroke="#4caf7d" stroke-width="1.4"/>
+<text x="824.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch5</text>
+<text x="824.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 6</text>
+<text x="824.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 2 pushes</text>
+<text x="824.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f9254">solved</text>
+<text x="824.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">14 turns</text>
+<path d="M 605.0 240.0 V 270.0 H 970.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
+<rect x="904.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#dcf5e3" stroke="#1f9254" stroke-width="2.6"/>
+<text x="970.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch6</text>
+<text x="970.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 8</text>
+<text x="970.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">fresh board</text>
+<text x="970.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#1f9254">solved</text>
+<text x="970.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">13 turns</text>
+<text x="970.0" y="290.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="600" fill="#1f9254">picked</text>
+<path d="M 605.0 240.0 V 270.0 H 1116.0 V 300.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
+<rect x="1050.0" y="300.0" width="132.0" height="118.0" rx="8" fill="#eceff3" stroke="#aab4c2" stroke-width="1.4"/>
+<text x="1116.0" y="324.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch7</text>
+<text x="1116.0" y="345.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 7</text>
+<text x="1116.0" y="362.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 1 push</text>
+<text x="1116.0" y="388.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" font-weight="600" fill="#6b7789">stuck</text>
+<text x="1116.0" y="406.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" font-weight="normal" fill="#6b7789">15 turns</text>
+<path d="M 970.0 418.0 V 442.5 H 605.0 V 467.0" fill="none" stroke="#b3bdcc" stroke-width="1.4"/>
+<path d="M 605.0 452.0 V 469.0" fill="none" stroke="#b3bdcc" stroke-width="1.6" marker-end="url(#tip)"/>
+<rect x="416.3" y="474.0" width="377.4" height="46.0" rx="8" fill="#ffffff" stroke="#1f9254" stroke-width="2.0"/>
+<text x="605.0" y="503.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" font-weight="600" fill="#1b2330">Picked branch6: solved=True, score=989.0, pushes=11</text>
+</svg>

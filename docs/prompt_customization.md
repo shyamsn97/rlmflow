@@ -11,29 +11,21 @@ Use full replacement only when you want to own that entire protocol yourself.
 
 ## Inspect The Prompt
 
-Before changing the prompt, render the one your agent already sees:
+Before changing the prompt, render the one your agent already sees. Nothing has
+to run first — a root from `flow.start(...)` is enough:
 
 ```python
 import rlmflow
 
 flow = rlmflow.Flow(llm)
-root = rlmflow.start("Summarize this document.", inputs={"document": document})
-print(flow.build_system_prompt(root))
+root = flow.start("Summarize this document.", inputs={"document": document})
+print(flow.system_prompt.render(flow, root))
 ```
 
-You can render without starting a run by constructing the Node shape you
-want to inspect:
-
-```python
-import rlmflow
-
-flow = rlmflow.Flow(llm)
-root = rlmflow.start("Summarize this document.")
-print(flow.build_system_prompt(root))
-```
-
-`build_system_prompt(node)` renders against the Node's active query settings and
-the Flow's current prompt/tool configuration.
+`render(flow, agent)` renders against that agent's config — its query, inputs,
+model, and output schema — and the flow's current prompt and tool configuration.
+To see the whole conversation instead, `flow.messages(root.frontier)` returns the
+message list the model receives, whose first entry is this same text.
 
 ## Default Builder Shape
 
@@ -87,9 +79,9 @@ project_rules = """
 prompt = SystemPromptBuilder()
 prompt.sections.add("project_rules", project_rules, title="Project Rules", after="final")
 
-agent = rlmflow.Flow(llm, max_depth=2, system_prompt=prompt)
+flow = rlmflow.Flow(llm, system_prompt=prompt)
 # or set it after construction:
-agent.system_prompt = prompt
+flow.system_prompt = prompt
 ```
 
 ### Swap A Single Section
@@ -148,7 +140,7 @@ class AuditPrompt(SystemPromptBuilder):
             "rules", RULES, title="Rules", after="final"
         )
 
-agent = rlmflow.Flow(llm, system_prompt=AuditPrompt())
+flow = rlmflow.Flow(llm, system_prompt=AuditPrompt())
 ```
 
 ### Build A Prompt From Scratch
@@ -178,7 +170,7 @@ class MinimalPrompt(SystemPromptBuilder):
             .add("status", status_section, title="Status")
         )
 
-agent = rlmflow.Flow(llm, system_prompt=MinimalPrompt())
+flow = rlmflow.Flow(llm, system_prompt=MinimalPrompt())
 ```
 
 ## The `system_prompt` Source
@@ -196,7 +188,7 @@ function — and is resolved fresh on every turn:
 import rlmflow
 
 # constant string (most fragile — you own the whole protocol)
-agent = rlmflow.Flow(
+flow = rlmflow.Flow(
     llm,
     system_prompt="""
 You are a Python REPL agent.
@@ -213,7 +205,7 @@ def prompt_for(flow, agent):
     tail = "Return an executive summary." if depth == 0 else "Return findings only."
     return f"You are an auditor. {tail}"
 
-agent = rlmflow.Flow(llm, system_prompt=prompt_for)
+flow = rlmflow.Flow(llm, system_prompt=prompt_for)
 ```
 
 A string that omits `launch_subagents`, `INPUTS`, `HISTORY`, or the `done(...)`
@@ -246,7 +238,7 @@ class AuditPrompt(SystemPromptBuilder):
         return self.build(sections, flow, agent)
 
 
-agent = rlmflow.Flow(llm, system_prompt=AuditPrompt())
+flow = rlmflow.Flow(llm, system_prompt=AuditPrompt())
 ```
 
 You can also replace narrower callable sections directly:
@@ -264,8 +256,9 @@ prompt = SystemPromptBuilder()
 prompt.sections.update("tools", careful_tools)
 ```
 
-(Overriding `Flow.build_system_prompt` still works if you'd rather own prompt
-selection at the flow level.)
+(Assigning `flow.system_prompt` — a builder, or any `(flow, agent) -> str`
+callable — still works if you'd rather own the whole prompt at the flow level,
+and `prompt_profiles` with a `prompt_router` picks one per agent.)
 
 ## Callable Sections
 
@@ -390,10 +383,10 @@ from rlmflow import UserPromptBuilder
 
 class LabeledUser(UserPromptBuilder):
     def render_exec_output(self, node):
-        return {"role": "user", "content": "REPL OUTPUT:\n" + (node.content or node.output)}
+        return {"role": "user", "content": "REPL OUTPUT:\n" + node.content}
 
 
-agent = rlmflow.Flow(llm, user_prompt=LabeledUser())
+flow = rlmflow.Flow(llm, user_prompt=LabeledUser())
 ```
 
 The overridable renderers are `render_user_query`, `render_llm_output`,

@@ -21,7 +21,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rlmflow import AgentConfig, Flow, json_schema_for, start
+from rlmflow import AgentConfig, Flow, json_schema_for
 from rlmflow.llm import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -92,12 +92,10 @@ def main() -> None:
         "agents."
     )
 
-    root = start(
+    root = flow.start(
         query,
         inputs={"trip_brief": TRIP_BRIEF},
         output_schema=json_schema_for(PackingPlan),
-        max_depth=args.max_depth,
-        max_iters=args.max_iters,
     )
     out_dir = Path(args.out_dir)
 

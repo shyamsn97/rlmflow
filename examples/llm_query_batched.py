@@ -18,7 +18,6 @@ from rlmflow import (
     AgentConfig,
     Flow,
     LLMUsage,
-    start,
 )
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -86,12 +85,10 @@ def main() -> None:
         use_llm_query=True,
     )
 
-    root = start(
+    root = flow.start(
         "Classify the reviews. You must use `await "
         "llm_query_batched(prompts)` for the per-review classifications, "
-        "then call done(...) with one line per review.",
-        max_depth=0,
-        max_iters=3,
+        "then call done(...) with one line per review."
     )
     out_dir = example_run_dir("llm-query-batched")
 

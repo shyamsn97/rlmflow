@@ -118,7 +118,6 @@ def run_rlmflow(
         Flow,
         LocalRuntime,
         json_schema_for,
-        start,
     )
 
     reset_run_dir(run_dir, force=True)
@@ -135,7 +134,7 @@ def run_rlmflow(
 
     print(f"\n=== rlmflow run ===\nworkdir: {run_dir}\nmodel: {model}\n")
     try:
-        root = start(
+        root = flow.start(
             TASK,
             output_schema=json_schema_for(BoidsSimulation),
             max_depth=max_depth,

@@ -184,13 +184,13 @@ plain renderer when Rich is unavailable or stdout is not a terminal.
 `ui.handle(node)`:
 
 ```python
-from rlmflow import UserQuery, start
+from rlmflow import UserQuery
 from rlmflow.consumers import FlowTUI
 
 ui = FlowTUI()
 
 async def drive(root, *, query=None, inputs=None, until="done"):
-    root = root or start(query, inputs=inputs)
+    root = root or flow.start(query, inputs=inputs)
     if query is not None and root.content != query:
         root.frontier.append(UserQuery(content=query))
     async for node in flow.run_streaming(root, until=until):

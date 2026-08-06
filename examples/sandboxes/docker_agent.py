@@ -27,7 +27,6 @@ from rlmflow import (  # noqa: E402
     AgentStart,
     DockerRuntime,
     Flow,
-    start,
 )
 
 PLATFORMER_QUERY = """\
@@ -74,11 +73,7 @@ def main() -> None:
         runtime=runtime,
         config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
     )
-    root = start(
-        PLATFORMER_QUERY,
-        max_depth=args.max_depth,
-        max_iters=args.max_iters,
-    )
+    root = flow.start(PLATFORMER_QUERY)
     out_dir = Path(args.out_dir)
     try:
         asyncio.run(run_turn(flow, root, out_dir))

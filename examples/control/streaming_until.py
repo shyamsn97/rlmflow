@@ -17,7 +17,6 @@ from rlmflow import (
     Node,
     UserQuery,
     persistence,
-    start,
 )
 
 RUN_DIR = Path(__file__).resolve().parents[1] / "_runs" / "streaming-until"
@@ -91,7 +90,7 @@ async def demo_next_idle_and_resume() -> None:
         return "```repl\nprint('working')\n```"
 
     flow = Flow(ScriptedLLM(reply))
-    graph = start(query="work until I inject a stop instruction", max_iters=8)
+    graph = flow.start("work until I inject a stop instruction", max_iters=8)
 
     events = await collect(flow, graph, until=after_appends(3))
     print_nodes("callable boundary: exactly three appended nodes", events, graph)
@@ -116,7 +115,7 @@ async def demo_idle_heals_errors() -> None:
             )
         )
     )
-    graph = start(query="recover from a bad response")
+    graph = flow.start("recover from a bad response")
 
     events = await collect(flow, graph, until="idle")
     print_nodes("until='idle': pass through error_output to exec_output", events, graph)
@@ -135,7 +134,7 @@ async def demo_callable_boundary_with_child() -> None:
         return "```repl\ndone('child done')\n```"
 
     flow = Flow(ScriptedLLM(reply))
-    graph = start(query="parent", max_depth=1)
+    graph = flow.start("parent", max_depth=1)
 
     def child_done(node: Node, root: Node) -> bool:
         return node.parent_agent is not root and node.type == "done_output"

@@ -82,10 +82,10 @@ inside one typed `Node` tree:
 The graph is the run itself:
 
 ```python
-from rlmflow import Flow, start
+from rlmflow import Flow
 
 flow = Flow(client)
-root = start(query)
+root = flow.start(query)
 
 async for node in flow.run_streaming(root):
     print(node.parent_agent.config.path, node.type)
@@ -141,7 +141,7 @@ full interactive version.
 from pathlib import Path
 
 from rlmflow.llm import OpenAIClient
-from rlmflow import FILE_TOOLS, AgentConfig, Flow, LocalRuntime, start
+from rlmflow import FILE_TOOLS, AgentConfig, Flow, LocalRuntime
 
 workdir = Path("examples/_runs/quickstart")
 
@@ -154,7 +154,7 @@ flow = Flow(
 )
 
 query = "Build a Python text-based adventure game with combat and inventory."
-root = start(query)
+root = flow.start(query)
 
 async for node in flow.run_streaming(root):
     print(node.parent_agent.config.path, node.type)
@@ -202,9 +202,7 @@ Nest agents by passing one `FlowLLM(inner_flow)` as another flow's `llm`. See
   Nodes to a boundary.
 
 ```python
-from rlmflow import start
-
-root = start(query)
+root = flow.start(query)
 seen = 0
 
 def two_steps(node, _root):
@@ -273,7 +271,7 @@ See [`docs/injections.md`](docs/injections.md) and
 The Node tree is the durable run:
 
 ```python
-root = rlmflow.start(query)
+root = flow.start(query)
 flow.run(root)
 run_dir = root.save("runs/deep_research")
 
@@ -293,6 +291,59 @@ rebuilds each unfinished agent's REPL from its recorded code before stepping it,
 or with `Flow(restore="lazy")` tells the agent its variables are gone instead.
 See [`examples/showcase.py`](examples/showcase.py),
 [`docs/control.md`](docs/control.md), and [`docs/injections.md`](docs/injections.md).
+
+## Rewind a stuck agent, then branch
+
+[`examples/shepherd/`](examples/shepherd/) is the graph API doing something return
+values cannot. A small model plays Sokoban one push at a time and walks into the
+classic irreversible mistake — it shoves a box against a wall, where nothing can
+stand behind it to push it again. No sequence of moves solves that board now, so
+every turn it has left is wasted:
+
+<p align="center">
+  <img src="docs/shepherd_jam.gif" alt="Sokoban worker shoving a box east until it sits against the wall, unpushable" width="340" />
+</p>
+
+That board is finished, but the *transcript* is not. A larger model reads the
+stuck worker, previews what the board looked like at each earlier push, and forks
+it into eight recovery branches — each rewound to a different depth and handed a
+different box-to-goal plan. They run in parallel under one root, and the best
+scoring branch is kept:
+
+<p align="center">
+  <img src="docs/shepherd_graph.svg" alt="Agent graph: a jammed worker, a shepherd that rewound it, eight recovery branches with their rewind depths and outcomes, and the picked winner" />
+</p>
+
+How far to rewind is the real decision. A shallow rewind keeps finished work but
+leaves the bad plan in the worker's visible history, where it tends to imitate
+it: `branch1` kept seven of the eight jammed pushes and needed 27 turns to dig
+out. The winner threw all eight away and solved the board in 11 pushes:
+
+<p align="center">
+  <img src="docs/shepherd_recovery.gif" alt="The winning branch solving the same Sokoban board, locking every box on a goal" width="340" />
+</p>
+
+The worker and the shepherd are different models with different prompts on one
+flow, so the cheap model plays and the expensive one supervises:
+
+```python
+flow = Flow(
+    build_client("gpt-5"),                               # the shepherd
+    llm_clients={"worker": build_client("gpt-5-mini")},  # the players
+    prompt_profiles={
+        "worker": PromptProfile(system=WORKER_SYSTEM, user=UserPromptBuilder(board_prompt))
+    },
+)
+worker = flow.start(WORKER_QUERY, model="worker", prompt_profile="worker", max_depth=0)
+```
+
+The jam, the planning, all eight branches, and the pick are 526 nodes in one
+tree, so the losing branches are still there to read afterwards:
+
+```
+python examples/shepherd/shepherd.py       # --gradio for the live board dashboard
+python examples/shepherd/render_graph.py   # redraw the figure above from the saved run
+```
 
 ## DSPy Adapter
 
@@ -359,6 +410,7 @@ or `--include-slow` as needed. Most live examples share flags like
 | [`control/injection/`](examples/control/injection/) | Generate a baseline run, append controller Nodes to copies of it, and continue the variants. |
 | [`fork_repair.py`](examples/control/branching/fork_repair.py) | Fork graph/workdir snapshots into independent repair branches and compare results. |
 | [`best_of_n.py`](examples/control/branching/best_of_n.py) | Run N independent branches and pick the best result. |
+| [`shepherd/`](examples/shepherd/) | Rewind a jammed Sokoban worker to several depths, race the recovery branches, and keep the best. |
 | [`autoresearch/`](examples/autoresearch/) | TinyStories autoresearch loop with custom `@tool`s, delegation, and Modal GPU trials. |
 | [`graph/`](examples/graph/) | Offline tour of the Node API: query, navigate, save/load, timing, fork. |
 | [`run_examples.py`](examples/run_examples.py) | Manifest-driven smoke runner for offline, optional, live, sandbox, manual, and slow examples. |

@@ -29,7 +29,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rlmflow import AgentStart, Flow, Node, json_schema_for, start
+from rlmflow import AgentStart, Flow, Node, json_schema_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -132,8 +132,8 @@ def print_tree(node: Node, depth: int = 0) -> None:
 def run(model: str, out_dir: Path) -> None:
     flow = Flow(build_client(model))
 
-    graph = start(
-        query=QUERY,
+    graph = flow.start(
+        QUERY,
         inputs={"puzzle": PUZZLE},
         output_schema=json_schema_for(WordSearchResult),
         max_depth=2,

@@ -25,7 +25,6 @@ from rlmflow import (
     AgentConfig,
     DockerRuntime,
     Flow,
-    start,
 )
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -151,12 +150,7 @@ def main() -> None:
         config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
     )
 
-    root = start(
-        SUMMARIZE_QUERY,
-        inputs={"document": document},
-        max_depth=args.max_depth,
-        max_iters=args.max_iters,
-    )
+    root = flow.start(SUMMARIZE_QUERY, inputs={"document": document})
     out_dir = Path(args.out_dir)
 
     async def drive() -> None:

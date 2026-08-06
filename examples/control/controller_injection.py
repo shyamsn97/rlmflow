@@ -23,7 +23,6 @@ from rlmflow import (
     LLMUsage,
     Node,
     UserQuery,
-    start,
 )
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -72,7 +71,7 @@ def observation_injection() -> None:
     banner("1. Inject an observation and let the LLM react")
 
     flow = Flow(DemoLLM())
-    graph = start(query="Wait for a controller note, then finish.", max_depth=0, max_iters=4)
+    graph = flow.start("Wait for a controller note, then finish.", max_depth=0, max_iters=4)
     assert_types(graph, ["agent_start"])
 
     graph.frontier.append(ExecOutput(content=OBSERVATION))
@@ -109,7 +108,7 @@ def controller_stop_instruction() -> None:
     banner("2. Inject a controller stop instruction")
 
     flow = Flow(DemoLLM())
-    graph = start(query="This run will be stopped by the controller.", max_depth=0, max_iters=4)
+    graph = flow.start("This run will be stopped by the controller.", max_depth=0, max_iters=4)
     run_dir = example_run_dir("controller-injection") / "controller-stop-instruction"
 
     async def run_with_controller_stop() -> None:

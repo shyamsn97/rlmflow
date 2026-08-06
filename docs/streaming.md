@@ -5,10 +5,10 @@ trees, yields each durable Node as it is created, applies stream boundaries, and
 feeds unfinished leaves back into one `TaskQueue`.
 
 ```python
-from rlmflow import Flow, start
+from rlmflow import Flow
 
 flow = Flow(client)
-root = start("Audit this repository.")
+root = flow.start("Audit this repository.")
 
 async for node in flow.run_streaming(root):
     print(node.parent_agent.config.path, node.type)
@@ -266,12 +266,13 @@ The driver performs six phases.
 
 ### 1. Normalize and validate roots
 
-String inputs become new `AgentStart` roots. The same root object cannot be
-driven twice, and one Flow permits one active driver queue:
+String inputs become new `AgentStart` roots carrying the flow's defaults. The
+same root object cannot be driven twice, and one Flow permits one active driver
+queue:
 
 ```python
 agents = [
-    self.new_root(item) if isinstance(item, str) else item
+    self.start(item) if isinstance(item, str) else item
     for item in (root, *roots)
 ]
 

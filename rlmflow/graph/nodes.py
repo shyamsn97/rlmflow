@@ -472,36 +472,23 @@ def validate_agent_name(name: str) -> None:
         raise ValueError(f"invalid child name {name!r}")
 
 
-def start(
-    query: str = "",
-    *,
-    inputs: dict[str, str] | None = None,
-    model: str = "default",
-    prompt_profile: str = "default",
-    output_schema: dict[str, Any] | None = None,
-    max_depth: int = 2,
-    max_iters: int = 20,
-    child_max_iters: int | None = None,
-    max_budget: int | None = None,
-    keep_n_messages: int | None = None,
-    max_output_length: int = 4_000,
-    max_query_chars: int = DEFAULT_MAX_QUERY_CHARS,
-) -> AgentStart:
+def start(query: str = "", *, config: AgentConfig | None = None, **overrides: Any) -> AgentStart:
+    """A root agent to hand to ``Flow.run``.
+
+    ``config`` is the starting point, a fresh :class:`AgentConfig` when omitted, and
+    keyword overrides replace fields on a copy of it the way ``AgentConfig.child``
+    does — so ``AgentConfig`` stays the one place a default is written down::
+
+        start("find the bug", max_iters=8)
+
+    ``Flow.start`` is the same thing carrying that flow's defaults.
+    """
+    base = deepcopy(config) if config is not None else AgentConfig()
+    if "inputs" in overrides:
+        overrides["inputs"] = dict(overrides["inputs"] or {})
     return AgentStart(
         content=query or DEFAULT_QUERY,
-        config=AgentConfig(
-            inputs=dict(inputs or {}),
-            model=model,
-            prompt_profile=prompt_profile,
-            output_schema=output_schema,
-            max_depth=max_depth,
-            max_iters=max_iters,
-            child_max_iters=child_max_iters,
-            max_budget=max_budget,
-            keep_n_messages=keep_n_messages,
-            max_output_length=max_output_length,
-            max_query_chars=max_query_chars,
-        ),
+        config=replace(base, **overrides) if overrides else base,
     )
 
 

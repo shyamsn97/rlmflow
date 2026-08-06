@@ -25,7 +25,6 @@ from rlmflow import (
     AgentConfig,
     Flow,
     SystemPromptBuilder,
-    start,
 )
 from rlmflow.llm import OpenAIClient
 
@@ -159,7 +158,7 @@ def main() -> None:
             "(0, 1), (1, 2), (2, 2), (3, 4), then report m, b, the "
             "predicted values, and the L2 residual norm."
         )
-        root = start(query, max_iters=MAX_ITERS)
+        root = flow.start(query)
 
         print(f"Wrote skill artifact under: {skills_dir}")
         print("- skills/numpy-linear-algebra/SKILL.md")

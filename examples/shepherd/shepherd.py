@@ -24,7 +24,6 @@ from rlmflow import (
     Node,
     PromptProfile,
     UserPromptBuilder,
-    start,
 )
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -243,7 +242,7 @@ async def run_shepherd(
         },
     )
     flow.inject("Sokoban", Sokoban)
-    worker = start(
+    worker = flow.start(
         WORKER_QUERY,
         model="worker",
         prompt_profile="worker",
@@ -251,7 +250,7 @@ async def run_shepherd(
         max_iters=max_iters,
         keep_n_messages=15,
     )
-    shepherd = start(
+    shepherd = flow.start(
         META_QUERY.format(n=n_branches),
         max_depth=max_depth,
         max_iters=max_iters,

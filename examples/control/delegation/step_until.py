@@ -27,7 +27,6 @@ from rlmflow import (
     AgentStart,
     Flow,
     Node,
-    start,
 )
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -71,7 +70,7 @@ def print_nodes(title: str, nodes: list[Node], graph: Node) -> None:
 
 async def run_example(args: argparse.Namespace) -> AgentStart:
     flow = Flow(build_client(args.model), workers=args.max_concurrency)
-    graph = start(query=QUERY, max_depth=args.max_depth, max_iters=args.max_iters)
+    graph = flow.start(QUERY, max_depth=args.max_depth, max_iters=args.max_iters)
     observed: list[Node] = []
     out_dir = Path(args.out_dir)
 

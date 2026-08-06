@@ -7,10 +7,10 @@ The root Node is the control surface. Flow mutates that tree in place and
 
 ```python
 import asyncio
-from rlmflow import Flow, start
+from rlmflow import Flow
 
 flow = Flow(client)
-root = start("Audit this repository.", max_depth=2)
+root = flow.start("Audit this repository.", max_depth=2)
 
 async def drive():
     async for node in flow.run_streaming(root):
@@ -29,10 +29,11 @@ Pass `until="next"` for one appended Node, `until="idle"` for a clean
 
 ## Per-agent limits
 
-Limits belong to the agent, not the flow. Set them on the root with `start(...)`:
+Limits belong to the agent, not the flow. Set them on the root with
+`flow.start(...)`, which takes any `AgentConfig` field:
 
 ```python
-root = start(
+root = flow.start(
     "Audit this repository.",
     inputs={"tree": listing},
     model="fast",
@@ -44,15 +45,22 @@ root = start(
 )
 ```
 
-Or give the flow a default `AgentConfig`, which it copies onto every root it
-builds from a bare query string:
+Give the flow a default `AgentConfig` to stop repeating the limits it should
+apply anyway. It copies them onto every root it builds — from a bare query
+string, or from `flow.start(...)` when you want to override a field or two:
 
 ```python
 from rlmflow import AgentConfig, Flow
 
 flow = Flow(client, config=AgentConfig(max_depth=2, max_iters=20))
 flow.run("Audit this repository.")
+
+root = flow.start("Audit this repository.", max_iters=40)  # max_depth still 2
 ```
+
+The module-level `start(...)` builds a root with no flow involved, which is what
+loading, forking, and tests do. It has nothing to inherit from, so it carries
+`AgentConfig`'s own defaults; pass `config=` to build on something else.
 
 A loaded run keeps its identity, inputs, model, prompt profile, and schema, but
 not its limits — those come back as `AgentConfig` defaults. Set them on the
@@ -165,6 +173,36 @@ Children hang off the `ExecAction` that launched them, so the parent's
 transcript stays a single chain: `root.sub_agents` is where the children are,
 and the launching step lands one `ExecOutput` when the block finishes.
 
+## Agent tree inspection
+
+Opt into a read-only snapshot of the recursive tree:
+
+```python
+flow = Flow(client, use_agent_tree=True)
+```
+
+Every REPL action then receives `AGENTS` alongside `INPUTS`:
+
+```python
+AGENTS.get()                    # this agent
+AGENTS.get("root.researcher")   # by path, id, or unique name
+AGENTS.get_parent()
+AGENTS.get_siblings()
+AGENTS.get_children()
+AGENTS.get("researcher").get_result()
+AGENTS.print_graph(show_results=True)
+```
+
+Each `AgentInfo` includes identity, parent/children, frontier metadata, status,
+and a completed result. Status is one of `running`, `waiting`, `idle`, or
+`completed`.
+
+`AGENTS` is an immutable snapshot refreshed before each REPL action. It does
+not wait, message, cancel, or steer agents, and repeated queries in one action
+do not become fresher. The option defaults off, so disabled flows add no prompt
+text, snapshot work, or remote serialization. Process-isolated runtimes require
+the `cloudpickle` extra to inject the custom snapshot object by value.
+
 ## Save and load
 
 ```python
@@ -214,8 +252,8 @@ flow.inject("LOOKUP", {"a": 1})   # any object, not just callables
 flow.remove_tool("my_tool")
 ```
 
-`done`, `launch_subagents`, and `INPUTS` are reserved: they are rebuilt for each
-step and cannot be injected over.
+`done`, `launch_subagents`, `INPUTS`, and `AGENTS` are reserved: framework
+values are rebuilt for each step and cannot be injected over.
 
 `Flow(use_llm_query=True)` adds `llm_query_batched` to the REPL, for agents that
 want to fan out one-shot model calls without spawning children. It is available

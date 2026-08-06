@@ -1,6 +1,6 @@
 """Best-of-N with independent Flow branches.
 
-Each branch is a fresh ``start(...)`` run saved to its own ``graph.json``,
+Each branch is a fresh ``flow.start(...)`` run saved to its own ``graph.json``,
 demonstrating the Node-only surface.
 
 Usage:
@@ -17,7 +17,6 @@ from pathlib import Path
 from rlmflow import (
     Flow,
     LLMUsage,
-    start,
 )
 
 FRUITS = [
@@ -75,7 +74,7 @@ def score(result: str) -> tuple[int, dict[str, str]]:
 def run_branch(root: Path, idx: int) -> tuple[str, int, dict[str, str], int]:
     llm = MockLLM(seed=idx)
     flow = Flow(llm)
-    graph = start(query=QUERY, max_depth=1, max_iters=10)
+    graph = flow.start(QUERY, max_depth=1, max_iters=10)
     flow.run(graph)
     # Each branch persists to its own directory (graph.json).
     graph.save(root / f"branch_{idx}")

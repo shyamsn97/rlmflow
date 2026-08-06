@@ -25,7 +25,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import AgentConfig, Flow, start
+from rlmflow import AgentConfig, Flow
 from rlmflow.adapters import FlowLLM
 from rlmflow.llm import OpenAIClient
 
@@ -81,7 +81,7 @@ def demo_nested_flow():
         )
     )
     outer = Flow(inner)
-    root = start("What's the 7th Fibonacci number? Use ```repl``` to compute.", max_iters=3)
+    root = outer.start("What's the 7th Fibonacci number? Use ```repl``` to compute.", max_iters=3)
     run_dir = example_run_dir("drop-in-llm") / "nested-flow"
 
     async def drive() -> None:

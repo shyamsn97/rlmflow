@@ -72,7 +72,17 @@ from rlmflow.structured import (
     parse_structured_output,
     system_prompt_hint,
 )
-from rlmflow.tools import FILE_TOOLS, ToolMetadata, format_tool_line, get_tool_metadata, tool
+from rlmflow.tools import (
+    FILE_TOOLS,
+    AgentDirectory,
+    AgentFrontier,
+    AgentInfo,
+    AgentStatus,
+    ToolMetadata,
+    format_tool_line,
+    get_tool_metadata,
+    tool,
+)
 from rlmflow.utils import find_code_blocks
 
 #: Names resolved on first access. ``flow`` because it pulls in the shared prompt
@@ -102,7 +112,11 @@ __all__ = [
     "FILE_TOOLS",
     "SYSTEM_PROMPT",
     "AgentConfig",
+    "AgentDirectory",
+    "AgentFrontier",
+    "AgentInfo",
     "AgentStart",
+    "AgentStatus",
     "AnthropicClient",
     "AppendChild",
     "ConsumerGroup",

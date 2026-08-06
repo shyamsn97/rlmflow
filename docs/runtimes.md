@@ -43,7 +43,7 @@ instances that speak JSON with `python -m rlmflow.runtime.repl_server`.
 import rlmflow
 from rlmflow.llm import OpenAIClient
 
-agent = rlmflow.Flow(
+flow = rlmflow.Flow(
     OpenAIClient(model="gpt-5"),
     runtime=rlmflow.LocalRuntime(working_directory="./project"),
     tools=rlmflow.FILE_TOOLS,
@@ -79,7 +79,7 @@ runtime = rlmflow.DockerRuntime(
     memory="512m",
 )
 
-agent = rlmflow.Flow(
+flow = rlmflow.Flow(
     OpenAIClient(model="gpt-5"), runtime=runtime, tools=rlmflow.FILE_TOOLS
 )
 ```
@@ -96,7 +96,7 @@ pip install rlmflow[modal]
 import rlmflow
 from rlmflow.llm import OpenAIClient
 
-agent = rlmflow.Flow(
+flow = rlmflow.Flow(
     OpenAIClient(model="gpt-5"),
     runtime=rlmflow.ModalRuntime(),
     tools=rlmflow.FILE_TOOLS,

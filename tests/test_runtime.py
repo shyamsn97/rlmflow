@@ -74,6 +74,21 @@ def test_subprocess_runtime_executes_agent_code():
     assert "subproc" in root.frontier.content
 
 
+def test_subprocess_runtime_exposes_opt_in_agents_tree():
+    pytest.importorskip("cloudpickle")
+    code = block(
+        'done(AGENTS.get().path + "|" + str(len(AGENTS.get_siblings())) + "|" '
+        "+ AGENTS.render_graph())"
+    )
+    flow = Flow(
+        StubLLM(lambda _messages: code),
+        runtime=SubprocessRuntime(),
+        use_agent_tree=True,
+    )
+
+    assert flow.run(start("q")) == "root|0|root [running] (you)"
+
+
 def test_subprocess_runtime_supports_awaited_launch_subagents():
     def reply(messages):
         if first_user(messages) == "parent":

@@ -12,7 +12,8 @@ Pick the doc that matches what you're trying to do.
 ## Use rlmflow
 
 - [Control](control.md) — streaming loop, per-agent limits, multi-turn runs,
-  save/load resume, forks, `INPUTS`, `launch_subagents`, custom tools.
+  save/load resume, forks, `INPUTS`, opt-in `AGENTS`, `launch_subagents`,
+  custom tools.
 - [Streaming and scheduling](streaming.md) — detailed guide to
   `run_streaming(..., until=...)`, `TaskQueue`, transitions, delegation,
   parallel roots, boundaries, cancellation, and Pool/Runtime placement.
@@ -40,6 +41,8 @@ Pick the doc that matches what you're trying to do.
 
 ## Research Notes
 
+- [`AGENTS` tree discovery](research/inter_agent_communication.md) — opt-in REPL
+  view for querying and rendering agent status and results.
 - [RAO implementation plan](research/rao_implementation_plan.md) — how to
   implement Recursive Agent Optimization as a first-class `rlmflow.rao` module
   over `Flow` rollouts.

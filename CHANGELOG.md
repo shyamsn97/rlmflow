@@ -23,7 +23,10 @@ each one is called out under **Breaking** below.
   with no agent-id argument, and `node.walk(reverse=True)` for reading one
   agent's chain backwards. `Flow` no longer takes `max_iters`, `max_depth`, or
   `child_max_iters`: per-agent limits belong to `AgentConfig`, so pass them to
-  `start(query, ...)` or as `config=` for the flow's own defaults.
+  `flow.start(query, ...)` for one root, or as `Flow(config=...)` to set the defaults
+  every root from `flow.start(...)` (and every string handed to `flow.run`) picks
+  up. A root built by the bare `start(...)` carries `AgentConfig`'s own defaults —
+  it has no flow to inherit from.
 - **Node streaming.** `run_streaming(root_or_query, until=...)` yields affected
   Nodes, not Event wrappers.
 - **Forking is the whole branch API.** `node.fork()` copies the tree and cuts
@@ -100,6 +103,23 @@ each one is called out under **Breaking** below.
 
 ### Added
 
+- **Opt-in `AGENTS` tree inspection.** `Flow(use_agent_tree=True)` seeds each
+  REPL action with an immutable snapshot of its recursive run. Agents can query
+  themselves, parents, siblings, children, ids, paths, statuses, and completed
+  results through `AGENTS`, or render the tree with `AGENTS.print_graph()`.
+  The snapshot refreshes per action and is disabled by default, so ordinary
+  flows pay no prompt or serialization cost.
+- **`Flow.start(query, **overrides)`** — a root carrying that flow's defaults, so
+  `Flow(config=AgentConfig(max_iters=5))` reaches the roots you run on it. The
+  module-level `start` still builds the node and remains the way to make one
+  without a `Flow` (loading, forking, and tests do); `flow.start` supplies the
+  defaults and forwards. It replaces `Flow.new_root`, which only accepted a query
+  and existed so `flow.run("a query string")` could coerce a string.
+- **`start(query, config=..., **overrides)`** — the base config to build on, plus
+  per-field overrides, replacing the eleven keyword arguments that restated
+  `AgentConfig`'s defaults in a second place. Existing keyword calls such as
+  `start("q", inputs={...}, max_iters=8)` are unchanged, since every one of those
+  names is an `AgentConfig` field.
 - **`Flow(restore="replay" | "lazy")`** — how a graph this flow did not run gets its
   live state back. `Flow.replay` re-runs each agent's recorded `ExecAction`s;
   `Flow.note_cold` is the cheap alternative that tells unfinished agents their
@@ -161,6 +181,10 @@ each one is called out under **Breaking** below.
 
 - `rlmflow.pool`, `rlmflow.tasks`, `rlmflow.simple_flow`, the Event hierarchy,
   and the separate `Graph` wrapper.
+- `Flow.build_system_prompt(node)`. Render a prompt with
+  `flow.system_prompt.render(flow, agent)`, or read the whole message list from
+  `flow.messages(node)`. To own prompt selection at the flow level, assign
+  `flow.system_prompt` rather than overriding a method.
 
 ## [0.4.0] — 2026-06-12
 

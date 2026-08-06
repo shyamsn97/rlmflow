@@ -31,7 +31,6 @@ from rlmflow import (
     LocalRuntime,
     Node,
     persistence,
-    start,
 )
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -136,11 +135,7 @@ def main() -> None:
     flow = file_flow(workdir, AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters))
 
     banner("1. Step-by-step execution")
-    root = start(
-        "Create hello.py and goodbye.py. Delegate each file.",
-        max_depth=args.max_depth,
-        max_iters=args.max_iters,
-    )
+    root = flow.start("Create hello.py and goodbye.py. Delegate each file.")
     history = asyncio.run(run(flow, root, workdir / "run"))
     final = history[-1]
     print(f"\n{GREEN}Result:{RESET} {final.result()}")
@@ -172,11 +167,7 @@ def main() -> None:
 
     banner("6. Gym-style loop")
     flow3 = file_flow(workdir, AgentConfig(max_depth=0, max_iters=args.max_iters))
-    root3 = start(
-        "Write a haiku about recursion to haiku.txt",
-        max_depth=0,
-        max_iters=args.max_iters,
-    )
+    root3 = flow3.start("Write a haiku about recursion to haiku.txt")
     rewards = asyncio.run(gym_loop(flow3, root3, workdir / "gym-run"))
     print(f"{GREEN}Result:{RESET} {root3.result()}")
     print(f"Total reward: {sum(rewards):.1f}")

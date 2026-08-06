@@ -1,6 +1,6 @@
 """Compare repair branches with the Node-only API.
 
-Each repair attempt is a separate ``start(...)`` run in its own working
+Each repair attempt is a separate ``flow.start(...)`` run in its own working
 directory; the resulting graphs are directly comparable.
 
 Usage:
@@ -20,7 +20,6 @@ from rlmflow import (
     Flow,
     LLMUsage,
     LocalRuntime,
-    start,
 )
 
 TASK = "Implement slugify(text) in slugify.py so tests/test_slugify.py passes."
@@ -111,7 +110,7 @@ def run_branch(root: Path, name: str, implementation: str, label: str):
     # File tools run inside this branch's own working directory.
     runtime = LocalRuntime(working_directory=workdir)
     flow = Flow(RepairLLM(implementation, label), tools=FILE_TOOLS, runtime=runtime)
-    graph = start(query=TASK, max_depth=0, max_iters=3)
+    graph = flow.start(TASK, max_depth=0, max_iters=3)
 
     async def drive() -> None:
         # Checkpoint as nodes land, so the branch dir holds the run either way.

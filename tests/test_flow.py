@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from rlmflow import (
+    AgentConfig,
     AgentStart,
     AppendChild,
     DoneOutput,
@@ -93,6 +94,45 @@ def test_inputs():
     root = start("shout", inputs={"doc": "hi"})
     assert Flow(llm).run(root) == "HI"
     assert "- doc: str, 2 chars" in Flow(llm).messages(root.frontier)[0]["content"]
+
+
+def test_flow_start_carries_the_flow_defaults():
+    flow = Flow(ScriptedLLM([]), config=AgentConfig(max_depth=1, max_iters=5, model="fast"))
+
+    root = flow.start("dig in")
+    overridden = flow.start("dig in", max_iters=9)
+
+    assert root.content == "dig in"
+    assert (root.config.max_depth, root.config.max_iters, root.config.model) == (1, 5, "fast")
+    assert overridden.config.max_iters == 9
+    assert (overridden.config.max_depth, overridden.config.model) == (1, "fast")
+
+
+def test_flow_start_copies_the_defaults_it_hands_out():
+    flow = Flow(ScriptedLLM([]), config=AgentConfig(max_iters=5))
+
+    first = flow.start("a", inputs={"doc": "x"})
+    second = flow.start("b")
+    first.config.max_iters = 99
+
+    assert (second.config.max_iters, second.config.inputs) == (5, {})
+    assert (flow.defaults.max_iters, flow.defaults.inputs) == (5, {})
+
+
+def test_a_string_root_inherits_the_flow_defaults():
+    llm = ScriptedLLM([("", block("print('again')"))])
+
+    assert Flow(llm, config=AgentConfig(max_iters=2)).run("loop") == "[max_iters exceeded]"
+    assert len(llm.calls) == 2
+
+
+def test_start_overrides_a_base_config_without_touching_it():
+    base = AgentConfig(max_iters=5, model="fast")
+
+    root = start("q", config=base, max_iters=9)
+
+    assert (root.config.max_iters, root.config.model) == (9, "fast")
+    assert base.max_iters == 5
 
 
 def test_keep_n_messages_keeps_the_tail_without_rendering_the_history():
