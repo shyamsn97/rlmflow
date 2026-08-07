@@ -1,14 +1,16 @@
-"""Render a finished shepherd run as an agent-level SVG.
+"""Render a finished shepherd run as SVG, at two zoom levels.
 
-The saved tree has hundreds of nodes, which is the wrong picture for explaining
-the run: what matters is the shape of the recovery — one jammed worker, one
-shepherd that rewound it, and the branches that raced from those rewind points.
-So this draws one box per agent, reads the labels back off the graph, and draws
-the board each agent finished on, because "solved" and "stuck" only mean
-something next to the position that earned it.
+``graph.svg`` is the summary: one box per agent, labelled from the graph and
+showing the board that agent finished on, because "solved" and "stuck" only mean
+something next to the position that earned them.
 
-Boards are drawn as vector cells rather than the ``sprites`` tiles, so the figure
-stays small, stays crisp at any zoom, and needs no Pillow. The colours mirror
+``nodes.svg`` is the run itself — every saved ``Node``, typed and in order. That
+picture is worth drawing because the shape is the claim: a short shepherd trunk,
+one node fanning into eight branches, and each branch a chain whose length *is*
+how long that recovery took. Nothing is summarised away.
+
+Boards are drawn as vector cells rather than the ``sprites`` tiles, so the figures
+stay small, stay crisp at any zoom, and need no Pillow. The colours mirror
 ``sprites`` so a board here is recognisably the same board as in the GIFs.
 
 Run a shepherd first (``python examples/shepherd/shepherd.py``), then:
@@ -63,6 +65,18 @@ BOX_COLORS = (
 BOX_IDS = "123456789"
 BOX_ON_GOAL_IDS = "ABCDEFGHI"
 BOARD_CHARS = frozenset("# .$*@+") | frozenset(BOX_IDS) | frozenset(BOX_ON_GOAL_IDS)
+
+# One colour per Node type, for the node-level figure.
+NODE_COLORS = {
+    "agent_start": "#4285f4",
+    "llm_output": "#a855f7",
+    "exec_action": "#f5a524",
+    "exec_output": "#94a3b8",
+    "user_query": "#0ea5a4",
+    "append_child": "#ec4899",
+    "done_output": "#34a853",
+}
+NODE_FALLBACK = "#cbd5e1"
 
 # A monospace glyph advance is a fixed share of the font size; used to keep text
 # inside the boxes that surround it.
@@ -210,6 +224,12 @@ class Canvas:
         self.parts.append(
             f'<path d="M {cx:.2f} {cy - r:.2f} L {cx + r:.2f} {cy:.2f} '
             f'L {cx:.2f} {cy + r:.2f} L {cx - r:.2f} {cy:.2f} Z" fill="{fill}"/>'
+        )
+
+    def line(self, x0: float, y0: float, x1: float, y1: float):
+        self.parts.append(
+            f'<path d="M {x0:.1f} {y0:.1f} L {x1:.1f} {y1:.1f}" fill="none" '
+            f'stroke="{EDGE}" stroke-width="1.4"/>'
         )
 
     def elbow(self, x0: float, y0: float, x1: float, y1: float):
@@ -460,11 +480,122 @@ def build_svg(
     return c.render()
 
 
+def agent_chain(agent: AgentStart) -> list:
+    """The nodes this agent appended, in order, without descending into children."""
+    return [node for node in agent.walk() if node is agent or node.parent_agent is agent]
+
+
+def rewind_marker(chain: list) -> int:
+    """Index of the note ``prepare_branch`` left, which is where inherited history ends."""
+    for index, node in enumerate(chain):
+        if isinstance(node, UserQuery) and re.search(r"Rewound \d+ pushes", node.content or ""):
+            return index
+    return 0
+
+
+def build_nodes_svg(shepherd: AgentStart, branches: list[Branch]) -> str:
+    """Every saved Node, one square each: the trunk, the fan, and eight chains."""
+    margin, pitch, dot = 28.0, 9.0, 7.0
+    label_w, row_h, note_size = 74.0, 26.0, 11.0
+
+    trunk = agent_chain(shepherd)
+    tracks = [(branch, agent_chain(agent)) for branch, agent in zip(branches, shepherd.sub_agents)]
+    longest = max([len(trunk)] + [len(chain) for _, chain in tracks])
+
+    trunk_note = f"{len(trunk)} nodes · plans the rewinds"
+    notes = {
+        branch.name: f"{branch.outcome} · {branch.turns} turns"
+        + ("  ← picked" if branch.won else "")
+        for branch, _ in tracks
+    }
+    note_w = max(len(n) for n in [trunk_note, *notes.values()]) * note_size * SANS_ADVANCE + 8
+
+    lane_x = margin + label_w
+    width = lane_x + longest * pitch + 14 + note_w + margin
+    y_trunk = 62.0
+    y_first = y_trunk + row_h + 22
+    y_legend = y_first + len(tracks) * row_h + 26
+    height = y_legend + 30
+
+    c = Canvas(width, height)
+    c.text(margin, 30, "the same run, every node", size=16, weight="600", anchor="start")
+    c.text(
+        width - margin,
+        30,
+        f"{sum(len(chain) for _, chain in tracks) + len(trunk)} nodes · "
+        f"{len(tracks) + 1} agents · one tree",
+        size=12,
+        fill=MUTED,
+        anchor="end",
+    )
+
+    def draw_chain(
+        y: float, chain: list, label: str, note: str, note_fill: str, inherited: int = 0
+    ) -> None:
+        c.text(margin, y + dot, label, size=11.5, weight="600", anchor="start")
+        c.rect(lane_x, y + dot / 2 - 0.5, max(len(chain) - 1, 0) * pitch + dot, 1.0, EDGE)
+        for index, node in enumerate(chain):
+            fill = NODE_COLORS.get(node.type, NODE_FALLBACK)
+            # Nodes before the rewind marker were copied from the jam by the fork,
+            # so fading them shows how much history each branch chose to keep.
+            opacity = {"fill_opacity": 0.3} if index < inherited else {}
+            c.rect(lane_x + index * pitch, y, dot, dot, fill, rx=1.5, **opacity)
+        c.text(
+            lane_x + longest * pitch + 14,
+            y + dot,
+            note,
+            size=note_size,
+            fill=note_fill,
+            anchor="start",
+        )
+
+    draw_chain(y_trunk, trunk, "shepherd", trunk_note, MUTED)
+
+    # The one node with more than one child is where the branches hang.
+    fan = next((i for i, node in enumerate(trunk) if len(node.children) > 1), len(trunk) - 1)
+    fan_x = lane_x + fan * pitch + dot / 2
+    bus_x, bus_top = lane_x - 12, y_first - 9
+    y_last = y_first + (len(tracks) - 1) * row_h + dot / 2
+    c.line(fan_x, y_trunk + dot, fan_x, bus_top)
+    c.line(fan_x, bus_top, bus_x, bus_top)
+    c.line(bus_x, bus_top, bus_x, y_last)
+    for row, (branch, chain) in enumerate(tracks):
+        y = y_first + row * row_h
+        c.line(bus_x, y + dot / 2, lane_x - 1, y + dot / 2)
+        draw_chain(
+            y,
+            chain,
+            branch.name,
+            notes[branch.name],
+            WIN_LINE if branch.solved else FAIL_LINE,
+            inherited=rewind_marker(chain),
+        )
+
+    x = margin
+    for node_type, color in NODE_COLORS.items():
+        c.rect(x, y_legend, dot, dot, color, rx=1.5)
+        c.text(x + dot + 6, y_legend + dot, node_type, size=10.5, fill=MUTED, anchor="start")
+        x += dot + 12 + len(node_type) * 10.5 * SANS_ADVANCE
+    c.rect(x, y_legend, dot, dot, NODE_FALLBACK, rx=1.5, fill_opacity=0.5)
+    c.text(
+        x + dot + 6,
+        y_legend + dot,
+        "faded: inherited from the jam",
+        size=10.5,
+        fill=MUTED,
+        anchor="start",
+    )
+    return c.render()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", type=Path, default=RUN_DIR, help="Directory shepherd saved.")
     parser.add_argument(
-        "--out", type=Path, default=None, help="SVG path (default <run-dir>/graph.svg)."
+        "--out", type=Path, default=None, help="Agent summary SVG (default <run-dir>/graph.svg)."
+    )
+    parser.add_argument(
+        "--nodes-out", type=Path, default=None, help="Node-level SVG (default <run-dir>/nodes.svg)."
     )
     args = parser.parse_args()
 
@@ -509,6 +640,10 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(svg, encoding="utf-8")
 
+    nodes_out: Path = args.nodes_out or (run_dir / "nodes.svg")
+    nodes_out.parent.mkdir(parents=True, exist_ok=True)
+    nodes_out.write_text(build_nodes_svg(shepherd, branches), encoding="utf-8")
+
     print(summary or "no branch picked")
     for branch in branches:
         mark = " <- picked" if branch.won else ""
@@ -523,7 +658,7 @@ def main() -> None:
         missing.append("worker")
     if missing:
         print(f"\nno final board in traces for: {', '.join(missing)}")
-    print(f"\nsvg: {out}")
+    print(f"\nsvg: {out}\nsvg: {nodes_out}")
 
 
 if __name__ == "__main__":

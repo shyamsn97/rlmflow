@@ -29,6 +29,13 @@ python examples/summarizer.py --sections 10
 | [`autoresearch/`](autoresearch/) | TinyStories autoresearch loop with Modal GPU trials |
 | [`shepherd/`](shepherd/) | Meta-agent recovers a jammed Sokoban worker by forking its graph and replaying recovery branches in parallel, with board panels + a node trace |
 
+After a `shepherd/` run, two scripts redraw it from the saved graph and traces:
+`render_graph.py` writes an agent-level summary and a node-level picture of the
+whole tree as SVG, and `render_rewind.py` animates one branch — the jam, the
+pushes being undone, then the recovery — to a GIF. Pass `--branch` to animate a
+branch other than the one that won. `render_rewind.py` needs Pillow and the
+sprite tiles; `render_graph.py` needs neither.
+
 ## Tours & integrations
 
 | Folder | What it shows |

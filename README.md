@@ -298,18 +298,21 @@ See [`examples/showcase.py`](examples/showcase.py),
 small model plays Sokoban one push at a time and shoves a box flat against the
 wall. You push a box by standing on the opposite side, and there is nowhere to
 stand inside a wall, so that box can never move again. It never reached a goal,
-so nothing the worker does from here solves the board:
-
-<p align="center">
-  <img src="docs/shepherd_jam.gif" alt="Sokoban worker shoving a box east until it sits against the wall, unpushable" width="340" />
-</p>
+so nothing the worker does from here solves the board.
 
 The board cannot be recovered, but the transcript can. A larger model reads the
-stuck worker, previews what the board looked like at each earlier push, and forks
-it into eight recovery branches — each rewound to a different depth and handed a
-different box-to-goal plan. They run in parallel under one root, and the best
-scoring branch is kept. Every box below is one agent, showing the board it
-stopped on:
+stuck worker, previews what the board looked like at each earlier push, rewinds it
+to one of those points, and restarts it from there. Here is `branch5` doing it:
+eight pushes in, six of them taken back off the board, then a recovery that picks
+up from the two pushes it kept.
+
+<p align="center">
+  <img src="docs/shepherd_rewind.gif" alt="Animation of one shepherd recovery: a Sokoban worker shoving a box into the wall over eight pushes, then six of those pushes being undone one at a time, then a recovery branch resuming from the two pushes it kept and locking every box on a goal" width="380" />
+</p>
+
+It runs eight of those at once, each rewound to a different depth and handed a
+different box-to-goal plan, and keeps the best. Every box below is one agent,
+showing the board it stopped on:
 
 <p align="center">
   <img src="docs/shepherd_graph.svg" alt="Agent graph of one shepherd run: the jammed worker's final board, the shepherd that rewound it, and eight recovery branches each drawn with its rewind depth, final Sokoban board, and solved or stuck outcome, with the picked winner highlighted" />
@@ -317,12 +320,19 @@ stopped on:
 
 Rewind depth is a trade-off. A shallow rewind keeps finished work but leaves the
 bad plan in the worker's visible history, where it tends to imitate it: `branch1`
-kept seven of the eight jammed pushes and needed 27 turns to dig out. The winner
-threw all eight away and solved the board in 11 pushes:
+gave back a single push and took 25 in total to finish. `branch5` above gave back
+six and finished in 12. The winner gave back all eight and solved the board in 11.
+
+That summary is a drawing. The run is a tree, and this is all of it — the
+shepherd's own turns, the single node the eight branches hang off, and each
+branch's chain, faded over the history it inherited from the jam:
 
 <p align="center">
-  <img src="docs/shepherd_recovery.gif" alt="The winning branch solving the same Sokoban board, locking every box on a goal" width="340" />
+  <img src="docs/shepherd_nodes.svg" alt="Every node of one shepherd run: a short shepherd trunk, one node fanning into eight branch chains, each node coloured by type and each chain faded across the turns it inherited from the jammed worker" />
 </p>
+
+Nothing there is summarised away: chain length is how long that recovery took, and
+the branches that lost are still on disk to read.
 
 The worker and the shepherd are different models with different prompts on one
 flow, so the cheap model plays and the expensive one supervises:
@@ -338,12 +348,10 @@ flow = Flow(
 worker = flow.start(WORKER_QUERY, model="worker", prompt_profile="worker", max_depth=0)
 ```
 
-The jam, the planning, all eight branches, and the pick are 526 nodes in one
-tree, so the losing branches are still there to read afterwards:
-
 ```
 python examples/shepherd/shepherd.py       # --gradio for the live board dashboard
-python examples/shepherd/render_graph.py   # redraw the figure above from the saved run
+python examples/shepherd/render_graph.py   # redraw both diagrams from the saved run
+python examples/shepherd/render_rewind.py --branch branch5   # the animation (needs pillow)
 ```
 
 ## DSPy Adapter
