@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
+import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
@@ -30,6 +33,45 @@ def new_node_id() -> str:
 
 def _isoformat(stamp: float) -> str:
     return datetime.fromtimestamp(stamp, UTC).isoformat()
+
+
+class AgentBusyError(RuntimeError):
+    """Raised when something appends to an agent whose step is still in flight.
+
+    Distinct from the frontier check: the frontier is right, but it is about to
+    move. Appending here silently discards whatever the running step produces.
+    """
+
+
+_active_step: contextvars.ContextVar[Node | None] = contextvars.ContextVar(
+    "rlmflow_active_step", default=None
+)
+
+
+def active_step() -> Node | None:
+    """The node whose step this code is running inside, if any.
+
+    Each step is its own asyncio task, so this is per-step for free. It is what
+    lets an agent's own step extend its transcript while everyone else is
+    refused.
+    """
+    return _active_step.get()
+
+
+@contextmanager
+def running_step(node: Node) -> Iterator[None]:
+    """Mark ``node``'s agent as busy for the duration of its step."""
+    agent = node.parent_agent
+    token = _active_step.set(node)
+    previous = agent.in_flight if agent is not None else None
+    if agent is not None:
+        agent.in_flight = node
+    try:
+        yield
+    finally:
+        _active_step.reset(token)
+        if agent is not None:
+            agent.in_flight = previous
 
 
 def system_prompt_id(text: str) -> str:
@@ -88,6 +130,10 @@ class Node:
     #: The tree plus these is the whole run: concurrency changes when nodes are
     #: created, never where they land.
     seq: int = 0
+    #: When this node was made. Every node has one, which is what makes a run
+    #: orderable end to end: ``seq`` restarts inside each sub-agent, and a node
+    #: that never executed has no ``started_at``, but everything is created.
+    created_at: float = field(default_factory=time.time, compare=False)
     #: When the step that produced this node ran. Nodes written from inside a step
     #: (a nudge, a final-answer prod) were not executed, so they have no timing.
     started_at: float | None = None
@@ -99,8 +145,21 @@ class Node:
         if agent is None:
             raise RuntimeError("node is detached")
 
+        if agent.in_flight is not None and active_step() is not agent.in_flight:
+            # An agent's own step may extend its transcript (a nudge, a final-answer
+            # prod). Anyone else appending while that step is unfinished would move
+            # the frontier out from under it and corrupt the transcript.
+            raise AgentBusyError(
+                f"cannot append to {agent.config.path!r}: its step "
+                f"{agent.in_flight.type} ({agent.in_flight.id}) is still in flight"
+            )
+
         if self is not agent.frontier:
-            raise ValueError(f"{self.id} is not the frontier of {agent.id}")
+            raise ValueError(
+                f"cannot append to {self.type} ({self.id}): it is not the frontier of "
+                f"{agent.config.path!r}, which is at {agent.frontier.type} "
+                f"({agent.frontier.id})"
+            )
 
         if isinstance(node, AgentStart) and any(
             child.config.name == node.config.name for child in agent.sub_agents
@@ -201,12 +260,15 @@ class Node:
         """This node as run-format data; each type extends payload and metadata."""
         agent = self.parent_agent
         timing = self.timing()
+        metadata: dict[str, Any] = {"created_at": _isoformat(self.created_at)}
+        if timing:
+            metadata["timing"] = timing
         return {
             "id": self.id,
             "type": self.type,
             "agent_id": agent.config.path if agent is not None else None,
             "order": self.seq,
-            "metadata": {"timing": timing} if timing else {},
+            "metadata": metadata,
             "payload": {"content": self.content},
             "children": [child.to_dict() for child in self.children] if nested else [],
         }
@@ -226,8 +288,12 @@ class Node:
         agent.sub_agents = [sub for sub in agent.sub_agents if id(sub) in kept]
 
         if new_ids:
+            # These are new nodes with new ids, so they were created now. Keeping the
+            # original stamps would date a copy earlier than the node it now hangs
+            # from, and walk order keeps the copy internally ordered.
             for n in root.walk():
                 n.id = new_agent_id() if isinstance(n, AgentStart) else new_node_id()
+                n.created_at = time.time()
         return root
 
 
@@ -243,6 +309,9 @@ class AgentStart(Node):
     #: the text is stored once and a saved run reconstructs every turn's prompt.
     system_prompts: dict[str, str] = field(default_factory=dict, repr=False)
     frontier: Node = field(init=False, repr=False)
+    #: The node whose step is currently running for this agent, if any. Engine
+    #: bookkeeping, not transcript state: never saved, never compared.
+    in_flight: Node | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self.root = self
@@ -494,6 +563,9 @@ def start(query: str = "", *, config: AgentConfig | None = None, **overrides: An
 
 __all__ = [
     "DEFAULT_MAX_QUERY_CHARS",
+    "AgentBusyError",
+    "active_step",
+    "running_step",
     "DEFAULT_QUERY",
     "AgentConfig",
     "AgentStart",

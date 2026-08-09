@@ -87,7 +87,9 @@ from rlmflow.utils import find_code_blocks
 
 #: Names resolved on first access. ``flow`` because it pulls in the shared prompt
 #: stack, which imports these nodes back, so an eager import is a cycle;
-#: ``adapters`` because it probes for ``dspy``, which is slow and optional.
+#: ``adapters`` because it probes for ``dspy``, which is slow and optional;
+#: ``view`` because two of its renderers carry optional dependencies, and a run
+#: that never draws itself should not pay for them.
 _LAZY = {
     "Flow": "rlmflow.flow",
     "StepUntil": "rlmflow.flow",
@@ -95,10 +97,24 @@ _LAZY = {
     "DSPyFlow": "rlmflow.adapters",
     "FlowLLM": "rlmflow.adapters",
     "messages_to_query": "rlmflow.adapters",
+    "graph_svg": "rlmflow.view",
+    "open_viewer": "rlmflow.view",
+    "render_html": "rlmflow.view",
+    "render_steps": "rlmflow.view",
+    "replay": "rlmflow.view",
+    "save_frames": "rlmflow.view",
+    "save_gif": "rlmflow.view",
+    "save_html": "rlmflow.view",
+    "save_svg": "rlmflow.view",
+    "snapshot": "rlmflow.view",
+    "steps": "rlmflow.view",
+    "timeline": "rlmflow.view",
 }
 
 
 def __getattr__(name: str) -> Any:
+    if name == "view":
+        return import_module("rlmflow.view")
     module = _LAZY.get(name)
     if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
@@ -171,17 +187,30 @@ __all__ = [
     "find_code_blocks",
     "format_tool_line",
     "get_tool_metadata",
+    "graph_svg",
     "is_retryable",
     "json_schema_for",
     "messages_to_query",
+    "open_viewer",
     "parallel_run",
     "parallel_stream",
     "parse_structured_output",
     "persistence",
     "render_forest",
+    "render_html",
+    "render_steps",
     "render_tree",
+    "replay",
     "retry_transient",
+    "save_frames",
+    "save_gif",
+    "save_html",
+    "save_svg",
+    "snapshot",
     "start",
+    "steps",
     "system_prompt_hint",
+    "timeline",
     "tool",
+    "view",
 ]

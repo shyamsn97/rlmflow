@@ -115,7 +115,64 @@ class Repl(ABC):
 _stdout_buf: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar(
     "minimal_rflow_stdout", default=None
 )
-_CWD_LOCK = threading.RLock()
+
+class WorkingDirectoryConflict(RuntimeError):
+    """Two live runs asked for different working directories.
+
+    The current directory belongs to the process, so it cannot be two things at
+    once. Raised rather than silently running in the wrong place.
+    """
+
+
+class _CwdScope:
+    """Refcounted ``chdir``: first run in changes, last run out restores.
+
+    A mutex held across a run would serialize concurrent agents and deadlock
+    delegation — a parent waiting on a child would hold the directory the child
+    needs to start. Since every run sharing a REPL wants the *same* directory,
+    there is nothing to arbitrate: count the runs instead, and hold the lock only
+    while touching the counter.
+    """
+
+    def __init__(self) -> None:
+        self._guard = threading.Lock()
+        self._depth = 0
+        self._previous: str | None = None
+        self._active: Path | None = None
+
+    def _enter(self, target: Path) -> None:
+        with self._guard:
+            if self._depth == 0:
+                self._previous, self._active = os.getcwd(), target
+                os.chdir(target)
+            elif self._active is not None and target.resolve() != self._active.resolve():
+                raise WorkingDirectoryConflict(
+                    f"cannot run in {str(target)!r}: another run is active in "
+                    f"{str(self._active)!r}, and the working directory is per-process"
+                )
+            self._depth += 1
+
+    def _exit(self) -> None:
+        with self._guard:
+            self._depth -= 1
+            if self._depth == 0:
+                if self._previous is not None:
+                    os.chdir(self._previous)
+                self._previous = self._active = None
+
+    @contextmanager
+    def held(self, target: Path | None):
+        if target is None:
+            yield
+            return
+        self._enter(target)
+        try:
+            yield
+        finally:
+            self._exit()
+
+
+_CWD = _CwdScope()
 
 
 class _Stdout:
@@ -232,32 +289,36 @@ class LocalRepl(Repl):
     def capture(self):
         self._buf = io.StringIO()
         self.errored = False
-        token = _stdout_buf.set(self._buf)
-        previous_cwd: str | None = None
-        if self.working_directory is not None:
-            _CWD_LOCK.acquire()
-            previous_cwd = os.getcwd()
-            os.chdir(self.working_directory)
-        try:
-            yield
-        except DoneSignal:
-            pass
-        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
-            # Never swallow control-flow exceptions: a cancelled agent must
-            # actually unwind (otherwise run/interpreter shutdown hangs on it).
-            raise
-        except BaseException as exc:  # noqa: BLE001
-            self.errored = True
-            self._buf.write(f"{type(exc).__name__}: {exc}")
-        finally:
-            _stdout_buf.reset(token)
-            if previous_cwd is not None:
-                os.chdir(previous_cwd)
-                _CWD_LOCK.release()
+        # Entered outside the handler below: a directory conflict is a refusal to
+        # start, not an error raised by agent code, so it must reach ``run``
+        # rather than be recorded as this block's output.
+        with _CWD.held(self.working_directory):
+            token = _stdout_buf.set(self._buf)
+            try:
+                yield
+            except DoneSignal:
+                pass
+            except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+                # Never swallow control-flow exceptions: a cancelled agent must
+                # actually unwind (otherwise run/interpreter shutdown hangs on it).
+                raise
+            except BaseException as exc:  # noqa: BLE001
+                self.errored = True
+                self._buf.write(f"{type(exc).__name__}: {exc}")
+            finally:
+                _stdout_buf.reset(token)
 
     async def run(self, code: str) -> ReplRun:
         # Cleared here rather than by the caller: an answer belongs to one run.
         self.done_result = None
+        try:
+            return await self._run_captured(code)
+        except WorkingDirectoryConflict as exc:
+            # The block never started, so there is no captured output to report.
+            self.errored = True
+            return ReplRun(output=f"{type(exc).__name__}: {exc}", status=ReplStatus.ERROR)
+
+    async def _run_captured(self, code: str) -> ReplRun:
         with self.capture():
             if not code.strip():
                 raise MissingReplError("missing ```repl``` block")
@@ -292,5 +353,6 @@ __all__ = [
     "Repl",
     "ReplRun",
     "ReplStatus",
+    "WorkingDirectoryConflict",
     "has_top_level_await",
 ]

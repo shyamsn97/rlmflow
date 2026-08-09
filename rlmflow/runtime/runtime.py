@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from rlmflow.graph.nodes import AgentStart, Node
-from rlmflow.runtime.connections import PopenConnection
+from rlmflow.runtime.connections import DEFAULT_REPL_TIMEOUT, PopenConnection
 from rlmflow.runtime.env import agent_process_env
 from rlmflow.runtime.repl import LocalRepl, Repl, ReplRun, ReplStatus
 from rlmflow.runtime.repl_client import RemoteRepl
@@ -117,7 +117,7 @@ class SubprocessRuntime(Runtime):
         working_directory: str | Path | None = None,
         python: str | Path | None = None,
         env: dict[str, str] | None = None,
-        repl_timeout: float | None = None,
+        repl_timeout: float | None = DEFAULT_REPL_TIMEOUT,
     ) -> None:
         super().__init__(working_directory=working_directory)
         self.python = str(python or sys.executable)

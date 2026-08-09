@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from rlmflow.graph.nodes import Node
-from rlmflow.runtime.connections import PopenConnection
+from rlmflow.runtime.connections import DEFAULT_REPL_TIMEOUT, PopenConnection
 from rlmflow.runtime.repl import Repl
 from rlmflow.runtime.repl_client import RemoteRepl
 from rlmflow.runtime.runtime import Runtime
@@ -63,7 +63,7 @@ class DockerRuntime(Runtime):
         workdir: str | None = None,
         extra_args: list[str] | None = None,
         docker_bin: str = "docker",
-        repl_timeout: float | None = None,
+        repl_timeout: float | None = DEFAULT_REPL_TIMEOUT,
         **options: object,
     ) -> None:
         super().__init__(working_directory=working_directory)
@@ -91,7 +91,7 @@ class DockerRuntime(Runtime):
     def deploy_repl_server(self, agent: Node) -> RemoteRepl:
         cwd = str(self.working_directory) if self.working_directory else None
         options = dict(self.options)
-        repl_timeout = options.pop("repl_timeout", None)
+        repl_timeout = options.pop("repl_timeout", DEFAULT_REPL_TIMEOUT)
         argv = build_docker_argv(self.image, **options)
         return RemoteRepl(
             PopenConnection(

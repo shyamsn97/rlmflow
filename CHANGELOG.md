@@ -34,8 +34,7 @@ each one is called out under **Breaking** below.
   `insert`/`remove` are gone, as are `Flow.rewind`, `Flow.launch_branches`, and
   `Flow.discard`. An edit lands as an ordinary node appended to a frontier, which
   `Node.append` enforces — there is no way to rewrite history in place.
-- **Deleted with no replacement.** The legacy Graph/Event viewer implementation,
-  both CLI entry points, `LLMChannel` (bounding concurrency is
+- **Deleted with no replacement.** `LLMChannel` (bounding concurrency is
   `Flow(workers=...)` or a `Pool`), and the injection helpers `flow.next_query`,
   `flow.inject_tools`, `flow.register_halt`, and `flow.append` — appending a
   `UserQuery` to a frontier, `flow.add_tool`/`flow.inject`, and an `until`
@@ -103,6 +102,33 @@ each one is called out under **Breaking** below.
 
 ### Added
 
+- **`rlmflow.view` and the `rlmflow view` command, on the new node model.** Every
+  view is a render of the graph, and they are all back: `timeline`/`steps` read a
+  run in the order it happened, `graph_svg` draws it, `save_html` writes a
+  single-file stepper, `replay`/`render_steps` hand back the tree as it stood at
+  each step, `open_viewer` opens it in the browser, and `save_frames`/`save_gif`
+  rasterise it. From the shell: `rlmflow view runs/coding/graph` prints the agent
+  tree and the numbered timeline, with `--step N`, `--frames-only`, `--tree`,
+  `--svg`, `--html`, `--browser`, `--frames DIR`, `--gif PATH`, and `--every N`.
+  `python -m rlmflow view …` works the same.
+  The figure keeps the old viewer's dark ground, its colour and shape per node
+  type, and its tidy-tree layout, but it is hand-written SVG: the figure, the
+  timeline, the stepper, and `replay` need nothing outside the standard library.
+  Only two views carry dependencies and both say so when reached — `open_viewer`
+  wants `rlmflow[viewer]` (Gradio) and the raster exports want `rlmflow[image]`
+  (CairoSVG, Pillow) — and neither is imported until it is called, so
+  `import rlmflow` stays cheap. The stepper embeds the figure once and reveals it
+  a node at a time rather than shipping a drawing per step, which is the
+  difference between a 434&nbsp;KB file and an 85&nbsp;MB one on a 526-node run.
+  Layout is scaled into a target box instead of a fixed gap per row, so a
+  hundred-deep chain is dense rather than thousands of pixels tall.
+- **`node.created_at`.** Every node stamps itself when it is built, so the order a
+  run happened in is those stamps sorted — across agents, not just within one
+  chain. `started_at`/`finished_at` still record execution, which only some nodes
+  do. Forking restamps the copies it gives new ids, keeping a copy dated after the
+  node it now hangs from. The stamp round-trips through `persistence`; graphs
+  saved before it load with their nodes stamped at load time and fall back to tree
+  order, which is what they had.
 - **Opt-in `AGENTS` tree inspection.** `Flow(use_agent_tree=True)` seeds each
   REPL action with an immutable snapshot of its recursive run. Agents can query
   themselves, parents, siblings, children, ids, paths, statuses, and completed
@@ -176,6 +202,15 @@ each one is called out under **Breaking** below.
   live on `Runtime`; warm branch attachment uses `Runtime.rebind_repl`.
 - **Persistence and consumers accept Nodes directly.** Save/load uses
   `rlmflow.graph.persistence`; stream consumers handle one Node at a time.
+- **The browser viewer is Gradio only.** It draws `rlmflow.view`'s SVG instead of
+  building a Plotly figure, so `rlmflow[viewer]` no longer pulls Plotly or Kaleido
+  in, and `rlmflow[image]` is CairoSVG plus Pillow. `open_viewer(source)` takes a
+  root, a checkpoint directory, or a path to one; the old `states=`/`session=`
+  arguments and the click-a-node-for-its-payload panel are gone — the step slider
+  drives the detail panel, and an agent picker drives the transcript beside it.
+- **A pre-rewrite checkpoint says so.** `persistence.load` on a graph written by
+  the old engine (a flat `root_agent_id`/`agents` table) raises `ValueError` naming
+  the format instead of failing on a missing key.
 
 ### Removed
 

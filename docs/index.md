@@ -43,6 +43,14 @@ Pick the doc that matches what you're trying to do.
 
 - [`AGENTS` tree discovery](research/inter_agent_communication.md) — opt-in REPL
   view for querying and rendering agent status and results.
+- [Persistent agents](research/persistent_agents.md) — reopening a finished
+  child with a follow-up question, why peer messaging deadlocks, and the engine
+  constraints either would have to survive.
+- [Shared REPLs](research/shared_repls.md) — one namespace for several agents,
+  with `INPUTS`, `done`, stdout, and error state dispatched per agent through a
+  `ContextVar`.
+- [REPL correctness and sharing plan](research/repl_plan.md) — the staged plan:
+  the transport bugs found along the way, then local and remote co-tenancy.
 - [RAO implementation plan](research/rao_implementation_plan.md) — how to
   implement Recursive Agent Optimization as a first-class `rlmflow.rao` module
   over `Flow` rollouts.

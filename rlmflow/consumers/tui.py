@@ -347,7 +347,9 @@ def node_panel(node: Node):
     style = (
         "red"
         if isinstance(node, ErrorOutput)
-        else "green" if isinstance(node, DoneOutput) else "cyan"
+        else "green"
+        if isinstance(node, DoneOutput)
+        else "cyan"
     )
     body = node.result if isinstance(node, DoneOutput) else node.content
     return Panel(

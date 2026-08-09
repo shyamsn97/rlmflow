@@ -29,6 +29,9 @@ dependencies = [
     "tenacity>=8.0",
 ]
 
+[project.scripts]
+rlmflow = "rlmflow.cli:main"
+
 [project.optional-dependencies]
 openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.20"]
@@ -53,7 +56,11 @@ eval = [
     "python-docx>=1.1",
 ]
 sandbox = ["modal", "e2b", "daytona-sdk"]
-viewer = ["rich>=13.0"]
+# The browser viewer. The figure, the timeline, the HTML stepper, and replay need
+# nothing; this is only for `open_viewer` / `rlmflow view --browser`.
+viewer = ["gradio>=4.44", "rich>=13.0"]
+# Rasterising those figures into PNG frames or a GIF.
+image = ["cairosvg>=2.7", "pillow>=10.0"]
 tui = ["textual>=0.70", "rich>=13.0"]
 all = [
     "openai>=1.0",
@@ -77,6 +84,9 @@ all = [
     "python-docx>=1.1",
     "rich>=13.0",
     "textual>=0.70",
+    "gradio>=4.44",
+    "cairosvg>=2.7",
+    "pillow>=10.0",
 ]
 dev = [
     "pytest>=7.0",

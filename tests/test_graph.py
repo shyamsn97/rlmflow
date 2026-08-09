@@ -81,6 +81,4 @@ def test_append_child_reuses_one_launch_action():
 
     assert isinstance(action, AppendChild)
     assert action.child_agents == [first, second]
-    assert action.code == (
-        "print(await launch_subagents([{'name': 'one'}, {'name': 'two'}]))"
-    )
+    assert action.code == ("print(await launch_subagents([{'name': 'one'}, {'name': 'two'}]))")

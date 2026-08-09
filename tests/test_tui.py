@@ -52,9 +52,7 @@ def _delegating_run() -> tuple[AgentStart, ExecAction, AgentStart]:
         )
     )
     action = thinking.append(ExecAction(code="await launch_subagents(...)"))
-    child = action.append(
-        AgentStart(content="lookup", config=root.config.child("lookup"))
-    )
+    child = action.append(AgentStart(content="lookup", config=root.config.child("lookup")))
     return root, action, child
 
 
@@ -223,9 +221,7 @@ def test_importing_rlmflow_does_not_pull_in_textual():
         "assert 'textual' not in sys.modules, 'textual leaked into the import path'\n"
         "print('ok')\n"
     )
-    proc = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=False
-    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=False)
 
     assert proc.returncode == 0, proc.stderr
     assert "ok" in proc.stdout

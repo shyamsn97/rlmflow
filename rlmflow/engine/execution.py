@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
-from rlmflow.graph.nodes import AgentStart, Node
+from rlmflow.graph.nodes import AgentStart, Node, running_step
 
 
 class Pool(ABC):
@@ -131,7 +131,8 @@ class TaskQueue:
         return task
 
     async def _run(self, node: Node, fn: Callable[[Node], Any]) -> None:
-        transition = await self.pool.run(fn, node)
+        with running_step(node):
+            transition = await self.pool.run(fn, node)
         if not isinstance(transition, Transition):
             raise TypeError(f"task returned {type(transition).__name__}, expected Transition")
 

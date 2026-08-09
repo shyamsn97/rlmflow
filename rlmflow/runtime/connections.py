@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import selectors
 import subprocess as sp
+import threading
+from collections import deque
 from contextlib import suppress
 from pathlib import Path
 
@@ -19,6 +21,15 @@ from rlmflow.runtime.protocol import (
 )
 from rlmflow.runtime.repl_client import ReplConnection
 
+#: Nothing drains the sandbox's stderr while a block runs, so an unbounded pipe
+#: would fill and wedge the process. One owner reads it continuously into this
+#: many trailing lines.
+STDERR_LINES = 200
+
+#: A sandbox that stops answering must not hang the host forever. ``None`` is
+#: still accepted as an explicit "wait indefinitely".
+DEFAULT_REPL_TIMEOUT = 300.0
+
 
 class PopenConnection(ReplConnection):
     """Connect RemoteRepl to a repl_server subprocess/container."""
@@ -30,7 +41,7 @@ class PopenConnection(ReplConnection):
         cwd: str | Path | None = None,
         env: dict[str, str] | None = None,
         label: str = "minimal REPL subprocess",
-        repl_timeout: float | None = None,
+        repl_timeout: float | None = DEFAULT_REPL_TIMEOUT,
     ) -> None:
         self.argv = argv
         self.cwd = cwd
@@ -38,6 +49,8 @@ class PopenConnection(ReplConnection):
         self.label = label
         self.repl_timeout = repl_timeout
         self.proc: sp.Popen | None = None
+        self._stderr_tail: deque[str] = deque(maxlen=STDERR_LINES)
+        self._stderr_reader: threading.Thread | None = None
 
     def _process(self) -> sp.Popen:
         if self.proc is None:
@@ -50,7 +63,27 @@ class PopenConnection(ReplConnection):
                 env=self.env,
                 bufsize=0,
             )
+            self._drain_stderr(self.proc)
         return self.proc
+
+    def _drain_stderr(self, proc: sp.Popen) -> None:
+        """Give stderr a single dedicated reader so the pipe can never fill."""
+        if proc.stderr is None:
+            return
+
+        def pump(stream) -> None:
+            with suppress(Exception):
+                for line in iter(stream.readline, b""):
+                    self._stderr_tail.append(line.decode(errors="replace").rstrip("\n"))
+
+        self._stderr_reader = threading.Thread(
+            target=pump, args=(proc.stderr,), daemon=True, name=f"{self.label} stderr"
+        )
+        self._stderr_reader.start()
+
+    def stderr_tail(self) -> str:
+        """The sandbox's recent stderr, for diagnosing a failed or dead run."""
+        return "\n".join(self._stderr_tail)
 
     def send(self, msg: WireModel) -> None:
         stdin = self._stdin()
@@ -87,18 +120,18 @@ class PopenConnection(ReplConnection):
         finally:
             selector.close()
         if not events:
+            tail = self.stderr_tail()
             self.close(force=True)
-            raise TimeoutError(f"{self.label} did not respond within {self.repl_timeout}s")
+            detail = f" stderr: {tail}" if tail else ""
+            raise TimeoutError(f"{self.label} did not respond within {self.repl_timeout}s.{detail}")
 
     def _exited_error(self) -> RuntimeError:
-        proc = self._process()
-        err = b""
-        if proc.stderr is not None:
-            with suppress(Exception):
-                err = proc.stderr.read() or b""
+        # stderr was drained all along by its reader; join briefly so a message
+        # written just before the exit has landed.
+        if self._stderr_reader is not None:
+            self._stderr_reader.join(timeout=0.5)
         return RuntimeError(
-            f"{self.label} {self.argv!r} exited unexpectedly. "
-            f"stderr: {err.decode(errors='replace')}"
+            f"{self.label} {self.argv!r} exited unexpectedly. stderr: {self.stderr_tail()}"
         )
 
     def close(self, *, force: bool = False) -> None:
@@ -134,4 +167,4 @@ class PopenConnection(ReplConnection):
                 return
 
 
-__all__ = ["PopenConnection"]
+__all__ = ["DEFAULT_REPL_TIMEOUT", "STDERR_LINES", "PopenConnection"]

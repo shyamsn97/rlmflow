@@ -357,8 +357,7 @@ def test_lazy_restore_tells_the_agent_its_repl_is_gone(tmp_path):
 
 def test_replay_reads_recorded_child_answers_instead_of_relaunching(tmp_path):
     parent = block(
-        "answers = await launch_subagents([{'name': 'kid', 'query': 'add up'}])\n"
-        "print(answers[0])"
+        "answers = await launch_subagents([{'name': 'kid', 'query': 'add up'}])\nprint(answers[0])"
     )
     llm = ScriptedLLM([("delegate", parent), ("add up", block("done('20')"))])
     root = start("delegate", max_depth=2)
@@ -415,13 +414,9 @@ def test_controller_attaches_multiple_subtrees_between_streams():
 
         anchor = root.frontier
         child_a = start("child a")
-        child_a.append(ExecAction(code="value = 'A'")).append(
-            ExecOutput(content="child a")
-        )
+        child_a.append(ExecAction(code="value = 'A'")).append(ExecOutput(content="child a"))
         child_b = start("child b")
-        child_b.append(ExecAction(code="value = 'B'")).append(
-            ExecOutput(content="child b")
-        )
+        child_b.append(ExecAction(code="value = 'B'")).append(ExecOutput(content="child b"))
         anchor.append_child(child_a, name="a")
         anchor.append_child(child_b, name="b")
 
@@ -433,9 +428,7 @@ def test_controller_attaches_multiple_subtrees_between_streams():
     action = next(node for node in root.transcript() if isinstance(node, AppendChild))
     assert root.result() == "AB"
     assert [child.config.name for child in action.child_agents] == ["a", "b"]
-    assert action.code == (
-        "print(await launch_subagents([{'name': 'a'}, {'name': 'b'}]))"
-    )
+    assert action.code == ("print(await launch_subagents([{'name': 'a'}, {'name': 'b'}]))")
 
 
 def test_resume_uses_an_unfinished_subtree_already_on_the_launch_action():

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import textwrap
+import threading
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -39,6 +40,15 @@ class ReplConnection(Protocol):
     def close(self) -> None: ...
 
 
+class ProtocolDesyncError(RuntimeError):
+    """A response arrived that belongs to no outstanding request.
+
+    Means the stream lost framing — historically because something wrote
+    non-protocol bytes onto it. Raised rather than returned, because the
+    alternative is silently handing a caller another request's answer.
+    """
+
+
 class RemoteRepl(Repl):
     """A :class:`~rlmflow.runtime.repl.Repl` that runs code in a sandbox.
 
@@ -62,20 +72,71 @@ class RemoteRepl(Repl):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._request_id = 0
         self._capabilities: CapabilityMap | None = None
+        # One connection, possibly several callers. Sends are serialized so two
+        # messages cannot interleave on the wire; reads are serialized so only
+        # one caller owns the stream at a time and routes by id for the others.
+        self._send_lock = threading.Lock()
+        self._recv_cv = threading.Condition()
+        self._reading = False
+        self._stash: dict[str, ReplResponse] = {}
+        self._outstanding: set[str] = set()
 
     def _next_id(self, cmd: str) -> str:
         self._request_id += 1
         return f"{cmd}-{self._request_id}"
 
+    def _send(self, msg: WireModel) -> None:
+        with self._send_lock:
+            self.connection.send(msg)
+
+    def _finish(self, resp: ReplResponse) -> ReplResponse:
+        if not resp.ok or resp.error is not None:
+            raise RuntimeError(resp.error or "remote REPL request failed")
+        return resp
+
     def call(self, msg: WireModel) -> ReplResponse:
-        self.connection.send(msg)
+        request_id = getattr(msg, "id", None)
+        with self._recv_cv:
+            self._outstanding.add(request_id)
+        self._send(msg)
+        try:
+            return self._await_response(request_id)
+        finally:
+            with self._recv_cv:
+                self._outstanding.discard(request_id)
+                self._stash.pop(request_id, None)
+
+    def _await_response(self, request_id: str) -> ReplResponse:
         while True:
-            resp = self.connection.recv()
-            if isinstance(resp, ReplResponse):
-                if not resp.ok or resp.error is not None:
-                    raise RuntimeError(resp.error or "remote REPL request failed")
-                return resp
-            self._handle_proxy(resp)
+            with self._recv_cv:
+                if request_id in self._stash:
+                    return self._finish(self._stash.pop(request_id))
+                if self._reading:
+                    # Another caller owns the stream; it will stash ours.
+                    self._recv_cv.wait(timeout=0.05)
+                    continue
+                self._reading = True
+            try:
+                # Read outside the lock: a slow sandbox must not block a caller
+                # whose answer is already stashed.
+                resp = self.connection.recv()
+            finally:
+                with self._recv_cv:
+                    self._reading = False
+                    self._recv_cv.notify_all()
+            if isinstance(resp, ProxyCall):
+                self._handle_proxy(resp)
+                continue
+            if resp.id == request_id:
+                return self._finish(resp)
+            with self._recv_cv:
+                if resp.id not in self._outstanding:
+                    raise ProtocolDesyncError(
+                        f"response {resp.id!r} matches no outstanding request "
+                        f"(waiting on {request_id!r}); the stream lost framing"
+                    )
+                self._stash[resp.id] = resp
+                self._recv_cv.notify_all()
 
     def seed(
         self,
@@ -237,10 +298,10 @@ class RemoteRepl(Repl):
         try:
             result = fn(*resp.args, **resp.kwargs)
         except DoneSignal:
-            self.connection.send(ProxyResponse(id=resp.id, done=True))
+            self._send(ProxyResponse(id=resp.id, done=True))
             return
         except Exception as exc:  # noqa: BLE001
-            self.connection.send(
+            self._send(
                 ProxyResponse(
                     id=resp.id,
                     ok=False,
@@ -248,7 +309,7 @@ class RemoteRepl(Repl):
                 )
             )
             return
-        self.connection.send(ProxyResponse(id=resp.id, value=result))
+        self._send(ProxyResponse(id=resp.id, value=result))
 
     def _remote_done(self, answer: object) -> None:
         if self._done is None:
@@ -275,4 +336,4 @@ class RemoteRepl(Repl):
         return asyncio.run_coroutine_threadsafe(wait(), self._loop).result()
 
 
-__all__ = ["RemoteRepl", "ReplConnection"]
+__all__ = ["ProtocolDesyncError", "RemoteRepl", "ReplConnection"]

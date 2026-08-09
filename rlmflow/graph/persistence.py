@@ -97,6 +97,12 @@ def save(agent: AgentStart, path: str | Path) -> Path:
 def load(path: str | Path) -> AgentStart:
     """Rebuild the tree that :func:`save` wrote to ``path``."""
     data = json.loads((Path(path) / "graph.json").read_text(encoding="utf-8"))
+    if "root" not in data:
+        # The engine before the node-tree rewrite keyed agents off a flat table.
+        # Nothing reads that shape any more, so say which shape this is instead of
+        # failing on a missing key.
+        shape = "pre-rewrite (root_agent_id/agents)" if "root_agent_id" in data else "unknown"
+        raise ValueError(f"{path}/graph.json is not a run graph: {shape} format")
     return from_dict(data["root"])
 
 
@@ -149,6 +155,11 @@ def _new_node(data: dict[str, Any], parent_agent: str | None = None) -> Node:
         "started_at": _epoch(timing.get("started_at")),
         "finished_at": _epoch(timing.get("finished_at")),
     }
+    # Runs saved before nodes were stamped have no creation time; those fall back
+    # to the field default so the graph is still orderable, just by load order.
+    created = _epoch(metadata.get("created_at"))
+    if created is not None:
+        ran["created_at"] = created
     # Older runs opened an agent with a query node, so a query naming a different
     # agent than its parent is where that agent starts.
     if cls is AgentStart or (cls is UserQuery and agent_id != parent_agent):

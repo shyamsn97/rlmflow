@@ -228,6 +228,97 @@ for node in loaded.walk():
     print(node.seq, node.type, node.timing().get("duration_ms", ""))
 ```
 
-For anything else — a timeline, a diff between two runs, an export —
-`persistence.to_dict(root)` is the whole run as JSON-serializable data, and
-`persistence.summary(root)` is the one-line version.
+For anything else — a diff between two runs, an export — `persistence.to_dict(root)`
+is the whole run as JSON-serializable data, and `persistence.summary(root)` is the
+one-line version.
+
+## Stepping through a run
+
+Every node stamps itself when it is created, so the order a run happened in is
+those stamps sorted — across agents, not just down one chain. That is what
+`timeline` and `steps` hand back:
+
+```python
+from rlmflow.view import steps, timeline
+
+for node in timeline(loaded):          # every node, in the order it appeared
+    print(node.type)
+
+for step in steps(loaded):             # the same order, with content and offsets
+    print(f"{step.index:>3} +{step.elapsed:6.2f}s {step.title:<32} {step.summary}")
+```
+
+The same run can be drawn. `graph_svg` is one marker per node — coloured and
+shaped by type, agents named — and `render_html` is a single self-contained file
+that walks the run: the graph with the node you are on ringed, everything after it
+faded back, and its content beside it.
+
+```python
+from rlmflow.view import save_html, save_svg
+
+save_svg(loaded, "run.svg")            # the whole graph
+save_svg(loaded, "step12.svg", step=12)  # as it stood at step 12
+save_html(loaded, "run.html")          # steppable, no server, no network
+```
+
+Neither needs a plotting library, a browser, or a running flow. From the shell,
+the same thing without writing a script:
+
+```bash
+rlmflow view runs/deep_research               # the agent tree, then the timeline
+rlmflow view runs/deep_research --tree        # just the tree
+rlmflow view runs/deep_research --step 12     # one step, with its content
+rlmflow view runs/deep_research --svg run.svg --html run.html
+```
+
+In the stepper, the arrow keys move a step, `Home` and `End` jump to the ends, and
+the address bar carries the step you are on, so `run.html#12` opens on step 12.
+
+Runs saved before nodes were stamped still load; their nodes are stamped at load
+time and fall back to tree order. A run written by the engine before the node-tree
+rewrite does not load at all — `persistence.load` raises `ValueError` naming the
+format.
+
+## Replaying a run
+
+`replay` hands back the tree as it stood at each step, so anything that reads a
+tree works on a replay without knowing it is one:
+
+```python
+from rlmflow import render_tree
+from rlmflow.view import render_steps, replay
+
+for snap in replay("runs/deep_research"):
+    print(render_tree(snap))        # the live terminal tree, after the fact
+
+for frame in render_steps("runs/deep_research"):
+    print(frame)                    # the same thing, already rendered
+```
+
+Each snapshot is rebuilt rather than mutated, so they can be collected, compared,
+or rendered out of order, and the run they came from is left alone.
+
+## The browser viewer
+
+`open_viewer` puts a step slider over the figure, an agent picker beside it, and
+that agent's transcript underneath — all as of the step you are on:
+
+```python
+from rlmflow import open_viewer
+
+open_viewer("runs/deep_research")            # needs: pip install rlmflow[viewer]
+open_viewer(root, server_port=7861)          # extra keywords go to launch()
+```
+
+## Frames and GIFs
+
+For a strip of images or an animation, `rlmflow[image]` adds a rasteriser:
+
+```python
+from rlmflow.view import save_frames, save_gif
+
+save_frames(root, "out/", every=5)           # a PNG per fifth step
+save_gif(root, "run.gif", every=5, ms_per_frame=120)
+```
+
+`--frames`, `--gif`, and `--every` do the same from the shell.

@@ -108,6 +108,9 @@ pip install rlmflow[anthropic]    # + Anthropic client
 pip install rlmflow[tinker]       # + Tinker inference client
 pip install rlmflow[dspy]         # + DSPy adapter
 pip install rlmflow[modal]        # + Modal runtime
+pip install rlmflow[tui]          # + full-screen TUI
+pip install rlmflow[viewer]       # + browser viewer
+pip install rlmflow[image]        # + PNG / GIF export
 pip install rlmflow[all]          # all of the above
 ```
 
@@ -292,6 +295,107 @@ or with `Flow(restore="lazy")` tells the agent its variables are gone instead.
 See [`examples/showcase.py`](examples/showcase.py),
 [`docs/control.md`](docs/control.md), and [`docs/injections.md`](docs/injections.md).
 
+## Visualization
+
+Because the run *is* a typed graph, every view is a render of that graph. They all
+live in `rlmflow.view`, re-exported from `rlmflow`, and all work the same on a live
+tree, a loaded one, or a fork.
+
+### Live terminal tree
+
+`render_tree(root)` is the whole agent tree as ASCII — reprint it each tick to
+watch a run unfold:
+
+```python
+from rlmflow import render_tree
+
+async for node in flow.run_streaming(root):
+    print("\033[2J\033[H" + render_tree(root))   # clear + redraw
+```
+
+```text
+The Sokoban worker in `jam` walked itself into a bad irreversible plan.
+└── root: children running 1/2 (2 turns)
+    ├── root.branch0: done solved (16 turns)
+    └── root.branch1: planning (5 turns)
+```
+
+`LiveTreeRenderer` and `LiveGraphTree` package that as stream consumers if you
+would rather hand them nodes as they land.
+
+### Full-screen TUI
+
+`FlowTUI` is a stream consumer too: feed it your own
+`async for node in flow.run_streaming(...)` loop, or hand that loop to
+`FlowTUI().run(drive)` for the interactive prompt. Separate query and context
+inputs, live chat bubbles, and side tabs for the execution tree, agents, counts,
+waiting supervisors, errors, and latest nodes. Ctrl+S sends, Ctrl+R continues a
+paused run, Ctrl+T steps once — see
+[`examples/coding/agent.py`](examples/coding/agent.py).
+
+<p align="center">
+  <img src="docs/static/tui.png" alt="The rlmflow TUI: a chat pane on the left showing the root agent's system prompt and query, and a side panel on the right with a Tree tab listing every step of the root and its two sub-agents" width="820" />
+</p>
+
+```bash
+pip install rlmflow[tui]
+```
+
+### Browser viewer
+
+`open_viewer(source)` puts a step slider over the figure, an agent picker beside
+it, and that agent's transcript underneath — all as of the step you are on:
+
+```python
+from rlmflow import open_viewer
+
+open_viewer("runs/deep_research")     # needs: pip install rlmflow[viewer]
+```
+
+<p align="center">
+  <img src="docs/static/gradio_ui.png" alt="The browser viewer on the shepherd run: the node graph with the current node ringed, the node's content in a panel beside it, a step slider over 526 steps, and an agent picker above the selected agent's transcript" width="820" />
+</p>
+
+### Figures, steppers, and frames
+
+The same graph, without a server:
+
+```python
+from rlmflow import graph_svg, render_steps, replay, save_html, save_svg, steps, timeline
+
+for step in steps(root):              # the run in order, with content
+    print(step.index, step.title, step.summary)
+
+for snap in replay(root):             # the tree as it stood at each step
+    print(render_tree(snap))
+
+save_svg(root, "graph.svg")           # the figure
+save_html(root, "run.html")           # a single-file stepper, arrow keys and all
+```
+
+The stepper is one self-contained page — the graph with the node you are on
+ringed, everything after it faded back, its content beside it. It embeds the
+figure once and reveals it a node at a time, so a 500-node run is a few hundred
+KB you can mail, not a flipbook of duplicated drawings.
+
+Or from the shell, on any saved run:
+
+```bash
+rlmflow view runs/deep_research                  # the agent tree, then the timeline
+rlmflow view runs/deep_research --step 12        # one step, with its content
+rlmflow view runs/deep_research --frames-only    # every step as an ASCII tree
+rlmflow view runs/deep_research --svg g.svg      # the figure
+rlmflow view runs/deep_research --html run.html  # steppable single file
+rlmflow view runs/deep_research --browser        # the viewer above
+rlmflow view runs/deep_research --gif run.gif    # animated (needs [image])
+rlmflow view runs/deep_research --frames out/    # a PNG per step (needs [image])
+```
+
+`python -m rlmflow view …` works the same. Everything here needs nothing beyond
+the standard library except the two that say otherwise: the viewer wants
+`rlmflow[viewer]`, and PNG/GIF export wants `rlmflow[image]`. See
+[`docs/observability.md`](docs/observability.md).
+
 ## Rewind a stuck agent, then branch
 
 [`examples/shepherd/`](examples/shepherd/) runs that fork API on a real failure. A
@@ -473,7 +577,8 @@ in [`docs/internals.md`](docs/internals.md). Research notes live under
 - [Node injection](docs/injections.md): append controller Nodes between
   streaming calls and continue the same root.
 - [Observability](docs/observability.md): querying the Node tree, run
-  layout, stream consumers, and reading a saved run.
+  layout, stream consumers, reading a saved run, and stepping through one with
+  `rlmflow view`.
 - [Runtimes](docs/runtimes.md): `Runtime` protocol, shipped runtimes
   (Local / subprocess / Docker / Modal), writing your own.
 - [Prompt customization](docs/prompt_customization.md): `SystemPromptBuilder`

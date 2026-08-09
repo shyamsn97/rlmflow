@@ -5,7 +5,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib
+import os
 import sys
+import threading
+from collections import deque
+from contextlib import suppress
 from pathlib import Path
 from typing import TextIO
 
@@ -40,6 +44,72 @@ from rlmflow.utils.serial import (
     is_json_safe,
 )
 
+#: How many trailing lines of escaped fd-1 output to keep per run.
+FD_CAPTURE_LINES = 200
+
+
+class WireGuard:
+    """Give the protocol its own file descriptor, so agent code cannot reach it.
+
+    The wire is fd 1 by default, and ``LocalRepl``'s ``_Stdout`` shim only
+    intercepts Python-level writes. A subprocess inheriting fd 1, an
+    ``os.write(1, ...)``, or a C extension writes straight onto the protocol and
+    destroys the connection. So: ``dup`` the real pipe to a descriptor nothing
+    can name, then point fd 1 at a pipe we own and drain. After this, fd 1 is a
+    capture channel and the wire has exactly one writer.
+    """
+
+    def __init__(self) -> None:
+        self.wire: TextIO | None = None
+        self.escaped: deque[str] = deque(maxlen=FD_CAPTURE_LINES)
+        self._reader: threading.Thread | None = None
+        self._marker: str | None = None
+        self._seen = threading.Event()
+        self._sync_n = 0
+
+    def install(self) -> TextIO:
+        wire_fd = os.dup(1)
+        self.wire = os.fdopen(wire_fd, "w", buffering=1)
+        read_fd, write_fd = os.pipe()
+        os.dup2(write_fd, 1)
+        os.close(write_fd)
+        # Rebind sys.stdout to the capture pipe so Python-level writes that miss
+        # the ``_Stdout`` shim (a bare ``sys.__stdout__.write``) land here too.
+        sys.stdout = os.fdopen(os.dup(1), "w", buffering=1)
+        self._reader = threading.Thread(
+            target=self._pump, args=(read_fd,), daemon=True, name="fd1 capture"
+        )
+        self._reader.start()
+        return self.wire
+
+    def _pump(self, read_fd: int) -> None:
+        with suppress(Exception), os.fdopen(read_fd, "r") as stream:
+            for line in stream:
+                text = line.rstrip("\n")
+                if self._marker is not None and text == self._marker:
+                    self._seen.set()
+                    continue
+                self.escaped.append(text)
+
+    def take(self, *, timeout: float = 0.5) -> str:
+        """Drain what escaped to fd 1 since the last call.
+
+        A subprocess's bytes are in the pipe by the time it exits, but our reader
+        may not have consumed them yet. Writing a marker and waiting for the
+        reader to reach it makes "everything that escaped during this run" exact
+        rather than a race against a sleep.
+        """
+        if self._reader is not None:
+            self._sync_n += 1
+            self._marker = f"__rlmflow_fd1_sync_{self._sync_n}__"
+            self._seen.clear()
+            with suppress(Exception):
+                os.write(1, (self._marker + "\n").encode())
+                self._seen.wait(timeout)
+            self._marker = None
+        lines, self.escaped = list(self.escaped), deque(maxlen=FD_CAPTURE_LINES)
+        return "\n".join(lines)
+
 
 class ReplServer:
     """One deployed protocol server around one stateful REPL."""
@@ -50,9 +120,11 @@ class ReplServer:
         workdir: str | Path | None = None,
         protocol_in: TextIO | None = None,
         protocol_out: TextIO | None = None,
+        wire_guard: WireGuard | None = None,
     ) -> None:
         self._in = protocol_in or sys.stdin
         self._out = protocol_out or sys.stdout
+        self.wire_guard = wire_guard
         self.repl = LocalRepl(working_directory=workdir)
         self.capabilities = CapabilityMap(cloudpickle=cloudpickle_available())
         self._next_proxy_id = 0
@@ -64,6 +136,19 @@ class ReplServer:
     def _proxy_id(self, name: str) -> str:
         self._next_proxy_id += 1
         return f"proxy-{self._next_proxy_id}-{name}"
+
+    def _with_escaped(self, output: str) -> str:
+        """Fold anything that escaped to fd 1 into the run's own output.
+
+        Without the guard this text would have corrupted the protocol; with it,
+        a subprocess that prints is simply visible to the agent.
+        """
+        if self.wire_guard is None:
+            return output
+        escaped = self.wire_guard.take()
+        if not escaped:
+            return output
+        return f"{output}\n{escaped}".strip() if output else escaped
 
     def make_proxy(self, name: str, *, is_async: bool = False):
         def proxy(*args: object, **kwargs: object) -> object:
@@ -99,7 +184,7 @@ class ReplServer:
             run = await self.repl.run(msg.code)
             return ReplResponse(
                 id=msg.id,
-                output=run.output,
+                output=self._with_escaped(run.output),
                 errored=self.repl.errored,
                 env=dict(self.repl.env),
             )
@@ -166,11 +251,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="minimal rlmflow remote REPL")
     parser.add_argument("--workdir")
     args = parser.parse_args()
-    asyncio.run(ReplServer(workdir=args.workdir).serve_stdio())
+    # Vacate fd 1 before anything can write to it, so the protocol has exactly
+    # one writer for the life of the process.
+    guard = WireGuard()
+    wire = guard.install()
+    server = ReplServer(workdir=args.workdir, protocol_out=wire, wire_guard=guard)
+    asyncio.run(server.serve_stdio())
 
 
 if __name__ == "__main__":
     main()
 
 
-__all__ = ["ReplServer", "main"]
+__all__ = ["FD_CAPTURE_LINES", "ReplServer", "WireGuard", "main"]

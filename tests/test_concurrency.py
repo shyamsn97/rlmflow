@@ -46,8 +46,7 @@ def test_prebuilt_subtrees_get_a_thread_each():
     root.append_child(b, name="b")
     action = root.frontier
     action.code = (
-        "answers = await launch_subagents([{'name': 'a'}, {'name': 'b'}])\n"
-        "done(','.join(answers))"
+        "answers = await launch_subagents([{'name': 'a'}, {'name': 'b'}])\ndone(','.join(answers))"
     )
 
     assert Flow(BarrierLLM(2), workers=2).run(root) == "c,c"
