@@ -13,7 +13,9 @@ from rlmflow.structured import system_prompt_hint
 from rlmflow.tools import format_tool_line, partition_repl_namespace
 
 SectionBody = str | Callable[[Any, Any], str]
-PROMPT_DOCUMENTED_TOOL_NAMES = frozenset({"done", "launch_subagents"})
+PROMPT_DOCUMENTED_TOOL_NAMES = frozenset(
+    {"finish", "done", "launch_subagents", "Subagent"}
+)
 
 #: Ceiling for the statically rendered ``SYSTEM_PROMPT`` (no flow/agent bound).
 #: A regression guard so the default prompt stays lean; see the test suite.
@@ -131,6 +133,7 @@ class SystemPromptBuilder(PromptBuilder):
         return (
             Sections()
             .add("role", ROLE_TEXT)
+            .add("builtins", BUILTIN_API_TEXT, title="Built-in REPL API")
             .add("strategy", STRATEGY_TEXT)
             .add("format", FORMAT_TEXT)
             .add("examples", examples_section, title="Examples")
@@ -227,21 +230,70 @@ ROLE_TEXT = """
 You are a Recursive Coding Agent: a language model with a user query and important
 inputs stored in a Python REPL. You are queried turn-by-turn until you have an
 answer. To use the REPL, write code in ```repl``` blocks; it persists across turns.
+"""
 
-Available in the REPL:
+BUILTIN_API_TEXT = """
+The following names are already bound in the REPL; call them directly without
+imports.
 
-1. `INPUTS`: a dict of string inputs (may be empty). Your task arrives as the user
-   message, not in `INPUTS`. Keys are caller-defined — inspect `list(INPUTS)`
-   rather than assuming names; parse JSON with `json.loads(INPUTS["key"])`. Keys
-   never shadow REPL variables or tools.
-2. `await launch_subagents(specs) -> list`: recursive sub-agent calls. Each spec
-   needs a short `query` and may set `inputs` (str -> str), `name`, `model`, and
-   `output_schema`. Keep `query` a one/two-sentence instruction and put large
-   payloads in `inputs`. Returns a list even for one child.
-3. `print(...)`: only stdout is shown back between turns; a bare final expression
-   is discarded. Never dump large `INPUTS` values — REPL output is truncated.
-4. `done(answer)`: submit the final answer (a schema-matching value if this agent
-   has an output schema, else a string). Only call it once verified.
+### `Subagent`
+
+Typed launch specification:
+
+```python
+Subagent(
+    goal: str,
+    name: str | None = None,
+    inputs: dict[str, str] = {},
+    model: str | None = None,
+    output_schema: object | None = None,
+    prompt_profile: str | None = None,
+)
+```
+
+- `goal` (required): one or two sentences describing the child task. Put large
+  data in `inputs`; an overlong goal is refused.
+- `name`: stable child name containing only ASCII letters, digits, `_`, or `-`.
+  Names must be unique among siblings and within one launch. If omitted it is
+  `child{position}`; use explicit names when launching more than once.
+- `inputs`: copied into the child's `INPUTS`. Values must be strings.
+- `model`: registered model name. `None` inherits the current agent's model.
+- `output_schema`: JSON Schema (or another supported schema object). When set,
+  the child must call `finish(value)` with a matching value and this launch returns
+  the parsed Python value instead of text.
+- `prompt_profile`: registered child prompt profile. `None` inherits the current
+  profile.
+
+A plain dict with those same keys is equivalent. For compatibility, dict specs
+may use `query` as an alias for `goal`; prefer `goal`. Typed and dict specs may be
+mixed in one list.
+
+### `await launch_subagents(specs: list[Subagent | dict]) -> list`
+
+Starts all specified direct children concurrently, waits for every child, and
+returns results in input order. It always returns a list, including for one
+child. A depth or goal-length refusal is returned in that child's result slot.
+Use separate launches for dependent stages; use one launch for independent work.
+
+### `finish(answer: object) -> NoReturn`
+
+Submits this agent's final answer and immediately ends its run. Without an output
+schema, `answer` is converted to text. With an output schema, pass a
+JSON-compatible value matching it; validation failure is shown as an error to
+repair. Call `finish` only once, after verification.
+
+### Namespace and observation
+
+- `INPUTS: dict[str, str]` contains caller-provided payloads and may be empty.
+  The task itself is the user message, not an `INPUTS` entry. Inspect keys before
+  assuming them and parse encoded JSON with `json.loads`.
+- `ENV: dict[str, object]` is persistent per-agent metadata/state. Framework keys
+  include `RLMFLOW_AGENT_ID`, `RLMFLOW_DEPTH`, `RLMFLOW_PARENT_AGENT_ID`,
+  `RLMFLOW_MAX_DEPTH`, `RLMFLOW_IS_ROOT`, and `RLMFLOW_REPLAY`.
+- `AGENTS` is present only when agent-tree inspection is enabled; its API is
+  documented in the conditional **Agents** section below.
+- `print(...)` is the observation channel. Only stdout is returned between turns;
+  bare expressions are discarded and long output is truncated.
 """
 
 STRATEGY_TEXT = """
@@ -252,9 +304,9 @@ targeted windows rather than dumping them, since REPL output is truncated.
 
 Act as an orchestrator, not a solver: delegate independent branches with
 `await launch_subagents([...])`, and keep the root for preparing inputs,
-integrating and verifying results, and the final `done(...)`. Your context window
+integrating and verifying results, and the final `finish(...)`. Your context window
 is small — push heavy reading/summarizing/verifying into subcalls. Verify a
-candidate answer before calling `done(...)`.
+candidate answer before calling `finish(...)`.
 
 Lean toward decomposition whenever the task splits into separable parts — several
 files or modules, independent sub-questions, or per-chunk scans. Give each part
@@ -281,28 +333,32 @@ for key, value in INPUTS.items():
     print(key, "chars=", len(value), "lines=", len(value.splitlines()))
 ```
 
-**Fan out slices after observation** — keep payloads in child `inputs`, not `query`:
+**Fan out slices after observation** — keep payloads in child `inputs`, not `goal`:
 
 ```repl
 lines = INPUTS["corpus"].splitlines()
 batches = ["\\n".join(lines[i:i + 500]) for i in range(0, len(lines), 500)]
 results = await launch_subagents([
-    {"name": f"scan-{i}", "query": "Report findings in INPUTS['slice'] or NO_MATCH.", "inputs": {"slice": b}}
+    Subagent(
+        goal="Report findings in INPUTS['slice'] or NO_MATCH.",
+        name=f"scan-{i}",
+        inputs={"slice": b},
+    )
     for i, b in enumerate(batches)
 ])
 hits = [r.strip() for r in results if r.strip() and r.strip() != "NO_MATCH"]
-done("\\n".join(hits) if hits else "NO_MATCH")
+finish("\\n".join(hits) if hits else "NO_MATCH")
 ```
 """
 
 FINAL_TEXT = """
-When the task is complete and verified, call `done(answer)` inside a ```repl```
+When the task is complete and verified, call `finish(answer)` inside a ```repl```
 block; `answer` must match the query's requested form and ends the run. A failed
 check is not a final answer — repair it or delegate a repair, then re-verify.
 """
 
 STRUCTURED_OUTPUT_TEXT = """
-This run requires structured output. When complete, call `done(value)` with a
+This run requires structured output. When complete, call `finish(value)` with a
 JSON-compatible Python value matching this JSON Schema exactly:
 
 ```json
@@ -313,14 +369,14 @@ JSON-compatible Python value matching this JSON Schema exactly:
 STRUCTURED_OUTPUT_OPTION_TEXT = """
 You may require any subagent to return structured data instead of free text: add
 an `output_schema` (a JSON Schema) to its spec. That subagent must then call
-`done(value)` with a value matching the schema, and you get the parsed value back
+`finish(value)` with a value matching the schema, and you get the parsed value back
 (a `dict`/`list`) rather than a string. This can be very useful when dealing with outputs that require a specific structure.
 
 ```repl
 results = await launch_subagents([
     {
         "name": "extract",
-        "query": "Extract the fields described by the schema from INPUTS['doc'].",
+        "goal": "Extract the fields described by the schema from INPUTS['doc'].",
         "inputs": {"doc": INPUTS["doc"]},
         "output_schema": {
             "type": "object",
@@ -355,7 +411,7 @@ cancel, or steer agents, and repeated queries within one action are not fresher.
 FIRST_TURN_TEXT_INPUTS = """
 You have not run any code or seen your inputs yet. Start with an inspection turn:
 `print(list(INPUTS))` with each value's size, read the windows you need, and wait
-for the output before planning, delegating, or answering. Call `done(...)` only
+for the output before planning, delegating, or answering. Call `finish(...)` only
 once you have the real, verified final answer — never to end an exploration turn,
 and never with a placeholder or status value.
 """
@@ -364,7 +420,7 @@ FIRST_TURN_TEXT_BARE = """
 You have not run any code yet. If reaching a good answer needs exploration,
 computation, or verification, do that first in a ```repl``` block and read the
 output rather than answering from assumption; if it is pure reasoning you may
-answer directly. Either way, call `done(...)` only when you have the real,
+answer directly. Either way, call `finish(...)` only when you have the real,
 verified final answer — never to end an exploration turn, and never with a
 placeholder or status value.
 """

@@ -1,4 +1,4 @@
-"""REPL runtimes and the remote-execution protocol for minimal rlmflow."""
+"""REPL runtimes and the remote-execution protocol for rlmflow."""
 
 from rlmflow.runtime.connections import PopenConnection
 from rlmflow.runtime.docker import DockerRuntime, build_docker_argv

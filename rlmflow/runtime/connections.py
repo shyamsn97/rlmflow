@@ -1,4 +1,4 @@
-"""Subprocess/container transport for the minimal remote REPL protocol.
+"""Subprocess/container transport for the remote REPL protocol.
 
 ``PopenConnection`` is shared by the subprocess and Docker runtimes.
 """
@@ -40,7 +40,7 @@ class PopenConnection(ReplConnection):
         *,
         cwd: str | Path | None = None,
         env: dict[str, str] | None = None,
-        label: str = "minimal REPL subprocess",
+        label: str = "REPL subprocess",
         repl_timeout: float | None = DEFAULT_REPL_TIMEOUT,
     ) -> None:
         self.argv = argv

@@ -1,4 +1,4 @@
-"""Typed JSON-line protocol models for minimal remote REPLs."""
+"""Typed JSON-line protocol models for remote REPLs."""
 
 from __future__ import annotations
 
@@ -135,6 +135,22 @@ def parse_request(data: str | dict[str, Any]) -> ReplRequest:
     return _REQUEST_ADAPTER.validate_python(data)
 
 
+def parse_host_message(data: str | dict[str, Any]) -> ReplRequest | ProxyResponse:
+    """Parse a line from the host, which sends both kinds down one stream.
+
+    Needed wherever the sandbox reads stdin without knowing which it will get:
+    an ordinary request can arrive while a proxy call is waiting for its answer.
+    Every request carries ``cmd``; a :class:`ProxyResponse` never does.
+    """
+    if isinstance(data, str):
+        raw = TypeAdapter(dict[str, Any]).validate_json(data)
+    else:
+        raw = data
+    if "cmd" in raw:
+        return parse_request(raw)
+    return ProxyResponse.model_validate(raw)
+
+
 def parse_client_message(data: str | dict[str, Any]) -> ReplResponse | ProxyCall:
     if isinstance(data, str):
         raw = TypeAdapter(dict[str, Any]).validate_json(data)
@@ -169,5 +185,6 @@ __all__ = [
     "WireModel",
     "dump_message",
     "parse_client_message",
+    "parse_host_message",
     "parse_request",
 ]

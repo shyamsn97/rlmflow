@@ -21,7 +21,12 @@ def _agent(value: AgentStart | Node) -> AgentStart:
 
 
 class Runtime:
-    """Own one live REPL per agent."""
+    """Own one live REPL per agent.
+
+    One agent, one interpreter: the mapping is one-to-one, so an agent's namespace,
+    imports and memory are its own and nothing it binds can be seen or clobbered by
+    another. Where that interpreter runs is what the subclasses vary.
+    """
 
     def __init__(self, working_directory: str | Path | None = None) -> None:
         self.working_directory = Path(working_directory) if working_directory is not None else None
@@ -80,12 +85,6 @@ class Runtime:
     def close(self) -> None:
         self.close_repls()
 
-    def sync_inputs(self, value: AgentStart | Node) -> None:
-        agent = _agent(value)
-        repl = self.repls.get(agent.id)
-        if repl is not None:
-            repl.inject("INPUTS", dict(agent.config.inputs))
-
     def namespace_for(self, value: AgentStart | Node) -> dict[str, Any] | None:
         repl = self.get(value)
         return repl.namespace if repl is not None else None
@@ -132,7 +131,7 @@ class SubprocessRuntime(Runtime):
             PopenConnection(
                 argv,
                 env=self.env,
-                label="minimal subprocess REPL",
+                label="subprocess REPL",
                 repl_timeout=self.repl_timeout,
             )
         )

@@ -1,4 +1,4 @@
-"""Built-in file tools for the minimal REPL."""
+"""Built-in file tools for the REPL."""
 
 from __future__ import annotations
 

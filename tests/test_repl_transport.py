@@ -6,6 +6,7 @@ working directory (D14) and the frontier guard (D13).
 
 import asyncio
 import contextvars
+import io
 import sys
 import threading
 import time
@@ -21,9 +22,18 @@ from rlmflow.graph.nodes import (
 )
 from rlmflow.runtime import PopenConnection
 from rlmflow.runtime.connections import DEFAULT_REPL_TIMEOUT
-from rlmflow.runtime.protocol import ProxyCall, ReplResponse, RunRequest
+from rlmflow.runtime.protocol import (
+    ProxyCall,
+    ProxyResponse,
+    ReplResponse,
+    RunRequest,
+    SetEnvRequest,
+    dump_message,
+    parse_client_message,
+)
 from rlmflow.runtime.repl import LocalRepl, WorkingDirectoryConflict
 from rlmflow.runtime.repl_client import ProtocolDesyncError, RemoteRepl
+from rlmflow.runtime.repl_server import ReplServer
 from rlmflow.runtime.runtime import SubprocessRuntime
 
 
@@ -271,6 +281,39 @@ def test_a_proxy_call_is_serviced_while_waiting_for_a_response():
 
 
 # --------------------------------------------------------------------------
+# The sandbox reads one stream that carries two kinds of message
+# --------------------------------------------------------------------------
+
+
+def test_a_request_arriving_mid_proxy_call_is_held_not_misparsed():
+    """The host may send a request while agent code sits inside a proxy call.
+
+    That line lands on the read the parked call is doing. Parsed as the answer it
+    was waiting for, it fails the tool for a reason unrelated to the code the
+    agent wrote; held instead, both the call and the request are served.
+    """
+    incoming = "".join(
+        dump_message(msg) + "\n"
+        for msg in [
+            RunRequest(id="run-1", code="print(ask())"),
+            SetEnvRequest(id="env-1", values={"arrived": "mid-call"}),
+            ProxyResponse(id="proxy-1-ask", value="answer"),
+        ]
+    )
+    outgoing = io.StringIO()
+    server = ReplServer(protocol_in=io.StringIO(incoming), protocol_out=outgoing)
+    server.repl.inject("ask", server.make_proxy("ask"))
+
+    asyncio.run(server.serve_stdio())
+
+    written = [parse_client_message(line) for line in outgoing.getvalue().splitlines()]
+    run = next(msg for msg in written if msg.id == "run-1")
+    assert (run.errored, run.output) == (False, "answer")
+    assert server.repl.env["arrived"] == "mid-call"
+    assert any(msg.id == "env-1" for msg in written)
+
+
+# --------------------------------------------------------------------------
 # D14 - the working directory is refcounted, not mutually exclusive
 # --------------------------------------------------------------------------
 
@@ -360,7 +403,7 @@ def test_conflict_is_raised_directly_by_the_scope(tmp_path):
 
 
 def test_the_same_directory_nests_without_complaint(tmp_path):
-    """Co-tenants share a directory, which is the case that must not raise."""
+    """Concurrent agents under one working directory: the case that must not raise."""
     import os
 
     from rlmflow.runtime.repl import _CWD

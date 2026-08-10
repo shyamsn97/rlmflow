@@ -89,7 +89,7 @@ def _format_error_message(content: str, schema: Schema, cause: Exception) -> str
     schema_text = json.dumps(json_schema_for(schema), indent=2)
     return (
         "Structured output is invalid.\n"
-        "Hint: call done(value) with a JSON-compatible Python value that matches "
+        "Hint: call finish(value) with a JSON-compatible Python value that matches "
         "the expected schema. Do not pass prose, Markdown fences, or a JSON "
         "string containing JSON.\n\n"
         "Expected JSON Schema:\n"

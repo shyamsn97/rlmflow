@@ -16,12 +16,12 @@ from typing import Any
 from rlmflow.graph.nodes import AgentStart, ErrorOutput, ExecOutput, LLMOutput, Node, UserQuery
 
 FINAL_ANSWER_ACTION = (
-    "You have used the full iteration budget without calling done(). Based on the "
-    "work above, call done(answer) now with only the final answer, in the exact "
+    "You have used the full iteration budget without calling finish(). Based on the "
+    "work above, call finish(answer) now with only the final answer, in the exact "
     "form the query requested. Do not investigate further."
 )
 
-CONTINUE_NUDGE = "Continue. Reply with one ```repl``` block, or call done(...)."
+CONTINUE_NUDGE = "Continue. Reply with one ```repl``` block, or call finish(...)."
 
 TRUNCATION_SUMMARY = (
     "[earlier turns omitted to fit the context window; the most recent turns follow]"

@@ -1,4 +1,4 @@
-"""Sandbox-side server for the minimal remote REPL protocol."""
+"""Sandbox-side server for the remote REPL protocol."""
 
 from __future__ import annotations
 
@@ -32,9 +32,10 @@ from rlmflow.runtime.protocol import (
     RunRequest,
     SetEnvRequest,
     dump_message,
+    parse_host_message,
     parse_request,
 )
-from rlmflow.runtime.repl import DoneSignal, LocalRepl
+from rlmflow.runtime.repl import DoneSignal, LocalRepl, ReplStatus
 from rlmflow.tools import tool
 from rlmflow.utils.serial import (
     CLOUDPICKLE,
@@ -128,6 +129,10 @@ class ReplServer:
         self.repl = LocalRepl(working_directory=workdir)
         self.capabilities = CapabilityMap(cloudpickle=cloudpickle_available())
         self._next_proxy_id = 0
+        # Requests that arrived while a proxy call was waiting for its answer.
+        # They cannot be handled at that point (the only thread is inside the
+        # block), so they queue here for the serve loop to take next.
+        self._held: deque[ReplRequest] = deque()
 
     def write(self, msg: ReplResponse | ProxyCall) -> None:
         self._out.write(dump_message(msg) + "\n")
@@ -150,14 +155,31 @@ class ReplServer:
             return output
         return f"{output}\n{escaped}".strip() if output else escaped
 
+    def _proxy_response(self) -> ProxyResponse:
+        """Read past anything that is not the answer to the call parked here.
+
+        The host may send an ordinary request at any time, including while agent
+        code sits inside a proxy call. Parsing every line as a ``ProxyResponse``
+        would fail the tool for a reason unrelated to the agent's code, so a
+        request is held instead and answered once the block finishes.
+        """
+        while True:
+            line = self._in.readline()
+            if not line:
+                raise RuntimeError("the host closed the connection mid-proxy-call")
+            msg = parse_host_message(line)
+            if isinstance(msg, ProxyResponse):
+                return msg
+            self._held.append(msg)
+
     def make_proxy(self, name: str, *, is_async: bool = False):
         def proxy(*args: object, **kwargs: object) -> object:
             proxy_id = self._proxy_id(name)
             self.write(ProxyCall(id=proxy_id, proxy=name, args=list(args), kwargs=kwargs))
-            resp = ProxyResponse.model_validate_json(self._in.readline())
+            resp = self._proxy_response()
             if resp.done:
-                if name == "done" and args:
-                    print(f"[done] {args[0]}")
+                if name in {"finish", "done"} and args:
+                    print(f"[{name}] {args[0]}")
                 raise DoneSignal()
             if not resp.ok or resp.error is not None:
                 raise RuntimeError(resp.error or "proxy call failed")
@@ -179,13 +201,13 @@ class ReplServer:
         if isinstance(msg, CapabilitiesRequest):
             return ReplResponse(id=msg.id, capabilities=self.capabilities)
         if isinstance(msg, RunRequest):
-            # The answer travels back over the proxied ``done``, not this response,
+            # The answer travels back over the proxied completion tool, not this response,
             # so the client classifies the run on its side.
             run = await self.repl.run(msg.code)
             return ReplResponse(
                 id=msg.id,
                 output=self._with_escaped(run.output),
-                errored=self.repl.errored,
+                errored=run.status is ReplStatus.ERROR,
                 env=dict(self.repl.env),
             )
         if isinstance(msg, InjectRequest):
@@ -225,11 +247,15 @@ class ReplServer:
 
     async def serve_stdio(self) -> None:
         while True:
-            line = self._in.readline()
-            if not line:
-                return
             try:
-                resp = await self.handle(parse_request(line))
+                if self._held:
+                    request = self._held.popleft()
+                else:
+                    line = self._in.readline()
+                    if not line:
+                        return
+                    request = parse_request(line)
+                resp = await self.handle(request)
             except ValidationError as exc:
                 resp = ReplResponse(
                     id="unknown",
@@ -248,7 +274,7 @@ class ReplServer:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="minimal rlmflow remote REPL")
+    parser = argparse.ArgumentParser(description="rlmflow remote REPL")
     parser.add_argument("--workdir")
     args = parser.parse_args()
     # Vacate fd 1 before anything can write to it, so the protocol has exactly

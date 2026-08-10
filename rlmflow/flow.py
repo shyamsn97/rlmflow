@@ -1,4 +1,4 @@
-"""Run minimal agents: prompt the model, execute its code, delegate to children."""
+"""Run agents: prompt the model, execute its code, delegate to children."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import json
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
-from types import SimpleNamespace
 from typing import Any, Literal
 
 from rlmflow import boundaries
@@ -43,6 +42,7 @@ from rlmflow.runtime import LocalRuntime, Runtime
 from rlmflow.runtime.env import RLMFLOW_REPLAY
 from rlmflow.runtime.repl import DoneSignal, Repl, ReplStatus
 from rlmflow.structured import json_schema_for, parse_structured_output
+from rlmflow.subagents import Subagent, SubagentSpec, normalize_subagent
 from rlmflow.tools import RESERVED_TOOLS, tool
 from rlmflow.tools.agents import AgentDirectory, build_agent_directory
 from rlmflow.tools.llm_query import llm_query_batched
@@ -269,8 +269,7 @@ class Flow:
 
     async def exec_step(self, action: ExecAction) -> Node:
         agent = action.parent_agent
-        repl = self.runtime.repl_for(agent)
-        repl.seed(self.build_tools(action, repl), agent.config.inputs)
+        self.runtime.repl_for(agent).seed(self.build_tools(action), agent.config.inputs)
         run = await self.runtime.execute(action, action.code)
         output = truncate_output(run.output, agent.config.max_output_length)
         if run.status is ReplStatus.DONE:
@@ -323,49 +322,53 @@ class Flow:
         )
         return build_agent_directory(viewer, running_nodes=running)
 
-    def build_tools(self, node: Node, repl: Repl | None = None) -> dict[str, Any]:
-        # Called without a repl to describe the tools in a prompt.
-        repl = repl or SimpleNamespace(done_result=None)
+    def build_tools(self, node: Node) -> dict[str, Any]:
+        finish = self.finish_tool(node)
         namespace = {
             **self.tools,
-            "done": self.done_tool(node, repl),
+            "finish": finish,
+            "done": finish,  # compatibility for saved runs and existing agent code
             "launch_subagents": self.launch_tool(node),
+            "Subagent": Subagent,
             "INPUTS": node.parent_agent.config.inputs,
         }
         if self.use_agent_tree:
             namespace["AGENTS"] = self.agent_directory(node.parent_agent)
         return namespace
 
-    def done_tool(self, node: Node, repl: Repl):
+    def finish_tool(self, node: Node):
         schema = node.parent_agent.config.output_schema
 
         @tool("Submit this agent's final answer and end its run.", proxy=True)
-        def done(answer: object) -> None:
+        def finish(answer: object) -> None:
             if schema is None:
-                repl.done_result = str(answer)
-            else:
-                encoded = answer if isinstance(answer, str) else json.dumps(answer)
-                # Keep the parsed value, so the run records what callers receive.
-                repl.done_result = parse_structured_output(encoded, schema)
-            raise DoneSignal
+                raise DoneSignal(str(answer))
+            encoded = answer if isinstance(answer, str) else json.dumps(answer)
+            # Carry the parsed value, so the run records what callers receive.
+            raise DoneSignal(parse_structured_output(encoded, schema))
 
-        return done
+        return finish
 
     def launch_tool(self, node: Node):
         @tool(
             "Spawn or resume child agents and await their results.",
             proxy=True,
         )
-        async def launch_subagents(specs: list[dict[str, Any]]) -> list[Any]:
+        async def launch_subagents(specs: list[SubagentSpec]) -> list[Any]:
             if not isinstance(node, ExecAction):
                 raise TypeError("launch_subagents requires an ExecAction")
 
-            names = [spec.get("name") or f"child{index}" for index, spec in enumerate(specs)]
+            normalized = [normalize_subagent(spec) for spec in specs]
+            names = [
+                spec.get("name") or f"child{index}" for index, spec in enumerate(normalized)
+            ]
             if len(names) != len(set(names)):
                 raise ValueError("duplicate child names in one launch_subagents call")
 
             existing = {id(child) for child in node.children if isinstance(child, AgentStart)}
-            resolved = [self.resolve_child(node, spec, index) for index, spec in enumerate(specs)]
+            resolved = [
+                self.resolve_child(node, spec, index) for index, spec in enumerate(normalized)
+            ]
             children = [value for value in resolved if isinstance(value, AgentStart)]
             created = [child for child in children if id(child) not in existing]
             await self.run_children(children, submit=created)
@@ -470,7 +473,7 @@ class Flow:
             if agent.terminal:
                 continue  # it answered; nothing will run in this namespace again
             repl = self.runtime.repl_for(agent)
-            repl.seed(self.build_tools(node, repl), agent.config.inputs)
+            repl.seed(self.build_tools(node), agent.config.inputs)
             repl.update_env({RLMFLOW_REPLAY: "1"})
             try:
                 await self.runtime.execute(node, node.code)

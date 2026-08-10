@@ -1,4 +1,4 @@
-"""Tiny async Python REPL for minimal rlmflow."""
+"""Tiny async Python REPL for rlmflow."""
 
 from __future__ import annotations
 
@@ -24,7 +24,17 @@ class MissingReplError(Exception):
 
 
 class DoneSignal(BaseException):
-    """Raised by ``done(...)`` to end a block immediately."""
+    """Raised by ``finish(...)`` to end a block immediately, carrying its answer.
+
+    The answer rides on the exception because that is the one path certain to
+    reach whoever started the block. A REPL therefore never has to hold "the last
+    answer" as state, and a finished run is classified from what happened rather
+    than from what was left behind.
+    """
+
+    def __init__(self, answer: Any = None) -> None:
+        super().__init__(answer)
+        self.answer = answer
 
 
 class ReplStatus(StrEnum):
@@ -34,7 +44,7 @@ class ReplStatus(StrEnum):
     OK = "ok"
     #: It raised; the traceback is the output.
     ERROR = "error"
-    #: It called ``done(...)``, so its agent has an answer.
+    #: It called ``finish(...)``, so its agent has an answer.
     DONE = "done"
     #: The REPL itself died, taking the namespace with it.
     DEAD = "dead"
@@ -50,7 +60,7 @@ class ReplRun:
 
     output: str = ""
     status: ReplStatus = ReplStatus.OK
-    #: What ``done(...)`` was called with; set only when the status is ``DONE``.
+    #: What ``finish(...)`` was called with; set only when the status is ``DONE``.
     answer: Any = None
     #: What killed the REPL; set only when the status is ``DEAD``.
     error: BaseException | None = None
@@ -65,17 +75,13 @@ class Repl(ABC):
     relationship explicit — you can see both subclasses inherit from it, and
     Python enforces that each implements every abstract method.
 
-    Implementations expose four state attributes: ``namespace`` (the Python
-    globals code runs against), ``env`` (the host<->REPL metadata channel),
-    ``done_result`` (where the injected ``done(...)`` leaves its answer), and
-    ``errored`` (whether the last run raised). The last two are how a run reports
-    back from inside; callers read :class:`ReplRun` instead.
+    Implementations expose two pieces of state: ``namespace`` (the Python globals
+    code runs against) and ``env`` (the host<->REPL metadata channel). How a run
+    ended is not state — it is the :class:`ReplRun` that :meth:`run` returns.
     """
 
     namespace: dict[str, Any]
     env: dict[str, Any]
-    done_result: str | None
-    errored: bool
 
     @abstractmethod
     def seed(self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]) -> None: ...
@@ -87,9 +93,6 @@ class Repl(ABC):
     def get_var(self, name: str) -> Any: ...
 
     @abstractmethod
-    def get_env_var(self, name: str) -> Any: ...
-
-    @abstractmethod
     def remove_tool(self, name: str) -> None: ...
 
     @abstractmethod
@@ -99,22 +102,28 @@ class Repl(ABC):
     async def run(self, code: str) -> ReplRun: ...
 
     @abstractmethod
-    def read(self, *, clear: bool = False) -> str: ...
-
-    @abstractmethod
     def close(self) -> None: ...
 
-    def outcome(self, output: str) -> ReplRun:
-        """Classify a finished run from the state it left behind."""
-        if self.done_result is not None:
-            return ReplRun(output=output, status=ReplStatus.DONE, answer=self.done_result)
-        status = ReplStatus.ERROR if self.errored else ReplStatus.OK
-        return ReplRun(output=output, status=status)
+    def get_env_var(self, name: str) -> Any:
+        """Return a value from the ``env`` metadata channel (``ENV``).
 
+        Distinct from :meth:`get_var`, which reads the Python namespace. Concrete
+        here because ``env`` is part of this contract, so both implementations
+        read it the same way. Raises ``KeyError`` if ``name`` is unset.
+        """
+        if name not in self.env:
+            raise KeyError(name)
+        return self.env[name]
+
+
+# The pseudo-filename agent code is compiled under. Appears in every traceback
+# and syntax error the agent reads back, so it names the tool, not the file.
+REPL_FILENAME = "<rlmflow>"
 
 _stdout_buf: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar(
-    "minimal_rflow_stdout", default=None
+    "rlmflow_stdout", default=None
 )
+
 
 class WorkingDirectoryConflict(RuntimeError):
     """Two live runs asked for different working directories.
@@ -225,9 +234,6 @@ class LocalRepl(Repl):
         # it is per-REPL it stays isolated across concurrent local agents.
         self.env: dict[str, Any] = {}
         self.namespace["ENV"] = self.env
-        self.done_result: str | None = None
-        self.errored = False
-        self._buf = io.StringIO()
         self.working_directory = (
             Path(working_directory).resolve() if working_directory is not None else None
         )
@@ -235,18 +241,6 @@ class LocalRepl(Repl):
             self.working_directory.mkdir(parents=True, exist_ok=True)
         if not isinstance(sys.stdout, _Stdout):
             sys.stdout = _Stdout(sys.stdout)
-
-    @property
-    def output(self) -> str:
-        return self._buf.getvalue().strip()
-
-    def read(self, *, clear: bool = False) -> str:
-        """Return captured stdout so far; with ``clear=True``, also reset the buffer."""
-        output = self.output
-        if clear:
-            self._buf = io.StringIO()
-            _stdout_buf.set(self._buf)
-        return output
 
     def seed(self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]) -> None:
         self.namespace.update(tools)
@@ -265,16 +259,6 @@ class LocalRepl(Repl):
             raise KeyError(name)
         return self.namespace[name]
 
-    def get_env_var(self, name: str) -> Any:
-        """Return a value from this REPL's ``env`` metadata channel (``ENV``).
-
-        Distinct from :meth:`get_var`, which reads the Python namespace. Raises
-        ``KeyError`` if ``name`` is unset.
-        """
-        if name not in self.env:
-            raise KeyError(name)
-        return self.env[name]
-
     def remove_tool(self, name: str) -> None:
         self.namespace.pop(name, None)
 
@@ -283,67 +267,68 @@ class LocalRepl(Repl):
         self.env.update(values)
 
     def close(self) -> None:
-        """Release runtime resources; local minimal REPLs have none."""
-
-    @contextmanager
-    def capture(self):
-        self._buf = io.StringIO()
-        self.errored = False
-        # Entered outside the handler below: a directory conflict is a refusal to
-        # start, not an error raised by agent code, so it must reach ``run``
-        # rather than be recorded as this block's output.
-        with _CWD.held(self.working_directory):
-            token = _stdout_buf.set(self._buf)
-            try:
-                yield
-            except DoneSignal:
-                pass
-            except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
-                # Never swallow control-flow exceptions: a cancelled agent must
-                # actually unwind (otherwise run/interpreter shutdown hangs on it).
-                raise
-            except BaseException as exc:  # noqa: BLE001
-                self.errored = True
-                self._buf.write(f"{type(exc).__name__}: {exc}")
-            finally:
-                _stdout_buf.reset(token)
+        """Release runtime resources; local in-process REPLs have none."""
 
     async def run(self, code: str) -> ReplRun:
-        # Cleared here rather than by the caller: an answer belongs to one run.
-        self.done_result = None
         try:
-            return await self._run_captured(code)
+            # Held outside ``_capture``: a directory conflict is a refusal to start,
+            # not an error raised by agent code, so it is not this block's output.
+            with _CWD.held(self.working_directory):
+                return await self._capture(code)
         except WorkingDirectoryConflict as exc:
-            # The block never started, so there is no captured output to report.
-            self.errored = True
             return ReplRun(output=f"{type(exc).__name__}: {exc}", status=ReplStatus.ERROR)
 
-    async def _run_captured(self, code: str) -> ReplRun:
-        with self.capture():
-            if not code.strip():
-                raise MissingReplError("missing ```repl``` block")
-            try:
-                tree = ast.parse(code)
-            except SyntaxError as exc:
-                self.errored = True
-                self._buf.write(f"SyntaxError: {exc}")
-                return self.outcome(self.output)
-            if not has_top_level_await(tree):
-                exec(  # noqa: S102 - executing agent code is the REPL's purpose
-                    compile(tree, "<minimal-rlmflow>", "exec"),
-                    self.namespace,
-                )
-            else:
-                compiled = compile(
-                    tree,
-                    "<minimal-rlmflow>",
-                    "exec",
-                    flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT,
-                )
-                result = eval(compiled, self.namespace)
-                if inspect.iscoroutine(result):
-                    await result
-        return self.outcome(self.output)
+    async def _capture(self, code: str) -> ReplRun:
+        """Run one block, collecting what it printed and how it ended.
+
+        Private because it must run inside the working-directory scope that
+        :meth:`run` holds around it.
+        """
+        buf = io.StringIO()
+        token = _stdout_buf.set(buf)
+        try:
+            await self._execute(code)
+        except DoneSignal as signal:
+            return ReplRun(
+                output=buf.getvalue().strip(),
+                status=ReplStatus.DONE,
+                answer=signal.answer,
+            )
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+            # Never swallow control-flow exceptions: a cancelled agent must
+            # actually unwind (otherwise run/interpreter shutdown hangs on it).
+            raise
+        except BaseException as exc:  # noqa: BLE001
+            buf.write(f"{type(exc).__name__}: {exc}")
+            return ReplRun(output=buf.getvalue().strip(), status=ReplStatus.ERROR)
+        finally:
+            _stdout_buf.reset(token)
+        return ReplRun(output=buf.getvalue().strip(), status=ReplStatus.OK)
+
+    async def _execute(self, code: str) -> None:
+        """Compile and run ``code`` against the namespace, awaiting top-level await.
+
+        Raises whatever the block raises, ``SyntaxError`` included, for
+        :meth:`_capture` to classify.
+        """
+        if not code.strip():
+            raise MissingReplError("missing ```repl``` block")
+        tree = ast.parse(code, filename=REPL_FILENAME)
+        if not has_top_level_await(tree):
+            exec(  # noqa: S102 - executing agent code is the REPL's purpose
+                compile(tree, REPL_FILENAME, "exec"),
+                self.namespace,
+            )
+            return
+        compiled = compile(
+            tree,
+            REPL_FILENAME,
+            "exec",
+            flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT,
+        )
+        result = eval(compiled, self.namespace)
+        if inspect.iscoroutine(result):
+            await result
 
 
 __all__ = [

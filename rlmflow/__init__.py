@@ -72,6 +72,7 @@ from rlmflow.structured import (
     parse_structured_output,
     system_prompt_hint,
 )
+from rlmflow.subagents import Subagent, SubagentSpec
 from rlmflow.tools import (
     FILE_TOOLS,
     AgentDirectory,
@@ -172,6 +173,8 @@ __all__ = [
     "StreamConsumer",
     "StructuredOutputError",
     "StructuredOutputParser",
+    "Subagent",
+    "SubagentSpec",
     "SubprocessRuntime",
     "SystemPromptBuilder",
     "TaskQueue",

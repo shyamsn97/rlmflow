@@ -32,7 +32,7 @@ def messages_to_query(messages: list[dict[str, Any]]) -> str:
 
 
 class FlowLLM:
-    """Expose a minimal :class:`Flow` through a sync ``chat(messages)`` API."""
+    """Expose a :class:`Flow` through a sync ``chat(messages)`` API."""
 
     def __init__(self, flow: Flow) -> None:
         self.flow = flow

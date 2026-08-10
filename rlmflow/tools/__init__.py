@@ -20,7 +20,9 @@ from rlmflow.tools.tools import (
     tool,
 )
 
-RESERVED_TOOLS = frozenset({"done", "launch_subagents", "INPUTS", "AGENTS"})
+RESERVED_TOOLS = frozenset(
+    {"finish", "done", "launch_subagents", "Subagent", "INPUTS", "ENV", "AGENTS"}
+)
 
 __all__ = [
     "AgentDirectory",

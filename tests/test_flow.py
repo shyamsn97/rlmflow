@@ -67,8 +67,8 @@ def _walk(node):
         yield from _walk(child)
 
 
-def test_done():
-    llm = ScriptedLLM([("count", block("x = 2\nprint(x)")), ("2", block("done(x * 3)"))])
+def test_finish():
+    llm = ScriptedLLM([("count", block("x = 2\nprint(x)")), ("2", block("finish(x * 3)"))])
     flow = Flow(llm)
     assert flow.run("count for me") == "6"
     assert llm.calls[0][0]["role"] == "system"
@@ -177,7 +177,7 @@ def test_streaming_until_idle():
 def test_children_run_in_parallel():
     parent = block(
         "results = await launch_subagents("
-        "[{'name': 'a', 'query': 'do a'}, {'name': 'b', 'query': 'do b'}])\n"
+        "[Subagent(goal='do a', name='a'), {'name': 'b', 'goal': 'do b'}])\n"
         "print(results)"
     )
     llm = ScriptedLLM(
@@ -304,7 +304,7 @@ def test_appending_off_the_frontier_is_refused():
 
 def test_structured_output_is_stored_parsed():
     schema = {"type": "object", "properties": {"n": {"type": "number"}}, "required": ["n"]}
-    llm = ScriptedLLM([("count", block("done({'n': 41})"))])
+    llm = ScriptedLLM([("count", block("finish({'n': 41})"))])
     root = start("count", output_schema=schema)
     assert Flow(llm).run(root) == {"n": 41}
     assert root.frontier.to_dict()["payload"]["result"] == {"n": 41}

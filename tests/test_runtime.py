@@ -65,7 +65,7 @@ def test_subprocess_runtime_uses_working_directory(tmp_path):
 
 def test_subprocess_runtime_executes_agent_code():
     flow = Flow(
-        StubLLM(lambda _messages: block('print("subproc")\ndone("ok")')),
+        StubLLM(lambda _messages: block('print("subproc")\nfinish("ok")')),
         runtime=SubprocessRuntime(),
     )
     root = start("q")
@@ -77,7 +77,7 @@ def test_subprocess_runtime_executes_agent_code():
 def test_subprocess_runtime_exposes_opt_in_agents_tree():
     pytest.importorskip("cloudpickle")
     code = block(
-        'done(AGENTS.get().path + "|" + str(len(AGENTS.get_siblings())) + "|" '
+        'finish(AGENTS.get().path + "|" + str(len(AGENTS.get_siblings())) + "|" '
         "+ AGENTS.render_graph())"
     )
     flow = Flow(
@@ -93,9 +93,9 @@ def test_subprocess_runtime_supports_awaited_launch_subagents():
     def reply(messages):
         if first_user(messages) == "parent":
             return block(
-                'r = await launch_subagents([{"name": "c", "query": "child"}])\ndone(r[0])'
+                'r = await launch_subagents([Subagent("child", name="c")])\nfinish(r[0])'
             )
-        return block('done("child-done")')
+        return block('finish("child-done")')
 
     flow = Flow(StubLLM(reply), runtime=SubprocessRuntime())
 
@@ -175,8 +175,7 @@ def test_remote_repl_runs_code_in_the_repl_server():
     repl = remote_repl()
 
     def done(answer):
-        repl.done_result = str(answer)
-        raise DoneSignal()
+        raise DoneSignal(str(answer))
 
     async def run():
         try:
@@ -189,7 +188,29 @@ def test_remote_repl_runs_code_in_the_repl_server():
 
     assert "remote" in result.output
     assert (result.status, result.answer) == (ReplStatus.DONE, "ok")
-    assert not repl.errored
+
+
+def test_a_falsy_answer_is_still_a_finished_run():
+    """``None``, ``False`` and ``0`` are answers, not the absence of one."""
+
+    def done(answer):
+        raise DoneSignal(answer)
+
+    local = LocalRepl()
+    local.seed({"done": done}, {})
+    remote = remote_repl()
+    remote.seed({"done": done}, {})
+
+    async def run():
+        try:
+            return await local.run("done(0)"), await remote.run("done(None)")
+        finally:
+            remote.close()
+
+    ran_local, ran_remote = asyncio.run(run())
+
+    assert (ran_local.status, ran_local.answer) == (ReplStatus.DONE, 0)
+    assert (ran_remote.status, ran_remote.answer) == (ReplStatus.DONE, None)
 
 
 def test_remote_repl_reads_back_published_env():

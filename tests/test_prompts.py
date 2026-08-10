@@ -41,3 +41,22 @@ def test_explicit_output_schema_is_in_system_prompt():
     root = start("query", output_schema=Answer.model_json_schema())
 
     assert '"value"' in flow.messages(root.frontier)[0]["content"]
+
+
+def test_prompt_documents_the_complete_builtin_repl_api():
+    flow = Flow(StubLLM(lambda _messages: "unused"))
+    root = start("query", max_depth=1)
+
+    prompt = flow.messages(root.frontier)[0]["content"]
+
+    assert "# Built-in REPL API" in prompt
+    assert "Subagent(" in prompt
+    for field in ("goal", "name", "inputs", "model", "output_schema", "prompt_profile"):
+        assert f"`{field}`" in prompt
+    assert "`query` as an alias for `goal`" in prompt
+    assert "`await launch_subagents(specs: list[Subagent | dict]) -> list`" in prompt
+    assert "`finish(answer: object) -> NoReturn`" in prompt
+    assert "done(" not in prompt
+    assert "`INPUTS: dict[str, str]`" in prompt
+    assert "`ENV: dict[str, object]`" in prompt
+    assert "`print(...)` is the observation channel" in prompt

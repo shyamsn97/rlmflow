@@ -1,4 +1,4 @@
-"""Host-side client for the minimal remote REPL protocol."""
+"""Host-side client for the remote REPL protocol."""
 
 from __future__ import annotations
 
@@ -40,6 +40,9 @@ class ReplConnection(Protocol):
     def close(self) -> None: ...
 
 
+_NO_ANSWER = object()
+
+
 class ProtocolDesyncError(RuntimeError):
     """A response arrived that belongs to no outstanding request.
 
@@ -65,10 +68,14 @@ class RemoteRepl(Repl):
         # Mirror of the sandbox's host-visible ``ENV`` state channel, refreshed
         # from each run response (see Repl.env).
         self.env: dict[str, Any] = {}
-        self.done_result: str | None = None
-        self.errored = False
+        # The answer to the block currently running, if it has answered. It cannot
+        # ride the exception here the way it does locally: ``finish`` is a proxy call
+        # serviced while ``run`` is still waiting on the run response, so the value
+        # has to wait somewhere until ``run`` returns. A sentinel rather than
+        # ``None``, so answering ``None`` differs from not answering.
+        self._answer: Any = _NO_ANSWER
         self.proxied: dict[str, Callable[..., object]] = {}
-        self._done: Callable[[object], object] | None = None
+        self._completion: Callable[[object], object] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._request_id = 0
         self._capabilities: CapabilityMap | None = None
@@ -149,11 +156,12 @@ class RemoteRepl(Repl):
         for name, fn in tools.items():
             if name == "INPUTS":
                 continue
-            # ``done`` is a framework primitive: always a host proxy with special
-            # completion semantics, even if seeded without tool metadata.
-            if name == "done":
-                self._done = fn
-                self._inject_proxy("done", self._remote_done)
+            # Completion is a framework primitive: always a host proxy with special
+            # semantics, even if seeded without tool metadata. ``done`` remains an
+            # alias so recorded code from older runs still replays.
+            if name in {"finish", "done"}:
+                self._completion = fn
+                self._inject_proxy(name, self._remote_finish)
             else:
                 # Everything else (launch_subagents, llm_query_batched, user
                 # tools) is driven by its own metadata via inject.
@@ -187,16 +195,6 @@ class RemoteRepl(Repl):
         if resp.value_encoding == CLOUDPICKLE:
             return decode_object(resp.value)
         return resp.value
-
-    def get_env_var(self, name: str) -> Any:
-        """Return a value from the mirrored REPL ``env`` metadata channel.
-
-        Reflects the last sync from the sandbox (after ``run`` / ``update_env``).
-        Raises ``KeyError`` if ``name`` is unset.
-        """
-        if name not in self.env:
-            raise KeyError(name)
-        return self.env[name]
 
     def capabilities(self) -> CapabilityMap:
         """Fetch (and cache) the sandbox's advertised capabilities."""
@@ -238,20 +236,19 @@ class RemoteRepl(Repl):
         self.call(SetEnvRequest(id=self._next_id("set_env"), values=dict(values)))
 
     async def run(self, code: str) -> ReplRun:
-        self.done_result = None  # the proxied ``done`` fills it while the block runs
         if not code.strip():
-            self.errored = True
             text = f"{MissingReplError.__name__}: missing ```repl``` block"
             return ReplRun(output=text, status=ReplStatus.ERROR)
+        self._answer = _NO_ANSWER  # cleared per run: an answer belongs to one block
         self._loop = asyncio.get_running_loop()
         resp = await asyncio.to_thread(self.call, RunRequest(id=self._next_id("run"), code=code))
-        self.errored = resp.errored
         if resp.env is not None:
             self.env = resp.env
-        return self.outcome(resp.output or "")
-
-    def read(self, *, clear: bool = False) -> str:
-        return ""
+        output = resp.output or ""
+        if self._answer is not _NO_ANSWER:
+            return ReplRun(output=output, status=ReplStatus.DONE, answer=self._answer)
+        status = ReplStatus.ERROR if resp.errored else ReplStatus.OK
+        return ReplRun(output=output, status=status)
 
     def close(self) -> None:
         self.connection.close()
@@ -297,7 +294,8 @@ class RemoteRepl(Repl):
         fn = self.proxied[resp.proxy]
         try:
             result = fn(*resp.args, **resp.kwargs)
-        except DoneSignal:
+        except DoneSignal as signal:
+            self._answer = signal.answer
             self._send(ProxyResponse(id=resp.id, done=True))
             return
         except Exception as exc:  # noqa: BLE001
@@ -311,12 +309,13 @@ class RemoteRepl(Repl):
             return
         self._send(ProxyResponse(id=resp.id, value=result))
 
-    def _remote_done(self, answer: object) -> None:
-        if self._done is None:
-            self.done_result = str(answer).strip()
-        else:
-            self._done(answer)
-        raise DoneSignal()
+    def _remote_finish(self, answer: object) -> None:
+        if self._completion is None:
+            raise DoneSignal(str(answer).strip())
+        # The host's completion tool raises with the answer it parsed, which is the
+        # one that counts (it may be a validated object, not this string).
+        self._completion(answer)
+        raise DoneSignal(answer)
 
     def _sync_callable(self, fn: Callable[..., object]) -> Callable[..., object]:
         def call(*args: object, **kwargs: object) -> object:

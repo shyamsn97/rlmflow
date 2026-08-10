@@ -1,4 +1,4 @@
-"""Modal Sandbox runtime for the minimal remote REPL protocol."""
+"""Modal Sandbox runtime for the remote REPL protocol."""
 
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ class ModalConnection(ReplConnection):
 
     def _closed_error(self) -> RuntimeError:
         stderr = "".join(self._stderr_tail).strip()
-        return RuntimeError(f"Modal minimal REPL exited. stderr: {stderr or '<empty>'}")
+        return RuntimeError(f"Modal REPL exited. stderr: {stderr or '<empty>'}")
 
     def _is_expected_stream_close(self, exc: Exception) -> bool:
         if self._closing.is_set():
@@ -130,7 +130,7 @@ def _to_text(data: object) -> str:
 
 
 class ModalRuntime(Runtime):
-    """Run each agent in a Modal Sandbox using the minimal remote protocol."""
+    """Run each agent in a Modal Sandbox using the remote protocol."""
 
     def __init__(
         self,

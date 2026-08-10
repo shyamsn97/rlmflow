@@ -1,4 +1,4 @@
-"""Docker-backed runtime for the minimal remote REPL protocol."""
+"""Docker-backed runtime for the remote REPL protocol."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def build_docker_argv(
 
 
 class DockerRuntime(Runtime):
-    """Run each agent in a Docker container using the minimal remote protocol."""
+    """Run each agent in a Docker container using the remote protocol."""
 
     def __init__(
         self,
@@ -97,7 +97,7 @@ class DockerRuntime(Runtime):
             PopenConnection(
                 argv,
                 cwd=cwd,
-                label="minimal Docker REPL",
+                label="Docker REPL",
                 repl_timeout=repl_timeout,
             )
         )
