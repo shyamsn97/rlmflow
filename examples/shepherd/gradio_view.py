@@ -20,6 +20,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from sokoban import BOX_GLYPHS, BOX_ON_GOAL_GLYPHS
+
 
 @dataclass
 class Dashboard:
@@ -106,13 +108,26 @@ def _board_html(board: str) -> str:
     return _PRE.format(body=safe)
 
 
+def _board_solved(board: str) -> bool:
+    """Read solved state from the identity glyphs in ``render(ids=True)``.
+
+    A box off-goal is drawn as 1..9 and one on a goal as A..I. Deriving this from
+    the exact frame being displayed keeps the live badge correct even when its
+    best-effort runtime status callback misses an update.
+    """
+    glyphs = set(board)
+    return bool(glyphs.intersection(BOX_ON_GOAL_GLYPHS)) and not glyphs.intersection(BOX_GLYPHS)
+
+
 def _panels_html(panels: list[tuple[str, str]], picked: str) -> str:
     if not panels:
         return "<em>waiting for the worker…</em>"
     cells = []
     for label, board in panels:
         is_pick = bool(picked) and label.split()[:1] == [picked]
-        solved = "SOLVED" in label or "solved" in label
+        solved = "solved" in label.lower() or _board_solved(board)
+        if solved and "solved" not in label.lower():
+            label = f"{label} [SOLVED]"
         color = "#d29922" if is_pick else ("#2ea043" if solved else "#8b949e")
         ring = "outline:2px solid #d29922;outline-offset:3px;" if is_pick else ""
         badge = " ◀ picked" if is_pick else ""

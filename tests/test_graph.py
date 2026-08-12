@@ -69,7 +69,10 @@ def test_append_child_rehomes_a_complete_subtree():
     assert all(node.root is root for node in subtree.walk())
     assert subtree.config.path == "root.branch0"
     assert nested.config.path == "root.branch0.nested"
-    assert action.code == "print(await launch_subagents([{'name': 'branch0'}]))"
+    assert action.code == (
+        "_handle = await launch_subagent('', name='branch0')\n"
+        "print(await _handle.wait_for_result())"
+    )
 
 
 def test_append_child_reuses_one_launch_action():
@@ -81,4 +84,10 @@ def test_append_child_reuses_one_launch_action():
 
     assert isinstance(action, AppendChild)
     assert action.child_agents == [first, second]
-    assert action.code == ("print(await launch_subagents([{'name': 'one'}, {'name': 'two'}]))")
+    assert action.code == (
+        "_handles = [\n"
+        "    await launch_subagent('', name='one'),\n"
+        "    await launch_subagent('', name='two'),\n"
+        "]\n"
+        "print([await h.wait_for_result() for h in _handles])"
+    )

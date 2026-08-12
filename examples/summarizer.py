@@ -2,9 +2,8 @@
 
 The canonical RLM pattern: a document too long to summarize well in one shot
 is passed as an input (`document`), and the root agent splits it into chunks,
-launches a summary of each chunk on a cheap `fast` child in parallel with
-`await launch_subagents([...])` (the *map* step), then synthesizes the child
-summaries into one final summary (the *reduce* step).
+launches a background summary of each chunk on a cheap `fast` child (the *map*
+step), then collects and synthesizes the summaries (the *reduce* step).
 
 Usage:
     python examples/summarizer.py
@@ -87,18 +86,21 @@ it with a map-reduce strategy instead of reading it all at once:
 1. Split `INPUTS["document"]` into a handful of contiguous chunks (aim for ~4-8
    chunks). For example: `lines = INPUTS["document"].splitlines()`, then slice
    into ranges.
-2. Summarize all chunks in parallel with one call, using the "fast" model.
-   Pass each chunk to its child via `inputs` (a dict of str -> str):
-   summaries = await launch_subagents([
-       {"name": f"chunk-{i}",
-        "query": "Summarize `INPUTS['passage']` in 3-4 sentences, preserving "
-                 "any concrete facts, dates, and decisions.",
-        "inputs": {"passage": chunk_text},
-        "model": "fast"}
+2. Launch all chunk summaries before collecting any result, using the "fast"
+   model. Pass each chunk via `inputs` (a dict of str -> str):
+   handles = [
+       await launch_subagent(
+           "Summarize `INPUTS['passage']` in 3-4 sentences, preserving "
+           "any concrete facts, dates, and decisions.",
+           name=f"chunk-{i}",
+           inputs={"passage": chunk_text},
+           model="fast",
+       )
        for i, chunk_text in enumerate(chunks)
-   ])
-   launch_subagents runs the children concurrently and returns their summaries
-   in order.
+   ]
+   summaries = [await handle.wait_for_result() for handle in handles]
+   All children run concurrently after launch; collecting handles sequentially
+   does not serialize their execution.
 3. Combine the child summaries into a single coherent summary of the whole
    document (a short intro paragraph plus bullet points), then call
    done(final_summary).

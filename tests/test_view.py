@@ -35,10 +35,16 @@ def ran() -> AgentStart:
     """A run with a sub-agent, so the figure has a fan in it."""
     llm = ScriptedLLM(
         [
-            ("do a thing", block("child = launch_subagent('sub', 'count')\nprint(child)")),
+            (
+                "do a thing",
+                block(
+                    "child = await launch_subagent('sub', name='count')\n"
+                    "print(await child.wait_for_result())"
+                ),
+            ),
             ("sub", block("print(2 + 2)")),
             ("4", block("done('four')")),
-            ("done", block("done('finished')")),
+            ("four", block("done('finished')")),
         ]
     )
     flow = Flow(llm, config=AgentConfig(max_depth=2))

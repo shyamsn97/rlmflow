@@ -21,7 +21,10 @@ FINAL_ANSWER_ACTION = (
     "form the query requested. Do not investigate further."
 )
 
-CONTINUE_NUDGE = "Continue. Reply with one ```repl``` block, or call finish(...)."
+CONTINUE_NUDGE = (
+    "Continue. Reply with exactly one ```repl``` block: the next step, or "
+    "finish(...) if you have the verified final answer."
+)
 
 TRUNCATION_SUMMARY = (
     "[earlier turns omitted to fit the context window; the most recent turns follow]"
@@ -31,6 +34,29 @@ COLD_REPL_NOTE = (
     "[this agent's REPL was restarted, so variables and imports from earlier turns "
     "are gone. Re-derive whatever you need before using it.]"
 )
+
+
+def build_background_agents_manifest(flow: Any, agent: AgentStart) -> str:
+    """Render direct children and current result readiness from the graph."""
+    children = agent.sub_agents
+    if not children:
+        return ""
+
+    lines = ["Background subagents:"]
+    for child in children:
+        state = "result ready" if child.terminal else "running"
+        lines.append(f"- `{child.config.name}` ({child.config.path}): {state}")
+    if getattr(flow, "use_agent_tree", False):
+        lines.append(
+            "Retrieve a result with "
+            '`await AGENTS.get("name").wait_for_result()` before finishing.'
+        )
+    else:
+        lines.append(
+            "Retrieve needed results with `await handle.wait_for_result()` on the "
+            "handles returned by `launch_subagent` before finishing."
+        )
+    return "\n".join(lines)
 
 
 def build_inputs_manifest(inputs: dict[str, str]) -> str:
@@ -101,7 +127,7 @@ class UserPromptBuilder(PromptBuilder):
         """
         if self._build_fn is not None:
             return self._build_fn(flow, agent)
-        return None
+        return build_background_agents_manifest(flow, agent) or None
 
     def project(self, flow: Any, node: Node, keep: int | None = None) -> list[dict[str, str]]:
         """The conversation as of ``node``: its own agent's nodes, as turns.
@@ -194,6 +220,7 @@ __all__ = [
     "UserPromptFn",
     "UserPromptSource",
     "as_user_prompt",
+    "build_background_agents_manifest",
     "build_inputs_manifest",
     "coalesce_roles",
 ]

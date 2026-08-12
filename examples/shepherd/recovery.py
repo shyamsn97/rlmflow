@@ -65,17 +65,23 @@ def rewind_point(agent: AgentStart, rewind: int) -> tuple[Node, int]:
 
 
 def snapshot(flow: Flow, agent: AgentStart, rewind: int = 0) -> dict:
-    game = flow.runtime.get_var(agent, "game")
+    """The agent's board as plain data, read from its REPL env.
+
+    The game itself lives wherever its REPL runs, which is a worker process under
+    every runtime but the in-process one, so ``Sokoban._publish`` posts each
+    reading the host needs to ``env`` and the host never touches the object.
+    """
+    env = flow.runtime.repl_for(agent).env
     return {
         "rewind": rewind,
         # Ruled, because ``board`` is the only description of the walls a reader
         # gets — there is no wall list to fall back on.
-        "board": game.grid(),
-        "status": game.status(),
-        "player": game.player,
-        "boxes": dict(game.box_items()),
-        "goals": dict(game.goal_items()),
-        "legal_pushes": game.legal_pushes(),
+        "board": env.get("grid", ""),
+        "status": env.get("status", ""),
+        "player": env.get("player"),
+        "boxes": env.get("boxes", {}),
+        "goals": env.get("goals", {}),
+        "legal_pushes": env.get("legal_pushes", []),
     }
 
 
@@ -127,7 +133,7 @@ class Branch:
         return score(self.env)
 
     def board(self) -> str:
-        return self.flow.runtime.get_var(self.graph, "game").render(ids=True)
+        return self.env.get("board", "")
 
 
 def recovery_tools(
@@ -141,7 +147,10 @@ def recovery_tools(
     jam = snapshot(flow, worker)
     max_rewind = len(push_turns(worker))
 
-    @tool("Inspect the worker after rewinding pushes, without playing.")
+    # Both tools run on the host, not in the shepherd's REPL: ``preview`` drives a
+    # graph replay and ``branch`` records into the host's ``plans`` list, and a copy
+    # shipped into a worker process would replay nothing and record into the copy.
+    @tool("Inspect the worker after rewinding pushes, without playing.", proxy=True)
     async def preview(rewind: int) -> dict:
         fork, depth = await replayed_fork(flow, worker, rewind)
         try:
@@ -149,7 +158,7 @@ def recovery_tools(
         finally:
             flow.runtime.close_repl(fork)
 
-    @tool("Record {rewind, order} recovery plans, then stop.")
+    @tool("Record {rewind, order} recovery plans, then stop.", proxy=True)
     def branch(specs: list[Plan]) -> str:
         """Take the plans as written. What makes a *good* spread of branches is
         the prompt's job to explain, not this tool's job to enforce; only the

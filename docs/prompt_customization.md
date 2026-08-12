@@ -3,7 +3,7 @@
 `Flow` builds a system prompt from named sections. Most customization should
 derive from the default builder instead of replacing the whole prompt, because
 the default sections carry the REPL protocol, the
-`launch_subagents` delegation rules,
+`launch_subagent` delegation rules,
 `INPUTS`, `HISTORY`, and the worked examples that keep recursive execution
 well-formed.
 
@@ -208,7 +208,7 @@ def prompt_for(flow, agent):
 flow = rlmflow.Flow(llm, system_prompt=prompt_for)
 ```
 
-A string that omits `launch_subagents`, `INPUTS`, `HISTORY`, or the `done(...)`
+A string that omits `launch_subagent`, `INPUTS`, `HISTORY`, or the `done(...)`
 rule means the model will not reliably use those features — prefer a
 `SystemPromptBuilder` unless you intend to own the entire protocol.
 
@@ -278,23 +278,21 @@ from `flow` and `node`.
 
 ## Child-Specific Prompts
 
-The easiest way to steer a child is the query you pass in a
-`launch_subagents([...])` spec. Use the global prompt for stable behavior and
-use child queries for local contracts.
+The easiest way to steer a child is the goal you pass to `launch_subagent`.
+Use the global prompt for stable behavior and child goals for local contracts.
 
 ```python
-results = await launch_subagents([
-    {
-        "name": "api",
-        "query": "Implement src/api.py. Return ONLY JSON {\"files\": [str], \"checks\": [str]}.",
-        "inputs": {"spec": api_spec},
-    },
-    {
-        "name": "tests",
-        "query": "Implement tests for src/api.py. Return ONLY JSON {\"files\": [str], \"checks\": [str]}.",
-        "inputs": {"spec": test_spec},
-    },
-])
+api = await launch_subagent(
+        "Implement src/api.py. Return ONLY JSON {\"files\": [str], \"checks\": [str]}.",
+        name="api",
+        inputs={"spec": api_spec},
+)
+tests = await launch_subagent(
+        "Implement tests for src/api.py. Return ONLY JSON {\"files\": [str], \"checks\": [str]}.",
+        name="tests",
+        inputs={"spec": test_spec},
+)
+results = [await api.wait_for_result(), await tests.wait_for_result()]
 ```
 
 ## Per-child prompts
@@ -329,10 +327,8 @@ By default, Flow reads the profile name stamped on the Node's latest
 advertised in the orchestrator's system prompt, so it can name one per child:
 
 ```python
-await launch_subagents([
-    {"name": "impl",   "query": "...", "prompt_profile": "coder"},
-    {"name": "review", "query": "...", "prompt_profile": "reviewer"},
-])
+impl = await launch_subagent("...", name="impl", prompt_profile="coder")
+review = await launch_subagent("...", name="review", prompt_profile="reviewer")
 ```
 
 Pass a callable `prompt_router` only when host policy should choose the profile
@@ -346,7 +342,7 @@ flow = rlmflow.Flow(
 )
 ```
 
-The spawn spec's `prompt_profile` is stored on `UserQuery.prompt_profile` and
+The launch call's `prompt_profile` is stored on `UserQuery.prompt_profile` and
 serialized. When omitted, a cold child inherits its immediate parent agent's
 profile; a prepared branch keeps its own profile. Without a router, that stamp
 is authoritative. With a router, the callable's result is authoritative.

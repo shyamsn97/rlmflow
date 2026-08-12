@@ -154,6 +154,7 @@ def main():
                     consumers.handle(node)
             finally:
                 consumers.close()
+                await flow.aclose()
 
         asyncio.run(drive())
 
@@ -163,7 +164,6 @@ def main():
         print(f"Correct:        {answer in root.result()}")
         print(f"Run saved to    {out_dir}")
 
-        flow.runtime.close_repls()
     finally:
         if tmp is not None:
             tmp.cleanup()

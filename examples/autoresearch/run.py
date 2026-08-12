@@ -57,12 +57,11 @@ Autoresearch loop policy:
 - Do not use git or run training manually. Use `submit_trial(slug, hypothesis)`.
 - Call `run_baseline()` once; it uses the cached baseline result and does not
   submit a Modal job.
-- Hierarchy is flat: root is the planner. Each turn root plans a wave, fans out
-  several implementer children in ONE `launch_subagents([...])` call (they run in
-  parallel), then those children come back and root plans the next wave from the
-  new results. Anything passed in a single `launch_subagents` list runs
-  concurrently, so prefer wide waves over launching one child at a time. Children
-  may block while `submit_trial(...)` runs its Modal job.
+- Hierarchy is flat: root is the planner. Each turn root plans a wave, launches
+  several implementer handles before collecting any result (the children run in
+  parallel), then collects those handles and plans the next wave from the new
+  results. Prefer wide waves over launching and immediately waiting on one child
+  at a time. Children may block while `submit_trial(...)` runs its Modal job.
 
 Diagnose before proposing:
 - Read at least one prior log with `get_run(n)` before planning a wave (start
@@ -137,10 +136,11 @@ Spend the WHOLE budget — a plateau means pivot, not stop:
   COMBINATION of two prior winners. NEVER break out of planning or call `done()`
   with the reasoning "no new ideas / only duplicates left" while budget remains
   — there is always another untried direction within the task Constraints.
-- Keep waves wide: size each `launch_subagents([...])` list up to your
-  `parallel` limit and up to `remaining_submissions`, so the budget is spent in
-  a few wide waves rather than trickled out. Re-check `submission_status()` at
-  the start of every turn and keep going until `remaining_submissions == 0`.
+- Keep waves wide: launch up to your `parallel` limit and up to
+  `remaining_submissions` independent children before collecting their handles,
+  so the budget is spent in a few wide waves rather than trickled out. Re-check
+  `submission_status()` at the start of every turn and keep going until
+  `remaining_submissions == 0`.
 
 Editing train.py (do it the robust way):
 - Implementation children edit only `INPUTS["trial_dir"]/train.py`, then call
@@ -156,7 +156,7 @@ Editing train.py (do it the robust way):
   it still fails, re-read `INPUTS["trial_dir"]/train.py` from scratch and rewrite
   cleanly. Do not retry more than twice; if still broken, return the failure row.
 - If it returns any other failure row, return it to the parent.
-- All `launch_subagents(..., inputs=...)` values must be strings. Use `str(...)`
+- All `launch_subagent(..., inputs=...)` values must be strings. Use `str(...)`
   for counts and JSON strings for structured values.
 
 Root sketch (root is the planner: plan a wave, fan out implementers, repeat):
@@ -181,13 +181,16 @@ candidates = [
 tried = {r.get("slug") for r in runs} | {r.get("hypothesis") for r in runs}
 ideas = [(s, h, seed) for s, h, seed in candidates if s not in tried and h not in tried][:remaining]
 trials = [create_trial(s, h, parent_slug=(seed["slug"] if seed else "baseline")) for s, h, seed in ideas]
-wave = [{
-    "name": row["slug"],
-    "query": "Read INPUTS['trial_dir']/train.py in full, then write_file the complete "
-             "updated file changing only the constants your hypothesis needs, then submit_trial(...).",
-    "inputs": {"trial_dir": row["agent_trial_dir"], "slug": row["slug"], "hypothesis": row["hypothesis"]},
-} for row in trials]
-results = await launch_subagents(wave)     # implementer children run concurrently
+handles = [
+    await launch_subagent(
+        "Read INPUTS['trial_dir']/train.py in full, then write_file the complete "
+        "updated file changing only the constants your hypothesis needs, then submit_trial(...).",
+        name=row["slug"],
+        inputs={"trial_dir": row["agent_trial_dir"], "slug": row["slug"], "hypothesis": row["hypothesis"]},
+    )
+    for row in trials
+]
+results = [await handle.wait_for_result() for handle in handles]
 # Print results and STOP here — this is ONE wave for ONE turn. Do not wrap this
 # in a `while` loop over a fixed candidate list; finishing the turn lets your
 # NEXT turn reason about `results` and brainstorm genuinely new hypotheses. If
@@ -663,10 +666,10 @@ Use INPUTS["task_instructions"] for task context. Use the system prompt for the
 rlmflow loop policy and examples.
 
 Start with run_baseline(); it is cached and does not run Modal. You are the
-planner: each turn inspect list_runs()/best_run()/submission_status(), then fan
-out a PARALLEL WAVE of implementer children in a single launch_subagents([...])
-call — several trials at once, not one at a time. The children return here; plan
-the next wave from their results.
+planner: each turn inspect list_runs()/best_run()/submission_status(), then
+launch a PARALLEL WAVE of implementer handles before waiting for any result —
+several trials at once, not one at a time. Collect those handles and plan the
+next wave from their results.
 
 Keep launching waves until submission_status()["remaining_submissions"] == 0.
 That is the ONLY stop condition — do NOT call done() while submissions remain,

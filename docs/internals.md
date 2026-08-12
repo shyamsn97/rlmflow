@@ -132,11 +132,12 @@ call frees the caller but not its thread.
 
 ## Delegation and replay
 
-`launch_subagents` validates child names, refuses a spec past `max_depth` or
-over `max_query_chars` by returning a refusal string in its place, opens one
-`AgentStart` per accepted spec under the running `ExecAction`, submits them, and
-awaits their answers in spec order. The parent's frontier stays on the action
-for the whole block, so the step lands a single output when the block returns.
+`launch_subagent` validates the child name, refuses a call past `max_depth` or
+over `max_query_chars` by returning a refusal string, opens one `AgentStart`
+under the running `ExecAction`, submits it, and awaits its answer. Independent
+calls can run concurrently through `asyncio.gather`, which preserves call order
+in its result sequence. The parent's frontier stays on the action for the whole
+block, so the step lands a single output when the block returns.
 
 A child failure is a value, not an exception: the crash is recorded as that
 child's `DoneOutput` so siblings settle and the parent reads an explicit
@@ -147,8 +148,8 @@ it — loaded, forked, or from another process — is replayed once before the r
 loop starts: each unfinished agent's namespace is rebuilt by re-running its
 recorded `ExecAction`s in tree order. Agents that already answered are skipped,
 since nothing will run in their namespaces again. `RLMFLOW_REPLAY` is `"1"`
-during the rebuild, so `launch_subagents` hands back the answers its children
-already gave instead of launching them again, and agent code can skip work it
+during the rebuild, so `launch_subagent` hands back the answer its child already
+gave instead of launching it again, and agent code can skip work it
 should not repeat. The replay appends nothing and discards output, because a
 block that failed the first time fails the same way here. Pass
 `Flow(restore="lazy")` to skip the rebuild and instead tell each unfinished
@@ -166,7 +167,7 @@ entry so the next step opens a fresh one, and returns a `ReplRun` with status
 `flow.inject(name, value)` and `flow.add_tool(fn)` write into the flow's tool
 namespace *and* into every open REPL, so a tool added mid-run reaches agents
 that are already warm. `flow.remove_tool(name)` does the reverse. The three
-reserved names — `done`, `launch_subagents`, `INPUTS` — are rebuilt per step and
+reserved names — `done`, `launch_subagent`, `INPUTS` — are rebuilt per step and
 cannot be overwritten.
 
 ## Branches

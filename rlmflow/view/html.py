@@ -51,7 +51,9 @@ button:disabled { opacity: 0.4; cursor: default; }
   padding: 0; cursor: pointer; }
 .dot.on { transform: scale(1.35); }
 input[type=range] { margin-left: auto; width: 46%; accent-color: #58a6ff; }
-""".replace("$bg", BG)
+""".replace(
+        "$bg", BG
+    )
     .replace("$ink", INK)
     .replace("$dim", DIM)
 )

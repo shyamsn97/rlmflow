@@ -45,6 +45,13 @@ sprite tiles; `render_graph.py` needs neither.
 | [`sandboxes/`](sandboxes/) | Docker and Modal remote execution |
 | [`providers/`](providers/) | DSPy, MCP, Tinker adapters |
 
+The shared-state delegation example is deterministic and needs no API key:
+
+```bash
+python examples/control/delegation/reuse_repl.py
+python examples/control/delegation/nonblocking.py
+```
+
 ---
 
 Most compute examples (`summarizer.py`, `needle/haystack.py`, `showcase.py`,
@@ -116,7 +123,9 @@ python examples/sandboxes/docker_agent.py --docker-image rlmflow:local
 python examples/sandboxes/modal_agent.py --model gpt-5
 ```
 
-Install the matching extra first: `rlmflow[modal]` or `rlmflow[sandbox]`.
+The Docker runtime needs only the core package and the host `docker` CLI.
+Install `rlmflow[modal]` for Modal; `rlmflow[sandbox]` is an equivalent
+convenience extra.
 
 For fully locked-down local runs, pass a `DockerRuntime`:
 

@@ -482,11 +482,11 @@ When enabled, `RemoteRepl.seed(...)` ships `AGENTS` by value through the
 existing object injection path. The object contains no live host references.
 
 The current by-value path uses `cloudpickle` for custom class instances. The
-shipped subprocess, Docker, and Modal environments must therefore include the
-`cloudpickle` extra when `AGENTS` is enabled.
+shipped subprocess, Docker, and Modal environments include it through
+`rlmflow`'s core dependencies.
 
-If avoiding that optional dependency is a requirement, add a narrow wire
-encoding later:
+If avoiding that dependency becomes a requirement, add a narrow wire encoding
+later:
 
 ```text
 AgentDirectory -> JSON data -> reconstruct AgentDirectory in sandbox

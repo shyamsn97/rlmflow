@@ -345,8 +345,8 @@ The created Node is yielded before its boundary is applied:
 yield node
 
 stop = boundary is not None and boundary(node, root)
-if stop or root.terminal:
-    active.discard(id(root))
+if stop:
+    driving.discard(id(root))
     await queue.cancel(root.walk())
 elif not transition.is_agent_start and not node.parent_agent.terminal:
     queue.submit(node, self.step)
@@ -355,7 +355,8 @@ elif not transition.is_agent_start and not node.parent_agent.terminal:
 The cases are:
 
 - **boundary matched**: stop this root and cancel only its active work;
-- **root terminal**: remove this root from the active set;
+- **root terminal**: do not submit another root step, but keep draining any
+  non-blocking descendants;
 - **child start publication**: its first step is already running, so do nothing;
 - **ordinary nonterminal transition**: submit the created Node as the next leaf.
 
@@ -370,9 +371,9 @@ Flow.step
     v
 Transition.created
     │
-    ├── boundary / terminal ─> stop this root
-    │
-    └── unfinished ─────────> submit created Node
+    ├── boundary ───────────> stop this root
+    ├── terminal agent ─────> no successor
+    └── unfinished agent ───> submit created Node
 ```
 
 ### 6. Clean up
@@ -390,7 +391,8 @@ finally:
 
 ## Delegation timeline
 
-`launch_subagents` runs inside the parent agent's `ExecAction` step.
+`launch_subagent` runs inside the parent agent's `ExecAction` step. A parent can
+start independent calls together with `asyncio.gather`.
 
 ```text
 parent ExecAction task
@@ -460,7 +462,7 @@ apply a different capacity or placement policy.
 
 `until` is checked after a Node is yielded and before its successor is submitted:
 
-- `"done"` / `"finished"`: run each root until terminal;
+- `"done"` / `"finished"`: run each root and drain queued descendants;
 - `"next"`: stop each root after its next created Node;
 - `"idle"`: stop on `ExecOutput` or `DoneOutput`;
 - `"error"`: stop on `ErrorOutput`;
@@ -536,8 +538,8 @@ Within one agent, `Node.append` preserves a single transcript chain and `seq`
 preserves that agent's local order. Across agents and roots, completion order is
 intentionally nondeterministic.
 
-`parallel_run` returns roots in input order. `launch_subagents` returns child
-answers in specification order. Neither promise changes stream completion order.
+`parallel_run` returns roots in input order. `asyncio.gather` returns child
+answers in call order. Neither promise changes stream completion order.
 
 ## Failure behavior
 

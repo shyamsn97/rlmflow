@@ -1,27 +1,21 @@
-"""Sandbox-side server for the remote REPL protocol."""
+"""Sandbox-side lightweight Python worker."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib
 import os
 import sys
 import threading
-from collections import deque
-from contextlib import suppress
+from concurrent.futures import Future
 from pathlib import Path
 from typing import TextIO
 
 from pydantic import ValidationError
 
 from rlmflow.runtime.protocol import (
-    CapabilitiesRequest,
-    CapabilityMap,
-    InjectImportRequest,
     InjectProxyRequest,
     InjectRequest,
-    InjectSourceRequest,
     PingRequest,
     ProxyCall,
     ProxyResponse,
@@ -30,90 +24,23 @@ from rlmflow.runtime.protocol import (
     ReplResponse,
     RetrieveRequest,
     RunRequest,
-    SetEnvRequest,
+    WireModel,
     dump_message,
     parse_host_message,
-    parse_request,
 )
-from rlmflow.runtime.repl import DoneSignal, LocalRepl, ReplStatus
-from rlmflow.tools import tool
-from rlmflow.utils.serial import (
-    CLOUDPICKLE,
-    cloudpickle_available,
-    decode_object,
-    encode_object,
-    is_json_safe,
+from rlmflow.runtime.repl import (
+    CurrentObject,
+    DoneSignal,
+    LocalRepl,
+    ReplStatus,
+    current_binding,
 )
-
-#: How many trailing lines of escaped fd-1 output to keep per run.
-FD_CAPTURE_LINES = 200
-
-
-class WireGuard:
-    """Give the protocol its own file descriptor, so agent code cannot reach it.
-
-    The wire is fd 1 by default, and ``LocalRepl``'s ``_Stdout`` shim only
-    intercepts Python-level writes. A subprocess inheriting fd 1, an
-    ``os.write(1, ...)``, or a C extension writes straight onto the protocol and
-    destroys the connection. So: ``dup`` the real pipe to a descriptor nothing
-    can name, then point fd 1 at a pipe we own and drain. After this, fd 1 is a
-    capture channel and the wire has exactly one writer.
-    """
-
-    def __init__(self) -> None:
-        self.wire: TextIO | None = None
-        self.escaped: deque[str] = deque(maxlen=FD_CAPTURE_LINES)
-        self._reader: threading.Thread | None = None
-        self._marker: str | None = None
-        self._seen = threading.Event()
-        self._sync_n = 0
-
-    def install(self) -> TextIO:
-        wire_fd = os.dup(1)
-        self.wire = os.fdopen(wire_fd, "w", buffering=1)
-        read_fd, write_fd = os.pipe()
-        os.dup2(write_fd, 1)
-        os.close(write_fd)
-        # Rebind sys.stdout to the capture pipe so Python-level writes that miss
-        # the ``_Stdout`` shim (a bare ``sys.__stdout__.write``) land here too.
-        sys.stdout = os.fdopen(os.dup(1), "w", buffering=1)
-        self._reader = threading.Thread(
-            target=self._pump, args=(read_fd,), daemon=True, name="fd1 capture"
-        )
-        self._reader.start()
-        return self.wire
-
-    def _pump(self, read_fd: int) -> None:
-        with suppress(Exception), os.fdopen(read_fd, "r") as stream:
-            for line in stream:
-                text = line.rstrip("\n")
-                if self._marker is not None and text == self._marker:
-                    self._seen.set()
-                    continue
-                self.escaped.append(text)
-
-    def take(self, *, timeout: float = 0.5) -> str:
-        """Drain what escaped to fd 1 since the last call.
-
-        A subprocess's bytes are in the pipe by the time it exits, but our reader
-        may not have consumed them yet. Writing a marker and waiting for the
-        reader to reach it makes "everything that escaped during this run" exact
-        rather than a race against a sleep.
-        """
-        if self._reader is not None:
-            self._sync_n += 1
-            self._marker = f"__rlmflow_fd1_sync_{self._sync_n}__"
-            self._seen.clear()
-            with suppress(Exception):
-                os.write(1, (self._marker + "\n").encode())
-                self._seen.wait(timeout)
-            self._marker = None
-        lines, self.escaped = list(self.escaped), deque(maxlen=FD_CAPTURE_LINES)
-        return "\n".join(lines)
+from rlmflow.tools.agents import AGENT_WAIT_TOOL
+from rlmflow.utils.serial import decode_object, encode_object
 
 
 class ReplServer:
-    """One deployed protocol server around one stateful REPL."""
+    """One worker process with a shared heap and concurrent agent tenants."""
 
     def __init__(
         self,
@@ -121,172 +48,220 @@ class ReplServer:
         workdir: str | Path | None = None,
         protocol_in: TextIO | None = None,
         protocol_out: TextIO | None = None,
-        wire_guard: WireGuard | None = None,
     ) -> None:
         self._in = protocol_in or sys.stdin
         self._out = protocol_out or sys.stdout
-        self.wire_guard = wire_guard
-        self.repl = LocalRepl(working_directory=workdir)
-        self.capabilities = CapabilityMap(cloudpickle=cloudpickle_available())
-        self._next_proxy_id = 0
-        # Requests that arrived while a proxy call was waiting for its answer.
-        # They cannot be handled at that point (the only thread is inside the
-        # block), so they queue here for the serve loop to take next.
-        self._held: deque[ReplRequest] = deque()
+        self._workdir = workdir
+        self._namespace: dict[str, object] = {"__builtins__": __builtins__}
+        self._tenants: dict[str, LocalRepl] = {}
+        self._pending: dict[str, Future[ProxyResponse]] = {}
+        self._send_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._proxy_counter = 0
 
-    def write(self, msg: ReplResponse | ProxyCall) -> None:
-        self._out.write(dump_message(msg) + "\n")
-        self._out.flush()
+    def _tenant(self, tenant_id: str) -> LocalRepl:
+        with self._state_lock:
+            tenant = self._tenants.get(tenant_id)
+            if tenant is None:
+                tenant = LocalRepl(self._workdir, namespace=self._namespace)
+                self._tenants[tenant_id] = tenant
+            return tenant
 
-    def _proxy_id(self, name: str) -> str:
-        self._next_proxy_id += 1
-        return f"proxy-{self._next_proxy_id}-{name}"
+    def send(self, message: WireModel) -> None:
+        with self._send_lock:
+            self._out.write(dump_message(message) + "\n")
+            self._out.flush()
 
-    def _with_escaped(self, output: str) -> str:
-        """Fold anything that escaped to fd 1 into the run's own output.
+    def _next_proxy_id(self, name: str) -> str:
+        with self._state_lock:
+            self._proxy_counter += 1
+            return f"proxy-{self._proxy_counter}-{name}"
 
-        Without the guard this text would have corrupted the protocol; with it,
-        a subprocess that prints is simply visible to the agent.
-        """
-        if self.wire_guard is None:
-            return output
-        escaped = self.wire_guard.take()
-        if not escaped:
-            return output
-        return f"{output}\n{escaped}".strip() if output else escaped
-
-    def _proxy_response(self) -> ProxyResponse:
-        """Read past anything that is not the answer to the call parked here.
-
-        The host may send an ordinary request at any time, including while agent
-        code sits inside a proxy call. Parsing every line as a ``ProxyResponse``
-        would fail the tool for a reason unrelated to the agent's code, so a
-        request is held instead and answered once the block finishes.
-        """
-        while True:
-            line = self._in.readline()
-            if not line:
-                raise RuntimeError("the host closed the connection mid-proxy-call")
-            msg = parse_host_message(line)
-            if isinstance(msg, ProxyResponse):
-                return msg
-            self._held.append(msg)
-
-    def make_proxy(self, name: str, *, is_async: bool = False):
-        def proxy(*args: object, **kwargs: object) -> object:
-            proxy_id = self._proxy_id(name)
-            self.write(ProxyCall(id=proxy_id, proxy=name, args=list(args), kwargs=kwargs))
-            resp = self._proxy_response()
-            if resp.done:
-                if name in {"finish", "done"} and args:
-                    print(f"[{name}] {args[0]}")
-                raise DoneSignal()
-            if not resp.ok or resp.error is not None:
-                raise RuntimeError(resp.error or "proxy call failed")
-            return resp.value
-
-        if not is_async:
-            return proxy
-
-        # Awaitable in the sandbox for async proxy tools (e.g. launch_subagents,
-        # llm_query_batched); the body is a synchronous host round-trip.
-        async def async_proxy(*args: object, **kwargs: object) -> object:
-            return proxy(*args, **kwargs)
-
-        return async_proxy
-
-    async def handle(self, msg: ReplRequest) -> ReplResponse:
-        if isinstance(msg, PingRequest):
-            return ReplResponse(id=msg.id)
-        if isinstance(msg, CapabilitiesRequest):
-            return ReplResponse(id=msg.id, capabilities=self.capabilities)
-        if isinstance(msg, RunRequest):
-            # The answer travels back over the proxied completion tool, not this response,
-            # so the client classifies the run on its side.
-            run = await self.repl.run(msg.code)
-            return ReplResponse(
-                id=msg.id,
-                output=self._with_escaped(run.output),
-                errored=run.status is ReplStatus.ERROR,
-                env=dict(self.repl.env),
-            )
-        if isinstance(msg, InjectRequest):
-            value = decode_object(msg.value) if msg.encoding == CLOUDPICKLE else msg.value
-            self.repl.namespace[msg.name] = value
-            return ReplResponse(id=msg.id)
-        if isinstance(msg, RetrieveRequest):
-            if msg.name not in self.repl.namespace:
-                return ReplResponse(id=msg.id, ok=False, error=f"no variable named {msg.name!r}")
-            value = self.repl.namespace[msg.name]
-            # Send plain data as JSON; wrap anything else as a cloudpickle blob.
-            if is_json_safe(value):
-                return ReplResponse(id=msg.id, value=value)
-            return ReplResponse(id=msg.id, value=encode_object(value), value_encoding=CLOUDPICKLE)
-        if isinstance(msg, RemoveRequest):
-            self.repl.namespace.pop(msg.name, None)
-            return ReplResponse(id=msg.id)
-        if isinstance(msg, SetEnvRequest):
-            self.repl.env.update(msg.values)
-            return ReplResponse(id=msg.id)
-        if isinstance(msg, InjectProxyRequest):
-            self.repl.namespace[msg.name] = self.make_proxy(msg.name, is_async=msg.is_async)
-            return ReplResponse(id=msg.id)
-        if isinstance(msg, InjectImportRequest):
-            target = importlib.import_module(msg.module)
-            for part in msg.qualname.split("."):
-                target = getattr(target, part)
-            self.repl.namespace[msg.name] = target
-            return ReplResponse(id=msg.id)
-        if isinstance(msg, InjectSourceRequest):
-            scope = dict(self.repl.namespace)
-            scope.setdefault("tool", tool)
-            exec(msg.source, scope)  # noqa: S102 - trusted host-shipped source
-            self.repl.namespace[msg.name] = scope[msg.func_name]
-            return ReplResponse(id=msg.id)
-        return ReplResponse(id=msg.id, ok=False, error=f"unknown command: {msg.cmd!r}")
-
-    async def serve_stdio(self) -> None:
-        while True:
-            try:
-                if self._held:
-                    request = self._held.popleft()
-                else:
-                    line = self._in.readline()
-                    if not line:
-                        return
-                    request = parse_request(line)
-                resp = await self.handle(request)
-            except ValidationError as exc:
-                resp = ReplResponse(
-                    id="unknown",
-                    ok=False,
-                    error=f"ValidationError: {exc}",
-                    errored=True,
+    def make_proxy(self, name: str, *, is_async: bool):
+        def begin(args: tuple[object, ...], kwargs: dict[str, object]):
+            binding = current_binding()
+            counts = binding.setdefault("_rpc_counts", {})
+            call_id = counts.get(name, 0)
+            counts[name] = call_id + 1
+            request_id = self._next_proxy_id(name)
+            future: Future[ProxyResponse] = Future()
+            with self._state_lock:
+                self._pending[request_id] = future
+            self.send(
+                ProxyCall(
+                    id=request_id,
+                    run_id=binding["run_id"],
+                    tenant_id=binding["tenant_id"],
+                    proxy=name,
+                    call_id=call_id,
+                    payload=encode_object((args, kwargs)),
                 )
-            except Exception as exc:  # noqa: BLE001
-                resp = ReplResponse(
-                    id="unknown",
+            )
+            return request_id, future
+
+        def finish(request_id: str, future: Future[ProxyResponse]) -> object:
+            try:
+                response = future.result()
+            finally:
+                with self._state_lock:
+                    self._pending.pop(request_id, None)
+            if response.done:
+                raise DoneSignal()
+            if not response.ok or response.error is not None:
+                raise RuntimeError(response.error or f"{name} failed")
+            return decode_object(response.value) if response.value is not None else None
+
+        if is_async:
+
+            async def async_proxy(*args: object, **kwargs: object) -> object:
+                request_id, future = begin(args, kwargs)
+                try:
+                    response = await asyncio.wrap_future(future)
+                finally:
+                    with self._state_lock:
+                        self._pending.pop(request_id, None)
+                if response.done:
+                    raise DoneSignal()
+                if not response.ok or response.error is not None:
+                    raise RuntimeError(response.error or f"{name} failed")
+                return decode_object(response.value) if response.value is not None else None
+
+            return async_proxy
+
+        def proxy(*args: object, **kwargs: object) -> object:
+            return finish(*begin(args, kwargs))
+
+        return proxy
+
+    def handle_control(self, message: ReplRequest) -> None:
+        if isinstance(message, PingRequest):
+            self.send(ReplResponse(id=message.id))
+            return
+        if isinstance(message, RunRequest):
+            threading.Thread(
+                target=self._run,
+                args=(message,),
+                daemon=True,
+                name=f"rlmflow-run-{message.id}",
+            ).start()
+            return
+        try:
+            if isinstance(message, InjectRequest):
+                self._namespace[message.name] = decode_object(message.value)
+                response = ReplResponse(id=message.id)
+            elif isinstance(message, RetrieveRequest):
+                if message.name not in self._namespace:
+                    response = ReplResponse(
+                        id=message.id,
+                        ok=False,
+                        error=f"no variable named {message.name!r}",
+                    )
+                else:
+                    response = ReplResponse(
+                        id=message.id,
+                        value=encode_object(self._namespace[message.name]),
+                    )
+            elif isinstance(message, RemoveRequest):
+                self._namespace.pop(message.name, None)
+                response = ReplResponse(id=message.id)
+            elif isinstance(message, InjectProxyRequest):
+                self._namespace[message.name] = self.make_proxy(
+                    message.name,
+                    is_async=message.is_async,
+                )
+                response = ReplResponse(id=message.id)
+            else:
+                response = ReplResponse(id=message.id, ok=False, error="unknown command")
+        except BaseException as exc:  # noqa: BLE001 - control errors cross the wire
+            response = ReplResponse(
+                id=message.id,
+                ok=False,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        self.send(response)
+
+    def _run(self, message: RunRequest) -> None:
+        tenant = self._tenant(message.tenant_id)
+        binding = decode_object(message.binding)
+        tenant.inputs = binding["inputs"]
+        tenant.env = binding["env"]
+        wait_agent = self._namespace.get(AGENT_WAIT_TOOL)
+        if wait_agent is not None:
+            binding["wait_agent"] = wait_agent
+        if binding.get("expose_agents"):
+            self._namespace.setdefault("AGENTS", CurrentObject("agents"))
+        try:
+            run = asyncio.run(tenant.run(message.code, binding=binding))
+            self.send(
+                ReplResponse(
+                    id=message.id,
+                    output=run.output,
+                    errored=run.status is ReplStatus.ERROR,
+                    env=encode_object(binding["env"]),
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001 - keep the worker dispatcher alive
+            self.send(
+                ReplResponse(
+                    id=message.id,
                     ok=False,
                     error=f"{type(exc).__name__}: {exc}",
-                    errored=True,
                 )
-            self.write(resp)
+            )
+
+    def resolve_proxy(self, response: ProxyResponse) -> None:
+        with self._state_lock:
+            future = self._pending.get(response.id)
+        if future is not None and not future.done():
+            future.set_result(response)
+
+    def serve_stdio(self) -> None:
+        for line in self._in:
+            try:
+                message = parse_host_message(line)
+                if isinstance(message, ProxyResponse):
+                    self.resolve_proxy(message)
+                else:
+                    self.handle_control(message)
+            except ValidationError as exc:
+                self.send(
+                    ReplResponse(
+                        id="unknown",
+                        ok=False,
+                        error=f"ValidationError: {exc}",
+                    )
+                )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="rlmflow remote REPL")
+    parser = argparse.ArgumentParser(description="rlmflow Python worker")
     parser.add_argument("--workdir")
     args = parser.parse_args()
-    # Vacate fd 1 before anything can write to it, so the protocol has exactly
-    # one writer for the life of the process.
-    guard = WireGuard()
-    wire = guard.install()
-    server = ReplServer(workdir=args.workdir, protocol_out=wire, wire_guard=guard)
-    asyncio.run(server.serve_stdio())
+
+    # Claim private protocol descriptors before user code can inherit stdio.
+    wire_in_fd = os.dup(0)
+    wire_out_fd = os.dup(1)
+    os.set_inheritable(wire_in_fd, False)
+    os.set_inheritable(wire_out_fd, False)
+    wire_in = os.fdopen(wire_in_fd, "r")
+    wire_out = os.fdopen(wire_out_fd, "w", buffering=1)
+
+    # User stdin is empty. Native stdout and subprocess output become stderr
+    # diagnostics; normal Python output is captured per run.
+    devnull = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(devnull, 0)
+    os.close(devnull)
+    os.dup2(2, 1)
+    sys.stdout = sys.stderr
+    ReplServer(
+        workdir=args.workdir,
+        protocol_in=wire_in,
+        protocol_out=wire_out,
+    ).serve_stdio()
 
 
 if __name__ == "__main__":
     main()
 
 
-__all__ = ["FD_CAPTURE_LINES", "ReplServer", "WireGuard", "main"]
+__all__ = ["ReplServer", "main"]

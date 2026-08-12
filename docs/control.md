@@ -150,24 +150,58 @@ alternatives.
 
 ## Delegation
 
-Agent code must await the launcher:
+The only model-facing delegation function is:
 
 ```python
-[answer] = await launch_subagents([
-    {"name": "single", "query": query, "inputs": {"data": data}},
-])
-
-results = await launch_subagents([
-    {"name": "a", "query": "...", "inputs": {"chunk": chunk_a}},
-    {"name": "b", "query": "...", "inputs": {"chunk": chunk_b}},
-])
+async def launch_subagent(
+    goal: str,
+    *,
+    name: str | None = None,
+    inputs: dict[str, str] | None = None,
+    model: str | None = None,
+    output_schema=None,
+    prompt_profile: str | None = None,
+    reuse_repl: bool = False,
+) -> AgentHandle: ...
 ```
 
-Specs run concurrently and results preserve spec order. Child `name` is one
-ASCII identifier segment containing only letters, digits, `_`, or `-`, and is
-unique among its siblings. A spec may also carry `model`, `prompt_profile`, and
-`output_schema`. A spec deeper than `max_depth`, or with a query longer than
-`max_query_chars`, is answered with a refusal string in place of a child.
+Agent code awaits each launch to receive its persistent handle. Launch all
+independent children before waiting for any result:
+
+```python
+a = await launch_subagent("...", name="a", inputs={"chunk": chunk_a})
+b = await launch_subagent("...", name="b", inputs={"chunk": chunk_b})
+results = [
+    await a.wait_for_result(),
+    await b.wait_for_result(),
+]
+```
+
+`launch_subagent` always starts background work and returns immediately after the
+child is attached and queued. Awaiting handles sequentially does not serialize
+the children: both are already running. Child `name` is one ASCII identifier
+segment containing only letters, digits, `_`, or `-`, and is unique among its
+siblings. A call may also pass `model`, `prompt_profile`, `output_schema`, and
+`reuse_repl`. Invalid depth or goal length raises an execution error without
+spawning a child.
+
+The handle exposes identity and current status:
+
+```python
+child = await launch_subagent("run a long check", name="check")
+print(child.name, child.status)
+```
+
+The child remains in the same `run_streaming()` queue and continues appending
+nodes to the graph. A later block can wait on the persistent handle without
+launching anything again:
+
+```python
+result = await child.wait_for_result()
+```
+
+If the root becomes terminal first, the stream still drains queued descendants
+before returning. This is not a detached daemon job.
 
 Children hang off the `ExecAction` that launched them, so the parent's
 transcript stays a single chain: `root.sub_agents` is where the children are,
@@ -189,7 +223,8 @@ AGENTS.get("root.researcher")   # by path, id, or unique name
 AGENTS.get_parent()
 AGENTS.get_siblings()
 AGENTS.get_children()
-AGENTS.get("researcher").get_result()
+AGENTS.get("researcher").result()
+await AGENTS.get("researcher").wait_for_result()
 AGENTS.print_graph(show_results=True)
 ```
 
@@ -197,11 +232,12 @@ Each `AgentInfo` includes identity, parent/children, frontier metadata, status,
 and a completed result. Status is one of `running`, `waiting`, `idle`, or
 `completed`.
 
-`AGENTS` is an immutable snapshot refreshed before each REPL action. It does
-not wait, message, cancel, or steer agents, and repeated queries in one action
-do not become fresher. The option defaults off, so disabled flows add no prompt
+`AGENTS` is an immutable snapshot refreshed before each REPL action. Local
+queries do not become fresher within one action; `wait_for_result()` is the one
+operation that waits on live graph state. The option defaults off, so disabled flows add no prompt
 text, snapshot work, or remote serialization. Process-isolated runtimes require
-the `cloudpickle` extra to inject the custom snapshot object by value.
+the core `cloudpickle` dependency to inject the custom snapshot object by value;
+it is installed automatically with `rlmflow`.
 
 ## Save and load
 
@@ -252,7 +288,7 @@ flow.inject("LOOKUP", {"a": 1})   # any object, not just callables
 flow.remove_tool("my_tool")
 ```
 
-`done`, `launch_subagents`, `INPUTS`, and `AGENTS` are reserved: framework
+`done`, `launch_subagent`, `INPUTS`, and `AGENTS` are reserved: framework
 values are rebuilt for each step and cannot be injected over.
 
 `Flow(use_llm_query=True)` adds `llm_query_batched` to the REPL, for agents that

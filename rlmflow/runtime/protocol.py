@@ -1,4 +1,4 @@
-"""Typed JSON-line protocol models for remote REPLs."""
+"""Typed JSON-line protocol for lightweight Python workers."""
 
 from __future__ import annotations
 
@@ -14,29 +14,23 @@ class WireModel(BaseModel):
 class BaseRequest(WireModel):
     id: str
     cmd: str
-    repl_id: str = "root"
+    tenant_id: str
 
 
 class PingRequest(BaseRequest):
     cmd: Literal["ping"] = "ping"
 
 
-class CapabilitiesRequest(BaseRequest):
-    cmd: Literal["capabilities"] = "capabilities"
-
-
 class RunRequest(BaseRequest):
     cmd: Literal["run"] = "run"
     code: str
+    binding: str
 
 
 class InjectRequest(BaseRequest):
     cmd: Literal["inject"] = "inject"
     name: str
-    value: Any
-    # "json" (default): ``value`` is plain JSON data. "cloudpickle": ``value`` is
-    # a base64 cloudpickle blob of a live object, rebuilt by value in the sandbox.
-    encoding: Literal["json", "cloudpickle"] = "json"
+    value: str
 
 
 class RetrieveRequest(BaseRequest):
@@ -49,113 +43,57 @@ class RemoveRequest(BaseRequest):
     name: str
 
 
-class SetEnvRequest(BaseRequest):
-    cmd: Literal["set_env"] = "set_env"
-    values: dict[str, Any]
-
-
 class InjectProxyRequest(BaseRequest):
     cmd: Literal["inject_proxy"] = "inject_proxy"
     name: str
     is_async: bool = False
 
 
-class InjectImportRequest(BaseRequest):
-    cmd: Literal["inject_import"] = "inject_import"
-    name: str
-    module: str
-    qualname: str
-
-
-class InjectSourceRequest(BaseRequest):
-    cmd: Literal["inject_source"] = "inject_source"
-    name: str
-    func_name: str
-    source: str
-
-
 ReplRequest = Annotated[
-    PingRequest
-    | CapabilitiesRequest
-    | RunRequest
-    | InjectRequest
-    | RetrieveRequest
-    | RemoveRequest
-    | SetEnvRequest
-    | InjectProxyRequest
-    | InjectImportRequest
-    | InjectSourceRequest,
+    PingRequest | RunRequest | InjectRequest | RetrieveRequest | RemoveRequest | InjectProxyRequest,
     Field(discriminator="cmd"),
 ]
-
-
-class CapabilityMap(WireModel):
-    namespace_snapshot: bool = False
-    filesystem_snapshot: bool = False
-    process_checkpoint: bool = False
-    # Whether the sandbox can (de)serialize live objects by value (cloudpickle).
-    cloudpickle: bool = False
 
 
 class ReplResponse(WireModel):
     id: str
     ok: bool = True
-    output: str | None = None
+    output: str = ""
     errored: bool = False
     error: str | None = None
-    value: Any = None
-    # Encoding of ``value`` (e.g. a retrieved object): "json" or "cloudpickle".
-    value_encoding: Literal["json", "cloudpickle"] = "json"
-    done: bool = False
-    env: dict[str, Any] | None = None
-    capabilities: CapabilityMap | None = None
+    value: str | None = None
+    env: str | None = None
 
 
 class ProxyCall(WireModel):
     id: str
+    run_id: str
+    tenant_id: str
     proxy: str
-    args: list[Any] = Field(default_factory=list)
-    kwargs: dict[str, Any] = Field(default_factory=dict)
+    call_id: int
+    payload: str
 
 
 class ProxyResponse(WireModel):
     id: str
     ok: bool = True
-    value: Any = None
+    value: str | None = None
     done: bool = False
     error: str | None = None
 
 
-_REQUEST_ADAPTER = TypeAdapter(ReplRequest)
+_REQUEST = TypeAdapter(ReplRequest)
 
 
-def parse_request(data: str | dict[str, Any]) -> ReplRequest:
-    if isinstance(data, str):
-        return _REQUEST_ADAPTER.validate_json(data)
-    return _REQUEST_ADAPTER.validate_python(data)
-
-
-def parse_host_message(data: str | dict[str, Any]) -> ReplRequest | ProxyResponse:
-    """Parse a line from the host, which sends both kinds down one stream.
-
-    Needed wherever the sandbox reads stdin without knowing which it will get:
-    an ordinary request can arrive while a proxy call is waiting for its answer.
-    Every request carries ``cmd``; a :class:`ProxyResponse` never does.
-    """
-    if isinstance(data, str):
-        raw = TypeAdapter(dict[str, Any]).validate_json(data)
-    else:
-        raw = data
+def parse_host_message(data: str) -> ReplRequest | ProxyResponse:
+    raw = TypeAdapter(dict[str, Any]).validate_json(data)
     if "cmd" in raw:
-        return parse_request(raw)
+        return _REQUEST.validate_python(raw)
     return ProxyResponse.model_validate(raw)
 
 
-def parse_client_message(data: str | dict[str, Any]) -> ReplResponse | ProxyCall:
-    if isinstance(data, str):
-        raw = TypeAdapter(dict[str, Any]).validate_json(data)
-    else:
-        raw = data
+def parse_client_message(data: str) -> ReplResponse | ProxyCall:
+    raw = TypeAdapter(dict[str, Any]).validate_json(data)
     if "proxy" in raw:
         return ProxyCall.model_validate(raw)
     return ReplResponse.model_validate(raw)
@@ -166,13 +104,8 @@ def dump_message(message: WireModel) -> str:
 
 
 __all__ = [
-    "BaseRequest",
-    "CapabilitiesRequest",
-    "CapabilityMap",
-    "InjectImportRequest",
     "InjectProxyRequest",
     "InjectRequest",
-    "InjectSourceRequest",
     "PingRequest",
     "ProxyCall",
     "ProxyResponse",
@@ -181,10 +114,8 @@ __all__ = [
     "ReplResponse",
     "RetrieveRequest",
     "RunRequest",
-    "SetEnvRequest",
     "WireModel",
     "dump_message",
     "parse_client_message",
     "parse_host_message",
-    "parse_request",
 ]

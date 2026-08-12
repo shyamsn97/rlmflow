@@ -1,13 +1,13 @@
-"""Docker-backed runtime for the remote REPL protocol."""
+"""Docker provisioner for the lightweight Python worker."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from rlmflow.graph.nodes import Node
+from rlmflow.graph.nodes import AgentStart
 from rlmflow.runtime.connections import DEFAULT_REPL_TIMEOUT, PopenConnection
 from rlmflow.runtime.repl import Repl
-from rlmflow.runtime.repl_client import RemoteRepl
+from rlmflow.runtime.repl_client import WorkerRepl, WorkerSession
 from rlmflow.runtime.runtime import Runtime
 
 
@@ -24,7 +24,8 @@ def build_docker_argv(
     extra_args: list[str] | None = None,
     docker_bin: str = "docker",
 ) -> list[str]:
-    argv: list[str] = [docker_bin, "run", "-i", "--rm"]
+    """Build a stdio-attached, automatically removed worker container."""
+    argv = [docker_bin, "run", "-i", "--rm"]
     for host, container in (mounts or {}).items():
         argv += ["-v", f"{Path(host).resolve()}:{container}"]
     for key, value in (env or {}).items():
@@ -41,13 +42,11 @@ def build_docker_argv(
         argv += ["--workdir", workdir]
     argv += list(extra_args or [])
     argv += [image, "python", "-u", "-m", "rlmflow.runtime.repl_server"]
-    if workdir is not None:
-        argv += ["--workdir", workdir]
     return argv
 
 
 class DockerRuntime(Runtime):
-    """Run each agent in a Docker container using the remote protocol."""
+    """Run isolated or explicitly shared agents in Docker workers."""
 
     def __init__(
         self,
@@ -64,46 +63,48 @@ class DockerRuntime(Runtime):
         extra_args: list[str] | None = None,
         docker_bin: str = "docker",
         repl_timeout: float | None = DEFAULT_REPL_TIMEOUT,
+        execution_timeout: float | None = None,
         **options: object,
     ) -> None:
         super().__init__(working_directory=working_directory)
         self.image = image
         if self.working_directory is not None:
             host = str(self.working_directory.resolve())
-            if mounts is None:
-                mounts = {host: "/workspace"}
-            if workdir is None:
-                workdir = "/workspace"
-        self.options = dict(
-            mounts=mounts,
-            env=env,
-            network=network,
-            cpus=cpus,
-            memory=memory,
-            user=user,
-            workdir=workdir,
-            extra_args=extra_args,
-            docker_bin=docker_bin,
-            repl_timeout=repl_timeout,
+            mounts = mounts or {host: "/workspace"}
+            workdir = workdir or "/workspace"
+        self.repl_timeout = repl_timeout or DEFAULT_REPL_TIMEOUT
+        self.execution_timeout = execution_timeout
+        self.options = {
+            "mounts": mounts,
+            "env": env,
+            "network": network,
+            "cpus": cpus,
+            "memory": memory,
+            "user": user,
+            "workdir": workdir,
+            "extra_args": extra_args,
+            "docker_bin": docker_bin,
             **options,
-        )
+        }
 
-    def deploy_repl_server(self, agent: Node) -> RemoteRepl:
-        cwd = str(self.working_directory) if self.working_directory else None
-        options = dict(self.options)
-        repl_timeout = options.pop("repl_timeout", DEFAULT_REPL_TIMEOUT)
-        argv = build_docker_argv(self.image, **options)
-        return RemoteRepl(
-            PopenConnection(
-                argv,
-                cwd=cwd,
-                label="Docker REPL",
-                repl_timeout=repl_timeout,
-            )
+    def open(self, agent: AgentStart) -> Repl:
+        if agent.config.reuse_repl and agent.parent is not None:
+            parent = agent.parent.parent_agent
+            parent_repl = self.repls.get(parent.id)
+            if not isinstance(parent_repl, WorkerRepl):
+                raise RuntimeError("reuse_repl requires a live parent worker")
+            return WorkerRepl(parent_repl.session, tenant_id=agent.id)
+        connection = PopenConnection(
+            build_docker_argv(self.image, **self.options),
+            cwd=self.working_directory or Path.cwd(),
+            label="Docker REPL worker",
         )
-
-    def open(self, agent: Node) -> Repl:
-        return self.deploy_repl_server(agent)
+        session = WorkerSession(
+            connection,
+            timeout=self.repl_timeout,
+            execution_timeout=self.execution_timeout,
+        )
+        return WorkerRepl(session, tenant_id=agent.id)
 
 
 __all__ = ["DockerRuntime", "build_docker_argv"]

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
@@ -41,10 +40,15 @@ from rlmflow.prompts.messages import (
 from rlmflow.runtime import LocalRuntime, Runtime
 from rlmflow.runtime.env import RLMFLOW_REPLAY
 from rlmflow.runtime.repl import DoneSignal, Repl, ReplStatus
-from rlmflow.structured import json_schema_for, parse_structured_output
-from rlmflow.subagents import Subagent, SubagentSpec, normalize_subagent
+from rlmflow.runtime.repl_client import current_rpc_call_id
+from rlmflow.structured import json_schema_for, parse_structured_answer
 from rlmflow.tools import RESERVED_TOOLS, tool
-from rlmflow.tools.agents import AgentDirectory, build_agent_directory
+from rlmflow.tools.agents import (
+    AGENT_WAIT_TOOL,
+    AGENTS_BINDING,
+    AgentHandle,
+    build_agent_directory,
+)
 from rlmflow.tools.llm_query import llm_query_batched
 from rlmflow.utils.helpers import (
     accepts_kwarg,
@@ -117,6 +121,8 @@ class Flow:
         self.runtime = runtime or LocalRuntime()
         self.pool = pool or ThreadPool(workers)
         self.queue: TaskQueue | None = None
+        self._restored_agents: set[int] = set()
+        self._restore_lock = asyncio.Lock()
         self._llm_clients = {"default": llm, **(llm_clients or {})}
         self.tools: dict[str, Any] = {}
         for fn in tools or []:
@@ -249,6 +255,9 @@ class Flow:
                     )
                 )
 
+        agent = landed.parent_agent
+        if agent is not None and agent.terminal and agent is not agent.root:
+            await asyncio.to_thread(self.runtime.close_repl, agent)
         return Transition(submitted=node, created=landed, error=error)
 
     async def llm_step(self, node: Node) -> Node:
@@ -313,28 +322,50 @@ class Flow:
         namespace = self.runtime.namespace_for(node)
         return namespace if namespace is not None else self.build_tools(node)
 
-    def agent_directory(self, viewer: AgentStart) -> AgentDirectory:
-        """Return a read-only snapshot of ``viewer``'s recursive agent tree."""
+    def build_tools(self, node: Node) -> dict[str, Any]:
+        finish = self.finish_tool(node)
         running = (
-            tuple(node for node, _task in self.queue.running.values())
+            tuple(current for current, _task in self.queue.running.values())
             if self.queue is not None
             else ()
         )
-        return build_agent_directory(viewer, running_nodes=running)
-
-    def build_tools(self, node: Node) -> dict[str, Any]:
-        finish = self.finish_tool(node)
+        agents = build_agent_directory(node.parent_agent, running_nodes=running)
         namespace = {
             **self.tools,
             "finish": finish,
             "done": finish,  # compatibility for saved runs and existing agent code
-            "launch_subagents": self.launch_tool(node),
-            "Subagent": Subagent,
+            "launch_subagent": self.launch_tool(node),
+            "asyncio": asyncio,
             "INPUTS": node.parent_agent.config.inputs,
+            AGENTS_BINDING: agents,
+            AGENT_WAIT_TOOL: self.wait_agent_tool(node),
         }
         if self.use_agent_tree:
-            namespace["AGENTS"] = self.agent_directory(node.parent_agent)
+            namespace["AGENTS"] = agents
         return namespace
+
+    def wait_agent_tool(self, node: Node):
+        @tool("Wait for an existing agent and return its result.", proxy=True)
+        async def wait_agent(agent_id: str) -> Any:
+            root = node.root
+            target = next(
+                (
+                    candidate
+                    for candidate in root.walk()
+                    if isinstance(candidate, AgentStart) and candidate.id == agent_id
+                ),
+                None,
+            )
+            if target is None:
+                raise KeyError(f"unknown agent {agent_id!r}")
+            if not target.terminal:
+                queue = self.queue
+                if queue is None:
+                    raise RuntimeError("waiting for an agent requires an active stream")
+                await queue.join(target)
+            return target.result()
+
+        return wait_agent
 
     def finish_tool(self, node: Node):
         schema = node.parent_agent.config.output_schema
@@ -343,56 +374,71 @@ class Flow:
         def finish(answer: object) -> None:
             if schema is None:
                 raise DoneSignal(str(answer))
-            encoded = answer if isinstance(answer, str) else json.dumps(answer)
             # Carry the parsed value, so the run records what callers receive.
-            raise DoneSignal(parse_structured_output(encoded, schema))
+            raise DoneSignal(parse_structured_answer(answer, schema))
 
         return finish
 
     def launch_tool(self, node: Node):
+        mutation_lock = asyncio.Lock()
+
         @tool(
-            "Spawn or resume child agents and await their results.",
+            "Spawn or resume one named child agent.",
             proxy=True,
         )
-        async def launch_subagents(specs: list[SubagentSpec]) -> list[Any]:
+        async def launch_subagent(
+            goal: str,
+            *,
+            name: str | None = None,
+            inputs: dict[str, str] | None = None,
+            model: str | None = None,
+            output_schema: Any = None,
+            prompt_profile: str | None = None,
+            reuse_repl: bool = False,
+        ) -> AgentHandle:
             if not isinstance(node, ExecAction):
-                raise TypeError("launch_subagents requires an ExecAction")
+                raise TypeError("launch_subagent requires an ExecAction")
+            if not isinstance(goal, str):
+                raise TypeError("launch_subagent goal must be a string")
+            spec = {
+                "query": goal,
+                "name": name,
+                "inputs": dict(inputs or {}),
+                "model": model,
+                "output_schema": output_schema,
+                "prompt_profile": prompt_profile,
+                "reuse_repl": reuse_repl,
+            }
+            async with mutation_lock:
+                existing = {id(child) for child in node.children if isinstance(child, AgentStart)}
+                resolved = self.resolve_child(node, spec, current_rpc_call_id())
+                if id(resolved) not in existing:
+                    self.submit_child(resolved)
+            return AgentHandle(
+                agent_id=resolved.id,
+                name=resolved.config.name,
+                path=resolved.config.path,
+            )
 
-            normalized = [normalize_subagent(spec) for spec in specs]
-            names = [
-                spec.get("name") or f"child{index}" for index, spec in enumerate(normalized)
-            ]
-            if len(names) != len(set(names)):
-                raise ValueError("duplicate child names in one launch_subagents call")
-
-            existing = {id(child) for child in node.children if isinstance(child, AgentStart)}
-            resolved = [
-                self.resolve_child(node, spec, index) for index, spec in enumerate(normalized)
-            ]
-            children = [value for value in resolved if isinstance(value, AgentStart)]
-            created = [child for child in children if id(child) not in existing]
-            await self.run_children(children, submit=created)
-            return [
-                value.result() if isinstance(value, AgentStart) else value for value in resolved
-            ]
-
-        return launch_subagents
+        return launch_subagent
 
     def resolve_child(
         self,
         action: ExecAction,
         spec: dict[str, Any],
-        index: int,
-    ) -> AgentStart | str:
-        """Resolve one launch spec to a direct child or refusal."""
-        name = spec.get("name") or f"child{index}"
-        validate_agent_name(name)
-
+        call_id: int,
+    ) -> AgentStart:
+        """Resolve one launch call to a direct child or refusal."""
+        explicit_name = spec.get("name")
         existing = next(
             (
                 child
                 for child in action.children
-                if isinstance(child, AgentStart) and child.config.name == name
+                if isinstance(child, AgentStart)
+                and (
+                    child.config.launch_call_id == call_id
+                    or (explicit_name is not None and child.config.name == explicit_name)
+                )
             ),
             None,
         )
@@ -400,44 +446,49 @@ class Flow:
             return existing
 
         parent = action.parent_agent
+        query = spec.get("query", "")
+        if explicit_name is None:
+            used = {child.config.name for child in parent.sub_agents}
+            index = call_id
+            while f"child{index}" in used:
+                index += 1
+            name = f"child{index}"
+        else:
+            name = explicit_name
+        validate_agent_name(name)
         if any(child.config.name == name for child in parent.sub_agents):
             raise ValueError(f"duplicate child name {name!r}")
 
-        query = spec.get("query", "")
         if parent.config.depth >= parent.config.max_depth:
-            return f"[refused: max depth {parent.config.max_depth}]"
+            raise ValueError(f"cannot launch beyond max depth {parent.config.max_depth}")
         if len(query) > parent.config.max_query_chars:
-            return f"[refused: query too long ({len(query)} chars)]"
-        return self.new_child(action, name, spec)
+            raise ValueError(f"subagent goal exceeds {parent.config.max_query_chars} characters")
+        return self.new_child(action, name, spec, call_id=call_id)
 
-    async def run_children(
-        self,
-        children: list[AgentStart],
-        *,
-        submit: list[AgentStart],
-    ) -> None:
-        """Submit newly created children and await every unfinished child."""
-        unfinished = [child for child in children if not child.terminal]
-        if not unfinished:
-            return
-
+    def submit_child(self, child: AgentStart) -> None:
+        """Submit a newly attached child and all unfinished restored leaves."""
         queue = self.queue
         if queue is None:
-            raise RuntimeError("launch_subagents requires an active stream")
-        for child in submit:
-            if child.terminal:
-                continue
-            for leaf in child.leaves():
-                owner = leaf.parent_agent
-                if owner is not None and not owner.terminal:
-                    queue.submit(
-                        leaf,
-                        self.step,
-                        publish=isinstance(leaf, AgentStart),
-                    )
-        await asyncio.gather(*(queue.join(child) for child in unfinished))
+            raise RuntimeError("launch_subagent requires an active stream")
+        if child.terminal:
+            return
+        for leaf in child.leaves():
+            owner = leaf.parent_agent
+            if owner is not None and not owner.terminal:
+                queue.submit(
+                    leaf,
+                    self.step,
+                    publish=isinstance(leaf, AgentStart),
+                )
 
-    def new_child(self, node: Node, name: str, spec: dict[str, Any]) -> AgentStart:
+    def new_child(
+        self,
+        node: Node,
+        name: str,
+        spec: dict[str, Any],
+        *,
+        call_id: int,
+    ) -> AgentStart:
         """Open a child agent of ``node``'s agent, attached to ``node``."""
         schema = spec.get("output_schema")
         overrides = {
@@ -447,6 +498,8 @@ class Flow:
                 "model": spec.get("model"),
                 "prompt_profile": spec.get("prompt_profile"),
                 "output_schema": (json_schema_for(schema) if schema is not None else None),
+                "reuse_repl": spec.get("reuse_repl"),
+                "launch_call_id": call_id,
             }.items()
             if value is not None
         }
@@ -454,23 +507,51 @@ class Flow:
             content=spec.get("query") or DEFAULT_QUERY,
             config=node.parent_agent.config.child(name, **overrides),
         )
-        return node.append(child)
+        attached = node.append(child)
+        node.children.sort(
+            key=lambda value: (
+                not isinstance(value, AgentStart),
+                (
+                    value.config.launch_call_id
+                    if isinstance(value, AgentStart) and value.config.launch_call_id is not None
+                    else 0
+                ),
+            )
+        )
+        parent = node.parent_agent
+        parent.sub_agents.sort(
+            key=lambda value: (
+                value.parent.seq if value.parent is not None else 0,
+                value.config.launch_call_id if value.config.launch_call_id is not None else 0,
+            )
+        )
+        return attached
 
     # -- Running ----------------------------------------------------------
 
     async def replay(self, root: AgentStart) -> None:
         """Rebuild the namespaces of a graph we did not run, from its recorded code.
 
-        Appends nothing: ``launch_subagents`` resolves the children already attached
+        Appends nothing: ``launch_subagent`` resolves children already attached
         to each action and reads finished results from their terminal nodes. A block
         that failed the first time fails the same way here, leaving the same partial
         bindings, which is why output and errors are discarded.
         """
-        for node in root.walk():
-            if not isinstance(node, ExecAction) or node is node.parent_agent.frontier:
-                continue  # the frontier action has not run yet; the first step runs it
+        actions = [
+            node
+            for node in root.walk()
+            if isinstance(node, ExecAction) and node is not node.parent_agent.frontier
+        ]
+        actions.sort(
+            key=lambda node: (
+                node.repl_execution_order is None,
+                node.repl_execution_order or 0,
+                node.created_at,
+            )
+        )
+        for node in actions:
             agent = node.parent_agent
-            if agent.terminal:
+            if agent.terminal and not agent.config.reuse_repl:
                 continue  # it answered; nothing will run in this namespace again
             repl = self.runtime.repl_for(agent)
             repl.seed(self.build_tools(node), agent.config.inputs)
@@ -480,13 +561,27 @@ class Flow:
             finally:
                 repl.update_env({RLMFLOW_REPLAY: "0"})
 
-    def note_cold(self, root: AgentStart) -> None:
-        """Tell every unfinished agent that ran code that its namespace is gone."""
-        for leaf in root.leaves():
-            if isinstance(leaf, DoneOutput):
-                continue
-            if any(isinstance(node, ExecAction) for node in leaf.walk(reverse=True)):
-                leaf.append(UserQuery(content=self.cold_repl_note))
+    async def ensure_replayed(self, agent: AgentStart) -> None:
+        """Restore an unfinished namespace immediately before its first execution."""
+        if id(agent) in self._restored_agents:
+            return
+        async with self._restore_lock:
+            if id(agent) in self._restored_agents:
+                return
+            if self.runtime.get(agent) is not None:
+                self._restored_agents.add(id(agent))
+                return
+
+            root = agent
+            while root.config.reuse_repl and root.parent is not None:
+                parent = root.parent.parent_agent
+                if parent is None or self.runtime.get(parent) is not None:
+                    break
+                root = parent
+            await self.replay(root)
+            self._restored_agents.update(
+                id(node) for node in root.walk() if isinstance(node, AgentStart)
+            )
 
     async def run_streaming(
         self,
@@ -505,36 +600,37 @@ class Flow:
         boundary = boundaries.resolve(until)
         for agent in agents:
             if self.runtime.get(agent) is None:  # a graph this Flow has not run
-                (await self.replay(agent) if self.restore == "replay" else self.note_cold(agent))
+                if self.restore == "replay":
+                    await self.replay(agent)
             else:
+                self._restored_agents.add(id(agent))
                 for node in agent.walk():
                     if (
                         isinstance(node, AgentStart)
                         and not node.terminal
                         and self.runtime.get(node) is None
                     ):
-                        (
+                        if self.restore == "replay":
                             await self.replay(node)
-                            if self.restore == "replay"
-                            else self.note_cold(node)
-                        )
 
         queue = TaskQueue(self.pool)
         self.queue = queue
-        active = {id(agent) for agent in agents}
+        driving = {id(agent) for agent in agents}
 
         try:
             for agent in agents:
                 for leaf in agent.leaves():
                     owner = leaf.parent_agent
                     if owner is not None and not owner.terminal:
+                        if self.restore == "lazy" and isinstance(leaf, ExecAction):
+                            await self.ensure_replayed(owner)
                         queue.submit(leaf, self.step)
 
-            while active and queue:
+            while driving and queue:
                 transition = await queue.next()
                 node = transition.created
                 root = node.root
-                if root is None or id(root) not in active:
+                if root is None or id(root) not in driving:
                     continue
 
                 root_error = (
@@ -549,10 +645,12 @@ class Flow:
 
                 yield node
                 stop = boundary is not None and boundary(node, root)
-                if stop or root.terminal:
-                    active.discard(id(root))
+                if stop:
+                    driving.discard(id(root))
                     await queue.cancel(root.walk())
                 elif not transition.is_agent_start and not node.parent_agent.terminal:
+                    if self.restore == "lazy" and isinstance(node, ExecAction):
+                        await self.ensure_replayed(node.parent_agent)
                     queue.submit(node, self.step)
 
                 if root_error is not None:

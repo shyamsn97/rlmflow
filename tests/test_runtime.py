@@ -1,81 +1,142 @@
-import ast
 import asyncio
 import sys
 
 import pytest
 from helpers import StubLLM, first_user
 
-from rlmflow import Flow, LocalRuntime, ReplStatus, SubprocessRuntime, start
-from rlmflow.runtime import PopenConnection, build_docker_argv
-from rlmflow.runtime.protocol import (
-    CapabilitiesRequest,
-    CapabilityMap,
-    PingRequest,
-    ProxyCall,
-    ReplResponse,
-    RunRequest,
-    parse_client_message,
-    parse_request,
+from rlmflow import (
+    DockerRuntime,
+    Flow,
+    LocalRuntime,
+    ModalRuntime,
+    ReplStatus,
+    SubprocessRuntime,
+    WorkerRepl,
+    start,
 )
-from rlmflow.runtime.repl import DoneSignal, LocalRepl, has_top_level_await
-from rlmflow.runtime.repl_client import RemoteRepl
+from rlmflow.runtime import build_docker_argv
 
 
 def block(code):
     return f"```repl\n{code}\n```"
 
 
-def remote_repl():
-    """A client stub wired to a repl_server running in its own process."""
-    return RemoteRepl(
-        PopenConnection(
-            [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
-            label="test remote REPL",
-            repl_timeout=5,
-        )
-    )
-
-
 WRITE_A_NOTE = block(
     "from pathlib import Path\n"
     'Path("note.txt").write_text("hello")\n'
-    'done(Path("note.txt").read_text())'
+    'finish(Path("note.txt").read_text())'
 )
 
 
-def test_local_runtime_uses_working_directory(tmp_path):
+class RecordingWorkerSession:
+    def __init__(self, *_args, **kwargs):
+        self.timeout = kwargs["timeout"]
+        self.execution_timeout = kwargs["execution_timeout"]
+        self.closed = False
+        self.tenants = {}
+
+    def add_tenant(self, tenant):
+        self.tenants[tenant.tenant_id] = tenant
+
+    def release(self, tenant):
+        self.tenants.pop(tenant.tenant_id, None)
+
+    def close(self, **_kwargs):
+        self.closed = True
+
+
+@pytest.mark.parametrize(
+    "runtime",
+    [
+        LocalRuntime(repl_timeout=19, execution_timeout=17),
+        SubprocessRuntime(repl_timeout=19, execution_timeout=17),
+    ],
+)
+def test_process_runtimes_propagate_execution_timeout(runtime):
+    repl = runtime.open(start("q"))
+    try:
+        assert isinstance(repl, WorkerRepl)
+        assert repl.session.execution_timeout == 17
+        assert repl.session.timeout == 19
+    finally:
+        repl.close()
+
+
+@pytest.mark.parametrize(
+    ("session_class", "runtime"),
+    [
+        (
+            "rlmflow.runtime.docker.WorkerSession",
+            DockerRuntime("rlmflow:test", repl_timeout=19, execution_timeout=17),
+        ),
+        (
+            "rlmflow.runtime.modal.WorkerSession",
+            ModalRuntime(repl_timeout=19, execution_timeout=17),
+        ),
+    ],
+)
+def test_sandbox_runtimes_propagate_execution_timeout(monkeypatch, session_class, runtime):
+    monkeypatch.setattr(session_class, RecordingWorkerSession)
+
+    repl = runtime.open(start("q"))
+    try:
+        assert isinstance(repl, WorkerRepl)
+        assert repl.session.execution_timeout == 17
+        assert repl.session.timeout == 19
+    finally:
+        repl.close()
+
+
+def test_runtime_execution_timeout_returns_dead_and_removes_worker():
+    runtime = LocalRuntime(execution_timeout=0.05)
+    flow = Flow(StubLLM(lambda _messages: ""), runtime=runtime)
+    root = flow.start("q")
+    try:
+        result = asyncio.run(
+            runtime.execute(
+                root,
+                "import asyncio\nawait asyncio.sleep(0.15)",
+            )
+        )
+
+        assert result.status is ReplStatus.DEAD
+        assert isinstance(result.error, TimeoutError)
+        assert result.output == "REPL execution failed: TimeoutError: REPL execution exceeded 0.05s"
+        assert runtime.get(root) is None
+    finally:
+        asyncio.run(flow.aclose())
+
+
+def test_local_runtime_uses_worker_and_working_directory(tmp_path):
     flow = Flow(
         StubLLM(lambda _messages: WRITE_A_NOTE),
         runtime=LocalRuntime(working_directory=tmp_path),
     )
+    root = start("q")
+    try:
+        assert flow.run(root) == "hello"
+        assert isinstance(flow.runtime.repl_for(root), WorkerRepl)
+        assert (tmp_path / "note.txt").read_text() == "hello"
+    finally:
+        asyncio.run(flow.aclose())
 
-    assert flow.run(start("q")) == "hello"
-    assert (tmp_path / "note.txt").read_text() == "hello"
 
-
-def test_subprocess_runtime_uses_working_directory(tmp_path):
+def test_subprocess_runtime_uses_selected_python_and_working_directory(tmp_path):
     flow = Flow(
         StubLLM(lambda _messages: WRITE_A_NOTE),
-        runtime=SubprocessRuntime(working_directory=tmp_path),
+        runtime=SubprocessRuntime(
+            working_directory=tmp_path,
+            python=sys.executable,
+        ),
     )
-
-    assert flow.run(start("q")) == "hello"
-    assert (tmp_path / "note.txt").read_text() == "hello"
-
-
-def test_subprocess_runtime_executes_agent_code():
-    flow = Flow(
-        StubLLM(lambda _messages: block('print("subproc")\nfinish("ok")')),
-        runtime=SubprocessRuntime(),
-    )
-    root = start("q")
-
-    assert flow.run(root) == "ok"
-    assert "subproc" in root.frontier.content
+    try:
+        assert flow.run(start("q")) == "hello"
+        assert (tmp_path / "note.txt").read_text() == "hello"
+    finally:
+        asyncio.run(flow.aclose())
 
 
 def test_subprocess_runtime_exposes_opt_in_agents_tree():
-    pytest.importorskip("cloudpickle")
     code = block(
         'finish(AGENTS.get().path + "|" + str(len(AGENTS.get_siblings())) + "|" '
         "+ AGENTS.render_graph())"
@@ -85,233 +146,108 @@ def test_subprocess_runtime_exposes_opt_in_agents_tree():
         runtime=SubprocessRuntime(),
         use_agent_tree=True,
     )
+    try:
+        assert flow.run(start("q")) == "root|0|root [running] (you)"
+    finally:
+        asyncio.run(flow.aclose())
 
-    assert flow.run(start("q")) == "root|0|root [running] (you)"
 
-
-def test_subprocess_runtime_supports_awaited_launch_subagents():
+def test_subprocess_runtime_supports_subagent_handles():
     def reply(messages):
         if first_user(messages) == "parent":
             return block(
-                'r = await launch_subagents([Subagent("child", name="c")])\nfinish(r[0])'
+                'child = await launch_subagent("child", name="c")\n'
+                "finish(await child.wait_for_result())"
             )
         return block('finish("child-done")')
 
     flow = Flow(StubLLM(reply), runtime=SubprocessRuntime())
+    try:
+        assert flow.run(start("parent", max_depth=1)) == "child-done"
+    finally:
+        asyncio.run(flow.aclose())
 
-    assert flow.run(start("parent", max_depth=1)) == "child-done"
 
-
-def test_local_repl_env_channel_round_trips():
-    # Host seeds the env; agent code reads it via ENV and publishes new state;
-    # the host reads that back off ``repl.env`` (distinct from ``namespace``).
-    code = block('ENV["solved"] = ENV["RLMFLOW_IS_ROOT"] == "1"\ndone(ENV["RLMFLOW_AGENT_ID"])')
+def test_worker_env_channel_round_trips():
+    code = block('ENV["solved"] = ENV["RLMFLOW_IS_ROOT"] == "1"\nfinish(ENV["RLMFLOW_AGENT_ID"])')
     flow = Flow(StubLLM(lambda _messages: code))
     root = start("q")
-
-    assert flow.run(root) == "root"
-    published = flow.runtime.repl_for(root).env
-    assert published["solved"] is True
-    assert published["RLMFLOW_AGENT_ID"] == "root"
-
-
-@pytest.mark.parametrize(
-    "expression",
-    [
-        "[await fetch(i) for i in items]",
-        "{await fetch(i) for i in items}",
-        "{i: await fetch(i) for i in items}",
-        "(await fetch(i) for i in items)",
-    ],
-)
-def test_top_level_await_detector_traverses_comprehensions(expression):
-    assert has_top_level_await(ast.parse(f"result = {expression}"))
+    try:
+        assert flow.run(root) == "root"
+        published = flow.runtime.repl_for(root).env
+        assert published["solved"] is True
+        assert published["RLMFLOW_AGENT_ID"] == "root"
+    finally:
+        asyncio.run(flow.aclose())
 
 
-def test_top_level_await_detector_ignores_nested_function_scope():
-    tree = ast.parse("async def fetch():\n    return await other()\n")
-    assert not has_top_level_await(tree)
-
-
-def test_local_repl_executes_await_in_comprehensions():
-    repl = LocalRepl()
+def test_worker_executes_await_in_comprehensions(tmp_path):
+    runtime = LocalRuntime(working_directory=tmp_path)
+    repl = runtime.repl_for(start("q"))
 
     async def double(value):
         await asyncio.sleep(0)
         return value * 2
 
     async def run():
-        try:
-            repl.seed({"double": double}, {})
-            return await repl.run(
-                "by_key = {i: await double(i) for i in range(3)}\n"
-                "values = [await double(i) for i in range(3)]"
-            )
-        finally:
-            repl.close()
+        repl.seed({"double": double}, {})
+        return await repl.run(
+            "by_key = {i: await double(i) for i in range(3)}\n"
+            "values = [await double(i) for i in range(3)]"
+        )
 
-    result = asyncio.run(run())
-    assert result.status is ReplStatus.OK
-    assert repl.get_var("by_key") == {0: 0, 1: 2, 2: 4}
-    assert repl.get_var("values") == [0, 2, 4]
-
-
-def test_subprocess_runtime_exposes_env_metadata():
-    code = block('done(ENV["RLMFLOW_AGENT_ID"] + "|" + ENV["RLMFLOW_IS_ROOT"])')
-    flow = Flow(StubLLM(lambda _messages: code), runtime=SubprocessRuntime())
-
-    assert flow.run(start("q")) == "root|1"
+    try:
+        result = asyncio.run(run())
+        assert result.status is ReplStatus.OK
+        assert repl.get_var("by_key") == {0: 0, 1: 2, 2: 4}
+        assert repl.get_var("values") == [0, 2, 4]
+    finally:
+        runtime.close()
 
 
-def test_get_var_reads_a_variable_out_of_the_local_repl():
-    flow = Flow(StubLLM(lambda _messages: block('result = {"n": 42}\ndone("ok")')))
+def test_get_var_reads_a_variable_out_of_the_worker():
+    flow = Flow(StubLLM(lambda _messages: block('result = {"n": 42}\nfinish("ok")')))
     root = start("q")
-
-    assert flow.run(root) == "ok"
-    assert flow.runtime.get_var(root, "result") == {"n": 42}
-
-
-def test_remote_repl_runs_code_in_the_repl_server():
-    repl = remote_repl()
-
-    def done(answer):
-        raise DoneSignal(str(answer))
-
-    async def run():
-        try:
-            repl.seed({"done": done}, {"x": "remote"})
-            return await repl.run('print(INPUTS["x"])\ndone("ok")')
-        finally:
-            repl.close()
-
-    result = asyncio.run(run())
-
-    assert "remote" in result.output
-    assert (result.status, result.answer) == (ReplStatus.DONE, "ok")
+    try:
+        assert flow.run(root) == "ok"
+        assert flow.runtime.get_var(root, "result") == {"n": 42}
+    finally:
+        asyncio.run(flow.aclose())
 
 
-def test_a_falsy_answer_is_still_a_finished_run():
-    """``None``, ``False`` and ``0`` are answers, not the absence of one."""
-
-    def done(answer):
-        raise DoneSignal(answer)
-
-    local = LocalRepl()
-    local.seed({"done": done}, {})
-    remote = remote_repl()
-    remote.seed({"done": done}, {})
-
-    async def run():
-        try:
-            return await local.run("done(0)"), await remote.run("done(None)")
-        finally:
-            remote.close()
-
-    ran_local, ran_remote = asyncio.run(run())
-
-    assert (ran_local.status, ran_local.answer) == (ReplStatus.DONE, 0)
-    assert (ran_remote.status, ran_remote.answer) == (ReplStatus.DONE, None)
-
-
-def test_remote_repl_reads_back_published_env():
-    repl = remote_repl()
-
-    async def run():
-        try:
-            repl.seed({}, {})
-            repl.update_env({"RLMFLOW_AGENT_ID": "root.child"})
-            await repl.run('assert ENV["RLMFLOW_AGENT_ID"] == "root.child"\nENV["solved"] = True')
-            return dict(repl.env)
-        finally:
-            repl.close()
-
-    env = asyncio.run(run())
-
-    assert env["solved"] is True
-    assert env["RLMFLOW_AGENT_ID"] == "root.child"
-
-
-def test_remote_inject_ships_a_live_object_by_value():
-    pytest.importorskip("cloudpickle")
-
-    # Defined locally so cloudpickle ships the CLASS by value too (the sandbox
-    # process can't import this test module).
+def test_worker_inject_ships_a_live_object_by_value(tmp_path):
     class Counter:
         def __init__(self):
             self.n = 0
 
-        def bump(self, k=1):
-            self.n += k
-            return self.n
+        def bump(self, amount=1):
+            self.n += amount
 
-    repl = remote_repl()
+    runtime = LocalRuntime(working_directory=tmp_path)
+    repl = runtime.repl_for(start("q"))
     counter = Counter()
 
     async def run():
-        try:
-            repl.seed({}, {})
-            assert repl.capabilities().cloudpickle is True
-            repl.inject("counter", counter)
-            await repl.run("counter.bump(5)\ncounter.bump()")
-            return repl.get_var("counter")
-        finally:
-            repl.close()
+        repl.seed({}, {})
+        repl.inject("counter", counter)
+        await repl.run("counter.bump(6)")
 
-    got = asyncio.run(run())
-
-    assert got.n == 6  # sandbox mutations round-tripped back by value
-    assert counter.n == 0  # by value: the host's own object was never touched
-
-
-def test_remote_inject_refuses_an_unpicklable_value_without_the_capability():
-    # A JSON-unsafe value + a sandbox that can't cloudpickle -> a clear error,
-    # not a silent JSON coercion failure.
-    class Sandboxless(RemoteRepl):
-        def __init__(self):
-            self.namespace = {}
-            self._request_id = 0
-            self._capabilities = CapabilityMap(cloudpickle=False)
-
-    class Obj:
-        pass
-
-    with pytest.raises(RuntimeError, match="cloudpickle"):
-        Sandboxless().inject("x", Obj())
-
-
-def test_remote_protocol_models_round_trip():
-    run = parse_request(RunRequest(id="r1", code="print(1)").model_dump())
-    response = parse_client_message(ReplResponse(id="r1", output="1").model_dump())
-    proxy = parse_client_message(ProxyCall(id="p1", proxy="done", args=["ok"]).model_dump())
-
-    assert isinstance(run, RunRequest)
-    assert run.code == "print(1)"
-    assert isinstance(response, ReplResponse)
-    assert response.output == "1"
-    assert isinstance(proxy, ProxyCall)
-    assert proxy.proxy == "done"
-
-
-def test_repl_server_supports_ping_and_capabilities():
-    repl = remote_repl()
     try:
-        ping = repl.call(PingRequest(id="ping-test"))
-        capabilities = repl.call(CapabilitiesRequest(id="cap-test"))
+        asyncio.run(run())
+        got = repl.get_var("counter")
+        assert got.n == 6
+        assert counter.n == 0
     finally:
-        repl.close()
-
-    assert ping.ok
-    assert capabilities.capabilities is not None
-    assert not hasattr(capabilities.capabilities, "fork")
+        runtime.close()
 
 
-def test_docker_argv_runs_the_repl_server(tmp_path):
+def test_docker_argv_runs_worker(tmp_path):
     argv = build_docker_argv(
         "rlmflow:minimal",
         mounts={str(tmp_path): "/workspace"},
         workdir="/workspace",
-        network="none",
     )
 
-    assert "rlmflow.runtime.repl_server" in argv
+    assert argv[-4:] == ["python", "-u", "-m", "rlmflow.runtime.repl_server"]
     assert argv[:4] == ["docker", "run", "-i", "--rm"]
+    assert not any(":50001" in part for part in argv)

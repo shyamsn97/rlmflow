@@ -134,14 +134,18 @@ turn, or the final-answer prod on the last allowed iteration.
 Agents delegate with:
 
 ```python
-results = await launch_subagents([
-    {"name": "search", "query": "Find the evidence", "inputs": {"chunk": chunk}},
-])
+search = await launch_subagent(
+    "Find the evidence",
+    name="search",
+    inputs={"chunk": chunk},
+)
+# Later, when the answer is needed:
+result = await search.wait_for_result()
 ```
 
-The launching block does not suspend the transcript. Children hang off the
-`ExecAction` that launched them, so the parent's frontier stays on that action
-for the whole step, and the step lands one `ExecOutput` when the block finishes:
+Launching returns a handle without waiting for the child. Children hang off the
+`ExecAction` that launched them, and the step lands one `ExecOutput` when the
+parent's block finishes:
 
 ```text
 ExecAction
@@ -150,9 +154,10 @@ ExecAction
 ```
 
 `node.next` skips the sub-agent branches, so the parent's transcript reads as
-one chain whether or not it delegated. Children run concurrently, and each
-child's answer is its `DoneOutput.result`; a child that crashes has the failure
-recorded as its answer, so its siblings still settle.
+one chain whether or not it delegated. Independent children run concurrently
+when their calls are passed to `asyncio.gather`. Each child's answer is its
+`DoneOutput.result`; a child that crashes has the failure recorded as its
+answer, so its siblings still settle.
 
 ## Streaming Semantics
 

@@ -31,7 +31,7 @@ def grow(agent: AgentStart, *, depth: int, branch: int) -> None:
 
     Each append goes to the agent's frontier, which is the node the last one
     returned. Children branch off the action that launched them, the way a real
-    ``launch_subagents`` turn records it.
+    ``launch_subagent`` turn records it.
     """
     turn = agent.append(
         LLMOutput(

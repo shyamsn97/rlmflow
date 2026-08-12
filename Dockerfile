@@ -20,12 +20,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /opt/rlmflow
 COPY pyproject.toml README.md ./
 COPY rlmflow ./rlmflow
-COPY rlmflow ./rlmflow
-RUN pip install ".[openai,anthropic,cloudpickle]"
+RUN pip install .
 
 # DockerRuntime bind-mounts the host workspace at /workspace.
 WORKDIR /workspace
 
-# DockerRuntime spawns: `docker run -i --rm <image> python -m rlmflow.runtime.repl`.
-# Setting it as CMD also makes `docker run -i rlmflow:local` work standalone.
-CMD ["python", "-m", "rlmflow.runtime.repl"]
+# DockerRuntime attaches to this worker over stdin/stdout.
+CMD ["python", "-u", "-m", "rlmflow.runtime.repl_server"]

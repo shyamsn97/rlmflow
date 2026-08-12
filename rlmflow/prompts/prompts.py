@@ -13,9 +13,7 @@ from rlmflow.structured import system_prompt_hint
 from rlmflow.tools import format_tool_line, partition_repl_namespace
 
 SectionBody = str | Callable[[Any, Any], str]
-PROMPT_DOCUMENTED_TOOL_NAMES = frozenset(
-    {"finish", "done", "launch_subagents", "Subagent"}
-)
+PROMPT_DOCUMENTED_TOOL_NAMES = frozenset({"finish", "done", "launch_subagent"})
 
 #: Ceiling for the statically rendered ``SYSTEM_PROMPT`` (no flow/agent bound).
 #: A regression guard so the default prompt stays lean; see the test suite.
@@ -133,8 +131,8 @@ class SystemPromptBuilder(PromptBuilder):
         return (
             Sections()
             .add("role", ROLE_TEXT)
-            .add("builtins", BUILTIN_API_TEXT, title="Built-in REPL API")
-            .add("strategy", STRATEGY_TEXT)
+            .add("builtins", builtin_api_section, title="Built-in REPL API")
+            .add("strategy", strategy_section)
             .add("format", FORMAT_TEXT)
             .add("examples", examples_section, title="Examples")
             .add("final", FINAL_TEXT)
@@ -232,49 +230,54 @@ inputs stored in a Python REPL. You are queried turn-by-turn until you have an
 answer. To use the REPL, write code in ```repl``` blocks; it persists across turns.
 """
 
-BUILTIN_API_TEXT = """
+DELEGATION_API_TEXT = """
 The following names are already bound in the REPL; call them directly without
 imports.
 
-### `Subagent`
-
-Typed launch specification:
+### `await launch_subagent(...) -> AgentHandle`
 
 ```python
-Subagent(
+await launch_subagent(
     goal: str,
     name: str | None = None,
-    inputs: dict[str, str] = {},
+    inputs: dict[str, str] | None = None,
     model: str | None = None,
     output_schema: object | None = None,
     prompt_profile: str | None = None,
+    reuse_repl: bool = False,
 )
 ```
 
 - `goal` (required): one or two sentences describing the child task. Put large
   data in `inputs`; an overlong goal is refused.
 - `name`: stable child name containing only ASCII letters, digits, `_`, or `-`.
-  Names must be unique among siblings and within one launch. If omitted it is
-  `child{position}`; use explicit names when launching more than once.
+  Names must be unique among siblings. An omitted name is generated.
 - `inputs`: copied into the child's `INPUTS`. Values must be strings.
 - `model`: registered model name. `None` inherits the current agent's model.
 - `output_schema`: JSON Schema (or another supported schema object). When set,
-  the child must call `finish(value)` with a matching value and this launch returns
-  the parsed Python value instead of text.
+  the child must call `finish(value)` with a matching value, and
+  `handle.wait_for_result()` returns the parsed Python value instead of text.
 - `prompt_profile`: registered child prompt profile. `None` inherits the current
   profile.
+- `reuse_repl`: when true, place the child in this agent's worker. The agents
+  keep separate transcripts, `INPUTS`, and `ENV`, but share live Python objects,
+  imports, globals, and worker failure.
 
-A plain dict with those same keys is equivalent. For compatibility, dict specs
-may use `query` as an alias for `goal`; prefer `goal`. Typed and dict specs may be
-mixed in one list.
+Every launch starts the child in the background and immediately returns an
+`AgentHandle` with `id`, `name`, `path`, `status`, `result()`, and
+`wait_for_result()`. Launch all independent children first, then continue useful
+parent work. Call `await handle.wait_for_result()` only when the result is needed;
+it returns immediately if the child has already completed. Once handles have
+been launched, awaiting them one-by-one does not serialize their execution.
 
-### `await launch_subagents(specs: list[Subagent | dict]) -> list`
+A background child is not detached from the run. The root may call
+`finish(...)` first, but the stream continues driving queued descendants and
+recording their work in the same graph. Handles persist across REPL blocks;
+`handle.status` and `handle.result()` read the fresh snapshot for the current
+block. `await handle.wait_for_result()` waits automatically when needed.
+"""
 
-Starts all specified direct children concurrently, waits for every child, and
-returns results in input order. It always returns a list, including for one
-child. A depth or goal-length refusal is returned in that child's result slot.
-Use separate launches for dependent stages; use one launch for independent work.
-
+CORE_API_TEXT = """
 ### `finish(answer: object) -> NoReturn`
 
 Submits this agent's final answer and immediately ends its run. Without an output
@@ -292,8 +295,14 @@ repair. Call `finish` only once, after verification.
   `RLMFLOW_MAX_DEPTH`, `RLMFLOW_IS_ROOT`, and `RLMFLOW_REPLAY`.
 - `AGENTS` is present only when agent-tree inspection is enabled; its API is
   documented in the conditional **Agents** section below.
+- `asyncio` is preloaded. Use `await asyncio.gather(...)` for independent async
+  calls; do not call `asyncio.run(...)`.
 - `print(...)` is the observation channel. Only stdout is returned between turns;
   bare expressions are discarded and long output is truncated.
+
+Do not catch tool exceptions merely to convert failures into empty, missing, or
+negative results. Catch an exception only when you can recover or report it;
+otherwise let it surface so you can diagnose the real failure.
 """
 
 STRATEGY_TEXT = """
@@ -302,11 +311,11 @@ what you need straight from the values (`INPUTS["key"]`). It is usually worth a
 quick look before acting on large or unfamiliar inputs; inspect long inputs in
 targeted windows rather than dumping them, since REPL output is truncated.
 
-Act as an orchestrator, not a solver: delegate independent branches with
-`await launch_subagents([...])`, and keep the root for preparing inputs,
-integrating and verifying results, and the final `finish(...)`. Your context window
-is small — push heavy reading/summarizing/verifying into subcalls. Verify a
-candidate answer before calling `finish(...)`.
+Act as an orchestrator, not a solver: launch handles for independent branches
+before collecting any result, and keep the root for preparing inputs, integrating
+and verifying results, and the final `finish(...)`. Your context window is small
+— push heavy reading/summarizing/verifying into subcalls. Verify a candidate
+answer before calling `finish(...)`.
 
 Lean toward decomposition whenever the task splits into separable parts — several
 files or modules, independent sub-questions, or per-chunk scans. Give each part
@@ -314,14 +323,26 @@ its own subagent instead of solving them one-by-one in the root: independent
 branches run concurrently and each child gets a fresh context budget, so the work
 is usually both faster and higher quality. Keep steps that depend on each other in
 the root (or chain them), and delegate one focused child per independent unit.
+Background children overlap with later parent turns; call
+`await handle.wait_for_result()` when a result is needed.
+"""
+
+LEAF_STRATEGY_TEXT = """
+Work directly on the assigned task. Read the `INPUTS` you need, use the available
+tools, and verify the result before calling `finish(...)`. Inspect long inputs in
+targeted windows rather than dumping them, since REPL output is truncated.
 """
 
 FORMAT_TEXT = """
-Execute Python in fenced `repl` blocks. Use exactly one block per assistant
-message, with the opening and closing triple backticks. Top-level `await` is
-supported — use it for async tools (e.g. `await launch_subagents([...])`). Never
-call `asyncio.run`, `run_until_complete`, or `get_event_loop()`: the REPL already
-runs inside an event loop, and nesting one raises RuntimeError.
+Every reply you send must contain exactly one fenced ```repl``` block, including
+the reply that calls `finish(...)`. The block is the only thing that runs: prose
+outside it executes nothing and wastes the turn, so carry out the next step in
+code rather than announcing what you are about to do.
+
+Write the block with the opening and closing triple backticks. Top-level `await`
+is supported for async tools. Never call `asyncio.run`, `run_until_complete`, or
+`get_event_loop()`: the REPL already runs inside an event loop, and nesting one
+raises RuntimeError.
 """
 
 EXAMPLES_TEXT = """
@@ -338,16 +359,35 @@ for key, value in INPUTS.items():
 ```repl
 lines = INPUTS["corpus"].splitlines()
 batches = ["\\n".join(lines[i:i + 500]) for i in range(0, len(lines), 500)]
-results = await launch_subagents([
-    Subagent(
+handles = [
+    await launch_subagent(
         goal="Report findings in INPUTS['slice'] or NO_MATCH.",
         name=f"scan-{i}",
         inputs={"slice": b},
     )
     for i, b in enumerate(batches)
-])
+]
+results = [await handle.wait_for_result() for handle in handles]
 hits = [r.strip() for r in results if r.strip() and r.strip() != "NO_MATCH"]
 finish("\\n".join(hits) if hits else "NO_MATCH")
+```
+
+**Start work now and collect it in a later block**:
+
+```repl
+audit = await launch_subagent("Run the slow audit.", name="audit")
+diagnostics = await launch_subagent(
+    "Generate optional diagnostics.", name="diagnostics"
+)
+print("queued:", audit.name, diagnostics.name)
+```
+
+On a later turn, wait for those same handles without relaunching anything:
+
+```repl
+audit_result = await audit.wait_for_result()
+diagnostics_result = await diagnostics.wait_for_result()
+finish({"audit": audit_result, "diagnostics": diagnostics_result})
 ```
 """
 
@@ -367,28 +407,28 @@ JSON-compatible Python value matching this JSON Schema exactly:
 """
 
 STRUCTURED_OUTPUT_OPTION_TEXT = """
-You may require any subagent to return structured data instead of free text: add
-an `output_schema` (a JSON Schema) to its spec. That subagent must then call
-`finish(value)` with a value matching the schema, and you get the parsed value back
-(a `dict`/`list`) rather than a string. This can be very useful when dealing with outputs that require a specific structure.
+You may require a subagent to return structured data instead of free text: pass
+an `output_schema` (a JSON Schema). That subagent must then call
+`finish(value)` with a value matching the schema, and waiting on its handle gives
+you the parsed value (a `dict`/`list`) rather than a string. This can be very
+useful when dealing with outputs that require a specific structure.
 
 ```repl
-results = await launch_subagents([
-    {
-        "name": "extract",
-        "goal": "Extract the fields described by the schema from INPUTS['doc'].",
-        "inputs": {"doc": INPUTS["doc"]},
-        "output_schema": {
-            "type": "object",
-            "properties": {
-                "total": {"type": "number"},
-                "currency": {"type": "string"},
-            },
-            "required": ["total", "currency"],
+extract = await launch_subagent(
+    name="extract",
+    goal="Extract the fields described by the schema from INPUTS['doc'].",
+    inputs={"doc": INPUTS["doc"]},
+    output_schema={
+        "type": "object",
+        "properties": {
+            "total": {"type": "number"},
+            "currency": {"type": "string"},
         },
+        "required": ["total", "currency"],
     },
-])
-total = results[0]["total"]  # already parsed, not a string
+)
+result = await extract.wait_for_result()
+total = result["total"]  # already parsed, not a string
 ```
 """
 
@@ -398,8 +438,9 @@ AGENTS_TEXT = """
 - `AGENTS.get()` returns you; `AGENTS.get(id_or_path_or_name)` finds another agent.
 - `AGENTS.get_parent()`, `.get_siblings()`, and `.get_children()` return
   `AgentInfo` objects relative to you (or pass an agent selector).
-- `AgentInfo.status` is `running`, `waiting`, `idle`, or `completed`; call
-  `.get_result()` for a completed agent's result.
+- `AgentInfo.status` is `running`, `waiting`, `idle`, or `completed`.
+  `.result()` returns an already-completed result and raises while one is still
+  in flight; `await agent.wait_for_result()` waits automatically.
 - `AGENTS.print_graph(show_results=True)` prints the whole tree with statuses and
   bounded result previews.
 
@@ -409,25 +450,45 @@ cancel, or steer agents, and repeated queries within one action are not fresher.
 
 
 FIRST_TURN_TEXT_INPUTS = """
-You have not run any code or seen your inputs yet. Start with an inspection turn:
-`print(list(INPUTS))` with each value's size, read the windows you need, and wait
-for the output before planning, delegating, or answering. Call `finish(...)` only
-once you have the real, verified final answer — never to end an exploration turn,
-and never with a placeholder or status value.
+You have not run any code or seen your inputs yet. Start with an inspection turn
+in this reply's block: `print(list(INPUTS))` with each value's size, read the
+windows you need, and wait for the output before planning, delegating, or
+answering. The manifest above names and sizes the inputs but does not read them,
+so it is not the inspection turn. Call `finish(...)` only once you have the real,
+verified final answer — never to end an exploration turn, and never with a
+placeholder or status value.
 """
 
 FIRST_TURN_TEXT_BARE = """
 You have not run any code yet. If reaching a good answer needs exploration,
 computation, or verification, do that first in a ```repl``` block and read the
-output rather than answering from assumption; if it is pure reasoning you may
-answer directly. Either way, call `finish(...)` only when you have the real,
-verified final answer — never to end an exploration turn, and never with a
-placeholder or status value.
+output rather than answering from assumption; if it is pure reasoning, call
+`finish(...)` in your first block. Either way the answer travels through
+`finish(...)`, and only once it is real and verified — never to end an
+exploration turn, and never with a placeholder or status value.
 """
 
 
+def can_spawn(flow: Any = None, agent: Any = None) -> bool:
+    """Whether this prompt's agent can create another recursion level."""
+    if flow is None or agent is None:
+        return True
+    return flow.max_depth > 0 and agent.config.depth < flow.max_depth
+
+
+def builtin_api_section(flow: Any = None, agent: Any = None) -> str:
+    parts = [CORE_API_TEXT.strip()]
+    if can_spawn(flow, agent):
+        parts.insert(0, DELEGATION_API_TEXT.strip())
+    return "\n\n".join(parts)
+
+
+def strategy_section(flow: Any = None, agent: Any = None) -> str:
+    return (STRATEGY_TEXT if can_spawn(flow, agent) else LEAF_STRATEGY_TEXT).strip()
+
+
 def examples_section(flow: Any = None, agent: Any = None) -> str:
-    return EXAMPLES_TEXT.strip()
+    return EXAMPLES_TEXT.strip() if can_spawn(flow, agent) else ""
 
 
 def first_turn_section(flow: Any = None, agent: Any = None) -> str:
@@ -496,15 +557,14 @@ def structured_output_option_section(flow: Any = None, agent: Any = None) -> str
         return ""
     if not getattr(flow, "enable_structured_output", True):
         return ""
-    max_depth = getattr(flow, "max_depth", 0)
-    if max_depth == 0 or agent.config.depth >= max_depth:
+    if not can_spawn(flow, agent):
         return ""
     return STRUCTURED_OUTPUT_OPTION_TEXT.strip()
 
 
 def prompt_profiles_section(flow: Any = None, agent: Any = None) -> str:
     """Advertise selectable prompt profiles so the orchestrator can choose one
-    per child (via a ``launch_subagents`` spec's ``prompt_profile`` key).
+    per child (via ``launch_subagent(..., prompt_profile=...)``).
 
     Shown when the flow has a non-empty profile registry, the agent can still
     spawn children, and no custom ``prompt_router`` is installed. A callable
@@ -515,10 +575,9 @@ def prompt_profiles_section(flow: Any = None, agent: Any = None) -> str:
     profiles = getattr(flow, "prompt_profiles", {})
     if not profiles or getattr(flow, "prompt_router", None) is not None:
         return ""
-    max_depth = getattr(flow, "max_depth", 0)
-    if max_depth == 0 or agent.config.depth >= max_depth:
+    if not can_spawn(flow, agent):
         return ""
-    lines = ["Available prompt profiles (pass `prompt_profile` in a launch_subagents spec):"]
+    lines = ["Available prompt profiles (pass `prompt_profile` to `launch_subagent`):"]
     for name in sorted(profiles):
         desc = getattr(profiles[name], "description", "")
         lines.append(f"- `{name}`" + (f" — {desc}" if desc else ""))

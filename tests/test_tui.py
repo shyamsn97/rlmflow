@@ -51,7 +51,7 @@ def _delegating_run() -> tuple[AgentStart, ExecAction, AgentStart]:
             usage=LLMUsage(10, 6),
         )
     )
-    action = thinking.append(ExecAction(code="await launch_subagents(...)"))
+    action = thinking.append(ExecAction(code="await launch_subagent(...)"))
     child = action.append(AgentStart(content="lookup", config=root.config.child("lookup")))
     return root, action, child
 

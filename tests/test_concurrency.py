@@ -4,7 +4,7 @@ import threading
 import pytest
 from helpers import first_user
 
-from rlmflow import AppendChild, Flow, SequentialPool, UserQuery, start
+from rlmflow import AppendChild, Flow, SequentialPool, SubprocessRuntime, UserQuery, start
 from rlmflow.prompts import PromptProfile
 from rlmflow.prompts.messages import UserPromptBuilder
 
@@ -14,8 +14,14 @@ def block(code):
 
 
 def fanout(*names):
-    specs = ", ".join(f"{{'name': {name!r}, 'query': {name!r}}}" for name in names)
-    return block(f"answers = await launch_subagents([{specs}])\ndone(','.join(answers))")
+    calls = "\n".join(
+        f"    await launch_subagent({name!r}, name={name!r})," for name in names
+    )
+    return block(
+        f"handles = [\n{calls}\n]\n"
+        "answers = [await h.wait_for_result() for h in handles]\n"
+        "done(','.join(answers))"
+    )
 
 
 class BarrierLLM:
@@ -38,6 +44,23 @@ def test_blocking_children_get_a_thread_each():
     assert Flow(BarrierLLM(2), workers=2).run(root) == "c,c"
 
 
+def test_ten_subprocess_children_can_launch_concurrently():
+    names = tuple(f"search-{index}" for index in range(10))
+
+    class LLM:
+        def chat(self, messages):
+            query = first_user(messages)
+            return fanout(*names) if query == "parent" else block(f"done({query!r})")
+
+    flow = Flow(LLM(), runtime=SubprocessRuntime())
+    try:
+        root = start("parent", max_depth=1)
+        assert flow.run(root) == ",".join(names)
+        assert list(flow.runtime.repls) == [root.id]
+    finally:
+        asyncio.run(flow.aclose())
+
+
 def test_prebuilt_subtrees_get_a_thread_each():
     root = start("parent", max_depth=1)
     a = start("a")
@@ -46,7 +69,12 @@ def test_prebuilt_subtrees_get_a_thread_each():
     root.append_child(b, name="b")
     action = root.frontier
     action.code = (
-        "answers = await launch_subagents([{'name': 'a'}, {'name': 'b'}])\ndone(','.join(answers))"
+        "handles = [\n"
+        "    await launch_subagent('', name='a'),\n"
+        "    await launch_subagent('', name='b'),\n"
+        "]\n"
+        "answers = [await h.wait_for_result() for h in handles]\n"
+        "done(','.join(answers))"
     )
 
     assert Flow(BarrierLLM(2), workers=2).run(root) == "c,c"
@@ -76,7 +104,11 @@ def test_prebuilt_children_are_not_submitted_twice():
     root.append_child(first, name="first")
     root.append_child(second, name="second")
     root.frontier.code = (
-        "answers = await launch_subagents([{'name': 'first'}, {'name': 'second'}])\n"
+        "handles = [\n"
+        "    await launch_subagent('', name='first'),\n"
+        "    await launch_subagent('', name='second'),\n"
+        "]\n"
+        "answers = [await h.wait_for_result() for h in handles]\n"
         "done(','.join(answers))"
     )
     flow = Flow(

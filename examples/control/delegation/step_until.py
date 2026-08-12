@@ -38,8 +38,8 @@ from common import build_client, save_example_graph  # noqa: E402
 QUERY = """\
 Show minimal `Flow.run_streaming(..., until=...)` boundaries with delegated child agents.
 
-In your first REPL block, launch two child agents in one `await launch_subagents`
-call, then call done with their joined results. Use exactly these child names:
+In your first REPL block, launch two child handles before waiting for either,
+then collect both results and call done. Use exactly these child names:
 
 - `slow`: ask it to solve a tiny task after sleeping briefly with
   `await asyncio.sleep(1)`.

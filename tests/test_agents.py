@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 from helpers import StubLLM
 
@@ -70,7 +72,7 @@ def test_directory_reports_statuses_and_completed_results():
 
     assert agents.get("root").status == "waiting"
     assert agents.get(researcher.id).status == "completed"
-    assert agents.get(researcher.id).get_result() == {"finding": "duplicate keys"}
+    assert agents.get(researcher.id).result() == {"finding": "duplicate keys"}
     assert agents.get(reviewer.id).status == "running"
     assert agents.get(checker.id).status == "idle"
 
@@ -94,9 +96,10 @@ def test_directory_is_a_snapshot_and_normalizes_results():
     after = build_agent_directory(root)
 
     assert before.get("worker").status == "idle"
-    assert before.get("worker").get_result() is None
+    with pytest.raises(asyncio.InvalidStateError):
+        before.get("worker").result()
     assert after.get("worker").status == "completed"
-    assert after.get("worker").get_result() == "custom answer"
+    assert after.get("worker").result() == "custom answer"
 
 
 def test_directory_renders_a_bounded_tree(capsys):
@@ -151,7 +154,7 @@ def test_agent_tree_is_opt_in_for_namespace_and_prompt():
     assert directory.self.agent_id == root.id
     prompt = enabled.messages(root)[0]["content"]
     assert "`AGENTS` is a read-only snapshot" in prompt
-    assert "`.get_result()` for a completed agent's result" in prompt
+    assert "`await agent.wait_for_result()` waits automatically" in prompt
     assert "`AGENTS.print_graph(show_results=True)`" in prompt
 
 

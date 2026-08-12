@@ -15,6 +15,8 @@ import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 
+import cloudpickle
+
 from rlmflow import (
     AgentStart,
     DoneOutput,
@@ -30,6 +32,7 @@ examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "ex
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
+import sokoban  # noqa: E402
 from common import add_flow_args, add_model_args, add_out_dir_arg, build_client  # noqa: E402
 from recovery import Plan, prepare_branch, push_turns, recovery_tools  # noqa: E402
 from sokoban import Sokoban  # noqa: E402
@@ -129,37 +132,42 @@ There are more goals than boxes, so some goals stay empty and no box is owed the
 goal sharing its number. Two plans that pair the same boxes with the same goals
 are one plan however you sequence them, so spend the {n} slots on different
 pairings — including the goals an obvious plan would leave out.
-Do not call done() or launch_subagents().
+Do not call done() or launch_subagent().
 """
 
 
-def scoreboard(game, agent: AgentStart) -> str:
+def scoreboard(state: dict, agent: AgentStart) -> str:
     """How the branch is doing and what it is being judged on.
 
     Without this a worker cannot tell a short solve from a long one, does not
     know a budget exists, and does not know it is being compared with siblings —
     so nothing discourages it from wandering.
     """
-    placed = sum(1 for pos in game.boxes if pos in game.targets)
+    dist = state.get("dist", 0)
     left = max(0, agent.config.max_iters - agent.llm_turns())
     return (
-        f"Standing: {game.pushes} pushes, {placed}/{len(game.boxes)} boxes locked, "
-        f"{game.dist} to go, ~{left} turns left.\n"
+        f"Standing: {state.get('pushes', 0)} pushes, {state.get('placed', 0)}/"
+        f"{state.get('box_count', 0)} boxes locked, {dist} to go, ~{left} turns left.\n"
         "Only the best of several parallel attempts is kept: solving scores 1000 "
-        f"minus total pushes, failing about {-1000 - game.dist}. The shortest solve "
+        f"minus total pushes, failing about {-1000 - dist}. The shortest solve "
         "wins, so don't wander or repeat a push."
     )
 
 
 def board_prompt(flow: Flow, agent: AgentStart) -> str | None:
-    try:
-        game = flow.runtime.get_var(agent, "game")
-    except Exception:  # noqa: BLE001 - the shepherd has no board
+    # The board lives in the agent's REPL — a worker process under every runtime
+    # but the in-process one — so the host reads the published state out of ENV
+    # rather than reaching for the game object.
+    repl = flow.runtime.get(agent)
+    state = dict(repl.env) if repl is not None else {}
+    if "status" not in state:  # the shepherd has no board
         return None
 
-    game.begin_turn()
-    legal = game.legal_pushes()
-    if game.solved:
+    # Stamp the turn the game's one-push guard keys on. It ships with the next
+    # run, so the worker sees it before it executes this turn's block.
+    repl.update_env({"turn": agent.llm_turns()})
+    legal = state.get("legal_pushes", [])
+    if state.get("solved"):
         action = 'Call done("solved").'
     elif not legal:
         action = 'Call done("stuck").'
@@ -168,13 +176,13 @@ def board_prompt(flow: Flow, agent: AgentStart) -> str | None:
 
     order = agent.config.inputs.get("_shepherd_order")
     guidance = (
-        f"\n\n{scoreboard(game, agent)}"
+        f"\n\n{scoreboard(state, agent)}"
         f"\n\nStanding order: lock {order}. Each box goes to the goal named for "
         "it, even when another goal is nearer, and the routes are yours."
         if order
         else ""
     )
-    return f"{game.status()}\n\nLegal pushes: {', '.join(legal) or 'none'}\n{action}{guidance}"
+    return f"{state['status']}\n\nLegal pushes: {', '.join(legal) or 'none'}\n{action}{guidance}"
 
 
 async def play_jam(
@@ -203,19 +211,26 @@ async def play_jam(
     yield action
     yield await land(action)
 
-    env = flow.runtime.repl_for(worker).env
     for _ in range(pushes):
         turn = worker.frontier.append(LLMOutput(content=JAM_REPLY, code=JAM_CODE))
         yield turn
         action = await land(turn)
         yield action
         yield await land(action)
+        # Read the env afresh each turn: a worker returns its published state as a
+        # new mapping per run, so a reference taken once goes stale.
+        env = flow.runtime.repl_for(worker).env
         if env.get("solved") or env.get("blocked"):
             return
 
 
 def board(flow: Flow, agent: AgentStart) -> str:
-    return flow.runtime.get_var(agent, "game").render(ids=True)
+    return flow.runtime.get_env_var(agent, "board") or ""
+
+
+def branch_heading(branch) -> str:
+    state = "SOLVED" if branch.solved else f"dist {branch.dist}"
+    return f"{branch.name} [push {branch.pushes} · {state}]"
 
 
 async def run_shepherd(
@@ -241,6 +256,12 @@ async def run_shepherd(
             )
         },
     )
+    # Each REPL runs in a worker process that has no examples directory on its
+    # path, so ``sokoban`` is not importable there and pickling the class by
+    # reference would arrive as a missing import. Sending the module by value ships
+    # the code itself, which is also what lets the host read a finished game back
+    # out at the end for the trace export.
+    cloudpickle.register_pickle_by_value(sokoban)
     flow.inject("Sokoban", Sokoban)
     worker = flow.start(
         WORKER_QUERY,
@@ -366,15 +387,10 @@ async def run_shepherd(
         shepherd.frontier.append(DoneOutput(content=summary, result=summary))
         shepherd.save(root / "shepherd")
 
+        final_panels = [(branch_heading(branch), branch.board()) for branch in branches]
         print(
             side_by_side(
-                [
-                    (
-                        f"{branch.name} [{'solved' if branch.solved else f'dist={branch.dist}'}]",
-                        branch.board(),
-                    )
-                    for branch in branches
-                ]
+                final_panels
             )
         )
         export_run_traces(
@@ -385,6 +401,11 @@ async def run_shepherd(
         best.graph.save(root / "best")
         print(f"\n{summary}\n{best.board()}")
         if dashboard is not None:
+            # Freeze the live viewer before publishing authoritative final labels;
+            # otherwise its best-effort status callback can overwrite SOLVED with
+            # a bare branch name during the final repaint.
+            panels.close()
+            dashboard.set_panels(final_panels)
             dashboard.set_picked(best.name)
             dashboard.finish(f"done — solved={best.solved}, {best.pushes} pushes")
     finally:

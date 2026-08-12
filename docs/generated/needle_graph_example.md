@@ -26,17 +26,17 @@ sequenceDiagram
     participant root_chunk_2_candidate_a as root.chunk_2.candidate_a
     participant root_chunk_2_candidate_b as root.chunk_2.candidate_b
     participant root_verify as root.verify
-    root->>+root_chunk_0: launch_subagents Scan first third for the hidden secret code.
-    root->>+root_chunk_1: launch_subagents Scan middle third for the hidden secret code.
-    root->>+root_chunk_2: launch_subagents Scan final third for the hidden secret code.
+    root->>+root_chunk_0: launch_subagent Scan first third for the hidden secret code.
+    root->>+root_chunk_1: launch_subagent Scan middle third for the hidden secret code.
+    root->>+root_chunk_2: launch_subagent Scan final third for the hidden secret code.
     root_chunk_0-->>-root: not found
     root_chunk_1-->>-root: decoy, no code
-    root_chunk_2->>+root_chunk_2_candidate_a: launch_subagents Inspect candidate window A.
-    root_chunk_2->>+root_chunk_2_candidate_b: launch_subagents Inspect candidate window B.
+    root_chunk_2->>+root_chunk_2_candidate_a: launch_subagent Inspect candidate window A.
+    root_chunk_2->>+root_chunk_2_candidate_b: launch_subagent Inspect candidate window B.
     root_chunk_2_candidate_a-->>-root_chunk_2: decoy: the code is not 12345
     root_chunk_2_candidate_b-->>-root_chunk_2: needle: the secret code is 84721
     root_chunk_2-->>-root: candidate code 84721
-    root->>+root_verify: launch_subagents Verify candidate code 84721 against the origi...
+    root->>+root_verify: launch_subagent Verify candidate code 84721 against the origi...
     root_verify-->>-root: 84721 matches the requested needle
     root-->>root: done 84721
 ```

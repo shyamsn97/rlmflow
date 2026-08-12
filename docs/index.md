@@ -12,7 +12,7 @@ Pick the doc that matches what you're trying to do.
 ## Use rlmflow
 
 - [Control](control.md) — streaming loop, per-agent limits, multi-turn runs,
-  save/load resume, forks, `INPUTS`, opt-in `AGENTS`, `launch_subagents`,
+  save/load resume, forks, `INPUTS`, opt-in `AGENTS`, `launch_subagent`,
   custom tools.
 - [Streaming and scheduling](streaming.md) — detailed guide to
   `run_streaming(..., until=...)`, `TaskQueue`, transitions, delegation,

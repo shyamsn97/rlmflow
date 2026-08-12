@@ -52,6 +52,17 @@ def parse_structured_output(content: str, schema: Schema) -> Any:
         raise StructuredOutputError(content=content, schema=schema, cause=exc) from exc
 
 
+def parse_structured_answer(answer: object, schema: Schema) -> Any:
+    """Validate an answer given as a Python value or as pre-encoded JSON text."""
+    if not isinstance(answer, str):
+        return parse_structured_output(json.dumps(answer), schema)
+    try:
+        return parse_structured_output(answer, schema)
+    except StructuredOutputError:
+        # A bare string such as NO_MATCH is a value, not a JSON document.
+        return parse_structured_output(json.dumps(answer), schema)
+
+
 class StructuredOutputParser:
     """Compatibility shim for the original public parser object."""
 
@@ -106,6 +117,7 @@ __all__ = [
     "StructuredOutputError",
     "StructuredOutputParser",
     "json_schema_for",
+    "parse_structured_answer",
     "parse_structured_output",
     "system_prompt_hint",
 ]

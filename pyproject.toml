@@ -24,6 +24,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "cloudpickle>=3.0",
     "jsonschema>=4.0",
     "pydantic>=2.0",
     "tenacity>=8.0",
@@ -39,11 +40,6 @@ tinker = ["tinker", "tinker-cookbook"]
 dspy = ["dspy"]
 mcp = ["mcp"]
 modal = ["modal"]
-e2b = ["e2b"]
-# By-value injection/retrieval of live Python objects across a process-isolated
-# runtime (SubprocessRuntime / Docker / Modal). Not needed for LocalRuntime.
-cloudpickle = ["cloudpickle>=2.2"]
-daytona = ["daytona-sdk"]
 eval = [
     "tqdm>=4.66",
     "wandb>=0.16",
@@ -55,7 +51,7 @@ eval = [
     "PyPDF2>=3.0",
     "python-docx>=1.1",
 ]
-sandbox = ["modal", "e2b", "daytona-sdk"]
+sandbox = ["modal"]
 # The browser viewer. The figure, the timeline, the HTML stepper, and replay need
 # nothing; this is only for `open_viewer` / `rlmflow view --browser`.
 viewer = ["gradio>=4.44", "rich>=13.0"]
@@ -70,9 +66,6 @@ all = [
     "dspy",
     "mcp",
     "modal",
-    "e2b",
-    "daytona-sdk",
-    "cloudpickle>=2.2",
     "tqdm>=4.66",
     "wandb>=0.16",
     "datasets>=2.19",

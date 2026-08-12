@@ -2,9 +2,10 @@
 
 ## Trust model
 
-`LocalRuntime` runs agent Python in your process. Same permissions as
-your interpreter: filesystem, network, env vars, subprocesses. **Use
-it only for code you'd run yourself.**
+`LocalRuntime` runs agent Python in a separate worker process, but that
+process still has the host user's filesystem, network, environment, and
+subprocess permissions. Process separation is not a sandbox. **Use it only for
+code you'd run yourself.**
 
 For untrusted agents, or agents you haven't audited yet, use an
 isolated runtime:
@@ -13,15 +14,14 @@ isolated runtime:
 - `ModalRuntime` — a remote Modal container.
 - Custom `Runtime` — SSH, `kubectl exec`, Firecracker, gVisor, anything.
 
-`SubprocessRuntime` separates interpreter state but retains the host user's
-permissions. It is not a security boundary for untrusted code.
+`SubprocessRuntime` selects another Python executable or environment but retains
+the host user's permissions. It is not a security boundary for untrusted code.
 
 ## Docker isolation knobs
 
 ```python
 DockerRuntime(
     image="rlmflow:local",
-    network="none",           # no outbound traffic
     cpus=1.0,                 # CPU quota
     memory="512m",            # OOM cap
     user="1000:1000",         # non-root
@@ -32,6 +32,9 @@ DockerRuntime(
     mounts={"./workspace": "/workspace"},
 )
 ```
+
+The Docker worker uses stdin/stdout for its control protocol, so
+`network="none"` is supported and requires no published ports.
 
 Mount only what the agent needs. A hostile agent inside the container
 can still fill its writable volumes, burn CPU up to the quota, and
@@ -50,9 +53,10 @@ Independent of the runtime:
 ## Proxied tools
 
 `Flow(tools=[...])` and `flow.add_tool(fn)` expose callables to the agent
-REPL. Tools marked `@tool(proxy=True)` execute on the
-host when called from a remote sandbox; local tools are shipped into the sandbox
-when possible. Working-directory-aware tools run relative to
+worker. Tools marked `@tool(proxy=True)` execute on the host through the
+worker's private protocol stream; local tools are copied into the worker when
+possible.
+Working-directory-aware tools run relative to
 `runtime.working_directory`.
 
 Tools you register are part of the trust boundary. The container can

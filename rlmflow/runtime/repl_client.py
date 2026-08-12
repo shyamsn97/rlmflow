@@ -1,338 +1,406 @@
-"""Host-side client for the remote REPL protocol."""
+"""Host-side client for lightweight Python workers."""
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import inspect
-import textwrap
 import threading
+import uuid
 from collections.abc import Callable
+from contextvars import Context, ContextVar
+from dataclasses import dataclass
 from typing import Any, Protocol
 
+from rlmflow.graph.nodes import ExecAction, Node, active_step, running_step
 from rlmflow.runtime.protocol import (
-    CapabilitiesRequest,
-    CapabilityMap,
-    InjectImportRequest,
     InjectProxyRequest,
     InjectRequest,
-    InjectSourceRequest,
+    PingRequest,
     ProxyCall,
     ProxyResponse,
     RemoveRequest,
     ReplResponse,
     RetrieveRequest,
     RunRequest,
-    SetEnvRequest,
     WireModel,
 )
-from rlmflow.runtime.repl import DoneSignal, MissingReplError, Repl, ReplRun, ReplStatus
+from rlmflow.runtime.repl import MISSING_REPL_NOTE, DoneSignal, Repl, ReplRun, ReplStatus
 from rlmflow.tools import get_tool_metadata
-from rlmflow.utils.serial import CLOUDPICKLE, decode_object, encode_object, is_json_safe
+from rlmflow.tools.agents import AGENTS_BINDING
+from rlmflow.utils.serial import decode_object, encode_object
+
+_NO_ANSWER = object()
+_RPC_CALL_ID: ContextVar[int] = ContextVar("rlmflow_rpc_call_id", default=0)
+
+
+def current_rpc_call_id() -> int:
+    """Ordinal of the current proxied call within one execution."""
+    return _RPC_CALL_ID.get()
 
 
 class ReplConnection(Protocol):
-    """Minimal send/recv boundary used by RemoteRepl."""
+    def start(self) -> None: ...
 
-    def send(self, msg: WireModel) -> None: ...
+    def send(self, message: WireModel) -> None: ...
 
     def recv(self) -> ReplResponse | ProxyCall: ...
 
-    def close(self) -> None: ...
+    def close(self, *, force: bool = False) -> None: ...
 
-
-_NO_ANSWER = object()
+    def stderr_tail(self) -> str: ...
 
 
 class ProtocolDesyncError(RuntimeError):
-    """A response arrived that belongs to no outstanding request.
-
-    Means the stream lost framing — historically because something wrote
-    non-protocol bytes onto it. Raised rather than returned, because the
-    alternative is silently handing a caller another request's answer.
-    """
+    """A worker response matched no outstanding request."""
 
 
-class RemoteRepl(Repl):
-    """A :class:`~rlmflow.runtime.repl.Repl` that runs code in a sandbox.
+@dataclass
+class _RunState:
+    tenant: WorkerRepl
+    loop: asyncio.AbstractEventLoop
+    step: Node | None
+    proxied: dict[str, Callable[..., object]]
+    answer: Any = _NO_ANSWER
 
-    Not a REPL itself — a host-side stub that speaks the wire protocol over a
-    :class:`ReplConnection` to a ``ReplServer`` (which wraps a ``LocalRepl`` in
-    another process/container). Objects cross the boundary by value; see
-    :meth:`inject`/:meth:`get_var`. Returned by the process-isolated runtimes
-    (``SubprocessRuntime``/``DockerRuntime``/``ModalRuntime``).
-    """
 
-    def __init__(self, connection: ReplConnection) -> None:
-        self.connection = connection
-        self.namespace: dict[str, Any] = {}
-        # Mirror of the sandbox's host-visible ``ENV`` state channel, refreshed
-        # from each run response (see Repl.env).
-        self.env: dict[str, Any] = {}
-        # The answer to the block currently running, if it has answered. It cannot
-        # ride the exception here the way it does locally: ``finish`` is a proxy call
-        # serviced while ``run`` is still waiting on the run response, so the value
-        # has to wait somewhere until ``run`` returns. A sentinel rather than
-        # ``None``, so answering ``None`` differs from not answering.
-        self._answer: Any = _NO_ANSWER
-        self.proxied: dict[str, Callable[..., object]] = {}
-        self._completion: Callable[[object], object] | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._request_id = 0
-        self._capabilities: CapabilityMap | None = None
-        # One connection, possibly several callers. Sends are serialized so two
-        # messages cannot interleave on the wire; reads are serialized so only
-        # one caller owns the stream at a time and routes by id for the others.
-        self._send_lock = threading.Lock()
-        self._recv_cv = threading.Condition()
-        self._reading = False
-        self._stash: dict[str, ReplResponse] = {}
-        self._outstanding: set[str] = set()
+class WorkerSession:
+    """One worker connection shared by one or more logical agent tenants."""
 
-    def _next_id(self, cmd: str) -> str:
-        self._request_id += 1
-        return f"{cmd}-{self._request_id}"
-
-    def _send(self, msg: WireModel) -> None:
-        with self._send_lock:
-            self.connection.send(msg)
-
-    def _finish(self, resp: ReplResponse) -> ReplResponse:
-        if not resp.ok or resp.error is not None:
-            raise RuntimeError(resp.error or "remote REPL request failed")
-        return resp
-
-    def call(self, msg: WireModel) -> ReplResponse:
-        request_id = getattr(msg, "id", None)
-        with self._recv_cv:
-            self._outstanding.add(request_id)
-        self._send(msg)
-        try:
-            return self._await_response(request_id)
-        finally:
-            with self._recv_cv:
-                self._outstanding.discard(request_id)
-                self._stash.pop(request_id, None)
-
-    def _await_response(self, request_id: str) -> ReplResponse:
-        while True:
-            with self._recv_cv:
-                if request_id in self._stash:
-                    return self._finish(self._stash.pop(request_id))
-                if self._reading:
-                    # Another caller owns the stream; it will stash ours.
-                    self._recv_cv.wait(timeout=0.05)
-                    continue
-                self._reading = True
-            try:
-                # Read outside the lock: a slow sandbox must not block a caller
-                # whose answer is already stashed.
-                resp = self.connection.recv()
-            finally:
-                with self._recv_cv:
-                    self._reading = False
-                    self._recv_cv.notify_all()
-            if isinstance(resp, ProxyCall):
-                self._handle_proxy(resp)
-                continue
-            if resp.id == request_id:
-                return self._finish(resp)
-            with self._recv_cv:
-                if resp.id not in self._outstanding:
-                    raise ProtocolDesyncError(
-                        f"response {resp.id!r} matches no outstanding request "
-                        f"(waiting on {request_id!r}); the stream lost framing"
-                    )
-                self._stash[resp.id] = resp
-                self._recv_cv.notify_all()
-
-    def seed(
+    def __init__(
         self,
-        tools: dict[str, Callable[..., object]],
-        inputs: dict[str, str],
+        connection: ReplConnection,
+        *,
+        timeout: float = 300.0,
+        execution_timeout: float | None = None,
     ) -> None:
-        self.namespace = dict(tools)
-        self.namespace["INPUTS"] = dict(inputs)
-        self.call(InjectRequest(id=self._next_id("inject"), name="INPUTS", value=dict(inputs)))
-        for name, fn in tools.items():
-            if name == "INPUTS":
-                continue
-            # Completion is a framework primitive: always a host proxy with special
-            # semantics, even if seeded without tool metadata. ``done`` remains an
-            # alias so recorded code from older runs still replays.
-            if name in {"finish", "done"}:
-                self._completion = fn
-                self._inject_proxy(name, self._remote_finish)
-            else:
-                # Everything else (launch_subagents, llm_query_batched, user
-                # tools) is driven by its own metadata via inject.
-                self.inject(name, fn)
+        self.connection = connection
+        self.timeout = timeout
+        self.execution_timeout = execution_timeout
+        self.tenants: dict[str, WorkerRepl] = {}
+        self.runs: dict[str, _RunState] = {}
+        self.pending: dict[str, concurrent.futures.Future[ReplResponse]] = {}
+        self.closed = False
+        self._started = False
+        self._counter = 0
+        self._execution_order = 0
+        self._start_lock = threading.Lock()
+        self._send_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._reader: threading.Thread | None = None
+        self._failure: BaseException | None = None
 
-    def inject(self, name: str, fn: Any) -> None:
-        """Ship any Python object into the remote namespace.
+    def add_tenant(self, tenant: WorkerRepl) -> None:
+        with self._state_lock:
+            if self.closed:
+                raise RuntimeError("worker session is closed")
+            self.tenants[tenant.tenant_id] = tenant
 
-        Proxy tools run back on the host; other callables are imported or
-        source-shipped into the sandbox. Plain (JSON) values are injected as-is;
-        arbitrary live objects are shipped **by value** as a cloudpickle blob and
-        rebuilt as an independent copy in the sandbox.
-        """
-        self.namespace[name] = fn
-        if not callable(fn):
-            self._inject_value(name, fn)
-            return
-        meta = get_tool_metadata(fn)
-        if meta is not None and meta.proxy:
-            self._inject_proxy(name, self._sync_callable(fn), is_async=meta.is_async)
-        else:
-            self._inject_local_tool(name, fn)
+    def release(self, tenant: WorkerRepl) -> None:
+        with self._state_lock:
+            self.tenants.pop(tenant.tenant_id, None)
+            empty = not self.tenants
+        if empty:
+            self.close()
 
-    def get_var(self, name: str) -> Any:
-        """Read a variable back out of the remote Python namespace (by value).
+    def _next_id(self, kind: str) -> str:
+        with self._state_lock:
+            self._counter += 1
+            return f"{kind}-{self._counter}"
 
-        JSON-safe data comes back as-is; anything else is returned as a
-        cloudpickle copy of the sandbox object. Raises if ``name`` is unbound.
-        """
-        resp = self.call(RetrieveRequest(id=self._next_id("retrieve"), name=name))
-        if resp.value_encoding == CLOUDPICKLE:
-            return decode_object(resp.value)
-        return resp.value
-
-    def capabilities(self) -> CapabilityMap:
-        """Fetch (and cache) the sandbox's advertised capabilities."""
-        if self._capabilities is None:
-            resp = self.call(CapabilitiesRequest(id=self._next_id("capabilities")))
-            self._capabilities = resp.capabilities or CapabilityMap()
-        return self._capabilities
-
-    def _inject_value(self, name: str, value: Any) -> None:
-        # Plain JSON data goes over verbatim (readable, no dependency); a live
-        # object is shipped by value via cloudpickle when the sandbox supports it.
-        if is_json_safe(value):
-            self.call(InjectRequest(id=self._next_id("inject"), name=name, value=value))
-            return
-        if not self.capabilities().cloudpickle:
-            raise RuntimeError(
-                f"cannot inject {name!r}: the value is not JSON-serializable and "
-                "this sandbox does not support cloudpickle object injection "
-                "(install cloudpickle in the sandbox, or inject JSON-safe data)."
+    def ensure_started(self) -> None:
+        with self._start_lock:
+            if self.closed:
+                raise RuntimeError("worker session is closed")
+            if self._started:
+                if self._failure is not None:
+                    raise RuntimeError(f"worker failed: {self._failure}")
+                return
+            self.connection.start()
+            self._reader = threading.Thread(
+                target=self._read_messages,
+                daemon=True,
+                name=f"rlmflow-worker-reader-{id(self):x}",
             )
-        self.call(
-            InjectRequest(
-                id=self._next_id("inject"),
+            self._reader.start()
+            self._started = True
+        probe = PingRequest(id=self._next_id("ping"), tenant_id="__session__")
+        self.request(probe, timeout=self.timeout, start=False)
+
+    def request(
+        self,
+        message: WireModel,
+        *,
+        timeout: float | None,
+        start: bool = True,
+    ) -> ReplResponse:
+        if start:
+            self.ensure_started()
+        future: concurrent.futures.Future[ReplResponse] = concurrent.futures.Future()
+        with self._state_lock:
+            if self.closed:
+                raise RuntimeError("worker session is closed")
+            self.pending[message.id] = future
+        try:
+            with self._send_lock:
+                self.connection.send(message)
+            return future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            self.close(force=True)
+            kind = getattr(message, "cmd", "request")
+            if kind == "run":
+                raise TimeoutError(f"REPL execution exceeded {timeout}s") from None
+            raise TimeoutError(f"REPL {kind} did not respond within {timeout}s") from None
+        finally:
+            with self._state_lock:
+                self.pending.pop(message.id, None)
+
+    def _read_messages(self) -> None:
+        try:
+            while not self.closed:
+                message = self.connection.recv()
+                if isinstance(message, ProxyCall):
+                    threading.Thread(
+                        target=self._handle_proxy,
+                        args=(message,),
+                        daemon=True,
+                        name=f"rlmflow-host-call-{message.id}",
+                    ).start()
+                    continue
+                with self._state_lock:
+                    future = self.pending.get(message.id)
+                if future is None:
+                    raise ProtocolDesyncError(
+                        f"response {message.id!r} matches no outstanding request"
+                    )
+                if not future.done():
+                    future.set_result(message)
+        except BaseException as exc:  # noqa: BLE001 - reader death fails the session
+            if not self.closed:
+                self._fail(exc)
+
+    def _fail(self, error: BaseException) -> None:
+        with self._state_lock:
+            self._failure = error
+            futures = tuple(self.pending.values())
+        for future in futures:
+            if not future.done():
+                future.set_exception(error)
+
+    def _handle_proxy(self, message: ProxyCall) -> None:
+        with self._state_lock:
+            state = self.runs.get(message.run_id)
+        if state is None:
+            self._send_proxy_error(message, "RPC belongs to no active execution")
+            return
+        try:
+            args, kwargs = decode_object(message.payload)
+
+            def invoke() -> Any:
+                token = _RPC_CALL_ID.set(message.call_id)
+                try:
+                    fn = state.proxied[message.proxy]
+                    value = fn(*args, **kwargs)
+                    if inspect.isawaitable(value):
+                        value = self._await_host(value, state.loop)
+                    return value
+                finally:
+                    _RPC_CALL_ID.reset(token)
+
+            def in_step() -> Any:
+                if state.step is None:
+                    return invoke()
+                with running_step(state.step):
+                    return invoke()
+
+            value = Context().run(in_step)
+        except DoneSignal as signal:
+            state.answer = signal.answer
+            response = ProxyResponse(id=message.id, done=True)
+        except BaseException as exc:  # noqa: BLE001 - host tool failures cross the wire
+            response = ProxyResponse(
+                id=message.id,
+                ok=False,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        else:
+            response = ProxyResponse(id=message.id, value=encode_object(value))
+        with self._send_lock:
+            self.connection.send(response)
+
+    def _send_proxy_error(self, message: ProxyCall, error: str) -> None:
+        with self._send_lock:
+            self.connection.send(ProxyResponse(id=message.id, ok=False, error=error))
+
+    @staticmethod
+    def _await_host(value: Any, loop: asyncio.AbstractEventLoop) -> Any:
+        async def wait() -> Any:
+            return await value
+
+        return asyncio.run_coroutine_threadsafe(wait(), loop).result()
+
+    def execute(self, tenant: WorkerRepl, code: str, state: _RunState) -> ReplRun:
+        self.ensure_started()
+        run_id = uuid.uuid4().hex
+        with self._state_lock:
+            self._execution_order += 1
+            if isinstance(state.step, ExecAction):
+                state.step.repl_execution_order = self._execution_order
+            self.runs[run_id] = state
+        binding: dict[str, Any] = {
+            "run_id": run_id,
+            "tenant_id": tenant.tenant_id,
+            "inputs": dict(tenant.inputs),
+            "env": dict(tenant.env),
+        }
+        agents = tenant.namespace.get(AGENTS_BINDING)
+        if agents is not None:
+            binding["agents"] = agents
+            binding["expose_agents"] = "AGENTS" in tenant.namespace
+        request = RunRequest(
+            id=run_id,
+            tenant_id=tenant.tenant_id,
+            code=code,
+            binding=encode_object(binding),
+        )
+        try:
+            response = self.request(request, timeout=self.execution_timeout)
+            if not response.ok:
+                raise RuntimeError(response.error or "worker execution failed")
+            if response.env is not None:
+                tenant.env = decode_object(response.env)
+            if state.answer is not _NO_ANSWER:
+                return ReplRun(
+                    output=response.output,
+                    status=ReplStatus.DONE,
+                    answer=state.answer,
+                )
+            status = ReplStatus.ERROR if response.errored else ReplStatus.OK
+            return ReplRun(output=response.output, status=status)
+        finally:
+            with self._state_lock:
+                self.runs.pop(run_id, None)
+
+    def close(self, *, force: bool = False) -> None:
+        with self._state_lock:
+            if self.closed:
+                return
+            self.closed = True
+            futures = tuple(self.pending.values())
+        error = RuntimeError("worker session is closed")
+        for future in futures:
+            if not future.done():
+                future.set_exception(error)
+        self.connection.close(force=force)
+
+
+class WorkerRepl(Repl):
+    """One logical agent tenant in a lightweight Python worker."""
+
+    def __init__(
+        self,
+        session: WorkerSession,
+        *,
+        tenant_id: str | None = None,
+    ) -> None:
+        self.session = session
+        self.tenant_id = tenant_id or uuid.uuid4().hex
+        self.namespace: dict[str, Any] = {}
+        self.env: dict[str, Any] = {}
+        self.inputs: dict[str, str] = {}
+        self.proxied: dict[str, Callable[..., object]] = {}
+        self.closed = False
+        self._run_lock = threading.Lock()
+        self.session.add_tenant(self)
+
+    def seed(self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]) -> None:
+        self.namespace = dict(tools)
+        self.inputs = dict(inputs)
+        for name, value in tools.items():
+            if name not in {"INPUTS", "ENV", "AGENTS", AGENTS_BINDING}:
+                self.inject(name, value)
+
+    def inject(self, name: str, value: Any) -> None:
+        self.namespace[name] = value
+        metadata = get_tool_metadata(value) if callable(value) else None
+        if name in {"finish", "done"} or (metadata is not None and metadata.proxy):
+            self.proxied[name] = value
+            request: WireModel = InjectProxyRequest(
+                id=self.session._next_id("inject_proxy"),
+                tenant_id=self.tenant_id,
+                name=name,
+                is_async=bool(metadata and metadata.is_async),
+            )
+        else:
+            self.proxied.pop(name, None)
+            request = InjectRequest(
+                id=self.session._next_id("inject"),
+                tenant_id=self.tenant_id,
                 name=name,
                 value=encode_object(value),
-                encoding=CLOUDPICKLE,
             )
+        response = self.session.request(request, timeout=self.session.timeout)
+        if not response.ok:
+            raise RuntimeError(response.error or f"failed to inject {name!r}")
+
+    def get_var(self, name: str) -> Any:
+        response = self.session.request(
+            RetrieveRequest(
+                id=self.session._next_id("retrieve"),
+                tenant_id=self.tenant_id,
+                name=name,
+            ),
+            timeout=self.session.timeout,
         )
+        if not response.ok or response.value is None:
+            raise KeyError(name)
+        return decode_object(response.value)
 
     def remove_tool(self, name: str) -> None:
         self.namespace.pop(name, None)
         self.proxied.pop(name, None)
-        self.call(RemoveRequest(id=self._next_id("remove"), name=name))
+        self.session.request(
+            RemoveRequest(
+                id=self.session._next_id("remove"),
+                tenant_id=self.tenant_id,
+                name=name,
+            ),
+            timeout=self.session.timeout,
+        )
 
     def update_env(self, values: dict[str, Any]) -> None:
-        if not values:
-            return
         self.env.update(values)
-        self.call(SetEnvRequest(id=self._next_id("set_env"), values=dict(values)))
 
     async def run(self, code: str) -> ReplRun:
         if not code.strip():
-            text = f"{MissingReplError.__name__}: missing ```repl``` block"
-            return ReplRun(output=text, status=ReplStatus.ERROR)
-        self._answer = _NO_ANSWER  # cleared per run: an answer belongs to one block
-        self._loop = asyncio.get_running_loop()
-        resp = await asyncio.to_thread(self.call, RunRequest(id=self._next_id("run"), code=code))
-        if resp.env is not None:
-            self.env = resp.env
-        output = resp.output or ""
-        if self._answer is not _NO_ANSWER:
-            return ReplRun(output=output, status=ReplStatus.DONE, answer=self._answer)
-        status = ReplStatus.ERROR if resp.errored else ReplStatus.OK
-        return ReplRun(output=output, status=status)
+            return ReplRun(output=MISSING_REPL_NOTE, status=ReplStatus.ERROR)
+        state = _RunState(
+            tenant=self,
+            loop=asyncio.get_running_loop(),
+            step=active_step(),
+            proxied=dict(self.proxied),
+        )
+        try:
+            return await asyncio.to_thread(self._run_blocking, code, state)
+        except asyncio.CancelledError:
+            await asyncio.to_thread(self.session.close, force=True)
+            raise
+
+    def _run_blocking(self, code: str, state: _RunState) -> ReplRun:
+        with self._run_lock:
+            return self.session.execute(self, code, state)
 
     def close(self) -> None:
-        self.connection.close()
-
-    def _inject_proxy(
-        self, name: str, fn: Callable[..., object], *, is_async: bool = False
-    ) -> None:
-        self.proxied[name] = fn
-        self.call(
-            InjectProxyRequest(id=self._next_id("inject_proxy"), name=name, is_async=is_async)
-        )
-
-    def _inject_local_tool(self, name: str, fn: Callable[..., object]) -> None:
-        module = getattr(fn, "__module__", None)
-        qualname = getattr(fn, "__qualname__", "") or ""
-        if module and module != "__main__" and "<locals>" not in qualname:
-            self.call(
-                InjectImportRequest(
-                    id=self._next_id("inject_import"),
-                    name=name,
-                    module=module,
-                    qualname=qualname,
-                )
-            )
+        if self.closed:
             return
-        try:
-            source = textwrap.dedent(inspect.getsource(fn))
-        except (OSError, TypeError) as exc:
-            raise RuntimeError(
-                f"cannot ship local tool {name!r} into the sandbox: define it in "
-                "an importable module or as a top-level function"
-            ) from exc
-        self.call(
-            InjectSourceRequest(
-                id=self._next_id("inject_source"),
-                name=name,
-                func_name=getattr(fn, "__name__", name),
-                source=source,
-            )
-        )
-
-    def _handle_proxy(self, resp: ProxyCall) -> None:
-        fn = self.proxied[resp.proxy]
-        try:
-            result = fn(*resp.args, **resp.kwargs)
-        except DoneSignal as signal:
-            self._answer = signal.answer
-            self._send(ProxyResponse(id=resp.id, done=True))
-            return
-        except Exception as exc:  # noqa: BLE001
-            self._send(
-                ProxyResponse(
-                    id=resp.id,
-                    ok=False,
-                    error=f"{type(exc).__name__}: {exc}",
-                )
-            )
-            return
-        self._send(ProxyResponse(id=resp.id, value=result))
-
-    def _remote_finish(self, answer: object) -> None:
-        if self._completion is None:
-            raise DoneSignal(str(answer).strip())
-        # The host's completion tool raises with the answer it parsed, which is the
-        # one that counts (it may be a validated object, not this string).
-        self._completion(answer)
-        raise DoneSignal(answer)
-
-    def _sync_callable(self, fn: Callable[..., object]) -> Callable[..., object]:
-        def call(*args: object, **kwargs: object) -> object:
-            result = fn(*args, **kwargs)
-            if not inspect.isawaitable(result):
-                return result
-            return self._await_from_thread(result)
-
-        return call
-
-    def _await_from_thread(self, value: Any) -> object:
-        async def wait() -> object:
-            return await value
-
-        if self._loop is None:
-            return asyncio.run(wait())
-        return asyncio.run_coroutine_threadsafe(wait(), self._loop).result()
+        self.closed = True
+        self.session.release(self)
 
 
-__all__ = ["ProtocolDesyncError", "RemoteRepl", "ReplConnection"]
+__all__ = [
+    "ProtocolDesyncError",
+    "ReplConnection",
+    "WorkerRepl",
+    "WorkerSession",
+    "current_rpc_call_id",
+]

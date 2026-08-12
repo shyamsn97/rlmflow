@@ -92,6 +92,10 @@ class AgentConfig:
     prompt_profile: str = "default"
     inputs: dict[str, str] = field(default_factory=dict)
     output_schema: dict[str, Any] | None = None
+    #: Place a child in its caller's live Python worker.
+    reuse_repl: bool = False
+    #: Stable ordinal of the launch call that created this child.
+    launch_call_id: int | None = None
     max_depth: int = 2
     max_iters: int = 20
     child_max_iters: int | None = None
@@ -110,6 +114,8 @@ class AgentConfig:
             "depth": self.depth + 1,
             "inputs": {},
             "output_schema": None,
+            "reuse_repl": False,
+            "launch_call_id": None,
             "max_iters": self.child_max_iters or self.max_iters,
         }
         return replace(self, **{**values, **overrides})
@@ -416,10 +422,15 @@ class LLMOutput(Node):
 class ExecAction(Node):
     type: ClassVar[str] = "exec_action"
     code: str = ""
+    #: Submission order within the action's worker session, used for shared replay.
+    repl_execution_order: int | None = None
 
     def to_dict(self, *, nested: bool = True) -> dict[str, Any]:
         data = super().to_dict(nested=nested)
-        data["payload"] = {"code": self.code}
+        data["payload"] = {
+            "code": self.code,
+            "repl_execution_order": self.repl_execution_order,
+        }
         return data
 
 
@@ -484,8 +495,15 @@ class AppendChild(ExecAction):
         return self.append(subtree)
 
     def _refresh_code(self) -> None:
-        specs = [{"name": child.config.name} for child in self.child_agents]
-        self.code = f"print(await launch_subagents({specs!r}))"
+        calls = [f"launch_subagent('', name={child.config.name!r})" for child in self.child_agents]
+        if len(calls) == 1:
+            self.code = f"_handle = await {calls[0]}\nprint(await _handle.wait_for_result())"
+            return
+        self.code = (
+            "_handles = [\n"
+            + "".join(f"    await {call},\n" for call in calls)
+            + "]\nprint([await h.wait_for_result() for h in _handles])"
+        )
 
 
 @dataclass
@@ -528,6 +546,8 @@ def agent_payload(agent: AgentStart | None) -> dict[str, Any]:
         "model": config.model,
         "prompt_profile": config.prompt_profile,
         "output_schema": config.output_schema,
+        "reuse_repl": config.reuse_repl,
+        "launch_call_id": config.launch_call_id,
     }
 
 

@@ -21,13 +21,16 @@ def build_graph() -> AgentStart:
     turn = root.append(
         LLMOutput(
             content="splitting into two children",
-            code="await launch_subagents([{'name': 'write'}, {'name': 'test'}])",
+            code=(
+                "write = await launch_subagent('write module', name='write')\n"
+                "test = await launch_subagent('run pytest', name='test')"
+            ),
             usage=LLMUsage(input_tokens=120, output_tokens=40),
         )
     )
     # Children hang off the action that launched them; the agent's own sequel is
     # the output of that same step.
-    launch = turn.append(ExecAction(code="await launch_subagents(...)"))
+    launch = turn.append(ExecAction(code="write = await launch_subagent(...)"))
 
     writer = launch.append(
         AgentStart(content="write module", config=root.config.child("write"))

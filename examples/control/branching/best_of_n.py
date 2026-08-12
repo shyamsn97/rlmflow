@@ -36,8 +36,10 @@ QUERY = (
 ROOT_REPLY = (
     "```repl\n"
     f"fruits = {[name for name, _ in FRUITS]!r}\n"
-    "results = await launch_subagents([{'name': f'classify_{name}', "
-    "'query': f\"Classify {name} as 'citrus' or 'not_citrus'.\"} for name in fruits])\n"
+    "handles = [await launch_subagent("
+    "f\"Classify {name} as 'citrus' or 'not_citrus'.\", "
+    "name=f'classify_{name}') for name in fruits]\n"
+    "results = [await handle.wait_for_result() for handle in handles]\n"
     "done(', '.join(f'{name}={r}' for name, r in zip(fruits, results)))\n"
     "```"
 )

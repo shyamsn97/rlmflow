@@ -13,7 +13,7 @@ from rlmflow.consumers.tui import agent_table, overview_table
 def test_render_tree_shows_live_child_progress_and_results():
     root = start("find the needle")
     output = root.append(LLMOutput(content="search"))
-    action = output.append(ExecAction(code="await launch_subagents(...)"))
+    action = output.append(ExecAction(code="await launch_subagent(...)"))
     child = action.append(
         AgentStart(
             content="search batch",

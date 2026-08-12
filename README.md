@@ -25,14 +25,16 @@ Recursive agents let a model split work across fresh sub-agents, each with its
 own context, tools, and execution history. Those sub-agents can delegate again,
 so one root task can quickly become a tree of parallel work.
 
-For example, the root agent can split a haystack into chunks:
+For example, the root agent can split a haystack into chunks. Every launch
+returns a future-like handle immediately:
 
 ```python
-results = await launch_subagents([
-    {"name": "chunk_0", "query": "scan first third", "inputs": {"chunk": chunk_0}},
-    {"name": "chunk_1", "query": "scan middle third", "inputs": {"chunk": chunk_1}},
-    {"name": "chunk_2", "query": "scan final third", "inputs": {"chunk": chunk_2}},
-])
+handles = [
+    await launch_subagent("scan first third", name="chunk_0", inputs={"chunk": chunk_0}),
+    await launch_subagent("scan middle third", name="chunk_1", inputs={"chunk": chunk_1}),
+    await launch_subagent("scan final third", name="chunk_2", inputs={"chunk": chunk_2}),
+]
+results = [await handle.wait_for_result() for handle in handles]
 done(extract_answer(results))
 ```
 
@@ -40,10 +42,11 @@ Then `chunk_2` can recursively delegate again:
 
 ```python
 hits = find_candidate_windows(INPUTS["chunk"])
-results = await launch_subagents([
-    {"name": "candidate_a", "query": "inspect window A", "inputs": {"window": hits[0]}},
-    {"name": "candidate_b", "query": "inspect window B", "inputs": {"window": hits[1]}},
-])
+handles = [
+    await launch_subagent("inspect window A", name="candidate_a", inputs={"window": hits[0]}),
+    await launch_subagent("inspect window B", name="candidate_b", inputs={"window": hits[1]}),
+]
+results = [await handle.wait_for_result() for handle in handles]
 done(select_candidate(results))
 ```
 
@@ -125,8 +128,8 @@ For local development, `make install` runs cleanup, formatting/lint checks
 including `ruff check .`, then installs the package.
 
 > **Security warning — `LocalRuntime` is not a sandbox.**
-> Agent code runs as full Python in your process: filesystem, network,
-> environment variables, subprocesses — the same privileges as your interpreter.
+> Agent code runs as full Python in a separate worker process, but with the
+> same filesystem, network, environment, and subprocess privileges as the host.
 > LLM-generated code can be wrong or malicious (prompt injection, model errors,
 > supply-chain risk). **Use `LocalRuntime` only for code you would run yourself.**
 > For untrusted agents or anything exposed to the internet, use
@@ -566,7 +569,7 @@ in [`docs/internals.md`](docs/internals.md). Research notes live under
 - [Positioning](docs/positioning.md): when to use rlmflow vs
   rlm-minimal, ypi, LangGraph, CrewAI, AutoGen, SWE-agent, Aider.
 - [Control](docs/control.md): streaming loop, per-agent limits, multi-turn runs,
-  save/load resume, forks, `INPUTS`, `launch_subagents`, custom tools.
+  save/load resume, forks, `INPUTS`, `launch_subagent`, custom tools.
 - [Streaming and scheduling](docs/streaming.md): `run_streaming(..., until=...)`,
   `TaskQueue`, transition diagrams, delegation, parallel roots, boundaries,
   cancellation, and Pool/Runtime placement.

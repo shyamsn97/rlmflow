@@ -78,12 +78,13 @@ class Sokoban:
         # Set when a requested push can't be applied: the cue that the myopic
         # worker has run into a wall and it is time to rewind.
         self.blocked = False
-        # One-push-per-turn guard. Inactive until the host calls ``begin_turn``
-        # (which it does once per live turn), so deterministic fork REPLAY — which
-        # re-runs each push back-to-back with no host turn boundary — never trips
-        # it. During live play a second push in the same turn raises.
-        self._armed = False
-        self._pushed = False
+        # One-push-per-turn guard, keyed on the turn marker the host writes into
+        # ``env`` before each live turn. Reading the marker instead of being armed
+        # by a host method call keeps the guard working when the game lives in a
+        # worker process, where the host cannot touch this object. It also stays
+        # inactive during deterministic fork REPLAY, which re-runs each push
+        # back-to-back with no host turn boundary and so writes no marker.
+        self._turn = None
         # Filled on first use by ``dead_cells``; depends only on walls and goals.
         self._dead: set[tuple[int, int]] | None = None
         self._publish()
@@ -292,6 +293,19 @@ class Sokoban:
         self.env["dist"] = self.dist
         self.env["moves"] = self.moves
         self.env["pushes"] = self.pushes
+        # Everything the host reads about the board goes through ``env`` as plain
+        # data. The game object itself stays where it was built, which is a worker
+        # process under every runtime but the in-process one, so the host cannot
+        # call methods on it.
+        self.env["status"] = self.status()
+        self.env["board"] = self.render(ids=True)
+        self.env["grid"] = self.grid()
+        self.env["legal_pushes"] = self.legal_pushes()
+        self.env["player"] = self.player
+        self.env["boxes"] = dict(self.box_items())
+        self.env["goals"] = dict(self.goal_items())
+        self.env["box_count"] = len(self.boxes)
+        self.env["placed"] = sum(1 for pos in self.boxes if pos in self.targets)
         # This turn's per-sub-step board renders (walk frames + the shove) for the
         # live grid to animate; empty on a turn that moved nothing (a rejected push).
         self.env["frames"] = list(self.turn_frames)
@@ -300,10 +314,18 @@ class Sokoban:
         self.env["assignment"] = ";".join(f"{r},{c}" for r, c in self._pos_by_id)
 
     # --- action ----------------------------------------------------------
-    def begin_turn(self) -> None:
-        """Host calls this once per live worker turn; arms the one-push guard."""
-        self._armed = True
-        self._pushed = False
+    def _claim_turn(self, action: str) -> None:
+        """Spend this turn's single action, or refuse a second one.
+
+        The host stamps ``env["turn"]`` before each live turn. An unstamped run is
+        replay, which is expected to apply its pushes back-to-back.
+        """
+        turn = self.env.get("turn")
+        if turn is None:
+            return
+        if turn == self._turn:
+            raise RuntimeError(f"one {action} per turn — read the board, then act once next turn")
+        self._turn = turn
 
     def _reject(self, msg: str) -> str:
         self.blocked = True
@@ -357,9 +379,7 @@ class Sokoban:
         """Low-level one-cell step the strategic ``push`` is built on: walk or shove
         exactly one cell, reporting why if blocked. Subject to the one-action guard
         during live play. Workers use ``push``; this exists for tests/primitives."""
-        if self._armed and self._pushed:
-            raise RuntimeError("one push per turn — read the board, then act once next turn")
-        self._pushed = True
+        self._claim_turn("move")
         self.turn_frames = []
         delta = _norm_dir(direction)
         if delta is None:
@@ -378,9 +398,7 @@ class Sokoban:
         every sub-step. Commits exactly one push per turn. Illegal pushes report
         why and change nothing. ``direction`` is up/down/left/right; ``box`` is a
         ``B<n>`` id or an ``(r, c)`` coordinate."""
-        if self._armed and self._pushed:
-            raise RuntimeError("one push per turn — read the board, then push once next turn")
-        self._pushed = True
+        self._claim_turn("push")
         self.turn_frames = []
         delta = _norm_dir(direction)
         if delta is None:

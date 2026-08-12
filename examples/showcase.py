@@ -56,10 +56,12 @@ class DemoLLM:
         if "hello.py" in prompt and "goodbye.py" in prompt:
             return (
                 "```repl\n"
-                "results = await launch_subagents([\n"
-                '    {"name": "hello", "query": "Create hello.py"},\n'
-                '    {"name": "goodbye", "query": "Create goodbye.py"},\n'
-                "])\n"
+                'hello = await launch_subagent("Create hello.py", name="hello")\n'
+                'goodbye = await launch_subagent("Create goodbye.py", name="goodbye")\n'
+                "results = [\n"
+                "    await hello.wait_for_result(),\n"
+                "    await goodbye.wait_for_result(),\n"
+                "]\n"
                 'done("\\n".join(results))\n'
                 "```"
             )

@@ -1,7 +1,7 @@
 from helpers import StubLLM
 from pydantic import BaseModel
 
-from rlmflow import ErrorOutput, ExecOutput, Flow, LLMOutput, start
+from rlmflow import AgentConfig, ErrorOutput, ExecOutput, Flow, LLMOutput, start
 
 
 def test_messages_are_a_pure_projection_of_the_transcript():
@@ -50,13 +50,33 @@ def test_prompt_documents_the_complete_builtin_repl_api():
     prompt = flow.messages(root.frontier)[0]["content"]
 
     assert "# Built-in REPL API" in prompt
-    assert "Subagent(" in prompt
     for field in ("goal", "name", "inputs", "model", "output_schema", "prompt_profile"):
         assert f"`{field}`" in prompt
-    assert "`query` as an alias for `goal`" in prompt
-    assert "`await launch_subagents(specs: list[Subagent | dict]) -> list`" in prompt
+    assert "`await launch_subagent(...) -> AgentHandle`" in prompt
+    assert "`wait_for_result()`" in prompt
+    assert "Every launch starts the child in the background" in prompt
+    assert "wait: bool" not in prompt
     assert "`finish(answer: object) -> NoReturn`" in prompt
     assert "done(" not in prompt
     assert "`INPUTS: dict[str, str]`" in prompt
     assert "`ENV: dict[str, object]`" in prompt
     assert "`print(...)` is the observation channel" in prompt
+
+
+def test_leaf_prompt_omits_delegation_guidance():
+    flow = Flow(
+        StubLLM(lambda _messages: "unused"),
+        config=AgentConfig(max_depth=1),
+    )
+    root = flow.start("root")
+    leaf = start("leaf", config=root.config.child("leaf"))
+
+    prompt = flow.messages(leaf.frontier)[0]["content"]
+
+    assert "launch_subagent" not in prompt
+    assert "AgentHandle" not in prompt
+    assert "Act as an orchestrator" not in prompt
+    assert "Fan out slices" not in prompt
+    assert "Work directly on the assigned task" in prompt
+    assert "`finish(answer: object) -> NoReturn`" in prompt
+    assert "Do not catch tool exceptions" in prompt

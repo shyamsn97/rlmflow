@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Literal
@@ -9,6 +10,8 @@ from typing import Literal
 from rlmflow.graph.nodes import AgentStart, ExecAction, Node
 
 AgentStatus = Literal["running", "waiting", "idle", "completed"]
+AGENTS_BINDING = "__rlmflow_agents__"
+AGENT_WAIT_TOOL = "__rlmflow_wait_agent__"
 
 
 def _json_safe(value: object) -> object:
@@ -34,6 +37,51 @@ class AgentFrontier:
 
 
 @dataclass(frozen=True, slots=True)
+class AgentHandle:
+    """Future-like child selector whose observations refresh on every REPL action."""
+
+    agent_id: str
+    name: str
+    path: str
+
+    @property
+    def id(self) -> str:
+        return self.agent_id
+
+    def _current(self) -> AgentInfo | None:
+        from rlmflow.runtime.repl import current_binding
+
+        agents = current_binding().get("agents")
+        if not isinstance(agents, AgentDirectory):
+            return None
+        return agents.get(self.agent_id)
+
+    @property
+    def status(self) -> AgentStatus:
+        current = self._current()
+        return current.status if current is not None else "running"
+
+    def done(self) -> bool:
+        return self.status == "completed"
+
+    def result(self) -> object | None:
+        """Return the completed result or raise when it is not ready."""
+        current = self._current()
+        if current is None or not current.done():
+            raise asyncio.InvalidStateError(f"agent {self.path!r} is not completed")
+        return current.result()
+
+    async def wait_for_result(self) -> object | None:
+        """Wait for completion and return the result."""
+        from rlmflow.runtime.repl import current_binding
+
+        waiter = current_binding().get("wait_agent")
+        if waiter is None:
+            raise RuntimeError("agent waiting is unavailable in this execution")
+        return await waiter(self.agent_id)
+
+
+@dataclass(frozen=True, slots=True)
 class AgentInfo:
     """One agent as exposed through the REPL ``AGENTS`` snapshot."""
 
@@ -47,9 +95,27 @@ class AgentInfo:
     frontier: AgentFrontier
     _result: object | None = field(default=None, repr=False)
 
-    def get_result(self) -> object | None:
-        """Return this agent's completed result, or ``None`` when unfinished."""
+    def done(self) -> bool:
+        return self.status == "completed"
+
+    def result(self) -> object | None:
+        """Return the completed result or raise when it is not ready."""
+        if not self.done():
+            raise asyncio.InvalidStateError(f"agent {self.path!r} is not completed")
         return self._result
+
+    def get_result(self) -> object | None:
+        """Compatibility alias for :meth:`result`."""
+        return self.result()
+
+    async def wait_for_result(self) -> object | None:
+        """Wait for completion and return the result."""
+        from rlmflow.runtime.repl import current_binding
+
+        waiter = current_binding().get("wait_agent")
+        if waiter is None:
+            raise RuntimeError("agent waiting is unavailable in this execution")
+        return await waiter(self.agent_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,14 +156,16 @@ class AgentDirectory:
         """Every agent in root-first tree order."""
         return list(self.agents)
 
-    def get(self, selector: str | AgentInfo | None = None) -> AgentInfo | None:
+    def get(self, selector: str | AgentHandle | AgentInfo | None = None) -> AgentInfo | None:
         """Resolve self, an id/path, a direct relative, or a unique tree-wide name."""
         if selector is None:
             return self.self
+        if isinstance(selector, AgentHandle):
+            return self._by_id.get(selector.agent_id)
         if isinstance(selector, AgentInfo):
             return self._by_id.get(selector.agent_id)
         if not isinstance(selector, str):
-            raise TypeError("agent selector must be a string, AgentInfo, or None")
+            raise TypeError("agent selector must be a string, AgentHandle, AgentInfo, or None")
 
         exact = self._by_id.get(selector) or self._by_path.get(selector)
         if exact is not None:
@@ -124,17 +192,17 @@ class AgentDirectory:
             raise ValueError(f"ambiguous agent name {selector!r}; use a path or id")
         return None
 
-    def get_parent(self, agent: str | AgentInfo | None = None) -> AgentInfo | None:
+    def get_parent(self, agent: str | AgentHandle | AgentInfo | None = None) -> AgentInfo | None:
         """Return an agent's direct parent, defaulting to the viewer."""
         selected = self._selected(agent)
         return self._by_id.get(selected.parent_id) if selected.parent_id is not None else None
 
-    def get_children(self, agent: str | AgentInfo | None = None) -> list[AgentInfo]:
+    def get_children(self, agent: str | AgentHandle | AgentInfo | None = None) -> list[AgentInfo]:
         """Return an agent's direct children in creation order."""
         selected = self._selected(agent)
         return [self._by_id[child_id] for child_id in selected.child_ids]
 
-    def get_siblings(self, agent: str | AgentInfo | None = None) -> list[AgentInfo]:
+    def get_siblings(self, agent: str | AgentHandle | AgentInfo | None = None) -> list[AgentInfo]:
         """Return an agent's siblings in creation order, excluding itself."""
         selected = self._selected(agent)
         if selected.parent_id is None:
@@ -161,7 +229,7 @@ class AgentDirectory:
             if agent.agent_id == self.viewer_id:
                 label += " (you)"
             if show_results and agent.status == "completed":
-                preview = self._result_preview(agent.get_result(), max_result_chars)
+                preview = self._result_preview(agent.result(), max_result_chars)
                 if preview:
                     label += f" -> {preview}"
             lines.append(prefix + label)
@@ -191,7 +259,7 @@ class AgentDirectory:
             )
         )
 
-    def _selected(self, selector: str | AgentInfo | None) -> AgentInfo:
+    def _selected(self, selector: str | AgentHandle | AgentInfo | None) -> AgentInfo:
         selected = self.get(selector)
         if selected is None:
             raise KeyError(f"unknown agent {selector!r}")
@@ -266,8 +334,11 @@ def build_agent_directory(
 
 
 __all__ = [
+    "AGENTS_BINDING",
+    "AGENT_WAIT_TOOL",
     "AgentDirectory",
     "AgentFrontier",
+    "AgentHandle",
     "AgentInfo",
     "AgentStatus",
     "build_agent_directory",

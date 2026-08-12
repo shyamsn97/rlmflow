@@ -191,6 +191,8 @@ def _config(path: str, payload: dict[str, Any]) -> AgentConfig:
         model=payload.get("model", "default"),
         prompt_profile=payload.get("prompt_profile", "default"),
         output_schema=payload.get("output_schema"),
+        reuse_repl=bool(payload.get("reuse_repl", False)),
+        launch_call_id=payload.get("launch_call_id"),
     )
 
 

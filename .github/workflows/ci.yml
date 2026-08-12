@@ -44,4 +44,5 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
       - run: pip install -e ".[dev]"
+      - run: python -m pip check
       - run: pytest -q --strict-markers --cov=rlmflow --cov-report=term-missing

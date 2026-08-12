@@ -1,4 +1,4 @@
-"""Modal Sandbox runtime for the remote REPL protocol."""
+"""Modal Sandbox provisioner for the lightweight Python worker."""
 
 from __future__ import annotations
 
@@ -6,8 +6,10 @@ import importlib
 import threading
 from collections import deque
 from contextlib import suppress
+from typing import Any
 
-from rlmflow.graph.nodes import Node
+from rlmflow.graph.nodes import AgentStart
+from rlmflow.runtime.connections import STDERR_LINES
 from rlmflow.runtime.protocol import (
     ProxyCall,
     ReplResponse,
@@ -16,121 +18,115 @@ from rlmflow.runtime.protocol import (
     parse_client_message,
 )
 from rlmflow.runtime.repl import Repl
-from rlmflow.runtime.repl_client import RemoteRepl, ReplConnection
+from rlmflow.runtime.repl_client import WorkerRepl, WorkerSession
 from rlmflow.runtime.runtime import Runtime
 
 
-class ModalConnection(ReplConnection):
-    """Connect RemoteRepl to a repl_server process in a Modal Sandbox."""
-
+class _ModalConnection:
     def __init__(
         self,
-        app_name: str = "rlmflow",
         *,
-        remote_workdir: str = "/workspace",
-        image: object = None,
-        timeout: int = 3600,
-        repl_timeout: float = 30,
-        **container_kwargs: object,
+        app_name: str,
+        remote_workdir: str,
+        image: object,
+        timeout: int,
+        container_kwargs: dict[str, object],
     ) -> None:
         self.app_name = app_name
         self.remote_workdir = remote_workdir
         self.image = image
         self.timeout = timeout
-        self.repl_timeout = repl_timeout
         self.container_kwargs = container_kwargs
-        self.container = None
-        self._stdout_iter = None
-        self._stdout_pending = ""
-        self._stderr_tail: deque[str] = deque(maxlen=40)
-        self._closing = threading.Event()
+        self.container: Any = None
+        self._stdout: Any = None
+        self._stderr_tail: deque[str] = deque(maxlen=STDERR_LINES)
+        self._start_lock = threading.Lock()
+        self._stderr_reader: threading.Thread | None = None
 
-    def _ensure_sandbox(self) -> None:
-        if self.container is not None:
-            return
-        try:
-            modal = importlib.import_module("modal")
-        except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency
-            raise ModuleNotFoundError(
-                "Modal remote REPL requires the optional `modal` dependency."
-            ) from exc
-        app = modal.App.lookup(self.app_name, create_if_missing=True)
-        image = self.image or modal.Image.debian_slim().pip_install("rlmflow", "cloudpickle>=2.2")
-        self.container = modal.Sandbox.create(
-            "python",
-            "-u",
-            "-m",
-            "rlmflow.runtime.repl_server",
-            "--workdir",
-            self.remote_workdir,
-            app=app,
-            image=image,
-            timeout=self.timeout,
-            **self.container_kwargs,
+    def start(self) -> None:
+        with self._start_lock:
+            if self.container is not None:
+                return
+            try:
+                modal = importlib.import_module("modal")
+            except ModuleNotFoundError as exc:  # pragma: no cover - optional dependency
+                raise ModuleNotFoundError(
+                    "Modal execution requires the optional `modal` dependency."
+                ) from exc
+            app = modal.App.lookup(self.app_name, create_if_missing=True)
+            image = self.image or modal.Image.debian_slim(python_version="3.12").pip_install(
+                "rlmflow"
+            )
+            self.container = modal.Sandbox.create(
+                "python",
+                "-u",
+                "-m",
+                "rlmflow.runtime.repl_server",
+                app=app,
+                image=image,
+                timeout=self.timeout,
+                workdir=self.remote_workdir,
+                **self.container_kwargs,
+            )
+            self._stdout = iter(self.container.stdout)
+            self._drain_stderr()
+
+    def _drain_stderr(self) -> None:
+        def pump() -> None:
+            with suppress(Exception):
+                for chunk in self.container.stderr:
+                    text = (
+                        chunk.decode(errors="replace") if isinstance(chunk, bytes) else str(chunk)
+                    )
+                    self._stderr_tail.extend(text.rstrip("\n").splitlines())
+
+        self._stderr_reader = threading.Thread(
+            target=pump,
+            daemon=True,
+            name="Modal REPL worker stderr",
         )
-        self._closing.clear()
-        self._stdout_iter = iter(self.container.stdout)
-        self._stdout_pending = ""
+        self._stderr_reader.start()
 
-    def send(self, msg: WireModel) -> None:
-        self._ensure_sandbox()
-        assert self.container is not None
-        self.container.stdin.write(dump_message(msg) + "\n")
+    def stderr_tail(self) -> str:
+        return "\n".join(self._stderr_tail)
+
+    def send(self, message: WireModel) -> None:
+        self.start()
+        self.container.stdin.write(dump_message(message) + "\n")
         self.container.stdin.drain()
 
     def recv(self) -> ReplResponse | ProxyCall:
-        self._ensure_sandbox()
-        return parse_client_message(self._recv_line())
-
-    def _recv_line(self) -> str:
-        if self._stdout_iter is None:
-            raise RuntimeError("Modal stdout stream is not available")
+        self.start()
         try:
-            while True:
-                if "\n" in self._stdout_pending:
-                    line, self._stdout_pending = self._stdout_pending.split("\n", 1)
-                    if line:
-                        return line
-                self._stdout_pending += _to_text(next(self._stdout_iter))
-        except StopIteration as exc:
-            raise self._closed_error() from exc
-        except Exception as exc:
-            if self._is_expected_stream_close(exc):
-                raise self._closed_error() from exc
-            raise
+            chunk = next(self._stdout)
+        except StopIteration:
+            raise RuntimeError(
+                f"Modal REPL worker exited unexpectedly. stderr: {self.stderr_tail()}"
+            ) from None
+        text = chunk.decode(errors="replace") if isinstance(chunk, bytes) else str(chunk)
+        return parse_client_message(text)
 
-    def _closed_error(self) -> RuntimeError:
-        stderr = "".join(self._stderr_tail).strip()
-        return RuntimeError(f"Modal REPL exited. stderr: {stderr or '<empty>'}")
+    def close(self, *, force: bool = False) -> None:
+        del force
+        with self._start_lock:
+            container, self.container = self.container, None
+        if container is None:
+            return
 
-    def _is_expected_stream_close(self, exc: Exception) -> bool:
-        if self._closing.is_set():
-            return True
-        return exc.__class__.__name__ in {
-            "ClientClosed",
-            "StreamTerminatedError",
-            "GRPCError",
-        }
-
-    def close(self) -> None:
-        container, self.container = self.container, None
-        self._closing.set()
-        self._stdout_iter = None
-        self._stdout_pending = ""
-        self._stderr_tail.clear()
-        if container is not None:
+        def terminate() -> None:
             with suppress(Exception):
                 container.terminate()
 
-
-def _to_text(data: object) -> str:
-    if isinstance(data, bytes):
-        return data.decode(errors="replace")
-    return str(data)
+        thread = threading.Thread(target=terminate, daemon=True)
+        thread.start()
+        thread.join(timeout=10)
+        if self._stderr_reader is not None:
+            self._stderr_reader.join(timeout=1)
+            self._stderr_reader = None
 
 
 class ModalRuntime(Runtime):
-    """Run each agent in a Modal Sandbox using the remote protocol."""
+    """Run isolated or explicitly shared agents in Modal Sandbox workers."""
 
     def __init__(
         self,
@@ -140,30 +136,38 @@ class ModalRuntime(Runtime):
         image: object = None,
         timeout: int = 3600,
         repl_timeout: float = 30,
+        execution_timeout: float | None = None,
         **container_kwargs: object,
     ) -> None:
-        super().__init__(working_directory=remote_workdir)
+        super().__init__()
         self.app_name = app_name
         self.remote_workdir = remote_workdir
         self.image = image
         self.timeout = timeout
         self.repl_timeout = repl_timeout
+        self.execution_timeout = execution_timeout
         self.container_kwargs = dict(container_kwargs)
 
-    def deploy_repl_server(self, agent: Node) -> RemoteRepl:
-        return RemoteRepl(
-            ModalConnection(
-                self.app_name,
-                remote_workdir=self.remote_workdir,
-                image=self.image,
-                timeout=self.timeout,
-                repl_timeout=self.repl_timeout,
-                **self.container_kwargs,
-            )
+    def open(self, agent: AgentStart) -> Repl:
+        if agent.config.reuse_repl and agent.parent is not None:
+            parent = agent.parent.parent_agent
+            parent_repl = self.repls.get(parent.id)
+            if not isinstance(parent_repl, WorkerRepl):
+                raise RuntimeError("reuse_repl requires a live parent worker")
+            return WorkerRepl(parent_repl.session, tenant_id=agent.id)
+        connection = _ModalConnection(
+            app_name=self.app_name,
+            remote_workdir=self.remote_workdir,
+            image=self.image,
+            timeout=self.timeout,
+            container_kwargs=self.container_kwargs,
         )
+        session = WorkerSession(
+            connection,
+            timeout=self.repl_timeout,
+            execution_timeout=self.execution_timeout,
+        )
+        return WorkerRepl(session, tenant_id=agent.id)
 
-    def open(self, agent: Node) -> Repl:
-        return self.deploy_repl_server(agent)
 
-
-__all__ = ["ModalConnection", "ModalRuntime"]
+__all__ = ["ModalRuntime"]
