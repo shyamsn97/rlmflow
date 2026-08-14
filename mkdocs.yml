@@ -5,6 +5,11 @@
 # mkdocs.yml
 site_name: rlmflow Docs
 
+# There is no explicit nav, so mkdocs would otherwise publish every file under
+# docs/ — including the maintainer notes in docs/internal/.
+exclude_docs: |
+  internal/
+
 theme:
   name: material
   features:

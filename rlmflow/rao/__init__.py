@@ -3,7 +3,7 @@
 A rollout is one episode: the root and every subagent act on the same env. Each
 agent is scored on the env reward its own actions earned, gains a bonus for its
 immediate children, and is compared against a leave-one-out baseline over the
-other rollouts of the same task. See ``docs/internal/rao_design.md``.
+other rollouts of the same task. See ``docs/research/rao_implementation_plan.md``.
 """
 
 from __future__ import annotations

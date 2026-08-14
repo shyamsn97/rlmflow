@@ -163,16 +163,22 @@ Lock the boxes in this order: B1->G1 entering from (2,3), then B3->G3 entering
 from (5,10). The routes are yours to work out.
 ```
 
-From there it is an ordinary turn again — walk, then shove. For example, `branch4` took seven
-of them, one push each, and locked all three boxes:
+From there the subagents make their moves, all eight at once:
 
-<p align="center">
-  <img
-    src="shepherd/assets/blog/branch4.gif"
-    alt="branch4 rewinds to one inherited push and solves the board in eight pushes"
-    width="420"
-  />
-</p>
+<table align="center">
+  <tr>
+    <td align="center"><img src="shepherd/assets/blog/branch7.gif" alt="branch7 reverted 1 push and got stuck" width="220" /><br /><sub>reverted 1 · stuck</sub></td>
+    <td align="center"><img src="shepherd/assets/blog/branch6.gif" alt="branch6 reverted 2 pushes and got stuck" width="220" /><br /><sub>reverted 2 · stuck</sub></td>
+    <td align="center"><img src="shepherd/assets/blog/branch5.gif" alt="branch5 reverted 3 pushes and solved the board" width="220" /><br /><sub>reverted 3 · solved, 16 pushes</sub></td>
+    <td align="center"><img src="shepherd/assets/blog/branch3.gif" alt="branch3 reverted 4 pushes and solved the board" width="220" /><br /><sub>reverted 4 · solved, 18 pushes</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="shepherd/assets/blog/branch1.gif" alt="branch1 reverted 5 pushes and got stuck" width="220" /><br /><sub>reverted 5 · stuck</sub></td>
+    <td align="center"><img src="shepherd/assets/blog/branch0.gif" alt="branch0 reverted 6 pushes and got stuck" width="220" /><br /><sub>reverted 6 · stuck</sub></td>
+    <td align="center"><img src="shepherd/assets/blog/branch4.gif" alt="branch4 reverted 7 pushes and solved the board in eight" width="220" /><br /><sub>reverted 7 · <b>solved, 8 pushes</b></sub></td>
+    <td align="center"><img src="shepherd/assets/blog/branch2.gif" alt="branch2 reverted the whole jam and solved the board" width="220" /><br /><sub>reverted 8 · solved, 9 pushes</sub></td>
+  </tr>
+</table>
 
 #### Overall Results
 
@@ -187,14 +193,3 @@ different box-to-goal order.
     width="920"
   />
 </p>
-
-#### Run it
-
-```bash
-python examples/shepherd/shepherd.py                  # --gradio for the live board
-python examples/shepherd/shepherd.py --simple-moves   # one move(directions) action instead
-python docs/internal/render_blog.py                   # redraw the GIFs above
-python examples/shepherd/render_graph.py --out docs/shepherd_graph.svg \
-    --nodes-out docs/shepherd_nodes.svg               # redraw the node figure
-python examples/shepherd/render_rewind.py --branch branch4  # one rewind, end to end
-```
