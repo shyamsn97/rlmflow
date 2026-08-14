@@ -8,6 +8,8 @@ Pick the doc that matches what you're trying to do.
   Why recursive agents, why graphs over flat traces, and walkthroughs.
 - [Positioning](positioning.md) — when to use rlmflow vs
   rlm-minimal, ypi, LangGraph, CrewAI, AutoGen, SWE-agent, Aider.
+- [Shepherd walkthrough](shepherd.md) — one worked run: a meta-agent reverts a
+  jammed Sokoban worker's graph and steers eight recoveries in parallel.
 
 ## Use rlmflow
 

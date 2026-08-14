@@ -3,7 +3,7 @@
 
 <p align="center">
   <img
-    src="shepherd/assets/blog/tiers.gif"
+    src="static/shepherd/tiers.gif"
     alt="A stuck worker, the shepherd that reads its trace, one card per recovery plan, and four workers reverting to different depths and running in parallel"
     width="920"
   />
@@ -22,17 +22,17 @@ operations — observe, rewind, fork, re-instruct — are graph edits, and the
 meta-agent's forks are simply its own children.
 
 Only the revert itself works differently. The paper checkpoints the worker's
-process and filesystem, so any program comes back byte-identical. `rlmflow` has
-every action tracked as a node in the graph, so the cheap route is to fork the graph and
-replay them — no snapshot to take, and exactly as faithful whenever the
+process and filesystem, so any program comes back byte-identical. `rlmflow`
+already tracks every action as a node, so the cheap route is to fork the graph and
+replay those actions — no snapshot to take, and exactly as faithful whenever the
 environment is deterministic.
 
-#### Irreversable Sokoban
+#### Irreversible Sokoban
 
 For this example we augment our RLMs with tools to play Sokoban, where boxes can be pushed but never
 pulled. This means a single wrong shove can make the puzzle unsolvable.
 
-For simplicity, we introduce two main tools in the The worker's REPL:
+For simplicity, we introduce two main tools in the worker's REPL:
 
 ```python
 def goto(row, col=None):  # walk anywhere reachable; never disturbs a box
@@ -42,7 +42,7 @@ def push(direction):      # shove what you stand against, once per turn
     print(game.push(direction))
 ```
 
-So a turn can be to a walk to a square, push a direction, or both:
+So a turn can walk to a square, push a direction, or both:
 
 ```repl
 goto(4, 3)
@@ -59,7 +59,7 @@ it sits flat against the wall, where nothing can stand behind it.
 
 <p align="center">
   <img
-    src="shepherd/assets/blog/jam.gif"
+    src="static/shepherd/jam.gif"
     alt="The worker pushes one box right eight times until it is pinned against the far wall"
     width="520"
   />
@@ -167,16 +167,16 @@ From there the subagents make their moves, all eight at once:
 
 <table align="center">
   <tr>
-    <td align="center"><img src="shepherd/assets/blog/branch7.gif" alt="branch7 reverted 1 push and got stuck" width="220" /><br /><sub>reverted 1 · stuck</sub></td>
-    <td align="center"><img src="shepherd/assets/blog/branch6.gif" alt="branch6 reverted 2 pushes and got stuck" width="220" /><br /><sub>reverted 2 · stuck</sub></td>
-    <td align="center"><img src="shepherd/assets/blog/branch5.gif" alt="branch5 reverted 3 pushes and solved the board" width="220" /><br /><sub>reverted 3 · solved, 16 pushes</sub></td>
-    <td align="center"><img src="shepherd/assets/blog/branch3.gif" alt="branch3 reverted 4 pushes and solved the board" width="220" /><br /><sub>reverted 4 · solved, 18 pushes</sub></td>
+    <td align="center"><img src="static/shepherd/branch7.gif" alt="branch7 reverted 1 push and got stuck" width="220" /><br /><sub>reverted 1 · stuck</sub></td>
+    <td align="center"><img src="static/shepherd/branch6.gif" alt="branch6 reverted 2 pushes and got stuck" width="220" /><br /><sub>reverted 2 · stuck</sub></td>
+    <td align="center"><img src="static/shepherd/branch5.gif" alt="branch5 reverted 3 pushes and solved the board" width="220" /><br /><sub>reverted 3 · solved, 16 pushes</sub></td>
+    <td align="center"><img src="static/shepherd/branch3.gif" alt="branch3 reverted 4 pushes and solved the board" width="220" /><br /><sub>reverted 4 · solved, 18 pushes</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="shepherd/assets/blog/branch1.gif" alt="branch1 reverted 5 pushes and got stuck" width="220" /><br /><sub>reverted 5 · stuck</sub></td>
-    <td align="center"><img src="shepherd/assets/blog/branch0.gif" alt="branch0 reverted 6 pushes and got stuck" width="220" /><br /><sub>reverted 6 · stuck</sub></td>
-    <td align="center"><img src="shepherd/assets/blog/branch4.gif" alt="branch4 reverted 7 pushes and solved the board in eight" width="220" /><br /><sub>reverted 7 · <b>solved, 8 pushes</b></sub></td>
-    <td align="center"><img src="shepherd/assets/blog/branch2.gif" alt="branch2 reverted the whole jam and solved the board" width="220" /><br /><sub>reverted 8 · solved, 9 pushes</sub></td>
+    <td align="center"><img src="static/shepherd/branch1.gif" alt="branch1 reverted 5 pushes and got stuck" width="220" /><br /><sub>reverted 5 · stuck</sub></td>
+    <td align="center"><img src="static/shepherd/branch0.gif" alt="branch0 reverted 6 pushes and got stuck" width="220" /><br /><sub>reverted 6 · stuck</sub></td>
+    <td align="center"><img src="static/shepherd/branch4.gif" alt="branch4 reverted 7 pushes and solved the board in eight" width="220" /><br /><sub>reverted 7 · <b>solved, 8 pushes</b></sub></td>
+    <td align="center"><img src="static/shepherd/branch2.gif" alt="branch2 reverted the whole jam and solved the board" width="220" /><br /><sub>reverted 8 · solved, 9 pushes</sub></td>
   </tr>
 </table>
 
@@ -188,8 +188,16 @@ different box-to-goal order.
 
 <p align="center">
   <img
-    src="../docs/shepherd_nodes.svg"
+    src="shepherd_nodes.svg"
     alt="Every node of one shepherd run: a short shepherd trunk fanning into eight branch chains, each faded over the turns it inherited from the jam"
     width="920"
   />
 </p>
+
+#### Run it
+
+```bash
+python examples/shepherd/shepherd.py                  # --gradio for the live board
+python examples/shepherd/shepherd.py --simple-moves   # one move(directions) action instead
+python examples/shepherd/render_graph.py              # redraw the diagrams above
+```

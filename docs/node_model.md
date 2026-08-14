@@ -65,7 +65,8 @@ what the engine actually ran. `LLMOutput.prompt_id` keys into
 `agent.system_prompts`, so the exact system prompt a turn ran under is
 recoverable with `agent.system_prompt_for(node)`. `DoneOutput` is the only
 terminal node: an agent is finished when `agent.terminal` is true, which means
-its frontier is a `DoneOutput`.
+its frontier is a `DoneOutput`. The tool that lands one is `finish(...)`; `done`
+stays bound to the same function so older agent code and saved runs still read.
 
 ## Navigating
 
@@ -94,7 +95,7 @@ A one-turn successful run looks like this:
 
 ```text
 AgentStart
-  -> LLMOutput(code="done('answer')")
+  -> LLMOutput(code="finish('answer')")
   -> ExecAction
   -> DoneOutput(result="answer")
 ```
@@ -106,7 +107,7 @@ AgentStart
   -> LLMOutput(code="x = compute()")
   -> ExecAction
   -> ExecOutput(content="...")
-  -> LLMOutput(code="done(x)")
+  -> LLMOutput(code="finish(x)")
   -> ExecAction
   -> DoneOutput(result="...")
 ```
@@ -118,7 +119,7 @@ recover:
 LLMOutput(code="1 / 0")
   -> ExecAction
   -> ErrorOutput(error="exec", content="ZeroDivisionError: ...")
-  -> LLMOutput(code="done(...)")
+  -> LLMOutput(code="finish(...)")
 ```
 
 `error="exec"` means the agent's own code raised. `error="repl"` means the REPL

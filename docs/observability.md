@@ -70,7 +70,7 @@ See [`node_model.md`](node_model.md) for the concrete Node classes.
 ```python
 from rlmflow import AgentStart
 
-run_dir = root.save("runs/deep_research")
+run_dir = root.save("runs/shepherd")
 loaded = AgentStart.load(run_dir)
 ```
 
@@ -126,7 +126,7 @@ class Progress(StreamConsumer):
 consumers = ConsumerGroup([
     LiveTreeRenderer(),
     Progress(),
-    GraphCheckpointer("runs/deep_research"),
+    GraphCheckpointer("runs/shepherd"),
 ])
 
 try:
@@ -221,7 +221,7 @@ A saved run reloads into the same tree, so every query above works on it
 offline:
 
 ```python
-loaded = AgentStart.load("runs/deep_research")
+loaded = AgentStart.load("examples/_runs/shepherd/shepherd")
 
 print(loaded.result(), loaded.tokens())
 for node in loaded.walk():
@@ -265,10 +265,11 @@ Neither needs a plotting library, a browser, or a running flow. From the shell,
 the same thing without writing a script:
 
 ```bash
-rlmflow view runs/deep_research               # the agent tree, then the timeline
-rlmflow view runs/deep_research --tree        # just the tree
-rlmflow view runs/deep_research --step 12     # one step, with its content
-rlmflow view runs/deep_research --svg run.svg --html run.html
+RUN=examples/_runs/shepherd/shepherd   # whatever directory you saved
+rlmflow view $RUN               # the agent tree, then the timeline
+rlmflow view $RUN --tree        # just the tree
+rlmflow view $RUN --step 12     # one step, with its content
+rlmflow view $RUN --svg run.svg --html run.html
 ```
 
 In the stepper, the arrow keys move a step, `Home` and `End` jump to the ends, and
@@ -288,10 +289,10 @@ tree works on a replay without knowing it is one:
 from rlmflow import render_tree
 from rlmflow.view import render_steps, replay
 
-for snap in replay("runs/deep_research"):
+for snap in replay("examples/_runs/shepherd/shepherd"):
     print(render_tree(snap))        # the live terminal tree, after the fact
 
-for frame in render_steps("runs/deep_research"):
+for frame in render_steps("examples/_runs/shepherd/shepherd"):
     print(frame)                    # the same thing, already rendered
 ```
 
@@ -306,8 +307,8 @@ that agent's transcript underneath — all as of the step you are on:
 ```python
 from rlmflow import open_viewer
 
-open_viewer("runs/deep_research")            # needs: pip install rlmflow[viewer]
-open_viewer(root, server_port=7861)          # extra keywords go to launch()
+open_viewer("examples/_runs/shepherd/shepherd")   # needs: pip install rlmflow[viewer]
+open_viewer(root, server_port=7861)               # extra keywords go to launch()
 ```
 
 ## Frames and GIFs

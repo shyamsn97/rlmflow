@@ -43,6 +43,12 @@ context routes `INPUTS`, `ENV`, output, completion, and host-tool calls back to
 the correct agent. User code can use ordinary top-level `await` and
 `asyncio.gather(...)`.
 
+A worker outlives the agent that answered in it: finishing does not close a REPL,
+so a fan-out holds one worker per child until you close them. Close a run's
+REPLs with `close_repls=True` on `run`/`arun`/`run_streaming`, one with
+`flow.runtime.close_repl(agent)`, or everything the Flow owns with
+`await flow.aclose()` — see [Control](control.md#cleanup).
+
 ## Working directory and tools
 
 ```python

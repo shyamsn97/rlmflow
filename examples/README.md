@@ -29,6 +29,9 @@ python examples/summarizer.py --sections 10
 | [`autoresearch/`](autoresearch/) | TinyStories autoresearch loop with Modal GPU trials |
 | [`shepherd/`](shepherd/) | Meta-agent recovers a jammed Sokoban worker by forking its graph and replaying recovery branches in parallel, with board panels + a node trace |
 
+[`docs/shepherd.md`](../docs/shepherd.md) is the write-up of one such run: the
+jam, the plans the meta-agent wrote against it, and what each recovery branch did.
+
 After a `shepherd/` run, two scripts redraw it from the saved graph and traces:
 `render_graph.py` writes an agent-level summary and a node-level picture of the
 whole tree as SVG, and `render_rewind.py` animates one branch — the jam, the

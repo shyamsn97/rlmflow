@@ -34,11 +34,11 @@ The default builder has these sections, in order:
 | Section | Purpose |
 | --- | --- |
 | `role` | Opening contract + REPL namespace. |
-| `strategy` | Orchestrator principles: probe inputs, decompose/fanout, truncation, fix failures before `done()`. |
+| `strategy` | Orchestrator principles: probe inputs, decompose/fanout, truncation, fix failures before `finish()`. |
 | `format` | One `repl` block per turn; use `print(...)` for inspection. |
 | `examples` | Core recipes (observe inputs, fan out slices, delegate). |
-| `final` | `done(...)` contract and repair discipline. |
-| `structured-output` | Per-agent `done(value)` schema when the agent has an `output_schema`. |
+| `final` | `finish(...)` contract and repair discipline. |
+| `structured-output` | Per-agent `finish(value)` schema when the agent has an `output_schema`. |
 | `structured-output-option` | How to request structured output from subagents (only when `enable_structured_output=True` and the agent can spawn children). |
 | `tools` | Runtime-generated tool list (custom tools registered with the runtime, plus extra model aliases). |
 | `inputs` | Runtime-generated manifest of the agent's `INPUTS`. |
@@ -92,7 +92,7 @@ flow.system_prompt = prompt
 domain_strategy = """
 **When to delegate:** spawn one child per independent file/module. Keep the root
 agent's job to planning, dispatch, and integration. Verify children mechanically
-before `done()`.
+before `finish()`.
 """
 
 prompt = SystemPromptBuilder()
@@ -161,7 +161,7 @@ class MinimalPrompt(SystemPromptBuilder):
                 "protocol",
                 """
 - Use exactly one ```repl``` block per assistant message.
-- Call `done(answer)` exactly once when finished.
+- Call `finish(answer)` exactly once when finished.
 - Use tools to inspect or modify files.
 """,
                 title="Protocol",
@@ -195,7 +195,7 @@ You are a Python REPL agent.
 
 - Use exactly one ```repl``` block per assistant message.
 - Use available tools to make progress.
-- Call `done(answer)` exactly once when finished.
+- Call `finish(answer)` exactly once when finished.
 """,
 )
 
@@ -208,7 +208,7 @@ def prompt_for(flow, agent):
 flow = rlmflow.Flow(llm, system_prompt=prompt_for)
 ```
 
-A string that omits `launch_subagent`, `INPUTS`, `HISTORY`, or the `done(...)`
+A string that omits `launch_subagent`, `INPUTS`, `HISTORY`, or the `finish(...)`
 rule means the model will not reliably use those features — prefer a
 `SystemPromptBuilder` unless you intend to own the entire protocol.
 
@@ -396,5 +396,5 @@ attributes:
 ```python
 class TerseFlow(rlmflow.Flow):
     continue_nudge = "Continue."
-    final_action = "Give your final answer now via done(...)."
+    final_action = "Give your final answer now via finish(...)."
 ```

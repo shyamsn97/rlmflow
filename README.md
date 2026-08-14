@@ -35,7 +35,7 @@ handles = [
     await launch_subagent("scan final third", name="chunk_2", inputs={"chunk": chunk_2}),
 ]
 results = [await handle.wait_for_result() for handle in handles]
-done(extract_answer(results))
+finish(extract_answer(results))
 ```
 
 Then `chunk_2` can recursively delegate again:
@@ -47,7 +47,7 @@ handles = [
     await launch_subagent("inspect window B", name="candidate_b", inputs={"window": hits[1]}),
 ]
 results = [await handle.wait_for_result() for handle in handles]
-done(select_candidate(results))
+finish(select_candidate(results))
 ```
 
 That code creates an agent graph:
@@ -169,6 +169,7 @@ print(root.result())
 root.save(workdir / "graph")
 ```
 
+
 Delegated children fan out as ordinary asyncio tasks that step alongside their
 parent. See
 [`examples/control/delegation/step_until.py`](./examples/control/delegation/step_until.py)
@@ -228,7 +229,7 @@ Every transition follows the same obs → action → obs shape:
 
 ```text
 LLMOutput  -> ExecAction -> ExecOutput    (REPL output, normal continuation)
-                         -> DoneOutput    (code called done())
+                         -> DoneOutput    (code called finish())
                          -> ErrorOutput   (code raised, or the REPL died)
 ```
 
@@ -246,6 +247,8 @@ root.leaves()                           # the frontier of every agent in the tre
 list(root.walk())                       # every Node, preorder
 root.result()                           # root DoneOutput result
 root.tokens()                           # recursive usage accounting
+
+from rlmflow import persistence
 persistence.to_dict(root)               # JSON-serializable payload
 ```
 
@@ -279,7 +282,7 @@ The Node tree is the durable run:
 ```python
 root = flow.start(query)
 flow.run(root)
-run_dir = root.save("runs/deep_research")
+run_dir = root.save("runs/shepherd")
 
 latest = rlmflow.AgentStart.load(run_dir)
 ```
@@ -289,7 +292,7 @@ Fork an independent branch from any node and continue it with a `Flow`:
 ```python
 branch = node.fork()
 flow.run(branch)
-branch.save("runs/deep_research_repair")
+branch.save("runs/shepherd_repair")
 ```
 
 A `Flow` that has not run a tree — loaded, forked, or from another process —
@@ -319,7 +322,7 @@ async for node in flow.run_streaming(root):
 ```text
 The Sokoban worker in `jam` walked itself into a bad irreversible plan.
 └── root: children running 1/2 (2 turns)
-    ├── root.branch0: done solved (16 turns)
+    ├── root.branch0: done stuck (16 turns)
     └── root.branch1: planning (5 turns)
 ```
 
@@ -352,11 +355,12 @@ it, and that agent's transcript underneath — all as of the step you are on:
 ```python
 from rlmflow import open_viewer
 
-open_viewer("runs/deep_research")     # needs: pip install rlmflow[viewer]
+# the shepherd example's own run, once you have run it
+open_viewer("examples/_runs/shepherd/shepherd")   # needs: pip install rlmflow[viewer]
 ```
 
 <p align="center">
-  <img src="docs/static/gradio_ui.png" alt="The browser viewer on the shepherd run: the node graph with the current node ringed, the node's content in a panel beside it, a step slider over 526 steps, and an agent picker above the selected agent's transcript" width="820" />
+  <img src="docs/static/gradio_ui.png" alt="The browser viewer on the shepherd run: the node graph with the shepherd trunk fanning into eight branch chains, the final done_output beside it reporting the picked branch, a step slider over all 514 steps, and an agent picker above the selected agent's transcript" width="820" />
 </p>
 
 ### Figures, steppers, and frames
@@ -381,17 +385,18 @@ ringed, everything after it faded back, its content beside it. It embeds the
 figure once and reveals it a node at a time, so a 500-node run is a few hundred
 KB you can mail, not a flipbook of duplicated drawings.
 
-Or from the shell, on any saved run:
+Or from the shell, on any saved run — here the one the shepherd example wrote:
 
 ```bash
-rlmflow view runs/deep_research                  # the agent tree, then the timeline
-rlmflow view runs/deep_research --step 12        # one step, with its content
-rlmflow view runs/deep_research --frames-only    # every step as an ASCII tree
-rlmflow view runs/deep_research --svg g.svg      # the figure
-rlmflow view runs/deep_research --html run.html  # steppable single file
-rlmflow view runs/deep_research --browser        # the viewer above
-rlmflow view runs/deep_research --gif run.gif    # animated (needs [image])
-rlmflow view runs/deep_research --frames out/    # a PNG per step (needs [image])
+RUN=examples/_runs/shepherd/shepherd
+rlmflow view $RUN                  # the agent tree, then the timeline
+rlmflow view $RUN --step 12        # one step, with its content
+rlmflow view $RUN --frames-only    # every step as an ASCII tree
+rlmflow view $RUN --svg g.svg      # the figure
+rlmflow view $RUN --html run.html  # steppable single file
+rlmflow view $RUN --browser        # the viewer above
+rlmflow view $RUN --gif run.gif    # animated (needs [image])
+rlmflow view $RUN --frames out/    # a PNG per step (needs [image])
 ```
 
 `python -m rlmflow view …` works the same. Everything here needs nothing beyond
@@ -399,68 +404,25 @@ the standard library except the two that say otherwise: the viewer wants
 `rlmflow[viewer]`, and PNG/GIF export wants `rlmflow[image]`. See
 [`docs/observability.md`](docs/observability.md).
 
-## Rewind a stuck agent, then branch
+## Recursive meta-agents
 
-[`examples/shepherd/`](examples/shepherd/) runs that fork API on a real failure. A
-small model plays Sokoban one push at a time and shoves a box flat against the
-wall. You push a box by standing on the opposite side, and there is nowhere to
-stand inside a wall, so that box can never move again. It never reached a goal,
-so nothing the worker does from here solves the board.
+Because a run is a durable graph rather than a one-way transcript, a second agent
+can be programmed against it — this is the case
+[Shepherd](https://arxiv.org/abs/2605.10913) (Yu et al., 2026) makes for
+reversible execution traces. Its four operations are ordinary graph edits here:
+read an earlier node, rewind to it, fork, and re-instruct the copy.
 
-The board cannot be recovered, but the transcript can. A larger model reads the
-stuck worker, previews what the board looked like at each earlier push, rewinds it
-to one of those points, and restarts it from there. Here is `branch4` doing it:
-eight pushes in, seven of them taken back off the board, then a recovery that
-picks up from the single push it kept.
-
-<p align="center">
-  <img src="docs/shepherd_rewind.gif" alt="Animation of one shepherd recovery: a Sokoban worker shoving a box into the wall over eight pushes, then seven of those pushes being undone one at a time, then a recovery branch resuming from the one push it kept and locking every box on a goal" width="380" />
-</p>
-
-It runs eight of those at once, each rewound to a different depth and handed a
-different box-to-goal plan, and keeps the best. Every box below is one agent,
-showing the board it stopped on:
+[`examples/shepherd/`](examples/shepherd/) does that to a real failure. A small
+model jams a Sokoban board past saving; a larger one reads the trace, reverts to
+eight different earlier pushes, and gives each fork its own plan to try in
+parallel. The forks are its own children, so the search is one agent tree.
 
 <p align="center">
-  <img src="docs/shepherd_graph.svg" alt="Agent graph of one shepherd run: the jammed worker's final board, the shepherd that rewound it, and eight recovery branches each drawn with its rewind depth, final Sokoban board, and solved or stuck outcome, with the picked winner highlighted" />
+  <img src="docs/static/shepherd/tiers.gif" alt="A stuck Sokoban worker, the meta-agent that reads its trace, one card per recovery plan, and four workers reverting to different depths and playing on in parallel" width="920" />
 </p>
 
-Rewind depth is a trade-off. A shallow rewind keeps finished work but leaves the
-bad plan in the worker's visible history, where it tends to imitate it: the two
-branches that gave back only one and two pushes never escaped the jam. `branch3`
-gave back four and solved in 18 pushes; the winner gave back seven and solved in
-8. Four of the eight branches solved the board.
-
-That summary is a drawing. The run is a tree, and this is all of it — the
-shepherd's own turns, the single node the eight branches hang off, and each
-branch's chain, faded over the history it inherited from the jam:
-
-<p align="center">
-  <img src="docs/shepherd_nodes.svg" alt="Every node of one shepherd run: a short shepherd trunk, one node fanning into eight branch chains, each node coloured by type and each chain faded across the turns it inherited from the jammed worker" />
-</p>
-
-Nothing there is summarised away: chain length is how long that recovery took, and
-the branches that lost are still on disk to read.
-
-The worker and the shepherd are different models with different prompts on one
-flow, so the cheap model plays and the expensive one supervises:
-
-```python
-flow = Flow(
-    build_client("gpt-5"),                               # the shepherd
-    llm_clients={"worker": build_client("gpt-5-mini")},  # the players
-    prompt_profiles={
-        "worker": PromptProfile(system=WORKER_SYSTEM, user=UserPromptBuilder(board_prompt))
-    },
-)
-worker = flow.start(WORKER_QUERY, model="worker", prompt_profile="worker", max_depth=0)
-```
-
-```
-python examples/shepherd/shepherd.py       # --gradio for the live board dashboard
-python examples/shepherd/render_graph.py   # redraw both diagrams from the saved run
-python examples/shepherd/render_rewind.py --branch branch5   # the animation (needs pillow)
-```
+[`docs/shepherd.md`](docs/shepherd.md) is the full walkthrough: the tools the
+meta-agent gets, the plans it wrote, and what each branch did.
 
 ## DSPy Adapter
 

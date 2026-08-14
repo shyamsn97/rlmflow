@@ -167,8 +167,13 @@ entry so the next step opens a fresh one, and returns a `ReplRun` with status
 `flow.inject(name, value)` and `flow.add_tool(fn)` write into the flow's tool
 namespace *and* into every open REPL, so a tool added mid-run reaches agents
 that are already warm. `flow.remove_tool(name)` does the reverse. The three
-reserved names — `done`, `launch_subagent`, `INPUTS` — are rebuilt per step and
-cannot be overwritten.
+reserved names — `finish` (with `done` bound to it as an alias),
+`launch_subagent`, `INPUTS` — are rebuilt per step and cannot be overwritten.
+
+Nothing in the transition path closes a REPL, so a terminal agent's worker stays
+keyed and warm: its namespace is still readable, and appending a query and
+running again needs no replay. Closing is the caller's call —
+`close_repls=True`, `flow.runtime.close_repl(agent)`, or `flow.aclose()`.
 
 ## Branches
 
