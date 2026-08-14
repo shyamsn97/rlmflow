@@ -33,11 +33,16 @@ from rlmflow.llm import AnthropicClient, OpenAIClient
 EXAMPLES_DIR = Path(__file__).resolve().parent
 
 
-def build_client(model: str):
-    """Return an LLM client for ``model`` (Anthropic for ``claude*``, else OpenAI)."""
+def build_client(model: str, *, reasoning_effort: str | None = None):
+    """Return an LLM client for ``model`` (Anthropic for ``claude*``, else OpenAI).
+
+    ``reasoning_effort`` reaches OpenAI reasoning models only; on every other model
+    it is ignored rather than raised, so callers can pass it without branching on
+    which model a flag happened to name.
+    """
     if model.startswith("claude"):
         return AnthropicClient(model)
-    return OpenAIClient(model)
+    return OpenAIClient(model, reasoning_effort=reasoning_effort)
 
 
 def example_run_dir(name: str) -> Path:

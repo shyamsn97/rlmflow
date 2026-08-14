@@ -409,12 +409,12 @@ so nothing the worker does from here solves the board.
 
 The board cannot be recovered, but the transcript can. A larger model reads the
 stuck worker, previews what the board looked like at each earlier push, rewinds it
-to one of those points, and restarts it from there. Here is `branch5` doing it:
-eight pushes in, six of them taken back off the board, then a recovery that picks
-up from the two pushes it kept.
+to one of those points, and restarts it from there. Here is `branch4` doing it:
+eight pushes in, seven of them taken back off the board, then a recovery that
+picks up from the single push it kept.
 
 <p align="center">
-  <img src="docs/shepherd_rewind.gif" alt="Animation of one shepherd recovery: a Sokoban worker shoving a box into the wall over eight pushes, then six of those pushes being undone one at a time, then a recovery branch resuming from the two pushes it kept and locking every box on a goal" width="380" />
+  <img src="docs/shepherd_rewind.gif" alt="Animation of one shepherd recovery: a Sokoban worker shoving a box into the wall over eight pushes, then seven of those pushes being undone one at a time, then a recovery branch resuming from the one push it kept and locking every box on a goal" width="380" />
 </p>
 
 It runs eight of those at once, each rewound to a different depth and handed a
@@ -426,9 +426,10 @@ showing the board it stopped on:
 </p>
 
 Rewind depth is a trade-off. A shallow rewind keeps finished work but leaves the
-bad plan in the worker's visible history, where it tends to imitate it: `branch1`
-gave back a single push and took 25 in total to finish. `branch5` above gave back
-six and finished in 12. The winner gave back all eight and solved the board in 11.
+bad plan in the worker's visible history, where it tends to imitate it: the two
+branches that gave back only one and two pushes never escaped the jam. `branch3`
+gave back four and solved in 18 pushes; the winner gave back seven and solved in
+8. Four of the eight branches solved the board.
 
 That summary is a drawing. The run is a tree, and this is all of it — the
 shepherd's own turns, the single node the eight branches hang off, and each

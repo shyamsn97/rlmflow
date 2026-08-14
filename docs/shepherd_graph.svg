@@ -6,7 +6,7 @@
 </defs>
 <rect width="1306" height="726" fill="#ffffff"/>
 <text x="28.0" y="32.0" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16.0" font-weight="600" fill="#1b2330">shepherd — one jam, eight rewinds, one winner</text>
-<text x="1278.0" y="32.0" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="normal" fill="#6b7789">8 branches · 526 nodes in one tree</text>
+<text x="1278.0" y="32.0" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="normal" fill="#6b7789">8 branches · 514 nodes in one tree</text>
 <rect x="503.0" y="52.0" width="300.0" height="192.0" rx="9" fill="#fdf1f0" stroke="#d93b30" stroke-width="2.0"/>
 <text x="653.0" y="75.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.0" font-weight="600" fill="#1b2330">worker</text>
 <text x="653.0" y="93.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" fill="#6b7789">jammed after 8 pushes · 9 turns</text>
@@ -78,10 +78,10 @@
 <text x="653.0" y="315.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13.0" font-weight="600" fill="#1b2330">shepherd</text>
 <text x="653.0" y="334.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="normal" fill="#6b7789">previewed 8 rewind depths, wrote 8 plans · 2 turns</text>
 <path d="M 653.0 352.0 V 378.0 H 100.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
-<rect x="28.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#f1faf4" stroke="#34a853" stroke-width="1.6"/>
+<rect x="28.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#fdf1f0" stroke="#d93b30" stroke-width="1.6"/>
 <text x="100.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch0</text>
-<text x="100.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 2</text>
-<text x="100.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 6 pushes</text>
+<text x="100.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 6</text>
+<text x="100.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 2 pushes</text>
 <rect x="40.00" y="468.00" width="120.00" height="90.00" fill="#151515" rx="2"/>
 <rect x="40.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="50.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -105,7 +105,7 @@
 <rect x="60.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="80.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="100.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<circle cx="115.00" cy="493.00" r="3.40" fill="#5ec95e"/>
+<rect x="112.00" y="490.00" width="6.00" height="6.00" fill="#5abeff" rx="1" stroke="#d93b30" stroke-width="1.4000000000000001"/>
 <rect x="120.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="140.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="150.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -118,6 +118,7 @@
 <rect x="141.20" y="509.20" width="7.60" height="7.60" fill="#b982ff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
 <rect x="150.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="40.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<circle cx="145.00" cy="523.00" r="3.40" fill="#5ec95e"/>
 <rect x="150.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="40.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="70.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -126,7 +127,7 @@
 <rect x="120.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="150.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="40.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<rect x="61.20" y="539.20" width="7.60" height="7.60" fill="#5abeff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<path d="M 65.00 540.00 L 68.00 543.00 L 65.00 546.00 L 62.00 543.00 Z" fill="#e2483c"/>
 <path d="M 125.00 540.00 L 128.00 543.00 L 125.00 546.00 L 122.00 543.00 Z" fill="#e2483c"/>
 <rect x="150.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="40.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -141,13 +142,13 @@
 <rect x="130.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="140.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="150.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<text x="100.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#137a3c">solved</text>
-<text x="100.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">16 turns</text>
+<text x="100.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#d93b30">stuck</text>
+<text x="100.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">20 turns</text>
 <path d="M 653.0 352.0 V 378.0 H 258.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
-<rect x="186.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#f1faf4" stroke="#34a853" stroke-width="1.6"/>
+<rect x="186.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#fdf1f0" stroke="#d93b30" stroke-width="1.6"/>
 <text x="258.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch1</text>
-<text x="258.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 1</text>
-<text x="258.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 7 pushes</text>
+<text x="258.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 5</text>
+<text x="258.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 3 pushes</text>
 <rect x="198.00" y="468.00" width="120.00" height="90.00" fill="#151515" rx="2"/>
 <rect x="198.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="208.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -162,8 +163,9 @@
 <rect x="298.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="308.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="198.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<rect x="229.20" y="479.20" width="7.60" height="7.60" fill="#5abeff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
-<rect x="269.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<path d="M 233.00 480.00 L 236.00 483.00 L 233.00 486.00 L 230.00 483.00 Z" fill="#e2483c"/>
+<path d="M 273.00 480.00 L 276.00 483.00 L 273.00 486.00 L 270.00 483.00 Z" fill="#e2483c"/>
+<rect x="290.00" y="480.00" width="6.00" height="6.00" fill="#ffbe3c" rx="1" stroke="#d93b30" stroke-width="1.4000000000000001"/>
 <rect x="298.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="308.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="198.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -171,8 +173,8 @@
 <rect x="218.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="238.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="258.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<circle cx="273.00" cy="493.00" r="3.40" fill="#5ec95e"/>
 <rect x="278.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<circle cx="293.00" cy="493.00" r="3.40" fill="#5ec95e"/>
 <rect x="298.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="308.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="198.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -181,9 +183,11 @@
 <rect x="238.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="258.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="278.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<rect x="299.20" y="509.20" width="7.60" height="7.60" fill="#b982ff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<path d="M 303.00 510.00 L 306.00 513.00 L 303.00 516.00 L 300.00 513.00 Z" fill="#e2483c"/>
 <rect x="308.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="198.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<rect x="230.00" y="520.00" width="6.00" height="6.00" fill="#5abeff" rx="1" stroke="#d93b30" stroke-width="1.4000000000000001"/>
+<rect x="290.00" y="520.00" width="6.00" height="6.00" fill="#b982ff" rx="1" stroke="#d93b30" stroke-width="1.4000000000000001"/>
 <rect x="308.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="198.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="228.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -207,13 +211,13 @@
 <rect x="288.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="298.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="308.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<text x="258.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#137a3c">solved</text>
-<text x="258.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">27 turns</text>
+<text x="258.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#d93b30">stuck</text>
+<text x="258.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">11 turns</text>
 <path d="M 653.0 352.0 V 378.0 H 416.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
 <rect x="344.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#f1faf4" stroke="#34a853" stroke-width="1.6"/>
 <text x="416.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch2</text>
-<text x="416.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 3</text>
-<text x="416.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 5 pushes</text>
+<text x="416.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 8</text>
+<text x="416.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">fresh board</text>
 <rect x="356.00" y="468.00" width="120.00" height="90.00" fill="#151515" rx="2"/>
 <rect x="356.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="366.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -228,16 +232,16 @@
 <rect x="456.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="466.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="356.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<rect x="387.20" y="479.20" width="7.60" height="7.60" fill="#5abeff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
-<rect x="427.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="387.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<path d="M 431.00 480.00 L 434.00 483.00 L 431.00 486.00 L 428.00 483.00 Z" fill="#e2483c"/>
 <rect x="456.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="466.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="356.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="366.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="376.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<circle cx="391.00" cy="493.00" r="3.40" fill="#5ec95e"/>
 <rect x="396.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="416.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<circle cx="431.00" cy="493.00" r="3.40" fill="#5ec95e"/>
 <rect x="436.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="456.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="466.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -258,7 +262,7 @@
 <rect x="436.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="466.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="356.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<path d="M 381.00 540.00 L 384.00 543.00 L 381.00 546.00 L 378.00 543.00 Z" fill="#e2483c"/>
+<rect x="377.20" y="539.20" width="7.60" height="7.60" fill="#5abeff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
 <rect x="437.20" y="539.20" width="7.60" height="7.60" fill="#b982ff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
 <rect x="466.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="356.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -274,7 +278,7 @@
 <rect x="456.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="466.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <text x="416.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#137a3c">solved</text>
-<text x="416.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">20 turns</text>
+<text x="416.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">11 turns</text>
 <path d="M 653.0 352.0 V 378.0 H 574.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
 <rect x="502.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#f1faf4" stroke="#34a853" stroke-width="1.6"/>
 <text x="574.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch3</text>
@@ -294,7 +298,7 @@
 <rect x="614.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="624.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="514.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<path d="M 549.00 480.00 L 552.00 483.00 L 549.00 486.00 L 546.00 483.00 Z" fill="#e2483c"/>
+<rect x="545.20" y="479.20" width="7.60" height="7.60" fill="#5abeff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
 <rect x="585.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
 <rect x="614.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="624.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -324,7 +328,7 @@
 <rect x="594.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="624.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="514.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<rect x="535.20" y="539.20" width="7.60" height="7.60" fill="#5abeff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<path d="M 539.00 540.00 L 542.00 543.00 L 539.00 546.00 L 536.00 543.00 Z" fill="#e2483c"/>
 <rect x="595.20" y="539.20" width="7.60" height="7.60" fill="#b982ff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
 <rect x="624.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="514.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -340,12 +344,13 @@
 <rect x="614.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="624.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <text x="574.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#137a3c">solved</text>
-<text x="574.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">15 turns</text>
+<text x="574.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">21 turns</text>
 <path d="M 653.0 352.0 V 378.0 H 732.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
-<rect x="660.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#f1faf4" stroke="#34a853" stroke-width="1.6"/>
+<rect x="660.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#f1faf4" stroke="#137a3c" stroke-width="2.8"/>
+<text x="732.0" y="395.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.0" font-weight="600" fill="#137a3c">picked</text>
 <text x="732.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch4</text>
-<text x="732.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 5</text>
-<text x="732.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 3 pushes</text>
+<text x="732.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 7</text>
+<text x="732.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 1 push</text>
 <rect x="672.00" y="468.00" width="120.00" height="90.00" fill="#151515" rx="2"/>
 <rect x="672.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="682.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -360,8 +365,8 @@
 <rect x="772.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="782.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="672.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<path d="M 707.00 480.00 L 710.00 483.00 L 707.00 486.00 L 704.00 483.00 Z" fill="#e2483c"/>
-<rect x="743.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<rect x="703.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<path d="M 747.00 480.00 L 750.00 483.00 L 747.00 486.00 L 744.00 483.00 Z" fill="#e2483c"/>
 <rect x="772.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="782.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="672.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -406,12 +411,12 @@
 <rect x="772.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="782.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <text x="732.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#137a3c">solved</text>
-<text x="732.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">14 turns</text>
+<text x="732.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">10 turns</text>
 <path d="M 653.0 352.0 V 378.0 H 890.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
 <rect x="818.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#f1faf4" stroke="#34a853" stroke-width="1.6"/>
 <text x="890.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch5</text>
-<text x="890.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 6</text>
-<text x="890.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 2 pushes</text>
+<text x="890.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 3</text>
+<text x="890.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 5 pushes</text>
 <rect x="830.00" y="468.00" width="120.00" height="90.00" fill="#151515" rx="2"/>
 <rect x="830.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="840.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -472,13 +477,12 @@
 <rect x="930.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="940.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <text x="890.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#137a3c">solved</text>
-<text x="890.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">14 turns</text>
+<text x="890.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">18 turns</text>
 <path d="M 653.0 352.0 V 378.0 H 1048.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
-<rect x="976.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#f1faf4" stroke="#137a3c" stroke-width="2.8"/>
-<text x="1048.0" y="395.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11.0" font-weight="600" fill="#137a3c">picked</text>
+<rect x="976.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#fdf1f0" stroke="#d93b30" stroke-width="1.6"/>
 <text x="1048.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch6</text>
-<text x="1048.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 8</text>
-<text x="1048.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">fresh board</text>
+<text x="1048.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 2</text>
+<text x="1048.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 6 pushes</text>
 <rect x="988.00" y="468.00" width="120.00" height="90.00" fill="#151515" rx="2"/>
 <rect x="988.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="998.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -495,6 +499,7 @@
 <rect x="988.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1019.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
 <path d="M 1063.00 480.00 L 1066.00 483.00 L 1063.00 486.00 L 1060.00 483.00 Z" fill="#e2483c"/>
+<rect x="1080.00" y="480.00" width="6.00" height="6.00" fill="#b982ff" rx="1" stroke="#d93b30" stroke-width="1.4000000000000001"/>
 <rect x="1088.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1098.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="988.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -503,6 +508,7 @@
 <rect x="1028.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1048.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1068.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
+<circle cx="1083.00" cy="493.00" r="3.40" fill="#5ec95e"/>
 <rect x="1088.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1098.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="988.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -516,7 +522,6 @@
 <rect x="988.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1098.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="988.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<circle cx="1013.00" cy="533.00" r="3.40" fill="#5ec95e"/>
 <rect x="1018.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1028.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1048.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -524,7 +529,7 @@
 <rect x="1098.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="988.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1009.20" y="539.20" width="7.60" height="7.60" fill="#5abeff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
-<rect x="1069.20" y="539.20" width="7.60" height="7.60" fill="#b982ff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<path d="M 1073.00 540.00 L 1076.00 543.00 L 1073.00 546.00 L 1070.00 543.00 Z" fill="#e2483c"/>
 <rect x="1098.00" y="538.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="988.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="998.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -538,13 +543,13 @@
 <rect x="1078.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1088.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1098.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<text x="1048.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#137a3c">solved</text>
-<text x="1048.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">13 turns</text>
+<text x="1048.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#d93b30">stuck</text>
+<text x="1048.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">26 turns</text>
 <path d="M 653.0 352.0 V 378.0 H 1206.0 V 404.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
 <rect x="1134.0" y="404.0" width="144.0" height="196.0" rx="9" fill="#fdf1f0" stroke="#d93b30" stroke-width="1.6"/>
 <text x="1206.0" y="426.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.5" font-weight="600" fill="#1b2330">branch7</text>
-<text x="1206.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 7</text>
-<text x="1206.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 1 push</text>
+<text x="1206.0" y="444.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11.5" font-weight="normal" fill="#6b7789">rewind 1</text>
+<text x="1206.0" y="459.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">keeps 7 pushes</text>
 <rect x="1146.00" y="468.00" width="120.00" height="90.00" fill="#151515" rx="2"/>
 <rect x="1146.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1156.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -559,7 +564,7 @@
 <rect x="1246.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1256.00" y="468.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1146.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<rect x="1177.20" y="479.20" width="7.60" height="7.60" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
+<path d="M 1181.00 480.00 L 1184.00 483.00 L 1181.00 486.00 L 1178.00 483.00 Z" fill="#e2483c"/>
 <path d="M 1221.00 480.00 L 1224.00 483.00 L 1221.00 486.00 L 1218.00 483.00 Z" fill="#e2483c"/>
 <rect x="1246.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1256.00" y="478.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -572,7 +577,7 @@
 <rect x="1246.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1256.00" y="488.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1146.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<rect x="1158.00" y="500.00" width="6.00" height="6.00" fill="#5abeff" rx="1" stroke="#d93b30" stroke-width="1.4000000000000001"/>
+<rect x="1238.00" y="500.00" width="6.00" height="6.00" fill="#ffbe3c" rx="1" stroke="#d93b30" stroke-width="1.4000000000000001"/>
 <rect x="1256.00" y="498.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1146.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1186.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -581,7 +586,8 @@
 <rect x="1247.20" y="509.20" width="7.60" height="7.60" fill="#b982ff" rx="1" stroke="#ffffff" stroke-width="1.4000000000000001"/>
 <rect x="1256.00" y="508.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1146.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
-<circle cx="1251.00" cy="523.00" r="3.40" fill="#5ec95e"/>
+<rect x="1158.00" y="520.00" width="6.00" height="6.00" fill="#5abeff" rx="1" stroke="#d93b30" stroke-width="1.4000000000000001"/>
+<circle cx="1171.00" cy="523.00" r="3.40" fill="#5ec95e"/>
 <rect x="1256.00" y="518.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1146.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1176.00" y="528.00" width="10.00" height="10.00" fill="#7c4a3a"/>
@@ -606,11 +612,11 @@
 <rect x="1246.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <rect x="1256.00" y="548.00" width="10.00" height="10.00" fill="#7c4a3a"/>
 <text x="1206.0" y="574.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12.0" font-weight="600" fill="#d93b30">stuck</text>
-<text x="1206.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">15 turns</text>
-<path d="M 1048.0 600.0 V 616.0 H 653.0 V 632.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
+<text x="1206.0" y="590.0" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">14 turns</text>
+<path d="M 732.0 600.0 V 616.0 H 653.0 V 632.0" fill="none" stroke="#b9c2d0" stroke-width="1.4"/>
 <path d="M 653.0 632.0 V 647.0" fill="none" stroke="#b9c2d0" stroke-width="1.6" marker-end="url(#tip)"/>
-<rect x="423.5" y="652.0" width="459.1" height="46.0" rx="9" fill="#ffffff" stroke="#137a3c" stroke-width="2.0"/>
-<text x="653.0" y="681.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.0" font-weight="600" fill="#1b2330">Picked branch6: solved=True, score=989.0, pushes=11</text>
+<rect x="427.5" y="652.0" width="451.0" height="46.0" rx="9" fill="#ffffff" stroke="#137a3c" stroke-width="2.0"/>
+<text x="653.0" y="681.0" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13.0" font-weight="600" fill="#1b2330">Picked branch4: solved=True, score=992.0, pushes=8</text>
 <rect x="28.00" y="667.00" width="21.00" height="21.00" fill="#151515" rx="2"/>
 <rect x="30.52" y="669.52" width="15.96" height="15.96" fill="#ffbe3c" rx="1" stroke="#ffffff" stroke-width="2.9400000000000004"/>
 <text x="56.0" y="685.0" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.5" font-weight="normal" fill="#6b7789">box on a goal, locked</text>

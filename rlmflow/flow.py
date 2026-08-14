@@ -255,9 +255,6 @@ class Flow:
                     )
                 )
 
-        agent = landed.parent_agent
-        if agent is not None and agent.terminal and agent is not agent.root:
-            await asyncio.to_thread(self.runtime.close_repl, agent)
         return Transition(submitted=node, created=landed, error=error)
 
     async def llm_step(self, node: Node) -> Node:
@@ -665,14 +662,14 @@ class Flow:
                         if isinstance(node, AgentStart):
                             self.runtime.close_repl(node)
 
-    async def arun(self, root: AgentStart | str) -> Any:
+    async def arun(self, root: AgentStart | str, *, close_repls: bool = False) -> Any:
         agent = self.start(root) if isinstance(root, str) else root
-        async for _node in self.run_streaming(agent):
+        async for _node in self.run_streaming(agent, close_repls=close_repls):
             pass
         return agent.result()
 
-    def run(self, root: AgentStart | str) -> Any:
-        return asyncio.run(self.arun(root))
+    def run(self, root: AgentStart | str, *, close_repls: bool = False) -> Any:
+        return asyncio.run(self.arun(root, close_repls=close_repls))
 
     def start(self, query: str = "", **overrides: Any) -> AgentStart:
         """A root agent carrying this flow's defaults, which keyword overrides win against.

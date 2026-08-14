@@ -209,8 +209,10 @@ def test_runtime_delegates_without_sharing_workers():
     try:
         root = flow.start("delegate", max_depth=1)
         assert flow.run(root) == "parent answer"
-        assert list(runtime.repls) == [root.id]
-        assert root.sub_agents[0].id not in runtime.repls
+        # The child kept its own worker, on its own session.
+        child = root.sub_agents[0]
+        assert sorted(runtime.repls) == sorted([root.id, child.id])
+        assert runtime.repls[child.id].session is not runtime.repls[root.id].session
     finally:
         asyncio.run(flow.aclose())
 
@@ -267,7 +269,10 @@ def test_reuse_repl_places_child_in_parent_worker(tmp_path):
         assert flow.run(root) == "['parent', 'child']"
         parent_repl = runtime.repls[root.id]
         assert parent_repl.session.execution_timeout == 17
-        assert root.sub_agents[0].id not in runtime.repls
+        # Same worker, separate tenant: the child's REPL rides the parent's session.
+        child_repl = runtime.repls[root.sub_agents[0].id]
+        assert child_repl is not parent_repl
+        assert child_repl.session is parent_repl.session
         orders = [
             node.repl_execution_order for node in root.walk() if isinstance(node, ExecAction)
         ]

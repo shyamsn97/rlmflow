@@ -62,6 +62,13 @@ def panel_status(flow: Flow, agent: AgentStart) -> str:
     step = f"push {pushes}" if pushes is not None else "push ?"
     if env.get("solved"):
         return f"{step} · SOLVED"
+    # A lane that has stopped reports why it stopped, in its own words: quitting on
+    # "stuck" and running out of turns look identical on the board but mean opposite
+    # things. ``blocked`` only records that the last action was refused, so reading it
+    # here would blame a stray illegal step for ending the branch.
+    if agent.terminal:
+        claim = str(agent.result() or "done").strip("[]")
+        return f"{step} · {claim} (dist {env.get('dist')})"
     if env.get("blocked"):
         # A rejected push, not a terminal state — don't say DONE/BLOCKED.
         return f"{step} · illegal push (try another)"
@@ -135,9 +142,9 @@ class PanelViewer(StreamConsumer):
         self.board_of = board_of
         # When set, this reads a lane's current-turn sub-step frames (e.g.
         # ``env["frames"]`` published by the game) and plays them out one-by-one, so
-        # a box-level ``push`` visibly walks the player instead of snapping to the
-        # end state (which looks teleporty). Frames are per-turn (replaced each
-        # turn), so a plain "changed since last drawn?" check is all it takes.
+        # a turn that walks a route and then shoves plays out step by step instead
+        # of snapping to the end state (which looks teleporty). Frames are per-turn
+        # (replaced each turn), so a plain "changed since last drawn?" check does it.
         self.frames_of = frames_of
         self.frame_ms = frame_ms
         # Last frame-list drawn per lane, so a turn animates once (and a fork's

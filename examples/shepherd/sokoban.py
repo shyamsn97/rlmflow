@@ -1,16 +1,34 @@
 """The Sokoban game env for the shepherd demo — pure logic, no LLM or graph.
 
-Injected into every REPL as ``Sokoban``. The worker acts at the *strategic* layer:
-``push(box_id, direction)`` shoves one box one cell using ordinary Sokoban
-movement underneath — it walks the player cell-by-cell to the far side of the box
-(BFS over floor, boxes are obstacles) and then steps in to shove it, with no
-teleport. This demo adds one simplifying rule: a box locks once it reaches a goal.
-Every sub-step is played out and recorded (``step_frames``) so exports can animate
-the man walking. It still commits exactly one push per turn, so rewind granularity
-is one decision per turn, rewind anchors on the box-*pushes* (the irreversible
-progress), and the box->goal ASSIGNMENT signature is unchanged. ``legal_pushes()``
-reports which pushes are physically possible right now — landing cell free and the
-far side reachable (state derivation, never a solver or a plan).
+Injected into every REPL as ``Sokoban``. The worker plays the man directly, and the
+example picks one of two action spaces for it (see ``--simple-moves``):
+
+* ``goto(row, col)`` walks him to a square around the boxes, and
+  ``push(direction)`` shoves whatever box is straight ahead. Splitting them keeps
+  every irreversible step deliberate — walking can never nudge a box — while leaving
+  the worker the part that is actually a decision: which box, which way, what order.
+* ``move(directions)`` alone, Sokoban's classic action taking a whole route: step a
+  cell at a time, shoving a box if one is ahead. Harder, because routing is the
+  worker's problem again and a miscounted step shoves something it never meant to
+  touch.
+
+Both spend one shove per turn, so turns, scores and rewind depths compare directly.
+Any refused action raises :class:`IllegalAction` and ends the turn without changing
+the board, because every line a block runs after a refusal was written for a position
+the man never reached. This demo adds one simplifying rule: a box locks once it
+reaches a goal.
+
+Walking is free within a turn and a turn commits exactly one *shove*, so a turn is
+one irreversible decision: rewind granularity stays one push, and the box->goal
+ASSIGNMENT signature is unchanged. Every sub-step is recorded (``step_frames``), one
+frame per cell walked, so exports can animate the man rather than teleport him.
+
+``pushes_here()`` gives the directions the player can shove from where it stands,
+``legal_moves()`` the directions it can step at all, and ``legal_pushes()`` the box
+shoves physically possible anywhere on the board, each quoting the square to stand
+on — landing cell free and the far side reachable (state derivation, never a solver
+or a plan). ``doomed()`` names boxes that can no longer reach any goal, so a lost
+board can be called lost instead of played out.
 
 Board glyphs:  ``#`` wall · (space) floor · ``@`` player · ``$`` box ·
 ``.`` target · ``*`` box on target · ``+`` player on target
@@ -18,12 +36,18 @@ Board glyphs:  ``#`` wall · (space) floor · ``@`` player · ``$`` box ·
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 DIRS = {"up": (-1, 0), "down": (1, 0), "left": (0, -1), "right": (0, 1)}
 
 # Glyphs for ``render(ids=True)``: box ``Bn`` draws as the nth character, so a
 # viewer can tell the boxes apart. ``sprites`` maps these to per-box colours.
 BOX_GLYPHS = "123456789"
 BOX_ON_GOAL_GLYPHS = "ABCDEFGHI"
+
+
+class IllegalAction(RuntimeError):
+    """An action the board refused. Ends the turn without changing anything."""
 
 
 def _norm_dir(d: str) -> tuple[int, int] | None:
@@ -36,11 +60,11 @@ def _norm_dir(d: str) -> tuple[int, int] | None:
 
 class Sokoban:
     """The whole game as a plain Python object, injected into every REPL. Pure
-    logic: apply a box-level push (expanded into honest cell-by-cell moves), report
-    solved/blocked/dist (cheap verifier signals, never a solver), render. ``push``
-    publishes its outcome to the ``env`` mapping (the REPL's ``ENV`` channel) so the
-    host can read state, and records one board frame per sub-step in ``step_frames``
-    so the run can animate the play-by-play."""
+    logic: walk or shove one cell, report solved/blocked/dist (cheap verifier
+    signals, never a solver), render. Every action publishes its outcome to the
+    ``env`` mapping (the REPL's ``ENV`` channel) so the host can read state, and
+    records one board frame in ``step_frames`` so the run can animate the
+    play-by-play."""
 
     def __init__(self, board: list[str], env: dict | None = None) -> None:
         self.board = board
@@ -64,26 +88,30 @@ class Sokoban:
         # ``B1``..``Bn`` index into this list; entries update as boxes move.
         self._pos_by_id = sorted(self.boxes)
         self.env = env if env is not None else {}
-        # ``moves`` is the honest sub-step count (walks + shoves); ``pushes`` is the
-        # strategic decision count (one per ``push`` call). Turns == pushes.
+        # ``moves`` counts every cell the man travels (walks + shoves); ``pushes``
+        # counts the irreversible ones. One shove per turn, so turns == pushes.
         self.moves = 0
         self.pushes = 0
         # Full per-sub-step trace [(label, render), ...] for the whole game — saved
         # to disk and replayed by the GIF export to animate the man walking.
         self.step_frames: list[tuple[str, str]] = []
-        # Just the *current* turn's sub-step renders, reset at the start of every
-        # push/move and published to ``env["frames"]`` so the live grid can read it
-        # back (``flow.runtime.get_env_var``) and animate this turn's walk-and-shove.
+        # Just the *current* turn's sub-step renders, published to ``env["frames"]``
+        # so the live grid can read it back (``flow.runtime.get_env_var``) and
+        # animate the whole walk-and-shove. A turn may take many actions, so these
+        # reset when the turn marker changes rather than on every call.
         self.turn_frames: list[str] = []
-        # Set when a requested push can't be applied: the cue that the myopic
+        self._frame_turn = None
+        # Set when a requested action can't be applied: the cue that the myopic
         # worker has run into a wall and it is time to rewind.
         self.blocked = False
-        # One-push-per-turn guard, keyed on the turn marker the host writes into
-        # ``env`` before each live turn. Reading the marker instead of being armed
-        # by a host method call keeps the guard working when the game lives in a
-        # worker process, where the host cannot touch this object. It also stays
-        # inactive during deterministic fork REPLAY, which re-runs each push
-        # back-to-back with no host turn boundary and so writes no marker.
+        # One-shove-per-turn guard, keyed on the turn marker the host writes into
+        # ``env`` before each live turn. Walking is unguarded — it is reversible, and
+        # a worker that has to route itself needs several steps per decision.
+        # Reading the marker instead of being armed by a host method call keeps the
+        # guard working when the game lives in a worker process, where the host
+        # cannot touch this object. It also stays inactive during deterministic fork
+        # REPLAY, which re-runs a turn's actions back-to-back with no host turn
+        # boundary and so writes no marker.
         self._turn = None
         # Filled on first use by ``dead_cells``; depends only on walls and goals.
         self._dead: set[tuple[int, int]] | None = None
@@ -132,21 +160,29 @@ class Sokoban:
         )
 
     def legal_moves(self) -> list[str]:
-        """Directions the player can move right now: a plain walk onto floor, or a
-        push when a box is directly ahead with an empty cell behind it. State
-        derivation, never a solver or a plan."""
+        """``["up", "right"]`` — directions ``move`` would accept from where the player
+        stands: free floor, or an unlocked box with a free cell behind it. Only the
+        simple one-action interface needs this. State derivation, never a plan."""
+        r, c = self.player
+        return [
+            name
+            for name, (dr, dc) in DIRS.items()
+            if (r + dr, c + dc) not in self.walls
+            and ((r + dr, c + dc) not in self.boxes or name in self.pushes_here())
+        ]
+
+    def pushes_here(self) -> list[str]:
+        """``["right"]`` — directions ``push`` accepts from where the player stands:
+        an unlocked box straight ahead with a free cell behind it."""
         r, c = self.player
         out = []
         for name, (dr, dc) in DIRS.items():
             ahead = (r + dr, c + dc)
-            if ahead in self.walls:
+            if ahead not in self.boxes or ahead in self.targets:
                 continue
-            if ahead in self.boxes:
-                if ahead in self.targets:
-                    continue
-                beyond = (r + 2 * dr, c + 2 * dc)
-                if beyond in self.walls or beyond in self.boxes:
-                    continue
+            beyond = (r + 2 * dr, c + 2 * dc)
+            if beyond in self.walls or beyond in self.boxes:
+                continue
             out.append(name)
         return out
 
@@ -182,9 +218,10 @@ class Sokoban:
         computed once. It is a property of the maze, not a solver — it says
         nothing about whether *this* position is winnable.
 
-        For host-side analysis only, e.g. telling why a branch failed. Never put
-        it in a prompt: working out which pushes are safe is the worker's job,
-        and handing over the answer is what the task is asking for.
+        Never put this set in a prompt: working out which pushes are *safe* is the
+        worker's job, and handing over the answer is what the task is asking for.
+        Reporting a box that already sits on one of these squares is a different
+        thing — see ``doomed`` — because that mistake has already been made.
         """
         if self._dead is None:
             from collections import deque
@@ -208,10 +245,32 @@ class Sokoban:
             self._dead = floor - live
         return self._dead
 
+    def doomed(self) -> list[str]:
+        """``["B2 (3,1)"]`` — unlocked boxes that can no longer reach any goal at all.
+
+        A box on a dead square is a finished mistake: no sequence of pushes brings it
+        to a goal, so the position cannot be solved however many pushes remain
+        elsewhere. Worth publishing because that is exactly the state a rewind exists
+        for, and because a branch that keeps shuffling its other boxes for another
+        twenty turns is burning a turn budget on a board it has already lost.
+
+        Derived from the walls, so it never guesses: every box named here is provably
+        stranded, though other kinds of deadlock (boxes blocking each other) are not
+        detected and will not show up.
+        """
+        dead = self.dead_cells()
+        return [
+            f"{bid} ({pos[0]},{pos[1]})"
+            for bid, pos in self.box_items()
+            if pos not in self.targets and pos in dead
+        ]
+
     def legal_pushes(self) -> list[str]:
-        """``["B1 right", "B2 up", ...]`` — pushes physically possible right now:
-        the box's landing cell is free and the player can walk to the far side.
-        State derivation, never a solver or a plan."""
+        """``["B1 right from (3,2)", "B2 up from (6,4)", ...]`` — box shoves physically
+        possible right now: the box's landing cell is free and the player can walk to
+        the far side, which is the square quoted. Says nothing about which shove is
+        wise, or in what order, or whether the position is still winnable. State
+        derivation, never a solver or a plan."""
         out = []
         for bid, pos in self.box_items():
             if pos in self.targets:
@@ -224,7 +283,7 @@ class Sokoban:
                 if stand in self.walls or stand in self.boxes:
                     continue
                 if self._path(self.player, stand) is not None:
-                    out.append(f"{bid} {name}")
+                    out.append(f"{bid} {name} from ({stand[0]},{stand[1]})")
         return out
 
     # --- observation -----------------------------------------------------
@@ -301,6 +360,9 @@ class Sokoban:
         self.env["board"] = self.render(ids=True)
         self.env["grid"] = self.grid()
         self.env["legal_pushes"] = self.legal_pushes()
+        self.env["legal_moves"] = self.legal_moves()
+        self.env["pushes_here"] = self.pushes_here()
+        self.env["doomed"] = self.doomed()
         self.env["player"] = self.player
         self.env["boxes"] = dict(self.box_items())
         self.env["goals"] = dict(self.goal_items())
@@ -314,23 +376,47 @@ class Sokoban:
         self.env["assignment"] = ";".join(f"{r},{c}" for r, c in self._pos_by_id)
 
     # --- action ----------------------------------------------------------
-    def _claim_turn(self, action: str) -> None:
-        """Spend this turn's single action, or refuse a second one.
+    def _begin_action(self) -> None:
+        """Start this turn's frame buffer if this is the turn's first action.
 
-        The host stamps ``env["turn"]`` before each live turn. An unstamped run is
-        replay, which is expected to apply its pushes back-to-back.
+        A turn walks several cells before it shoves, and the live grid wants the
+        whole sequence, so the buffer follows the host's turn marker. Replay writes
+        no marker, so there each call stands alone.
+        """
+        turn = self.env.get("turn")
+        if turn is None or turn != self._frame_turn:
+            self.turn_frames = []
+        self._frame_turn = turn
+
+    def _claim_push(self) -> None:
+        """Spend this turn's single shove, or refuse a second one.
+
+        Walks are unguarded, because they are reversible. The host stamps
+        ``env["turn"]`` before each live turn. An unstamped run is replay, which
+        re-runs a turn's actions back-to-back.
         """
         turn = self.env.get("turn")
         if turn is None:
             return
         if turn == self._turn:
-            raise RuntimeError(f"one {action} per turn — read the board, then act once next turn")
+            raise RuntimeError(
+                "one push per turn — walking is free, but read the board before shoving again"
+            )
         self._turn = turn
 
-    def _reject(self, msg: str) -> str:
+    def _reject(self, msg: str) -> NoReturn:
+        """Refuse an action and end the turn, changing nothing.
+
+        Raising rather than returning is the point. Everything a block does after a
+        refused action was written for a position the man never reached, so letting
+        execution continue turns one miscounted cell into a whole turn of nonsense —
+        and, worse, into pushes aimed at the wrong box. The turn stops here, the board
+        is untouched, and the message says where the man actually is so the next turn
+        can be written against the truth.
+        """
         self.blocked = True
         self._publish()
-        return msg
+        raise IllegalAction(f"{msg} Nothing moved and you are at {self.player}.")
 
     def _record(self, label: str) -> None:
         """Snapshot the board after a sub-step: append to the full trace (disk +
@@ -340,96 +426,133 @@ class Sokoban:
         self.step_frames.append((label, render))
         self.turn_frames.append(render)
 
-    def _apply(self, direction) -> str | None:
-        """Raw one-cell step, the honest primitive ``push`` walks the man with: walk
-        onto floor, or shove a box that has an empty cell behind it. No per-turn
-        guard and no planning — mutates state, bumps counters, records a frame.
-        Returns a one-line description, or ``None`` when nothing can move."""
+    def goto(self, row, col=None) -> str:
+        """Walk the player to ``(row, col)`` by the shortest route around the boxes.
+
+        Walking is free and reversible, so a turn may ``goto`` as often as it likes;
+        the point of spelling a destination instead of a direction is that routing
+        the man is bookkeeping, not strategy. Boxes are obstacles here — nothing this
+        does can ever shove one, which leaves ``push`` as the only way to change what
+        is still solvable. Reports why when it cannot get there and changes nothing.
+        """
+        self._begin_action()
+        dest = row if col is None else (row, col)
+        try:
+            dest = (int(dest[0]), int(dest[1]))
+        except (TypeError, ValueError, IndexError, KeyError):
+            self._reject(f"UNKNOWN square {row!r} — call goto(row, col) with two integers.")
+        if dest == self.player:
+            return f"already standing on {dest}"
+        if dest in self.walls:
+            self._reject(f"ILLEGAL: {dest} is a wall.")
+        if dest in self.boxes:
+            self._reject(
+                f"ILLEGAL: box {self._id_at(dest)} is on {dest} — walk to a free square "
+                "beside it and push from there."
+            )
+        path = self._path(self.player, dest)
+        if path is None:
+            self._reject(f"ILLEGAL: no way to walk to {dest} — walls or boxes seal it off.")
+        start = self.player
+        # One frame per cell, so the viewer animates a walk instead of teleporting.
+        for name in path:
+            dr, dc = DIRS[name]
+            self.player = (self.player[0] + dr, self.player[1] + dc)
+            self.moves += 1
+            self._record(f"walk {name}")
+        self.blocked = False
+        self._publish()
+        return f"walked {start}->{dest} in {len(path)} cells"
+
+    def move(self, directions) -> str:
+        """Walk a route, one cell per step, shoving whatever box is straight ahead.
+
+        Takes one direction or a whole list of them — ``move("up")`` or
+        ``move(["down", "down", "right"])`` — and reports every step it took. This is
+        Sokoban's classic action and the whole interface under ``--simple-moves``: it
+        is strictly harder to use than ``goto`` + ``push``, because the route is the
+        worker's to work out and a miscounted step shoves a box it never meant to
+        touch, which is the point of having both. A shove still spends the turn's one
+        push, so turns, scores and rewind depths mean the same in either mode.
+
+        A refused step ends the route where it stood, and the refusal carries the
+        steps that did land, so a turn's report is never a mystery.
+        """
+        steps = [directions] if isinstance(directions, str) else list(directions)
+        done: list[str] = []
+        for i, direction in enumerate(steps):
+            try:
+                done.append(self._step(direction))
+            except IllegalAction as exc:
+                walked = "".join(f"{line}\n" for line in done)
+                raise IllegalAction(
+                    f"{walked}step {i + 1} of {len(steps)} ({direction!r}) refused, so the "
+                    f"rest of the route did not run. {exc}"
+                ) from None
+        return "\n".join(done)
+
+    def _step(self, direction) -> str:
+        """One cell of a ``move`` route: walk, or shove what is straight ahead."""
+        self._begin_action()
         delta = _norm_dir(direction)
         if delta is None:
-            return None
+            self._reject(f"UNKNOWN direction {direction!r} (use up/down/left/right).")
         dr, dc = delta
         r, c = self.player
         ahead = (r + dr, c + dc)
-        if ahead in self.walls:
-            return None
         if ahead in self.boxes:
-            if ahead in self.targets:
-                return None
-            beyond = (r + 2 * dr, c + 2 * dc)
-            if beyond in self.walls or beyond in self.boxes:
-                return None
-            bid = self._id_at(ahead)
-            self.boxes.discard(ahead)
-            self.boxes.add(beyond)
-            self._pos_by_id[self._pos_by_id.index(ahead)] = beyond
-            self.player = ahead
-            self.moves += 1
-            self.pushes += 1
-            self._publish()
-            self._record(f"push {direction} {bid}")
-            return f"push {direction}: {bid} {ahead}->{beyond}"
+            return self.push(direction)
+        if ahead in self.walls:
+            self._reject(f"ILLEGAL: can't step {direction} — wall.")
         self.player = ahead
         self.moves += 1
-        self._publish()
+        self.blocked = False
         self._record(f"walk {direction}")
+        self._publish()
         return f"walk {direction}: {(r, c)}->{ahead}"
 
-    def move(self, direction) -> str:
-        """Low-level one-cell step the strategic ``push`` is built on: walk or shove
-        exactly one cell, reporting why if blocked. Subject to the one-action guard
-        during live play. Workers use ``push``; this exists for tests/primitives."""
-        self._claim_turn("move")
-        self.turn_frames = []
-        delta = _norm_dir(direction)
-        if delta is None:
-            return self._reject(f"UNKNOWN direction {direction!r} (use up/down/left/right).")
-        desc = self._apply(direction)
-        if desc is None:
-            return self._reject(f"ILLEGAL: can't move {direction} — nothing moved.")
-        self.blocked = False
-        self._publish()
-        return desc + ("  SOLVED!" if self.solved else "")
+    def push(self, direction) -> str:
+        """Shove the box directly ``direction`` of the player one cell, stepping into
+        the square it left.
 
-    def push(self, box, direction) -> str:
-        """Shove one box one cell ``direction`` — the worker's single strategic
-        action. Plays real Sokoban underneath: BFS-walks the player cell-by-cell to
-        the far side of the box (no teleport) then steps in to shove it, printing
-        every sub-step. Commits exactly one push per turn. Illegal pushes report
-        why and change nothing. ``direction`` is up/down/left/right; ``box`` is a
-        ``B<n>`` id or an ``(r, c)`` coordinate."""
-        self._claim_turn("push")
-        self.turn_frames = []
+        The worker's one irreversible action, and the only one a turn is allowed. It
+        needs the player already standing on the far side, which is what ``goto`` is
+        for — a box against a wall can only be shoved along it, and a box in a corner
+        is finished. Reports why when it cannot push and changes nothing.
+        """
+        self._begin_action()
         delta = _norm_dir(direction)
         if delta is None:
-            return self._reject(f"UNKNOWN direction {direction!r} (use up/down/left/right).")
-        pos = self._box_pos(box)
-        if pos is None:
-            return self._reject(f"NO box {box!r} on the board.")
-        bid = self._id_at(pos)
-        if pos in self.targets:
-            return self._reject(f"LOCKED: box {bid} is already on a goal.")
+            self._reject(f"UNKNOWN direction {direction!r} (use up/down/left/right).")
         dr, dc = delta
-        dest = (pos[0] + dr, pos[1] + dc)
-        stand = (pos[0] - dr, pos[1] - dc)
-        if dest in self.walls or dest in self.boxes:
-            return self._reject(f"ILLEGAL: box {bid} can't go {direction} — blocked ahead.")
-        if stand in self.walls or stand in self.boxes:
-            return self._reject(
-                f"ILLEGAL: no room to stand behind box {bid} to push it {direction}."
+        r, c = self.player
+        ahead = (r + dr, c + dc)
+        if ahead not in self.boxes:
+            self._reject(
+                f"ILLEGAL: nothing to push {direction} — {self._describe(ahead)} there. "
+                "Stand beside a box first; legal_pushes names the square."
             )
-        route = self._path(self.player, stand)
-        if route is None:
-            return self._reject(
-                f"ILLEGAL: can't reach the far side of box {bid} to push it {direction}."
+        bid = self._id_at(ahead)
+        if ahead in self.targets:
+            self._reject(f"LOCKED: box {bid} is already on a goal.")
+        beyond = (r + 2 * dr, c + 2 * dc)
+        if beyond in self.walls or beyond in self.boxes:
+            self._reject(
+                f"ILLEGAL: box {bid} can't go {direction} — {self._describe(beyond)} behind it."
             )
-        # Walk the man to the pushing side, then step into the box — every sub-step
-        # is a real move that mutates state and records a frame.
-        steps = [f"  {self._apply(d)}" for d in route]
-        steps.append(f"  {self._apply(direction)}")
+        # Only a push that lands spends the turn's one shove: a worker that aimed at
+        # the wrong box should get another go at pushing, not lose the turn to a refusal.
+        self._claim_push()
+        self.boxes.discard(ahead)
+        self.boxes.add(beyond)
+        self._pos_by_id[self._pos_by_id.index(ahead)] = beyond
+        self.player = ahead
+        self.moves += 1
+        self.pushes += 1
         self.blocked = False
+        self._record(f"push {direction} {bid}")
         self._publish()
-        out = "\n".join([f"pushed {bid} {direction} ({len(steps)} moves):", *steps])
+        out = f"pushed {bid} {direction}: {ahead}->{beyond}"
         if self.solved:
             out += "\n  SOLVED!"
         return out

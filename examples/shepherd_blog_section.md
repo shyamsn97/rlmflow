@@ -1,0 +1,200 @@
+### Recursive Shepherd: RLMs as meta-agents
+
+
+<p align="center">
+  <img
+    src="shepherd/assets/blog/tiers.gif"
+    alt="A stuck worker, the shepherd that reads its trace, one card per recovery plan, and four workers reverting to different depths and running in parallel"
+    width="920"
+  />
+</p>
+
+
+[Shepherd: Enabling Programmable Meta-Agents via Reversible Agentic Execution
+Traces](https://arxiv.org/abs/2605.10913) (Yu et al., 2026) argues that an agent's
+execution should be a reversible object rather than a one-way transcript. Record
+the run as a Git-like trace, and you can program a second model against it — a
+*meta-agent* that inspects any earlier point, reverts to it, then plans and steers
+parallel alternative routes.
+
+`rlmflow` already keeps a run as a durable graph of typed nodes, so Shepherd's four
+operations — observe, rewind, fork, re-instruct — are graph edits, and the
+meta-agent's forks are simply its own children.
+
+Only the revert itself works differently. The paper checkpoints the worker's
+process and filesystem, so any program comes back byte-identical. `rlmflow` has
+every action tracked as a node in the graph, so the cheap route is to fork the graph and
+replay them — no snapshot to take, and exactly as faithful whenever the
+environment is deterministic.
+
+#### Irreversable Sokoban
+
+For this example we augment our RLMs with tools to play Sokoban, where boxes can be pushed but never
+pulled. This means a single wrong shove can make the puzzle unsolvable.
+
+For simplicity, we introduce two main tools in the The worker's REPL:
+
+```python
+def goto(row, col=None):  # walk anywhere reachable; never disturbs a box
+    print(game.goto(row, col))
+
+def push(direction):      # shove what you stand against, once per turn
+    print(game.push(direction))
+```
+
+So a turn can be to a walk to a square, push a direction, or both:
+
+```repl
+goto(4, 3)
+push("up")
+```
+
+```text
+walked (3, 2)->(4, 3) in 2 cells
+pushed B1 up: (3, 3)->(2, 3)
+```
+
+This run starts jammed on purpose: the worker shoves `B1` right eight times until
+it sits flat against the wall, where nothing can stand behind it.
+
+<p align="center">
+  <img
+    src="shepherd/assets/blog/jam.gif"
+    alt="The worker pushes one box right eight times until it is pinned against the far wall"
+    width="520"
+  />
+</p>
+
+The meta agent can now come up with distinct new pathways to explore and pick any of those eight spots to revert to, leading to some pretty diverse trajectories. This is done by giving the shepherd agent access to the following tools:
+
+```python
+@tool("Inspect the worker after rewinding pushes, without playing.", proxy=True)
+async def preview(rewind: int) -> dict:
+    """Board, boxes, goals and legal pushes as of `rewind` pushes ago."""
+
+@tool("Record {rewind, order} recovery plans, then stop.", proxy=True)
+def branch(specs: list[Plan]) -> str:
+    """Each plan is one revert depth plus the box-to-goal order for that worker."""
+```
+
+`preview(k)` forks the graph, replays it to `k` pushes ago and returns that state;
+the failed run is untouched, so the shepherd can look at every earlier board for
+free. `branch(plans)` takes one `{rewind, order}` per attempt and ends the
+shepherd's turn: each plan becomes a worker of its own, rewound to that depth and
+carrying that order.
+
+#### Step 1 — observe: `preview(k)`
+
+The shepherd's first turn swept every depth — its own code, trimmed:
+
+```repl
+for k in range(1, max_k + 1):
+    state = await preview(k)
+    print(f"===== Preview k={k} =====")
+    print(state["board"], state["boxes"], state["legal_pushes"][:10])
+```
+
+```text
+===== Preview k=3 =====
+            11
+  012345678901
+0 ############
+1 #  .   .  ##
+2 ### # # # ##
+3 #     @$   #
+4 #   # # # .#
+5 #  $     $ #
+6 #  ## # #  #
+7 # .     .  #
+8 ############
+boxes (3): {'B1': (3, 7), 'B2': (5, 3), 'B3': (5, 9)}
+legal_pushes (10): ['B1 up from (4,7)', 'B1 down from (2,7)', 'B1 left from (3,8)', ...]
+```
+
+#### Step 2 — re-instruct: `branch(plans)`
+
+Its second turn wrote one plan per depth. This is the whole call, untrimmed:
+
+```repl
+plans = [
+    {"rewind": 6, "order": ["B1->G2 entering from (2,7)", "B2->G1 entering from (2,3)"]},
+    {"rewind": 5, "order": ["B1->G2 entering from (1,8)", "B3->G3 entering from (5,10)"]},
+    {"rewind": 8, "order": ["B2->G4 entering from (6,2)", "B3->G5 entering from (7,9)"]},
+    {"rewind": 4, "order": ["B2->G1 entering from (2,3)", "B3->G5 entering from (7,9)"]},
+    {"rewind": 7, "order": ["B1->G1 entering from (2,3)", "B3->G3 entering from (5,10)"]},
+    {"rewind": 3, "order": ["B1->G2 entering from (2,7)", "B2->G4 entering from (7,3)"]},
+    {"rewind": 2, "order": ["B1->G1 entering from (2,3)", "B2->G4 entering from (6,2)"]},
+    {"rewind": 1, "order": ["B3->G3 entering from (5,10)", "B2->G4 entering from (7,3)"]},
+]
+branch(plans)
+```
+
+```text
+['stuck', 'stuck', 'solved', 'solved', 'solved', 'solved', 'stuck', 'stuck']
+```
+
+A plan is two decisions: where to revert back to, and what strategy to hand the worker
+instead. It contains no moves — those stay the worker's job.
+
+#### Step 3 — rewind and fork
+
+The host takes each plan's revert depth and turns it into a graph edit:
+
+```python
+cut = push_turns(worker)[-depth].prev
+fork = cut.fork()
+await flow.replay(fork)
+```
+
+`fork()` copies the graph and drops everything after the point it reverted to;
+`replay` re-runs the retained actions into a new REPL.
+
+#### Step 4 — resume: each fork is a sub-agent
+
+The forks launch as children of the shepherd, so the search is itself one
+recursive agent tree. Each child wakes in a rewound REPL with its instruction
+appended:
+
+```text
+Rewound 7 pushes. This is a fresh recovery attempt, so abandon the plan you
+were following.
+...
+Lock the boxes in this order: B1->G1 entering from (2,3), then B3->G3 entering
+from (5,10). The routes are yours to work out.
+```
+
+From there it is an ordinary turn again — walk, then shove. For example, `branch4` took seven
+of them, one push each, and locked all three boxes:
+
+<p align="center">
+  <img
+    src="shepherd/assets/blog/branch4.gif"
+    alt="branch4 rewinds to one inherited push and solves the board in eight pushes"
+    width="420"
+  />
+</p>
+
+#### Overall Results
+
+Four of the eight branches solved the board, each from a different depth and a
+different box-to-goal order.
+
+
+<p align="center">
+  <img
+    src="../docs/shepherd_nodes.svg"
+    alt="Every node of one shepherd run: a short shepherd trunk fanning into eight branch chains, each faded over the turns it inherited from the jam"
+    width="920"
+  />
+</p>
+
+#### Run it
+
+```bash
+python examples/shepherd/shepherd.py                  # --gradio for the live board
+python examples/shepherd/shepherd.py --simple-moves   # one move(directions) action instead
+python docs/internal/render_blog.py                   # redraw the GIFs above
+python examples/shepherd/render_graph.py --out docs/shepherd_graph.svg \
+    --nodes-out docs/shepherd_nodes.svg               # redraw the node figure
+python examples/shepherd/render_rewind.py --branch branch4  # one rewind, end to end
+```

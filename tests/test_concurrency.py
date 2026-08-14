@@ -55,10 +55,35 @@ def test_ten_subprocess_children_can_launch_concurrently():
     flow = Flow(LLM(), runtime=SubprocessRuntime())
     try:
         root = start("parent", max_depth=1)
-        assert flow.run(root) == ",".join(names)
-        assert list(flow.runtime.repls) == [root.id]
+        # Finished children keep their workers, so ask for the cleanup here rather
+        # than leaving eleven subprocesses behind.
+        assert flow.run(root, close_repls=True) == ",".join(names)
+        assert list(flow.runtime.repls) == []
     finally:
         asyncio.run(flow.aclose())
+
+
+def test_a_finished_child_keeps_its_repl():
+    """A child's namespace is the only record of what its code built, so a host
+    (or a meta-agent) can still read it after the child has answered."""
+
+    class LLM:
+        def chat(self, messages):
+            query = first_user(messages)
+            if query == "parent":
+                return fanout("a", "b")
+            return block(f"kept = {query!r}\ndone({query!r})")
+
+    flow = Flow(LLM(), runtime=SubprocessRuntime())
+    try:
+        root = start("parent", max_depth=1)
+        assert flow.run(root) == "a,b"
+        children = root.sub_agents
+        assert [flow.runtime.get_var(child, "kept") for child in children] == ["a", "b"]
+        assert sorted(flow.runtime.repls) == sorted([root.id, *(c.id for c in children)])
+    finally:
+        asyncio.run(flow.aclose())
+    assert list(flow.runtime.repls) == []
 
 
 def test_prebuilt_subtrees_get_a_thread_each():

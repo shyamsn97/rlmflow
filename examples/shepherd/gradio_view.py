@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import traceback
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -176,6 +177,10 @@ def launch(
         try:
             asyncio.run(run_factory(dashboard))
         except Exception as exc:  # noqa: BLE001 - surface crashes into the UI, don't die silently
+            # Into the terminal as well: a browser tab that says "crashed" with one
+            # line of text is not enough to fix anything, and the traceback is the
+            # only place the failing frame is named.
+            traceback.print_exc()
             dashboard.finish("crashed", error=f"{type(exc).__name__}: {exc}")
 
     threading.Thread(target=_run, daemon=True).start()

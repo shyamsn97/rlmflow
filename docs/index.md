@@ -54,5 +54,9 @@ Pick the doc that matches what you're trying to do.
 - [RAO implementation plan](research/rao_implementation_plan.md) — how to
   implement Recursive Agent Optimization as a first-class `rlmflow.rao` module
   over `Flow` rollouts.
+- [Shepherd run analysis](research/shepherd_run_analysis.md) — a concrete
+  rewind/replay/fan-out walkthrough from a saved eight-branch Sokoban run,
+  including outcomes, parallelism, process boundaries, persistence, and the
+  terminal-worker lifecycle bug exposed by the artifacts.
 - [DeLM vs. rlmflow](research/delm_vs_rlmflow.md) — how DeLM-style
   coordination could sit on top of recursive execution graphs.

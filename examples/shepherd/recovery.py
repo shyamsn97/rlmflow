@@ -42,10 +42,15 @@ def landed_push(output: Node | None) -> bool:
 
 
 def push_turns(agent: AgentStart) -> list[LLMOutput]:
-    """Successful worker pushes, oldest first."""
+    """Successful worker pushes, oldest first.
+
+    Judged by what the turn's output reports rather than what its code called: under
+    ``--simple-moves`` a shove is spelled ``move(...)``, so reading the code would
+    find no pushes at all and leave the shepherd nothing to rewind.
+    """
     pushes = []
     for node in agent.transcript():
-        if not isinstance(node, LLMOutput) or "push(" not in (node.code or ""):
+        if not isinstance(node, LLMOutput) or not (node.code or ""):
             continue
         action = node.next
         if landed_push(action.next if action is not None else None):
@@ -197,12 +202,17 @@ async def prepare_branch(
     plan: Plan,
     index: int,
     budget: int,
+    slack: int = 4,
 ) -> Branch:
     fork, depth = await replayed_fork(flow, worker, plan["rewind"])
     state = snapshot(flow, fork, depth)
     order = plan["order"]
     order_text = ", then ".join(order)
-    fork.config.max_iters = fork.llm_turns() + budget + 3
+    # ``budget`` is a push allowance, not a turn count, so the branch also needs turns
+    # for the ones that land nothing: a refused action ends its turn, and under
+    # ``--simple-moves`` the worker routes itself and misroutes more. Too little slack
+    # and a branch dies at its turn ceiling mid-solve, which reads as giving up.
+    fork.config.max_iters = fork.llm_turns() + budget + slack
     fork.config.name = f"branch{index}"
     fork.config.inputs.pop("_worker_strategy", None)
     fork.config.inputs["_shepherd_order"] = order_text

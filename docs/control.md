@@ -297,12 +297,22 @@ to host code as `flow.llm_query_batched(...)` either way.
 
 ## Cleanup
 
-Close one run's REPLs as the stream exits:
+A REPL lives until something closes it, and finishing does not close it. An agent
+that answered keeps its namespace, including a child that answered inside a
+parent's run, because that namespace is the only record of what its code built:
+read a finished child's variables with `flow.runtime.get_var(child, "name")`, or
+append a new query and run the same root again without a replay to rebuild it.
+
+The flip side is that a large fan-out holds a worker per child until you say
+otherwise. Close one run's REPLs as the stream exits:
 
 ```python
 async for _ in flow.run_streaming(root, close_repls=True):
     pass
 ```
+
+`run(root, close_repls=True)` and `arun(root, close_repls=True)` do the same, and
+`flow.runtime.close_repl(agent)` closes exactly one.
 
 Close all Flow resources — queued work, thread pool, and every REPL — with
 `await flow.aclose()`.
