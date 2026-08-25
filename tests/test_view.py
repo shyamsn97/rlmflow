@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 
 import pytest
@@ -38,7 +39,8 @@ def ran() -> AgentStart:
             (
                 "do a thing",
                 block(
-                    "child = await launch_subagent('sub', name='count')\n"
+                    "child = await launch_subagent("
+                    "'sub', model='default', name='count')\n"
                     "print(await child.wait_for_result())"
                 ),
             ),
@@ -47,7 +49,7 @@ def ran() -> AgentStart:
             ("four", block("done('finished')")),
         ]
     )
-    flow = Flow(llm, config=AgentConfig(max_depth=2))
+    flow = Flow(llm, root_config=AgentConfig(max_depth=2))
     root = flow.start("do a thing")
     flow.run(root)
     return root
@@ -137,42 +139,35 @@ def test_save_svg_clamps_a_step_out_of_range(ran: AgentStart, tmp_path) -> None:
 
 def test_cli_view_prints_the_tree_and_timeline(ran: AgentStart, tmp_path, capsys) -> None:
     persistence.save(ran, tmp_path / "graph")
-    assert main(["view", str(tmp_path / "graph")]) == 0
+    assert main(["view", "show", str(tmp_path / "graph")]) == 0
     out = capsys.readouterr().out
     assert "steps" in out
     assert "llm_output" in out
 
 
-def test_cli_view_writes_both_formats(ran: AgentStart, tmp_path, capsys) -> None:
+def test_cli_render_writes_both_formats(ran: AgentStart, tmp_path, capsys) -> None:
     persistence.save(ran, tmp_path / "graph")
-    code = main(
-        [
-            "view",
-            str(tmp_path / "graph"),
-            "--tree",
-            "--svg",
-            str(tmp_path / "g.svg"),
-            "--html",
-            str(tmp_path / "r.html"),
-        ]
-    )
-    assert code == 0
+    graph = str(tmp_path / "graph")
+
+    assert main(["render", "svg", graph, str(tmp_path / "g.svg")]) == 0
+    assert main(["render", "html", graph, str(tmp_path / "r.html")]) == 0
+
     capsys.readouterr()
     assert (tmp_path / "g.svg").read_text().startswith("<svg")
     assert "rlm-ring" in (tmp_path / "r.html").read_text()
 
 
 def test_cli_view_reports_a_bad_path_and_a_bad_step(ran: AgentStart, tmp_path, capsys) -> None:
-    assert main(["view", str(tmp_path / "missing")]) == 1
+    assert main(["view", "show", str(tmp_path / "missing")]) == 1
     assert "not found" in capsys.readouterr().err
     persistence.save(ran, tmp_path / "graph")
-    assert main(["view", str(tmp_path / "graph"), "--step", "9999"]) == 1
+    assert main(["view", "show", str(tmp_path / "graph"), "--step", "9999"]) == 1
     assert "out of range" in capsys.readouterr().err
 
 
 def test_cli_view_prints_one_step(ran: AgentStart, tmp_path, capsys) -> None:
     persistence.save(ran, tmp_path / "graph")
-    assert main(["view", str(tmp_path / "graph"), "--step", "1"]) == 0
+    assert main(["view", "show", str(tmp_path / "graph"), "--step", "1"]) == 0
     assert "step 1/" in capsys.readouterr().out
 
 
@@ -218,8 +213,20 @@ def test_render_steps_is_one_ascii_tree_per_step(ran: AgentStart) -> None:
 
 
 def test_view_holds_optional_renderers_back_until_asked() -> None:
-    """Importing rlmflow must not drag in Gradio or a rasteriser."""
-    assert "gradio" not in sys.modules
+    """Importing rlmflow must not drag in Gradio or a rasteriser.
+
+    Checked in a clean interpreter, because ``sys.modules`` in this one says
+    only that no other test happened to import Gradio first — and some
+    dependencies (the OpenEnv client, for one) import it for their own UI.
+    """
+    probe = (
+        "import sys, rlmflow, rlmflow.view; "
+        "print([n for n in ('gradio', 'cairosvg', 'PIL') if n in sys.modules])"
+    )
+    loaded = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    assert loaded.stdout.strip() == "[]", f"rlmflow imported {loaded.stdout.strip()}"
     assert {"open_viewer", "save_frames", "save_gif"} <= set(dir(rlmflow.view))
     with pytest.raises(AttributeError, match="no attribute"):
         _ = rlmflow.view.nope
@@ -250,7 +257,7 @@ def test_frames_and_gif_export(ran: AgentStart, tmp_path) -> None:
 
 def test_cli_view_prints_every_ascii_step(ran: AgentStart, tmp_path, capsys) -> None:
     persistence.save(ran, tmp_path / "graph")
-    assert main(["view", str(tmp_path / "graph"), "--frames-only"]) == 0
+    assert main(["view", "show", str(tmp_path / "graph"), "--frames-only"]) == 0
     out = capsys.readouterr().out
     assert out.count("=== step ") == len(timeline(ran))
 

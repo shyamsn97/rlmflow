@@ -45,7 +45,7 @@ call any tool you injected.
 Independent of the runtime:
 
 - `max_depth` — recursion limit.
-- `max_iters` — LLM calls per agent.
+- `max_iters` — LLM calls per agent (`None` means no cap).
 - `max_budget` — total tokens across the subtree.
 - `max_output_length` — truncate oversized stdout.
 - `workers` — cap concurrent blocking LLM calls on the flow's thread pool.

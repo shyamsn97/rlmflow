@@ -13,6 +13,8 @@ Pick the doc that matches what you're trying to do.
 
 ## Use rlmflow
 
+- [Command line](cli.md) — `rlmflow run` for a coding agent in the dashboard,
+  `view` and `render` for a saved run, and how settings resolve.
 - [Control](control.md) — streaming loop, per-agent limits, multi-turn runs,
   save/load resume, forks, `INPUTS`, opt-in `AGENTS`, `launch_subagent`,
   custom tools.
@@ -25,8 +27,8 @@ Pick the doc that matches what you're trying to do.
   calls, then continue the same root.
 - [Observability](observability.md) — querying the Node tree, run layout,
   stream consumers, and reading a saved run.
-- [Node model](node_model.md) — the seven node types, the transitions between
-  them, and how delegation is recorded.
+- [Node model](node_model.md) — the typed node hierarchy, its transitions, and
+  how delegation is recorded.
 - [Runtimes](runtimes.md) — `Runtime` protocol, shipped runtimes
   (Local / subprocess / Docker / Modal), writing your own.
 - [Prompt customization](prompt_customization.md) — `SystemPromptBuilder`
@@ -56,6 +58,9 @@ Pick the doc that matches what you're trying to do.
 - [RAO implementation plan](research/rao_implementation_plan.md) — how to
   implement Recursive Agent Optimization as a first-class `rlmflow.rao` module
   over `Flow` rollouts.
+- [Speculative programmatic tool calling](research/spec_ptc.md) — implement
+  Zhang's sPTC algorithm in `rlmflow.speculate` (shadow REPL, claim-or-run
+  futures) without depending on the spec-ptc package.
 - [Shepherd run analysis](research/shepherd_run_analysis.md) — a concrete
   rewind/replay/fan-out walkthrough from a saved eight-branch Sokoban run,
   including outcomes, parallelism, process boundaries, persistence, and the

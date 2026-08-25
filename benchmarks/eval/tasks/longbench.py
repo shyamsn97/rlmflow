@@ -20,6 +20,7 @@ class LongBenchV2Dataset(Dataset):
     """LongBench-v2 across all domains."""
 
     dataset_name = "zai-org/LongBench-v2"
+    id_prefix = "official_longbench_v2"
 
     def __init__(
         self,
@@ -61,6 +62,8 @@ class LongBenchV2Dataset(Dataset):
         rows: list[dict[str, Any]] = []
         for index, row in enumerate(_load_hf_rows(self.dataset_name, split, self.data_dir)):
             context = str(row.get("context", ""))
+            if not self._include_row(row):
+                continue
             if self.max_context_tokens is not None and len(context) // 4 > self.max_context_tokens:
                 continue
             rows.append({**dict(row), "_source_index": index})
@@ -70,6 +73,9 @@ class LongBenchV2Dataset(Dataset):
             raise ValueError("No LongBench-v2 examples fit the configured limits.")
         self._rows = rows
         return rows
+
+    def _include_row(self, row: dict[str, Any]) -> bool:
+        return True
 
     def _example(self, row: dict[str, Any]) -> Example:
         question = str(row.get("question", "")).strip()
@@ -94,7 +100,7 @@ class LongBenchV2Dataset(Dataset):
             expected = "||".join(_normalize_answers(row.get("answers") or row.get("answer")))
         index = int(row.get("_source_index") or 0)
         return Example(
-            id=f"official_longbench_v2_{index:05d}",
+            id=f"{self.id_prefix}_{index:05d}",
             prompt=prompt,
             context={"context": str(row.get("context", ""))},
             expected=expected,
@@ -103,6 +109,19 @@ class LongBenchV2Dataset(Dataset):
                 "sub_domain": row.get("sub_domain"),
                 "context_chars": len(str(row.get("context", ""))),
             },
+        )
+
+
+@dataset("official_codeqa", tags=["rlm-comparison", "long-context", "code"])
+class CodeQADataset(LongBenchV2Dataset):
+    """The paper-aligned code-repository subset of LongBench-v2."""
+
+    id_prefix = "official_codeqa"
+
+    def _include_row(self, row: dict[str, Any]) -> bool:
+        return (
+            row.get("domain") == "Code Repository Understanding"
+            or row.get("sub_domain") == "Code repo QA"
         )
 
 
@@ -131,10 +150,11 @@ def _load_hf_rows(dataset_name: str, split: str, data_dir: Path) -> list[dict[st
 def _select_rows(
     rows: list[dict[str, Any]], *, limit: int | None, seed: int
 ) -> list[dict[str, Any]]:
-    count = limit or 1
     indices = list(range(len(rows)))
     random.Random(seed).shuffle(indices)
-    return [rows[index] for index in indices[: min(count, len(indices))]]
+    if limit is not None:
+        indices = indices[: min(limit, len(indices))]
+    return [rows[index] for index in indices]
 
 
 def _normalize_answers(raw: Any) -> list[str]:
@@ -153,4 +173,4 @@ def _normalize_answers(raw: Any) -> list[str]:
     return [text] if text else []
 
 
-__all__ = ["LongBenchV2Dataset"]
+__all__ = ["CodeQADataset", "LongBenchV2Dataset"]

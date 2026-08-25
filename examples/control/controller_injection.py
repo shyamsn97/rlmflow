@@ -82,7 +82,7 @@ def observation_injection() -> None:
 
     print_states("after the controller appended its observation", graph)
 
-    projected = flow.messages(graph.frontier)[-1]["content"]
+    projected = flow.build_messages(graph.frontier)[-1]["content"]
     assert OBSERVATION in projected
     print("message projection contains the controller observation.")
 

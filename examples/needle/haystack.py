@@ -100,7 +100,7 @@ def main():
         llm,
         llm_clients=llm_clients,
         runtime=runtime,
-        config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
+        root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
     )
 
     root = flow.start(

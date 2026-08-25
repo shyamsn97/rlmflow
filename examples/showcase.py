@@ -56,8 +56,10 @@ class DemoLLM:
         if "hello.py" in prompt and "goodbye.py" in prompt:
             return (
                 "```repl\n"
-                'hello = await launch_subagent("Create hello.py", name="hello")\n'
-                'goodbye = await launch_subagent("Create goodbye.py", name="goodbye")\n'
+                "hello = await launch_subagent("
+                '"Create hello.py", model="default", name="hello")\n'
+                "goodbye = await launch_subagent("
+                '"Create goodbye.py", model="default", name="goodbye")\n'
                 "results = [\n"
                 "    await hello.wait_for_result(),\n"
                 "    await goodbye.wait_for_result(),\n"
@@ -77,7 +79,7 @@ class DemoLLM:
 def file_flow(workdir: Path, config: AgentConfig) -> Flow:
     """A Flow whose agents get the filesystem tools, running inside ``workdir``."""
     runtime = LocalRuntime(working_directory=workdir)
-    return Flow(DemoLLM(), runtime=runtime, tools=FILE_TOOLS, config=config)
+    return Flow(DemoLLM(), runtime=runtime, tools=FILE_TOOLS, root_config=config)
 
 
 def banner(msg: str) -> None:

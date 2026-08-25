@@ -313,7 +313,7 @@ the current context.
 
 ### 1.3 `rlmflow/flow.py`
 
-- `exec_step` establishes the context for the action it is about to run.
+- `Flow.execute_action` establishes the context for the action it is about to run.
 - `build_tools` returns the shared dispatchers rather than per-node closures, so
   `done` and `launch_subagents` resolve the calling agent from the context.
 

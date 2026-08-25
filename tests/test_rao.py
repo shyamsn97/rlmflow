@@ -15,7 +15,6 @@ from rlmflow.rao import (
     EnvSession,
     EpisodeOver,
     IncompleteTreeError,
-    OpenEnvAdapter,
     RolloutFlow,
     RolloutTree,
     TaskSpec,
@@ -46,12 +45,10 @@ class FakeEnv:
         self.closed = False
         self.resets = 0
 
-    def action(self, **fields):
-        return dict(fields)
-
-    async def reset(self):
+    async def reset(self, **kwargs):
         self.resets += 1
-        return self.observation
+        # Shaped like OpenEnv's StepResult, whose reward is None at reset.
+        return SimpleNamespace(observation=self.observation, reward=None, done=False)
 
     async def step(self, action):
         assert not self.inside, "two agents stepped one env at the same time"
@@ -61,7 +58,7 @@ class FakeEnv:
             self.actions.append(action)
             return SimpleNamespace(
                 observation={"taken": len(self.actions)},
-                reward=self.rewards.get(action.get("item"), 0.0),
+                reward=self.rewards.get(action.get("item")),
                 done=bool(action.get("stop")),
             )
         finally:
@@ -135,7 +132,9 @@ def tree(query="build a house", **overrides):
 
 
 def child_of(agent, name, goal="sub goal"):
-    action = agent.frontier.append(ExecAction(code=f"launch_subagent({goal!r}, name={name!r})"))
+    action = agent.frontier.append(
+        ExecAction(code=f"launch_subagent({goal!r}, model='default', name={name!r})")
+    )
     return action.append(AgentStart(content=goal, config=agent.config.child(name)))
 
 
@@ -346,40 +345,49 @@ def test_observations_are_reduced_to_plain_data():
     assert plain({"text": "plain"}) == {"text": "plain"}
 
 
-def test_open_env_adapter_builds_typed_actions_and_unwraps_results():
+def test_actions_go_out_as_dicts_unless_a_typed_action_is_given():
+    """Dicts are what GenericEnvClient takes; typed clients need their Action."""
+
     class Action:
         def __init__(self, **fields):
             self.fields = fields
 
-    class Client:
+    untyped, typed = EnvSession(FakeEnv()), EnvSession(FakeEnv(), action_cls=Action)
+
+    assert untyped.action(item="wood") == {"item": "wood"}
+    built = typed.action(item="wood")
+    assert isinstance(built, Action)
+    assert built.fields == {"item": "wood"}
+
+
+def test_a_client_that_returns_values_synchronously_still_works():
+    """OpenEnv's reset/step hand back an object that need not be a coroutine."""
+
+    class SyncClient:
         def __init__(self):
-            self.stepped = []
             self.closed = False
 
-        async def reset(self):
-            return SimpleNamespace(observation={"ready": True})
+        def reset(self, **kwargs):
+            return SimpleNamespace(observation={"ready": True}, reward=None, done=False)
 
-        async def step(self, action):
-            self.stepped.append(action)
+        def step(self, action):
             return SimpleNamespace(observation={"ok": True}, reward=1.0, done=False)
 
-        async def close(self):
+        def close(self):
             self.closed = True
 
-    client = Client()
-    adapter = OpenEnvAdapter(client, Action)
-    session = EnvSession(adapter)
+    client = SyncClient()
+    session = EnvSession(client)
 
     async def main():
         assert await session.reset() == {"ready": True}
-        return await session.act("root", message="hi")
+        step = await session.act("root", message="hi")
+        await session.close()
+        return step
 
     step = asyncio.run(main())
 
-    assert isinstance(client.stepped[0], Action)
-    assert client.stepped[0].fields == {"message": "hi"}
     assert step.reward == pytest.approx(1.0)
-    asyncio.run(adapter.close())
     assert client.closed
 
 
@@ -396,7 +404,8 @@ def delegating(child_goal="chop wood", child_item="wood", root_item="plank"):
         turns = sum(1 for message in messages if message["role"] == "assistant")
         if turns == 0:
             return block(
-                f"handle = await launch_subagent({child_goal!r}, name='w')\n"
+                f"handle = await launch_subagent("
+                f"{child_goal!r}, model='default', name='w')\n"
                 "print(await handle.wait_for_result())"
             )
         return block(f"print(await env_step(item={root_item!r}))\nfinish('built')")
@@ -478,12 +487,13 @@ def test_a_client_that_cannot_report_tokens_records_nothing():
 
 def test_children_are_capped_per_agent():
     def reply(messages):
-        if "sub" in first_user(messages):
+        if first_user(messages).startswith("sub "):
             return block("finish('sub done')")
         return block(
             "for index in range(4):\n"
             "    try:\n"
-            "        await launch_subagent('sub %d' % index, name='c%d' % index)\n"
+            "        await launch_subagent("
+            "'sub %d' % index, model='default', name='c%d' % index)\n"
             "    except Exception as error:\n"
             "        print('refused', error)\n"
             "finish('capped')"
@@ -501,12 +511,13 @@ def test_children_are_capped_per_agent():
 
 def test_total_agents_are_capped_per_rollout():
     def reply(messages):
-        if "sub" in first_user(messages):
+        if first_user(messages).startswith("sub "):
             return block("finish('sub done')")
         return block(
             "for index in range(3):\n"
             "    try:\n"
-            "        await launch_subagent('sub %d' % index, name='c%d' % index)\n"
+            "        await launch_subagent("
+            "'sub %d' % index, model='default', name='c%d' % index)\n"
             "    except Exception as error:\n"
             "        print('refused', error)\n"
             "finish('capped')"

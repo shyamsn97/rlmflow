@@ -4,9 +4,17 @@ import threading
 import pytest
 from helpers import first_user
 
-from rlmflow import AppendChild, Flow, SequentialPool, SubprocessRuntime, UserQuery, start
+from rlmflow import (
+    AppendChild,
+    Flow,
+    Node,
+    Runtime,
+    SequentialPool,
+    SubprocessRuntime,
+    UserQuery,
+    start,
+)
 from rlmflow.prompts import PromptProfile
-from rlmflow.prompts.messages import UserPromptBuilder
 
 
 def block(code):
@@ -15,7 +23,7 @@ def block(code):
 
 def fanout(*names):
     calls = "\n".join(
-        f"    await launch_subagent({name!r}, name={name!r})," for name in names
+        f"    await launch_subagent({name!r}, model='default', name={name!r})," for name in names
     )
     return block(
         f"handles = [\n{calls}\n]\n"
@@ -95,8 +103,8 @@ def test_prebuilt_subtrees_get_a_thread_each():
     action = root.frontier
     action.code = (
         "handles = [\n"
-        "    await launch_subagent('', name='a'),\n"
-        "    await launch_subagent('', name='b'),\n"
+        "    await launch_subagent('', model='default', name='a'),\n"
+        "    await launch_subagent('', model='default', name='b'),\n"
         "]\n"
         "answers = [await h.wait_for_result() for h in handles]\n"
         "done(','.join(answers))"
@@ -110,8 +118,11 @@ def test_prebuilt_subtrees_get_a_thread_each():
 def test_prebuilt_children_are_not_submitted_twice():
     calls = 0
 
-    def board_prompt(_flow, _agent):
-        return "current board"
+    def render_board(_runtime: Runtime, node: Node) -> list[dict[str, str]]:
+        return [
+            *node.render(),
+            {"role": "user", "content": "current board"},
+        ]
 
     class LLM:
         async def chat(self, messages):
@@ -130,8 +141,8 @@ def test_prebuilt_children_are_not_submitted_twice():
     root.append_child(second, name="second")
     root.frontier.code = (
         "handles = [\n"
-        "    await launch_subagent('', name='first'),\n"
-        "    await launch_subagent('', name='second'),\n"
+        "    await launch_subagent('', model='default', name='first'),\n"
+        "    await launch_subagent('', model='default', name='second'),\n"
         "]\n"
         "answers = [await h.wait_for_result() for h in handles]\n"
         "done(','.join(answers))"
@@ -139,7 +150,7 @@ def test_prebuilt_children_are_not_submitted_twice():
     flow = Flow(
         LLM(),
         prompt_profiles={
-            "worker": PromptProfile(user=UserPromptBuilder(board_prompt)),
+            "worker": PromptProfile(render_fn=render_board),
         },
     )
 
@@ -157,7 +168,7 @@ def test_prebuilt_children_are_not_submitted_twice():
             for node in child.transcript()
             if isinstance(node, UserQuery) and node.content == "current board"
         ]
-        assert len(boards) == 1
+        assert boards == []
 
 
 def test_sequential_pool_does_not_hold_its_slot_while_parent_awaits_children():

@@ -10,11 +10,17 @@ Clean benchmark harness for rlmflow. The core components are:
 Initial datasets:
 
 - `synthetic_needle`
+- `official_sniah`
 - `oolong`
+- `official_codeqa`
+- `official_aime_2025`
+- `official_sudoku_extreme`
 - `official_browsecomp`
 - `official_longbench_v2`
 - `official_livecodebench`
-- `official_sudoku_extreme`
+
+`rlm-core` is the minimal shared comparison suite: S-NIAH, AIME 2025, Sudoku
+Extreme, OOLONG, and CodeQA.
 
 ## Smoke
 
@@ -34,15 +40,27 @@ python -m benchmarks.eval \
   --dataset-param synthetic_needle.filler_words=2
 ```
 
-## Real Run
+## Minimal Official-RLM Comparison
 
 ```bash
 python -m benchmarks.eval \
   --model openai:gpt-5-mini \
-  --dataset oolong official_browsecomp official_longbench_v2 official_livecodebench official_sudoku_extreme \
+  --dataset rlm-core \
   --runner vanilla rlmflow-local official-rlm \
-  --seeds 0:20 \
-  --wandb
+  --seed 0 \
+  --limit 5
+```
+
+The short flag limits the number of complete examples; it does not truncate
+contexts. Omit the cap explicitly with `--full`:
+
+```bash
+python -m benchmarks.eval \
+  --model openai:gpt-5-mini \
+  --dataset rlm-core \
+  --runner vanilla rlmflow-local official-rlm \
+  --seed 0 \
+  --full
 ```
 
 ## Modal Parallelism
@@ -54,10 +72,10 @@ is unchanged. To fan rows out to cheap one-CPU Modal workers:
 ```bash
 python -m benchmarks.eval \
   --model openai:gpt-5-mini \
-  --dataset oolong official_browsecomp official_longbench_v2 official_livecodebench official_sudoku_extreme \
+  --dataset rlm-core \
   --runner vanilla rlmflow-local official-rlm \
   --seed 0 \
-  --limit 50 \
+  --limit 5 \
   --executor modal \
   --parallel 20 \
   --best-of-n 1 \
@@ -68,7 +86,14 @@ python -m benchmarks.eval \
 Set `--best-of-n N` to run each logical row N times and keep only the best
 scoring attempt in `rows.jsonl`.
 
-Rows and artifacts are written under `benchmarks/runs/<run_id>/`.
+Rows and artifacts are written under `benchmarks/eval/runs/<run_id>/`.
+
+The `official_` prefix follows RLM-Bench task names. AIME and Sudoku are
+comparison controls rather than RLM-paper datasets. Full mode uses
+benchmark-sized pools: 50 S-NIAH, OOLONG, and Sudoku examples, all 30 AIME
+problems, and the complete CodeQA subset. Sudoku's source has millions of rows,
+so its adapter additionally bounds the streamed source pool with
+`official_sudoku_extreme.sample_window` (default 4096).
 
 `official_browsecomp` is large. Download it once before running:
 

@@ -127,7 +127,8 @@ async def demo_callable_boundary_with_child() -> None:
         if first_user(messages) == "parent":
             return (
                 "```repl\n"
-                "child = await launch_subagent('child', name='child')\n"
+                "child = await launch_subagent("
+                "'child', model='default', name='child')\n"
                 "result = await child.wait_for_result()\n"
                 "done('parent saw ' + result)\n"
                 "```"

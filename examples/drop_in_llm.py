@@ -58,7 +58,7 @@ def demo_flow_as_llm():
     agent = FlowLLM(
         Flow(
             OpenAIClient(model="gpt-4o-mini"),
-            config=AgentConfig(max_iters=5),
+            root_config=AgentConfig(max_iters=5),
         )
     )
     answer = ask(agent, "Compute 17 * 23 using a ```repl``` block, then call done().")
@@ -77,7 +77,7 @@ def demo_nested_flow():
     inner = FlowLLM(
         Flow(
             OpenAIClient(model="gpt-4o-mini"),
-            config=AgentConfig(max_iters=3),
+            root_config=AgentConfig(max_iters=3),
         )
     )
     outer = Flow(inner)

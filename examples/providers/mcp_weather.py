@@ -275,7 +275,7 @@ def main() -> None:
             build_client(args.model),
             runtime=LocalRuntime(),
             tools=mcp_tools(mcp_client),
-            config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
+            root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
         )
         root = flow.start(args.query)
         out_dir = Path(args.out_dir)

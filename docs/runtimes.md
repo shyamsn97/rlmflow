@@ -27,6 +27,7 @@ to place a child in its caller's existing worker:
 ```python
 analyst = await launch_subagent(
     "Continue from the live objects prepared above.",
+    model="default",
     name="analyst",
     reuse_repl=True,
 )

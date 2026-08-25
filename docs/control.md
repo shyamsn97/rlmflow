@@ -40,7 +40,6 @@ root = flow.start(
     max_depth=2,
     max_iters=20,
     max_budget=200_000,
-    keep_n_messages=8,
     output_schema=schema,
 )
 ```
@@ -52,11 +51,26 @@ string, or from `flow.start(...)` when you want to override a field or two:
 ```python
 from rlmflow import AgentConfig, Flow
 
-flow = Flow(client, config=AgentConfig(max_depth=2, max_iters=20))
+flow = Flow(client, root_config=AgentConfig(max_depth=2, max_iters=20))
 flow.run("Audit this repository.")
 
 root = flow.start("Audit this repository.", max_iters=40)  # max_depth still 2
 ```
+
+For a stronger coordinator with cheaper workers, register both choices under
+clear names:
+
+```python
+flow = Flow(
+    root_client,
+    llm_clients={"fast": worker_client},
+    root_config=AgentConfig(max_depth=2),
+)
+```
+
+The system prompt shows every registered key and marks the current model. Agent
+code must choose one explicitly with `model=` for each launch; there is no
+host-selected child-model fallback.
 
 The module-level `start(...)` builds a root with no flow involved, which is what
 loading, forking, and tests do. It has nothing to inherit from, so it carries
@@ -74,8 +88,8 @@ loaded.config.max_iters = 40
 ```
 
 Children inherit the parent's config through `config.child(name)`, with
-`child_max_iters` as the per-child override and the spec's `inputs`, `model`,
-`prompt_profile`, and `output_schema` layered on top.
+`child_max_iters` as the per-child iteration default and the launch spec's
+`inputs`, required `model`, `prompt_profile`, and `output_schema` layered on top.
 
 ## Multi-turn runs
 
@@ -92,8 +106,9 @@ root.frontier.append(UserQuery(content="Now implement the fixes."))
 flow.run(root)
 ```
 
-`max_iters` counts an agent's model turns across the whole transcript, so a root
-you intend to drive for several turns needs headroom for all of them.
+`max_iters` counts an agent's model turns across the whole transcript. The
+default is `None` (no cap). When you set a number, a root you intend to drive
+for several turns needs headroom for all of them.
 
 To change the inputs an agent sees, set them on its config and let the next
 step re-seed the REPL:
@@ -156,9 +171,9 @@ The only model-facing delegation function is:
 async def launch_subagent(
     goal: str,
     *,
+    model: str,
     name: str | None = None,
     inputs: dict[str, str] | None = None,
-    model: str | None = None,
     output_schema=None,
     prompt_profile: str | None = None,
     reuse_repl: bool = False,
@@ -169,8 +184,12 @@ Agent code awaits each launch to receive its persistent handle. Launch all
 independent children before waiting for any result:
 
 ```python
-a = await launch_subagent("...", name="a", inputs={"chunk": chunk_a})
-b = await launch_subagent("...", name="b", inputs={"chunk": chunk_b})
+a = await launch_subagent(
+    "...", model="fast", name="a", inputs={"chunk": chunk_a}
+)
+b = await launch_subagent(
+    "...", model="default", name="b", inputs={"chunk": chunk_b}
+)
 results = [
     await a.wait_for_result(),
     await b.wait_for_result(),
@@ -181,14 +200,16 @@ results = [
 child is attached and queued. Awaiting handles sequentially does not serialize
 the children: both are already running. Child `name` is one ASCII identifier
 segment containing only letters, digits, `_`, or `-`, and is unique among its
-siblings. A call may also pass `model`, `prompt_profile`, `output_schema`, and
-`reuse_repl`. Invalid depth or goal length raises an execution error without
-spawning a child.
+siblings. Every call must pass `model`; `prompt_profile`, `output_schema`, and
+`reuse_repl` are optional. Invalid model, depth, or goal length raises an
+execution error without spawning a child.
 
 The handle exposes identity and current status:
 
 ```python
-child = await launch_subagent("run a long check", name="check")
+child = await launch_subagent(
+    "run a long check", model="fast", name="check"
+)
 print(child.name, child.status)
 ```
 
@@ -288,8 +309,8 @@ flow.inject("LOOKUP", {"a": 1})   # any object, not just callables
 flow.remove_tool("my_tool")
 ```
 
-`done`, `launch_subagent`, `INPUTS`, and `AGENTS` are reserved: framework
-values are rebuilt for each step and cannot be injected over.
+`done`, `launch_subagent`, `INPUTS`, and `AGENTS` are reserved:
+framework values are rebuilt for each step and cannot be injected over.
 
 `Flow(use_llm_query=True)` adds `llm_query_batched` to the REPL, for agents that
 want to fan out one-shot model calls without spawning children. It is available

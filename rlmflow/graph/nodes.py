@@ -96,12 +96,14 @@ class AgentConfig:
     reuse_repl: bool = False
     #: Stable ordinal of the launch call that created this child.
     launch_call_id: int | None = None
-    max_depth: int = 2
-    max_iters: int = 20
+    max_depth: int = 1
+    #: How many model turns this agent may take. ``None`` means no cap.
+    max_iters: int | None = None
     child_max_iters: int | None = None
     max_budget: int | None = None
-    #: How many of the agent's own transcript turns a prompt carries. The system
-    #: message and the truncation notice sit on top of this count.
+    #: How many of the agent's own transcript turns a prompt carries. ``None``
+    #: keeps the full history. The system message and the truncation notice sit
+    #: on top of this count when it is set.
     keep_n_messages: int | None = None
     max_output_length: int = 4_000
     max_query_chars: int = DEFAULT_MAX_QUERY_CHARS
@@ -247,6 +249,39 @@ class Node:
         for child in self.children:
             yield from child.walk()
 
+    def render(self) -> list[dict[str, str]]:
+        """This node as zero or more canonical chat messages."""
+        return []
+
+    def project(
+        self,
+        keep: int | None = None,
+    ) -> list[dict[str, str]]:
+        """This agent's canonical chat history, walking backwards from here.
+
+        ``keep`` counts flattened messages. Invisible nodes consume no capacity,
+        and a multi-message node is trimmed from its oldest messages when only
+        part of it fits.
+        """
+        if keep is not None and keep <= 0:
+            return []
+
+        groups: list[list[dict[str, str]]] = []
+        remaining = keep
+        for node in self.walk(reverse=True):
+            messages = node.render()
+            if remaining is not None:
+                messages = messages[-remaining:]
+            if not messages:
+                continue
+            groups.append(messages)
+            if remaining is not None:
+                remaining -= len(messages)
+                if remaining == 0:
+                    break
+
+        return [message for messages in reversed(groups) for message in messages]
+
     def tokens(self) -> LLMUsage:
         """What every model call from here down cost, added up."""
         spent = (node.usage for node in self.walk() if isinstance(node, LLMOutput))
@@ -297,8 +332,12 @@ class Node:
             # These are new nodes with new ids, so they were created now. Keeping the
             # original stamps would date a copy earlier than the node it now hangs
             # from, and walk order keeps the copy internally ordered.
-            for n in root.walk():
-                n.id = new_agent_id() if isinstance(n, AgentStart) else new_node_id()
+            nodes = list(root.walk())
+            id_map = {
+                n.id: new_agent_id() if isinstance(n, AgentStart) else new_node_id() for n in nodes
+            }
+            for n in nodes:
+                n.id = id_map[n.id]
                 n.created_at = time.time()
         return root
 
@@ -323,6 +362,9 @@ class AgentStart(Node):
         self.root = self
         self.parent_agent = self
         self.frontier = self
+
+    def render(self) -> list[dict[str, str]]:
+        return [{"role": "user", "content": self.content}]
 
     @property
     def terminal(self) -> bool:
@@ -384,14 +426,89 @@ class AgentStart(Node):
         return persistence.load(path)
 
 
+FINAL_ANSWER_ACTION = (
+    "You have used the full iteration budget without calling finish(). Based on the "
+    "work above, call finish(answer) now with only the final answer, in the exact "
+    "form the query requested. Do not investigate further."
+)
+
+CONTINUE_NUDGE = (
+    "Continue. Reply with exactly one ```repl``` block: the next step, or "
+    "finish(...) if you have the verified final answer."
+)
+
+TRUNCATION_SUMMARY = (
+    "[earlier turns omitted to fit the context window; the most recent turns follow. "
+    "The REPL kept running, so variables, imports, and helpers defined in those turns "
+    "are still bound — reuse them instead of redefining them.]"
+)
+
+COLD_REPL_NOTE = (
+    "[this agent's REPL was restarted, so variables and imports from earlier turns "
+    "are gone. Re-derive whatever you need before using it.]"
+)
+
+INSPECTION_ACTION = (
+    "Inspect the complete relevant content of `INPUTS` now. Preserve explicit "
+    "requirements in REPL state and print only a bounded summary. Do not produce "
+    "deliverables or finish on this turn."
+)
+
+ORCHESTRATION_ACTION = (
+    "Now size up the observed work and choose local execution or delegation. For "
+    "several substantial components with explicit interfaces, launch multiple "
+    "coherent workstreams before local implementation; components in one final "
+    "product still qualify. Keep work local only when there is no such decomposition "
+    "or each scope is trivial. Choose `model=` explicitly for each child and keep "
+    "final synthesis with the parent."
+)
+
+
 @dataclass
 class UserQuery(Node):
     type: ClassVar[str] = "user_query"
+
+    def render(self) -> list[dict[str, str]]:
+        return [{"role": "user", "content": self.content}]
 
     def to_dict(self, *, nested: bool = True) -> dict[str, Any]:
         data = super().to_dict(nested=nested)
         data["payload"].update(agent_payload(self.parent_agent))
         return data
+
+
+@dataclass
+class InspectQuery(UserQuery):
+    type: ClassVar[str] = "inspect_query"
+    content: str = INSPECTION_ACTION
+    after: ClassVar[type[Node] | None] = None
+
+
+@dataclass
+class PlanQuery(UserQuery):
+    type: ClassVar[str] = "plan_query"
+    content: str = ORCHESTRATION_ACTION
+
+
+InspectQuery.after = PlanQuery
+
+
+@dataclass
+class FinalQuery(UserQuery):
+    type: ClassVar[str] = "final_query"
+    content: str = FINAL_ANSWER_ACTION
+
+
+@dataclass
+class ContinueQuery(UserQuery):
+    type: ClassVar[str] = "continue_query"
+    content: str = CONTINUE_NUDGE
+
+
+@dataclass
+class TruncationSummary(UserQuery):
+    type: ClassVar[str] = "truncation_summary"
+    content: str = TRUNCATION_SUMMARY
 
 
 @dataclass
@@ -401,6 +518,9 @@ class LLMOutput(Node):
     usage: LLMUsage = field(default_factory=LLMUsage)
     #: Key into the owning agent's ``system_prompts`` table.
     prompt_id: str = ""
+
+    def render(self) -> list[dict[str, str]]:
+        return [{"role": "assistant", "content": self.content}]
 
     def to_dict(self, *, nested: bool = True) -> dict[str, Any]:
         data = super().to_dict(nested=nested)
@@ -495,7 +615,10 @@ class AppendChild(ExecAction):
         return self.append(subtree)
 
     def _refresh_code(self) -> None:
-        calls = [f"launch_subagent('', name={child.config.name!r})" for child in self.child_agents]
+        calls = [
+            ("launch_subagent(" f"'', model={child.config.model!r}, name={child.config.name!r})")
+            for child in self.child_agents
+        ]
         if len(calls) == 1:
             self.code = f"_handle = await {calls[0]}\nprint(await _handle.wait_for_result())"
             return
@@ -510,6 +633,9 @@ class AppendChild(ExecAction):
 class ExecOutput(Node):
     type: ClassVar[str] = "exec_output"
 
+    def render(self) -> list[dict[str, str]]:
+        return [{"role": "user", "content": self.content}]
+
     def to_dict(self, *, nested: bool = True) -> dict[str, Any]:
         data = super().to_dict(nested=nested)
         data["payload"]["output"] = self.content
@@ -521,10 +647,20 @@ class ErrorOutput(Node):
     type: ClassVar[str] = "error_output"
     error: str = "exec"
 
+    def render(self) -> list[dict[str, str]]:
+        return [{"role": "user", "content": self.content}]
+
     def to_dict(self, *, nested: bool = True) -> dict[str, Any]:
         data = super().to_dict(nested=nested)
         data["payload"].update({"error": self.error, "output": self.content})
         return data
+
+
+@dataclass
+class ReplDead(ErrorOutput):
+    type: ClassVar[str] = "repl_dead"
+    error: str = "repl"
+    content: str = COLD_REPL_NOTE
 
 
 @dataclass
@@ -587,16 +723,28 @@ __all__ = [
     "active_step",
     "running_step",
     "DEFAULT_QUERY",
+    "COLD_REPL_NOTE",
+    "CONTINUE_NUDGE",
+    "FINAL_ANSWER_ACTION",
+    "INSPECTION_ACTION",
+    "ORCHESTRATION_ACTION",
+    "TRUNCATION_SUMMARY",
     "AgentConfig",
     "AgentStart",
     "AppendChild",
+    "ContinueQuery",
     "DoneOutput",
     "ErrorOutput",
     "ExecAction",
     "ExecOutput",
+    "FinalQuery",
+    "InspectQuery",
     "LLMOutput",
     "LLMUsage",
     "Node",
+    "PlanQuery",
+    "ReplDead",
+    "TruncationSummary",
     "UserQuery",
     "new_agent_id",
     "new_node_id",

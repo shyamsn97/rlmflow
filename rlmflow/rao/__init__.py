@@ -22,8 +22,8 @@ from rlmflow.rao.env import (
     EnvSession,
     EnvStep,
     EpisodeOver,
-    OpenEnvAdapter,
     env_tool,
+    open_env,
     plain,
 )
 from rlmflow.rao.export import Trajectory, read_jsonl, stats, trajectories, write_jsonl
@@ -46,7 +46,6 @@ __all__ = [
     "EpisodeOver",
     "IncompleteTreeError",
     "NodeScore",
-    "OpenEnvAdapter",
     "RolloutFlow",
     "RolloutTree",
     "TaskSpec",
@@ -56,6 +55,7 @@ __all__ = [
     "assign_advantages",
     "assign_depth_weights",
     "env_tool",
+    "open_env",
     "plain",
     "read_jsonl",
     "score_tree",

@@ -75,3 +75,4 @@ examples/_runs/example-workspaces/*
 !examples/_runs/example-workspaces/skills-demo/skills/
 !examples/_runs/example-workspaces/skills-demo/skills/**
 benchmarks/eval/runs/*
+docs/research/*

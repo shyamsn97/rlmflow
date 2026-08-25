@@ -141,7 +141,7 @@ def main() -> None:
         OpenAIClient(model=args.model),
         llm_clients={"fast": OpenAIClient(model=args.fast_model)},
         runtime=runtime,
-        config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
+        root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
     )
     root = flow.start(PLATFORMER_QUERY)
     log("running platformer task; first run may build/start Modal sandbox")

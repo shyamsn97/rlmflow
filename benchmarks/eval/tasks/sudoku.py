@@ -19,7 +19,7 @@ class SudokuExtremeDataset(Dataset):
     def __init__(
         self,
         data_dir: str = "evals/data",
-        max_samples: int | None = None,
+        max_samples: int | None = 50,
         min_rating: int | None = None,
         max_rating: int | None = None,
         sample_window: int = 4096,
@@ -117,10 +117,11 @@ def _select_rows(
 ) -> list[dict[str, Any]]:
     import random
 
-    count = limit or 1
     indices = list(range(len(rows)))
     random.Random(seed).shuffle(indices)
-    return [rows[index] for index in indices[: min(count, len(indices))]]
+    if limit is not None:
+        indices = indices[: min(limit, len(indices))]
+    return [rows[index] for index in indices]
 
 
 def _format_sudoku_grid(puzzle: str) -> str:

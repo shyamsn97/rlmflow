@@ -71,7 +71,7 @@ def main() -> None:
         build_client(args.model),
         llm_clients={"fast": build_client(args.fast_model)},
         runtime=runtime,
-        config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
+        root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
     )
     root = flow.start(PLATFORMER_QUERY)
     out_dir = Path(args.out_dir)

@@ -209,6 +209,18 @@ EXAMPLES: list[Example] = [
         timeout=300,
     ),
     Example(
+        "delegation-behavior",
+        "examples/behavior/delegation.py",
+        category="live",
+        args=("--out-dir", "{tmp}/delegation-behavior"),
+        env=("OPENAI_API_KEY",),
+        modules=("openai",),
+        # Three scenarios, one of which fans out; the heavy boids scenario is
+        # opt-in via --scenario and is not part of this run.
+        timeout=1200,
+        note="grades delegation both ways: fan out on substantial work, stay local on trivial work",
+    ),
+    Example(
         "dspy-drop-in",
         "examples/providers/dspy_drop_in.py",
         category="live",

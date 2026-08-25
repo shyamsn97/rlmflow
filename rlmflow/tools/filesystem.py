@@ -13,7 +13,14 @@ def read_file(path: str) -> str:
     return Path(path).read_text()
 
 
-@tool("Write content to a file, creating directories if needed.")
+@tool(
+    "Write content to a file, creating directories if needed. Replaces the whole "
+    "file with no warning, so `ls` the directory and `read_file` the path first "
+    "when it may already exist; use `edit_file` to change part of a file. Agents "
+    "in one flow may share this working directory: write only paths assigned to "
+    "your scope. If another agent wrote a file, inspect it in place; never replace "
+    "it with that agent's status, manifest, filename, or placeholder."
+)
 def write_file(path: str, content: str) -> str:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -63,7 +70,8 @@ def _display_path(path: Path, *, absolute: bool) -> str:
 
 @tool(
     "List files and directories, returning paths usable by other file tools. "
-    "For relative inputs, returns workspace-relative paths."
+    "For relative inputs, returns workspace-relative paths. Call this on '.' "
+    "before writing anything, so you build on what the workspace already has."
 )
 def ls(path: str = ".") -> list[str]:
     absolute = Path(path).is_absolute()

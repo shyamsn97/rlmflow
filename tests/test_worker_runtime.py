@@ -198,7 +198,8 @@ def test_runtime_delegates_without_sharing_workers():
                 return "```python\nfinish('child answer')\n```"
             return (
                 "```python\n"
-                "child = await launch_subagent('child task', name='child')\n"
+                "child = await launch_subagent("
+                "'child task', model='default', name='child')\n"
                 "answer = await child.wait_for_result()\n"
                 "print(answer)\n"
                 "```"
@@ -257,7 +258,7 @@ def test_reuse_repl_places_child_in_parent_worker(tmp_path):
                 "```python\n"
                 "shared = ['parent']\n"
                 "child = await launch_subagent("
-                "'child task', name='child', reuse_repl=True)\n"
+                "'child task', model='default', name='child', reuse_repl=True)\n"
                 "print(await child.wait_for_result())\n"
                 "```"
             )
@@ -273,9 +274,7 @@ def test_reuse_repl_places_child_in_parent_worker(tmp_path):
         child_repl = runtime.repls[root.sub_agents[0].id]
         assert child_repl is not parent_repl
         assert child_repl.session is parent_repl.session
-        orders = [
-            node.repl_execution_order for node in root.walk() if isinstance(node, ExecAction)
-        ]
+        orders = [node.repl_execution_order for node in root.walk() if isinstance(node, ExecAction)]
         assert orders == [1, 2, 3]
         loaded = AgentStart.load(root.save(tmp_path / "run"))
         assert [

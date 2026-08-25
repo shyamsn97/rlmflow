@@ -70,7 +70,7 @@ def test_append_child_rehomes_a_complete_subtree():
     assert subtree.config.path == "root.branch0"
     assert nested.config.path == "root.branch0.nested"
     assert action.code == (
-        "_handle = await launch_subagent('', name='branch0')\n"
+        "_handle = await launch_subagent('', model='default', name='branch0')\n"
         "print(await _handle.wait_for_result())"
     )
 
@@ -86,8 +86,8 @@ def test_append_child_reuses_one_launch_action():
     assert action.child_agents == [first, second]
     assert action.code == (
         "_handles = [\n"
-        "    await launch_subagent('', name='one'),\n"
-        "    await launch_subagent('', name='two'),\n"
+        "    await launch_subagent('', model='default', name='one'),\n"
+        "    await launch_subagent('', model='default', name='two'),\n"
         "]\n"
         "print([await h.wait_for_result() for h in _handles])"
     )

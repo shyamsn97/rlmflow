@@ -2,7 +2,22 @@ import asyncio
 
 from helpers import StubLLM
 
-from rlmflow import Flow, start
+from rlmflow import (
+    ExecAction,
+    ExecActionStep,
+    ExecOutput,
+    Flow,
+    LLMChunk,
+    LLMOutput,
+    LLMRequestStep,
+    LLMUsage,
+    MessageBuilder,
+    ReplRun,
+    ReplStatus,
+    Runtime,
+    WrappedRuntime,
+    start,
+)
 
 
 def test_step_advances_exactly_one_state_transition():
@@ -28,3 +43,76 @@ def test_a_run_can_be_driven_by_hand_one_step_at_a_time():
 
     assert [node.type for node in produced] == ["llm_output", "exec_action", "done_output"]
     assert root.terminal and root.result() == "ok"
+
+
+def test_llm_request_step_runs_with_plain_fake_primitives():
+    seen = []
+
+    class FakeLLM:
+        async def stream(self, messages):
+            seen.append(messages)
+            yield LLMChunk(
+                text="reply",
+                usage=LLMUsage(1, 2),
+            )
+
+    class Messages(MessageBuilder):
+        def build(self, node):
+            return [
+                {"role": "system", "content": "system"},
+                *node.project(),
+            ]
+
+    class UnusedRuntime(Runtime):
+        def open(self, agent):
+            raise AssertionError("runtime is not used")
+
+    root = start("query")
+    step = LLMRequestStep(
+        llm=FakeLLM(),
+        messages=Messages(),
+        runtime=WrappedRuntime(UnusedRuntime(), lambda _node: {}),
+    )
+
+    landed = asyncio.run(step(root))
+
+    assert isinstance(landed, LLMOutput)
+    assert landed.usage == LLMUsage(1, 2)
+    assert seen[0][-1]["content"] == "query"
+
+
+def test_exec_action_step_runs_with_the_same_primitive_abi():
+    class UnusedLLM:
+        async def stream(self, _messages):
+            raise AssertionError("stream is not used")
+            yield LLMChunk()
+
+    class FakeRuntime(Runtime):
+        def open(self, agent):
+            raise AssertionError("open is not used")
+
+        async def execute(self, node, code):
+            return ReplRun(output="observed", status=ReplStatus.OK)
+
+    class FakeRepl:
+        def seed(self, tools, inputs):
+            self.seeded = (tools, inputs)
+
+    root = start("query")
+    action = root.append(ExecAction(code="print('observed')"))
+    runtime = FakeRuntime()
+    repl = FakeRepl()
+    runtime.repls[root.id] = repl
+    wrapped = WrappedRuntime(runtime, lambda _node: {"tool": "value"})
+    step = ExecActionStep(
+        llm=UnusedLLM(),
+        messages=MessageBuilder(),
+        runtime=wrapped,
+    )
+
+    landed = asyncio.run(step(action))
+
+    assert isinstance(landed, ExecOutput)
+    assert landed.content == "observed"
+    assert wrapped.runtime is runtime
+    assert repl.seeded == ({"tool": "value"}, {})

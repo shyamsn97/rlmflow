@@ -1,9 +1,10 @@
 # Recursive Agent Optimization: Implementation Plan
 
 > **Current API:** `Flow` drives a recursive Node tree. Active task settings live
-> on each agent's latest `UserQuery`; agent code reads its inputs through
-> `INPUTS`. Cold spawn uses `launch_subagent`; prepared host branches use
-> `flow.launch_branches`. See `docs/control.md` and `docs/internals.md`.
+> on `AgentConfig`, supplied via `flow.start(...)` or `Flow(root_config=...)`.
+> Agent code reads its inputs through `INPUTS` (`AgentConfig.inputs`). Cold spawn
+> uses `launch_subagent`; prepared host branches use `node.fork()` plus
+> `append_child`. See `docs/control.md` and `docs/internals.md`.
 
 This note sketches how to implement Recursive Agent Optimization (RAO) on top of
 `rlmflow`.
@@ -26,9 +27,11 @@ of the runtime.
 - a Python REPL action loop;
 - `launch_subagent(...)` and `AgentHandle` for background recursive delegation;
 - a durable tree of per-agent trajectories via recursive `Node.children`;
-- per-agent task payloads through `UserQuery.inputs` / `INPUTS`;
-- depth and iteration controls directly on `Flow`;
-- workspaces for replay, inspection, forking, and dataset export.
+- per-agent task payloads through `AgentConfig.inputs` / `INPUTS`;
+- depth and iteration controls on `AgentConfig`, via `flow.start(...)` or
+  `Flow(root_config=...)`;
+- the Node tree plus `AgentStart.save` / `AgentStart.load` and `Flow(restore=...)`
+  for replay, inspection, forking, and dataset export.
 
 The missing RAO pieces are training-specific:
 
@@ -377,8 +380,8 @@ change which trajectories have positive or negative advantage.
 RAO does not require `asyncio.gather` or launch-time waiting. This is valid:
 
 ```python
-a = await launch_subagent(...)
-b = await launch_subagent(...)
+a = await launch_subagent(..., model="default")
+b = await launch_subagent(..., model="fast")
 # Parent performs independent work while both children run.
 ```
 
@@ -466,14 +469,10 @@ Training should use the actual LLM transcript, not just typed graph nodes.
 
 The Node tree is the durable source for observability and reward analysis. For policy
 updates, the trainer needs the prompt/messages and chosen action text. The
-workspace transcript files already preserve the message-level view. The exporter
-should therefore prefer:
-
-```text
-workspace/session/<agent>/transcript.json
-```
-
-and fall back to each `AgentStart.transcript()` only for offline tests.
+saved graph plus `Flow.build_messages(node)` already preserve the message-level
+view. The exporter should therefore prefer `agent.transcript()` and rebuild
+prompts with `flow.build_messages(frontier)` rather than a Workspace session
+file.
 
 A minimal export record:
 
@@ -623,13 +622,14 @@ Keep these small:
 
 4. **Transcript export API**
 
-   Add a stable helper instead of making RAO code know workspace internals:
+   Add a stable helper instead of making RAO code know persistence internals:
 
    ```python
-   workspace.session.read_transcript(agent_id)
+   agent.transcript()
    ```
 
-   This already exists on the session interface; RAO export should use it.
+   Walk the agent's own chain; RAO export should use that, not a Workspace
+   session object.
 
 ## What Not To Do
 
@@ -637,13 +637,13 @@ Do not:
 
 - bake RAO rewards into `Flow.step`;
 - add reward/advantage fields to every `Node`;
-- make `Workspace` understand training updates;
+- make persistence or run directories understand training updates;
 - train directly from rendered graph visualizations;
 - require a specific model trainer before the rollout data pipeline works;
 - reward raw delegation count.
 
 The engine should stay an execution substrate. RAO should be a consumer of
-graphs, transcripts, contexts, and workspace runs.
+graphs, transcripts, contexts, and saved runs.
 
 ## Implementation TODOs
 
@@ -667,15 +667,14 @@ Use this as the working checklist for turning the plan into code.
 
 ### Rollout And Scoring
 
-- [ ] Build a collector that runs `rollouts_per_task` isolated workspaces per
+- [ ] Build a collector that runs `rollouts_per_task` isolated trees per
   `TaskSpec`.
 - [ ] Require every descendant to be terminal before scoring or export; reject
   incomplete trees.
 - [ ] Export one scored `TrajectoryExample` per agent trajectory, not just per root
   rollout.
-- [ ] Read transcripts through `workspace.session.read_transcript(agent_id)`.
-- [ ] Derive child `TaskSpec`s from the latest `UserQuery` and parent
-  spawn metadata.
+- [ ] Read transcripts through `agent.transcript()`.
+- [ ] Derive child `TaskSpec`s from `AgentConfig` and parent spawn metadata.
 - [ ] Store rollout terminal status: success, wrong answer, max-iteration stop,
   runtime error, validation error, or incomplete tree.
 - [ ] Add tests on hand-built recursive Node trees for reward aggregation.
@@ -689,7 +688,7 @@ Use this as the working checklist for turning the plan into code.
 - [ ] Add `examples/research/rao_collect_crafting.py`.
 - [ ] Compare `max_depth=0` single-agent rollouts against `max_depth>0`
   recursive rollouts.
-- [ ] Save rollout examples and metrics under a workspace artifact path.
+- [ ] Save rollout examples and metrics under a run artifact path.
 
 ### Trainer Boundary
 
@@ -785,12 +784,12 @@ single-agent setting.
 
 ## Open Questions
 
-- Should child launch specs be stored as explicit typed nodes, or are the latest
-  `UserQuery.content` / `UserQuery.inputs` enough?
-- Do we want `max_children_per_agent` and `max_total_agents` directly on `Flow`?
+- Should child launch specs be stored as explicit typed nodes, or are
+  `AgentStart.content` / `AgentConfig.inputs` enough?
+- Do we want `max_children_per_agent` and `max_total_agents` on `AgentConfig`?
 - Which trainer stack should be the first real adapter?
-- Should rollout collection use one workspace per rollout or one workspace per
-  task with child run directories?
+- Should rollout collection use one tree per rollout or one tree per task with
+  child run directories?
 - How should failed runtime executions be represented in the training example:
   negative reward, zero reward, or filtered?
 - For child nodes without gold labels, what proxy reward is least misleading?

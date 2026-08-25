@@ -68,7 +68,8 @@ def test_callable_boundary_sees_child_events():
         if first_user(messages) == "parent":
             return (
                 "```repl\n"
-                "child = await launch_subagent('child', name='c')\n"
+                "child = await launch_subagent("
+                "'child', model='default', name='c')\n"
                 "value = await child.wait_for_result()\n"
                 "done('p:' + value)\n"
                 "```"

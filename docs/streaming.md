@@ -36,7 +36,7 @@ The implementation is deliberately split by responsibility:
   - `Flow.run_streaming`: the driver loop;
   - `Flow.step`: one complete Node transition;
   - `Flow.launch_tool`: child creation, submission, and joining;
-  - `Flow.llm_step` / `Flow.exec_step`: model and REPL transitions.
+  - `rlmflow.engine.steps`: class-based `StepFunction` handlers.
 - [`rlmflow/engine/execution.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/engine/execution.py)
   - `Transition`: submitted Node, created Node, and infrastructure error;
   - `TaskQueue`: active tasks, completed transitions, child-terminal wake-ups;
@@ -75,13 +75,13 @@ It can run Nodes from several independent graphs in the same queue.
 `Flow.step(node)` consumes one frontier Node and creates its next durable Node:
 
 ```text
-AgentStart ─┐
-UserQuery ──┼─> llm_step ─> LLMOutput
-ExecOutput ─┤
-ErrorOutput ┘
+AgentStart ──> LLMRequestStep ─> InspectQuery | LLMOutput
+UserQuery  ──> LLMRequestStep ─> InspectQuery | LLMOutput
+ExecOutput ──> LLMRequestStep ─> PlanQuery | FinalQuery | LLMOutput
+ErrorOutput─> LLMRequestStep  ─> LLMOutput
 
-LLMOutput ────────────────> ExecAction
-ExecAction ─> exec_step ──> ExecOutput | ErrorOutput | DoneOutput
+LLMOutput  ──> LLMOutputStep ─> ExecAction
+ExecAction ──> ExecActionStep─> ExecOutput | ErrorOutput | ReplDead | DoneOutput
 ```
 
 The return value records both sides:
@@ -154,7 +154,7 @@ submit(node)
     │
     └── _run(node)
           │
-          ├── Pool.run(Flow.step, node)
+          ├── Flow.step(node)
           ├── done.put(transition)
           └── notify child joiners if terminal
 
@@ -184,11 +184,12 @@ The queue keys work by submitted Node identity, not by root or agent.
 
 ### `_run`
 
-The private runner performs orchestration through the Pool and publishes the
-result:
+The private runner invokes transition orchestration directly and publishes
+the result:
 
 ```python
-transition = await self.pool.run(fn, node)
+result = fn(node)
+transition = await result if inspect.isawaitable(result) else result
 self.done.put_nowait(transition)
 ```
 
@@ -432,24 +433,24 @@ The scheduler separates lightweight orchestration from bounded compute:
 ```text
 TaskQueue._run
     │
-    └─ Pool.run(Flow.step, node)       orchestration; no scarce slot
+    └─ Flow.step(node)                 orchestration; no scarce slot
           │
-          ├─ Flow.llm_step
-          │    └─ Pool.call(client.chat, ...)
-          │                                  bounded model compute
+          ├─ LLMRequestStep
+          │    └─ PooledLLMClient(...)
+          │         └─ Pool.stream(client.stream)
           │
-          └─ Flow.exec_step
+          └─ ExecActionStep
                └─ Runtime.execute(...)
                                               REPL/runtime placement
 ```
 
-`ThreadPool.call` sends synchronous functions to a thread executor. Async client
-methods are awaited directly. `SequentialPool.call` serializes compute calls with
-one lock.
+`ThreadPool.stream` sends synchronous producers to a thread executor and holds
+the placement slot until iteration ends. Async streams are consumed directly
+under the same lifetime policy. `SequentialPool.stream` holds one lock for the
+full stream.
 
-`Pool.run` must not reserve a scarce compute slot while a parent awaits children.
-Otherwise enough waiting parents could consume every slot and prevent their
-children from running.
+`TaskQueue` invokes orchestration directly. `Pool` is used only around compute
+calls, so a parent awaiting children cannot reserve a scarce compute slot.
 
 ```python
 flow = Flow(client, workers=16)

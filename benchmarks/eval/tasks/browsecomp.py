@@ -48,7 +48,7 @@ class BrowseCompPlusDataset(Dataset):
             available = min(available, self.max_samples)
         if available <= 0:
             raise ValueError("No BrowseComp-Plus examples were loaded.")
-        count = min(limit or 1, available)
+        count = available if limit is None else min(limit, available)
         indices = list(range(available))
         random.Random(seed).shuffle(indices)
         return [self._example(dict(ds[index]), index=index, seed=seed) for index in indices[:count]]

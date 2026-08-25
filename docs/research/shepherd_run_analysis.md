@@ -33,8 +33,8 @@ Picked branch0: solved=False, score=-1000.0, pushes=0
 
 That result is false. Each branch's durable terminal node says `result:
 "solved"`, and each final board observation says `3/3 boxes locked`. The
-framework closes a terminal child REPL before the example reads its final `ENV`
-or retrieves its `game` object. `Branch.env` consequently opens an empty
+framework closes a terminal child REPL before the example reads its final `ENV`.
+`Branch.env` consequently opens an empty
 replacement worker and reports the defaults `solved=False`, `pushes=0`, and
 `dist=0`. The same premature close prevents final trace export.
 
@@ -394,17 +394,21 @@ lane at a time and can make concurrent work look sequential.
 The model acts at the strategic push level:
 
 ```python
-push("B3", "up")
+goto(4, 3)
+push("up")
 ```
 
-`Sokoban.push(...)` computes the player's shortest ordinary walking route to the
-far side of the box, records every walk frame, and then performs exactly one box
-push. This gives the model one irreversible decision per turn while preserving
-an honest movement trace for visualization.
+`goto(...)` computes the player's shortest ordinary walking route to the chosen
+square; `push(...)` then performs exactly one box push. This gives the model one
+irreversible decision per turn while preserving an honest movement trace for
+visualization.
 
-The host writes a turn marker into `ENV`; the game refuses a second push with the
-same marker. Replay has no live turn marker, so recorded pushes can be applied
-back-to-back while rebuilding state.
+The worker profile's current-frontier `render_fn(runtime, node)` calls
+`board_prompt`, which stamps `ENV["turn"]` through `repl.update_env` before each
+live model request. The game refuses a second push with the same marker. Replay
+does not stamp a live turn, so recorded pushes can be applied back-to-back while
+rebuilding state. Adjacent board and observation turns stay separate messages;
+projection does not coalesce them.
 
 Solved means every box is on a goal:
 

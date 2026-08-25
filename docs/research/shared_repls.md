@@ -77,7 +77,7 @@ cause it, needing three different fixes:
    `self._buf = io.StringIO()` and `run()` opens with `self.done_result = None`.
    The second agent to enter replaces the buffer, and `outcome(self.output)`
    reads whichever was set last. `self.errored` is shared the same way.
-2. **Seeded names.** `Flow.exec_step` calls `repl.seed(...)` before every
+2. **Seeded names.** `Flow.execute_action` calls `repl.seed(...)` before every
    action, writing `namespace["done"]`, `namespace["launch_subagents"]`, and
    `namespace["INPUTS"]` bound to the current agent. The second agent's seed
    overwrites the first's, so the first then calls the wrong `done` closure and
@@ -129,7 +129,7 @@ class RunCtx:
 _ctx: ContextVar[RunCtx | None] = ContextVar("rlmflow_run", default=None)
 ```
 
-`Flow.exec_step` sets it around the step. Contextvars propagate down the await
+`Flow.execute_action` sets it around the step. Contextvars propagate down the await
 chain within one task, so the context reaches `Runtime.execute` → `Repl.run` →
 `exec` without threading an argument through any signature.
 

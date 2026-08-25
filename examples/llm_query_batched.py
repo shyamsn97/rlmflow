@@ -80,7 +80,7 @@ def main() -> None:
     llm = GuidedLLM()
     flow = Flow(
         llm,
-        config=AgentConfig(max_depth=0, max_iters=3),
+        root_config=AgentConfig(max_depth=0, max_iters=3),
         workers=3,
         use_llm_query=True,
     )

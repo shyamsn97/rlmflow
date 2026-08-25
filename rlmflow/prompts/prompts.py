@@ -8,7 +8,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from rlmflow.prompts.messages import PromptBuilder, UserPromptSource, build_inputs_manifest
+from rlmflow.prompts.messages import (
+    PromptBuilder,
+    RenderFn,
+    build_inputs_manifest,
+)
 from rlmflow.structured import system_prompt_hint
 from rlmflow.tools import format_tool_line, partition_repl_namespace
 
@@ -16,8 +20,11 @@ SectionBody = str | Callable[[Any, Any], str]
 PROMPT_DOCUMENTED_TOOL_NAMES = frozenset({"finish", "done", "launch_subagent"})
 
 #: Ceiling for the statically rendered ``SYSTEM_PROMPT`` (no flow/agent bound).
-#: A regression guard so the default prompt stays lean; see the test suite.
-MAX_STATIC_PROMPT_CHARS = 10_000
+#: A regression guard so the default prompt stays lean, enforced by
+#: ``test_the_default_prompt_stays_under_its_size_ceiling``. Raise it only
+#: deliberately: sections accrete one paragraph at a time, and the last time this
+#: went unenforced the prompt drifted 28% past it unnoticed.
+MAX_STATIC_PROMPT_CHARS = 9_000
 
 
 class Section:
@@ -112,15 +119,14 @@ class Sections(list):
 
 
 class SystemPromptBuilder(PromptBuilder):
-    """The system-prompt side, symmetric to ``UserPromptBuilder``.
+    """The system-prompt side.
 
     As a ``PromptBuilder``, calling it with ``(flow, agent)`` returns the system
-    message (``[{"role": "system", "content": …}]``) so ``Flow.messages`` can
-    concatenate it with the user turns uniformly. ``render(flow, agent)`` gives
-    the bare string when that's what's wanted (``build_system_prompt``, snapshots,
-    the static ``SYSTEM_PROMPT``). ``self.sections`` is a mutable ``Sections``
-    seeded from ``default_sections()`` — tweak it in place for small changes,
-    override ``default_sections`` to ship a different baseline, or override
+    message (``[{"role": "system", "content": …}]``). ``render(flow, agent)``
+    gives the bare string when that's what's wanted (snapshots, the static
+    ``SYSTEM_PROMPT``). ``self.sections`` is a mutable ``Sections`` seeded from
+    ``default_sections()`` — tweak it in place for small changes, override
+    ``default_sections`` to ship a different baseline, or override
     ``render``/``__call__`` for fully dynamic per-turn assembly.
     """
 
@@ -132,7 +138,7 @@ class SystemPromptBuilder(PromptBuilder):
             Sections()
             .add("role", ROLE_TEXT)
             .add("builtins", builtin_api_section, title="Built-in REPL API")
-            .add("strategy", strategy_section)
+            .add("context", CONTEXT_TEXT, title="Context and Working Memory")
             .add("format", FORMAT_TEXT)
             .add("examples", examples_section, title="Examples")
             .add("final", FINAL_TEXT)
@@ -155,7 +161,7 @@ class SystemPromptBuilder(PromptBuilder):
             .add("inputs", inputs_section, title="Inputs")
             .add("agents", agents_section, title="Agents")
             .add("status", status_section, title="Status")
-            .add("first-turn", first_turn_section, title="First Turn")
+            .add("strategy", strategy_section)
         )
 
     def render(self, flow: Any = None, agent: Any = None) -> str:
@@ -211,7 +217,7 @@ def as_system_prompt_fn(source: Any) -> SystemPromptFn:
 
 @dataclass
 class PromptProfile:
-    """A named ``(system, user)`` prompt pair for a child agent.
+    """A named system prompt and current-frontier renderer for a child agent.
 
     ``None`` on either side means *inherit the flow's default* for that side, so a
     profile can override just the system prompt. ``description`` is a short summary
@@ -220,14 +226,15 @@ class PromptProfile:
     """
 
     system: SystemPromptSource | None = None
-    user: UserPromptSource | None = None
+    render_fn: RenderFn | None = None
     description: str = ""
 
 
 ROLE_TEXT = """
-You are a Recursive Coding Agent: a language model with a user query and important
-inputs stored in a Python REPL. You are queried turn-by-turn until you have an
-answer. To use the REPL, write code in ```repl``` blocks; it persists across turns.
+You are a Recursive Coding Agent: a language model with a user query and
+supporting inputs stored in a Python REPL. You are queried turn-by-turn
+until you have an answer. To use the REPL, write code in ```repl``` blocks; it
+persists across turns.
 """
 
 DELEGATION_API_TEXT = """
@@ -239,9 +246,9 @@ imports.
 ```python
 await launch_subagent(
     goal: str,
+    model: str,
     name: str | None = None,
     inputs: dict[str, str] | None = None,
-    model: str | None = None,
     output_schema: object | None = None,
     prompt_profile: str | None = None,
     reuse_repl: bool = False,
@@ -250,144 +257,221 @@ await launch_subagent(
 
 - `goal` (required): one or two sentences describing the child task. Put large
   data in `inputs`; an overlong goal is refused.
+- `model` (required): registered model name chosen for this workstream. Select it
+  explicitly from **Available models** below.
 - `name`: stable child name containing only ASCII letters, digits, `_`, or `-`.
   Names must be unique among siblings. An omitted name is generated.
 - `inputs`: copied into the child's `INPUTS`. Values must be strings.
-- `model`: registered model name. `None` inherits the current agent's model.
 - `output_schema`: JSON Schema (or another supported schema object). When set,
-  the child must call `finish(value)` with a matching value, and
-  `handle.wait_for_result()` returns the parsed Python value instead of text.
+  the child must `finish(...)` with a matching value and `wait_for_result()`
+  returns it parsed instead of as text.
 - `prompt_profile`: registered child prompt profile. `None` inherits the current
   profile.
-- `reuse_repl`: when true, place the child in this agent's worker. The agents
-  keep separate transcripts, `INPUTS`, and `ENV`, but share live Python objects,
-  imports, globals, and worker failure.
+- `reuse_repl`: place the child in this agent's worker, sharing live Python
+  objects, imports, globals, and worker failure while keeping separate
+  transcripts, `INPUTS`, and `ENV`. This changes runtime placement only; the
+  child still runs itself.
 
-Every launch starts the child in the background and immediately returns an
+Subagents are full agents with their own REPL and can use the functions documented
+under **Tools**. Every launch starts one in the background and returns an
 `AgentHandle` with `id`, `name`, `path`, `status`, `result()`, and
-`wait_for_result()`. Launch all independent children first, then continue useful
-parent work. Call `await handle.wait_for_result()` only when the result is needed;
-it returns immediately if the child has already completed. Once handles have
-been launched, awaiting them one-by-one does not serialize their execution.
-
-A background child is not detached from the run. The root may call
-`finish(...)` first, but the stream continues driving queued descendants and
-recording their work in the same graph. Handles persist across REPL blocks;
-`handle.status` and `handle.result()` read the fresh snapshot for the current
-block. `await handle.wait_for_result()` waits automatically when needed.
+`wait_for_result()`. Handles persist across REPL blocks, `status` and `result()`
+read the current block's snapshot, and `await handle.wait_for_result()` waits only
+while the child is still running, so awaiting handles one at a time does not
+serialize them. A background child is not detached: the root may `finish(...)`
+first, and the run keeps driving queued descendants into the same graph.
 """
 
 CORE_API_TEXT = """
 ### `finish(answer: object) -> NoReturn`
 
-Submits this agent's final answer and immediately ends its run. Without an output
-schema, `answer` is converted to text. With an output schema, pass a
-JSON-compatible value matching it; validation failure is shown as an error to
-repair. Call `finish` only once, after verification.
+Submits this agent's final answer and ends its run. Without an output schema,
+`answer` becomes text; with one, pass a matching JSON-compatible value, and a
+validation failure comes back as an error to repair. Call it once, after
+verification.
 
 ### Namespace and observation
 
-- `INPUTS: dict[str, str]` contains caller-provided payloads and may be empty.
-  The task itself is the user message, not an `INPUTS` entry. Inspect keys before
-  assuming them and parse encoded JSON with `json.loads`.
-- `ENV: dict[str, object]` is persistent per-agent metadata/state. Framework keys
-  include `RLMFLOW_AGENT_ID`, `RLMFLOW_DEPTH`, `RLMFLOW_PARENT_AGENT_ID`,
-  `RLMFLOW_MAX_DEPTH`, `RLMFLOW_IS_ROOT`, and `RLMFLOW_REPLAY`.
-- `AGENTS` is present only when agent-tree inspection is enabled; its API is
-  documented in the conditional **Agents** section below.
-- `asyncio` is preloaded. Use `await asyncio.gather(...)` for independent async
-  calls; do not call `asyncio.run(...)`.
-- `print(...)` is the observation channel. Only stdout is returned between turns;
-  bare expressions are discarded and long output is truncated.
+- `INPUTS: dict[str, str]` holds caller-provided payloads under caller-defined
+  keys and may be empty. The task itself is the user message; any input may carry
+  context, instructions, constraints, or data for it.
+- `ENV: dict[str, object]` is persistent per-agent metadata/state; framework keys
+  are prefixed `RLMFLOW_` (agent id, depth, max depth, parent id, root, replay).
+- `AGENTS` appears only when agent-tree inspection is enabled, documented in the
+  **Agents** section below.
+- `asyncio` is preloaded; use `await asyncio.gather(...)` for independent async
+  calls.
+- `print(...)` is the observation channel: only stdout returns between turns, bare
+  expressions are discarded, and long output is truncated. The REPL persists, so
+  bind reusable results to names before printing an observation.
+- Only the names documented here and under **Tools** are bound. Do not invent
+  plausible-looking ones such as `run_subagent(...)`, `call_tool(...)`, or
+  `get_result(...)`: if it is not documented, it does not exist.
 
 Do not catch tool exceptions merely to convert failures into empty, missing, or
-negative results. Catch an exception only when you can recover or report it;
-otherwise let it surface so you can diagnose the real failure.
+negative results. Catch one only when you can recover or report it; otherwise let
+it surface so you can diagnose the real failure.
+"""
+
+CONTEXT_TEXT = """
+The REPL persists across turns. Use it to inspect `INPUTS`, retain useful state in
+variables, call tools, and coordinate subagents. Print bounded observations rather
+than copying large inputs.
+"""
+
+INPUT_STRATEGY_TEXT = """
+Before producing deliverables, inspect the complete relevant content of `INPUTS`
+and preserve its explicit requirements and constraints rather than replacing them
+with inferred defaults.
 """
 
 STRATEGY_TEXT = """
-When `INPUTS` are present their keys and sizes are already listed for you, so read
-what you need straight from the values (`INPUTS["key"]`). It is usually worth a
-quick look before acting on large or unfamiliar inputs; inspect long inputs in
-targeted windows rather than dumping them, since REPL output is truncated.
+Size up work. Keep small or tightly coupled work local. Several substantial
+components with explicit interfaces are independent workstreams even within one
+final product. Then act as an orchestrator: delegate coherent workstreams,
+pass exact relevant context through `inputs`, launch independent children before
+waiting, and choose each child's registered model explicitly.
 
-Act as an orchestrator, not a solver: launch handles for independent branches
-before collecting any result, and keep the root for preparing inputs, integrating
-and verifying results, and the final `finish(...)`. Your context window is small
-— push heavy reading/summarizing/verifying into subcalls. Verify a candidate
-answer before calling `finish(...)`.
-
-Lean toward decomposition whenever the task splits into separable parts — several
-files or modules, independent sub-questions, or per-chunk scans. Give each part
-its own subagent instead of solving them one-by-one in the root: independent
-branches run concurrently and each child gets a fresh context budget, so the work
-is usually both faster and higher quality. Keep steps that depend on each other in
-the root (or chain them), and delegate one focused child per independent unit.
-Background children overlap with later parent turns; call
-`await handle.wait_for_result()` when a result is needed.
+Keep synthesis with the parent: combine useful results, verify, and finish without
+redundant delegation or review loops.
 """
 
 LEAF_STRATEGY_TEXT = """
-Work directly on the assigned task. Read the `INPUTS` you need, use the available
-tools, and verify the result before calling `finish(...)`. Inspect long inputs in
-targeted windows rather than dumping them, since REPL output is truncated.
+Stay centered on the assigned goal and return material the parent can directly
+use. Do not expand into the entire parent task unless that is necessary to
+complete your scope. Verify the result before finishing.
 """
 
 FORMAT_TEXT = """
-Every reply you send must contain exactly one fenced ```repl``` block, including
-the reply that calls `finish(...)`. The block is the only thing that runs: prose
-outside it executes nothing and wastes the turn, so carry out the next step in
-code rather than announcing what you are about to do.
+Every reply must contain exactly one fenced ```repl``` block, including the one
+that calls `finish(...)`. The block is the only thing that runs: prose outside it
+wastes the turn, so carry out the next step in code instead of announcing it.
 
-Write the block with the opening and closing triple backticks. Top-level `await`
-is supported for async tools. Never call `asyncio.run`, `run_until_complete`, or
-`get_event_loop()`: the REPL already runs inside an event loop, and nesting one
-raises RuntimeError.
+Write both the opening and closing triple backticks. Top-level `await` is
+supported for async tools; never call `asyncio.run`, `run_until_complete`, or
+`get_event_loop()`, since the REPL already runs inside an event loop and nesting
+one raises RuntimeError.
 """
 
-EXAMPLES_TEXT = """
-**Observe inputs before acting** (first block when `INPUTS` is non-empty):
+INSPECTION_EXAMPLES_TEXT = """
+**Inspection example — task text.** This value happens to be a nested requirement
+list, so parse every complete unit and its hierarchy, then inventory its binding
+names and prohibitions. A preview such as `text[:100]`, keyword hits, or counts
+alone would lose the task:
 
 ```repl
-print("input keys:", list(INPUTS))
-for key, value in INPUTS.items():
-    print(key, "chars=", len(value), "lines=", len(value.splitlines()))
-```
+import re
 
-**Fan out slices after observation** — keep payloads in child `inputs`, not `goal`:
-
-```repl
-lines = INPUTS["corpus"].splitlines()
-batches = ["\\n".join(lines[i:i + 500]) for i in range(0, len(lines), 500)]
-handles = [
-    await launch_subagent(
-        goal="Report findings in INPUTS['slice'] or NO_MATCH.",
-        name=f"scan-{i}",
-        inputs={"slice": b},
-    )
-    for i, b in enumerate(batches)
+requirements = []
+for raw in INPUTS["context"].splitlines():
+    match = re.match(r"^(\\s*)[-*]\\s+(.*)", raw)
+    if match:
+        requirements.append(
+            {"depth": len(match.group(1)), "text": match.group(2).strip()}
+        )
+    elif raw.strip() and requirements:
+        requirements[-1]["text"] += " " + raw.strip()
+identifiers = sorted(set(re.findall(r"`([A-Za-z_]\\w*)`", INPUTS["context"])))
+prohibitions = [
+    item["text"]
+    for item in requirements
+    if re.search(r"\\b(?:do not|must not|never|no)\\b", item["text"], re.IGNORECASE)
 ]
-results = [await handle.wait_for_result() for handle in handles]
-hits = [r.strip() for r in results if r.strip() and r.strip() != "NO_MATCH"]
-finish("\\n".join(hits) if hits else "NO_MATCH")
+observed = {
+    "requirements": requirements,
+    "identifiers": identifiers,
+    "prohibitions": prohibitions,
+}
+print(observed)
 ```
 
-**Start work now and collect it in a later block**:
+**Inspection example — query-directed data.** The query asks which services
+produced at least five errors, so compute that result rather than printing the
+records:
 
 ```repl
-audit = await launch_subagent("Run the slow audit.", name="audit")
-diagnostics = await launch_subagent(
-    "Generate optional diagnostics.", name="diagnostics"
+import json
+from collections import Counter
+
+records = [json.loads(line) for line in INPUTS["events"].splitlines() if line.strip()]
+errors = [record for record in records if record.get("status") == "error"]
+errors_by_service = Counter(record["service"] for record in errors)
+observed = {
+    "records": len(records),
+    "fields": sorted({key for record in records for key in record}),
+    "services_with_5_errors": {
+        service: count
+        for service, count in errors_by_service.items()
+        if count >= 5
+    },
+}
+print(observed)
+```
+"""
+
+DELEGATION_EXAMPLES_TEXT = """
+**Local trajectory — one deterministic result.**
+
+```repl
+import re
+section = re.search(
+    r"(?ms)^\\[gateway\\]\\s*(.*?)(?=^\\[|\\Z)", INPUTS["config"]
+).group(1)
+answer = int(re.search(r"(?m)^bind_port\\s*=\\s*(\\d+)", section).group(1))
+print({"gateway_port": answer})
+```
+
+The inspected value yields one bounded known lookup, so finish locally:
+
+```repl
+finish(answer)
+```
+
+**Fan-out trajectory — several independent substantial outputs.**
+
+```repl
+import json
+brief = json.loads(INPUTS["brief"])
+chapter_groups = {}
+for chapter in brief["chapters"]:
+    chapter_groups.setdefault(chapter["area"], []).append(chapter)
+print({
+    "chapters": len(brief["chapters"]),
+    "substantial_scopes": sorted(chapter_groups),
+    "parent_work": ["title", "table of contents", "assembly"],
+})
+```
+
+Several requested chapters share one work area, so delegate one coherent scope
+per area rather than one child per chapter. Keep the short report glue local:
+
+```repl
+planned_children = [
+    {
+        "name": f"area-{index}",
+        "goal": "Write and verify the chapters described in INPUTS['chapters'].",
+        "inputs": {"chapters": json.dumps(chapters)},
+    }
+    for index, chapters in enumerate(chapter_groups.values(), 1)
+]
+handles = await asyncio.gather(
+    *(
+        launch_subagent(
+            name=child["name"],
+            goal=child["goal"],
+            model="{current_model}",
+            inputs=child["inputs"],
+        )
+        for child in planned_children
+    )
 )
-print("queued:", audit.name, diagnostics.name)
+results = await asyncio.gather(*(handle.wait_for_result() for handle in handles))
+print({"result_chars": [len(str(result)) for result in results]})
 ```
 
-On a later turn, wait for those same handles without relaunching anything:
-
 ```repl
-audit_result = await audit.wait_for_result()
-diagnostics_result = await diagnostics.wait_for_result()
-finish({"audit": audit_result, "diagnostics": diagnostics_result})
+toc = "\\n".join(f"- {chapter['title']}" for chapter in brief["chapters"])
+finish(f"# {brief['title']}\\n\\n{toc}\\n\\n" + "\\n\\n".join(map(str, results)))
 ```
 """
 
@@ -410,26 +494,10 @@ STRUCTURED_OUTPUT_OPTION_TEXT = """
 You may require a subagent to return structured data instead of free text: pass
 an `output_schema` (a JSON Schema). That subagent must then call
 `finish(value)` with a value matching the schema, and waiting on its handle gives
-you the parsed value (a `dict`/`list`) rather than a string. This can be very
-useful when dealing with outputs that require a specific structure.
-
-```repl
-extract = await launch_subagent(
-    name="extract",
-    goal="Extract the fields described by the schema from INPUTS['doc'].",
-    inputs={"doc": INPUTS["doc"]},
-    output_schema={
-        "type": "object",
-        "properties": {
-            "total": {"type": "number"},
-            "currency": {"type": "string"},
-        },
-        "required": ["total", "currency"],
-    },
-)
-result = await extract.wait_for_result()
-total = result["total"]  # already parsed, not a string
-```
+you the parsed value (a `dict`/`list`) rather than a string. Make the schema
+specific enough to reject missing, extra, placeholder, or wrong-kind results:
+prefer explicit `properties`, `required`, and `additionalProperties: false`.
+Schema validity does not change semantics; metadata is not the requested result.
 """
 
 AGENTS_TEXT = """
@@ -449,31 +517,11 @@ cancel, or steer agents, and repeated queries within one action are not fresher.
 """
 
 
-FIRST_TURN_TEXT_INPUTS = """
-You have not run any code or seen your inputs yet. Start with an inspection turn
-in this reply's block: `print(list(INPUTS))` with each value's size, read the
-windows you need, and wait for the output before planning, delegating, or
-answering. The manifest above names and sizes the inputs but does not read them,
-so it is not the inspection turn. Call `finish(...)` only once you have the real,
-verified final answer — never to end an exploration turn, and never with a
-placeholder or status value.
-"""
-
-FIRST_TURN_TEXT_BARE = """
-You have not run any code yet. If reaching a good answer needs exploration,
-computation, or verification, do that first in a ```repl``` block and read the
-output rather than answering from assumption; if it is pure reasoning, call
-`finish(...)` in your first block. Either way the answer travels through
-`finish(...)`, and only once it is real and verified — never to end an
-exploration turn, and never with a placeholder or status value.
-"""
-
-
 def can_spawn(flow: Any = None, agent: Any = None) -> bool:
     """Whether this prompt's agent can create another recursion level."""
     if flow is None or agent is None:
         return True
-    return flow.max_depth > 0 and agent.config.depth < flow.max_depth
+    return agent.config.max_depth > 0 and agent.config.depth < agent.config.max_depth
 
 
 def builtin_api_section(flow: Any = None, agent: Any = None) -> str:
@@ -484,20 +532,22 @@ def builtin_api_section(flow: Any = None, agent: Any = None) -> str:
 
 
 def strategy_section(flow: Any = None, agent: Any = None) -> str:
-    return (STRATEGY_TEXT if can_spawn(flow, agent) else LEAF_STRATEGY_TEXT).strip()
+    parts = []
+    if agent is None or agent.config.inputs:
+        parts.append(INPUT_STRATEGY_TEXT.strip())
+    parts.append((STRATEGY_TEXT if can_spawn(flow, agent) else LEAF_STRATEGY_TEXT).strip())
+    return "\n\n".join(parts)
 
 
 def examples_section(flow: Any = None, agent: Any = None) -> str:
-    return EXAMPLES_TEXT.strip() if can_spawn(flow, agent) else ""
-
-
-def first_turn_section(flow: Any = None, agent: Any = None) -> str:
-    # Bootstrap-only safeguard: rendered while the agent has produced no output
-    # yet, then it drops out once the trajectory has an ``llm_output`` node.
-    if agent is None or agent.llm_turns():
-        return ""
-    text = FIRST_TURN_TEXT_INPUTS if agent.config.inputs else FIRST_TURN_TEXT_BARE
-    return text.strip()
+    """Render only examples whose capabilities are available to this agent."""
+    parts = []
+    if agent is None or agent.config.inputs:
+        parts.append(INSPECTION_EXAMPLES_TEXT.strip())
+    if can_spawn(flow, agent):
+        current_model = agent.config.model if agent is not None else "default"
+        parts.append(DELEGATION_EXAMPLES_TEXT.replace("{current_model}", current_model).strip())
+    return "\n\n".join(parts)
 
 
 def inputs_section(flow: Any = None, agent: Any = None) -> str:
@@ -525,11 +575,13 @@ def tools_section(flow: Any = None, agent: Any = None) -> str:
         if line:
             lines.append(line)
     clients = getattr(flow, "_llm_clients", {})
-    if len(clients) > 1:
+    if clients and can_spawn(flow, agent):
         if lines:
             lines.append("")
-        lines.append("Available models:")
-        lines += [f"- `{key}`" for key in sorted(clients)]
+        lines.append("Available models (`model=` is required for every `launch_subagent` call):")
+        for key in sorted(clients):
+            current = " — current model" if key == agent.config.model else ""
+            lines.append(f"- `{key}`{current}")
     if not lines:
         return ""
     return "\n".join(
@@ -587,10 +639,13 @@ def prompt_profiles_section(flow: Any = None, agent: Any = None) -> str:
 def status_section(flow: Any = None, agent: Any = None) -> str:
     if flow is None or agent is None:
         return ""
-    max_depth = getattr(flow, "max_depth", 0)
+    max_depth = agent.config.max_depth
     if max_depth == 0:
         return "Baseline mode: no sub-agents available."
-    note = f"You are at recursion depth **{agent.config.depth}** of max **{max_depth}**."
+    note = (
+        f"You are using model key **`{agent.config.model}`** at recursion depth "
+        f"**{agent.config.depth}** of max **{max_depth}**."
+    )
     if agent.config.depth >= max_depth:
         note += " You cannot spawn sub-agents."
     return note

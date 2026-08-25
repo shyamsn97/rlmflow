@@ -11,35 +11,30 @@ from typing import Any, Literal
 from rlmflow import boundaries
 from rlmflow.engine.boundaries import StepUntil
 from rlmflow.engine.execution import Pool, TaskQueue, ThreadPool, Transition
+from rlmflow.engine.steps import DEFAULT_STEPS, MessageBuilder, StepFunction
 from rlmflow.graph.nodes import (
     DEFAULT_QUERY,
     AgentConfig,
     AgentStart,
     DoneOutput,
-    ErrorOutput,
     ExecAction,
-    ExecOutput,
-    LLMOutput,
     LLMUsage,
     Node,
-    UserQuery,
     start,
     validate_agent_name,
 )
-from rlmflow.prompts import DEFAULT_BUILDER, PromptProfile, SystemPromptSource, as_system_prompt_fn
-from rlmflow.prompts.messages import (
-    COLD_REPL_NOTE,
-    CONTINUE_NUDGE,
-    FINAL_ANSWER_ACTION,
-    TRUNCATION_SUMMARY,
-    UserPromptBuilder,
-    UserPromptSource,
-    as_user_prompt,
-    coalesce_roles,
+from rlmflow.llm import LLMChunk, PooledLLMClient
+from rlmflow.prompts import (
+    DEFAULT_BUILDER,
+    PromptProfile,
+    RenderFn,
+    SystemPromptSource,
+    as_system_prompt_fn,
+    default_render,
 )
-from rlmflow.runtime import LocalRuntime, Runtime
+from rlmflow.runtime import LocalRuntime, Runtime, WrappedRuntime
 from rlmflow.runtime.env import RLMFLOW_REPLAY
-from rlmflow.runtime.repl import DoneSignal, Repl, ReplStatus
+from rlmflow.runtime.repl import DoneSignal, Repl, ReplRun
 from rlmflow.runtime.repl_client import current_rpc_call_id
 from rlmflow.structured import json_schema_for, parse_structured_answer
 from rlmflow.tools import RESERVED_TOOLS, tool
@@ -50,16 +45,19 @@ from rlmflow.tools.agents import (
     build_agent_directory,
 )
 from rlmflow.tools.llm_query import llm_query_batched
-from rlmflow.utils.helpers import (
-    accepts_kwarg,
-    code_block,
-    tool_name,
-    truncate_output,
-    usage_from_client,
-)
+from rlmflow.utils.helpers import tool_name
 
-MAX_ITERS_EXCEEDED = "[max_iters exceeded]"
 BUDGET_EXCEEDED = "[budget exceeded]"
+
+
+class FlowMessages(MessageBuilder):
+    """``Flow.build_messages`` as the step-level message builder."""
+
+    def __init__(self, flow: Flow) -> None:
+        self.flow = flow
+
+    def build(self, node: Node) -> list[dict[str, str]]:
+        return self.flow.build_messages(node)
 
 
 @contextmanager
@@ -77,19 +75,14 @@ def timed(node: Node) -> Iterator[None]:
 class Flow:
     """Own the model, tools, prompts, and REPLs. The queue owns running agents."""
 
-    final_action = FINAL_ANSWER_ACTION
-    continue_nudge = CONTINUE_NUDGE
-    truncation_summary = TRUNCATION_SUMMARY
-    cold_repl_note = COLD_REPL_NOTE
-
     def __init__(
         self,
         llm: Any,
         *,
-        config: AgentConfig | None = None,
+        root_config: AgentConfig | None = None,
         restore: Literal["replay", "lazy"] = "replay",
         system_prompt: SystemPromptSource | None = None,
-        user_prompt: UserPromptSource | None = None,
+        render_fn: RenderFn | None = None,
         prompt_profiles: dict[str, PromptProfile] | None = None,
         prompt_router: Callable[[Flow, AgentStart], str] | None = None,
         tools: list[Any] | None = None,
@@ -106,14 +99,11 @@ class Flow:
             raise ValueError(f"restore must be 'replay' or 'lazy', not {restore!r}")
         if pool is not None and workers is not None:
             raise ValueError("pass workers or pool, not both")
-        self.llm = llm
-        self.defaults = config or AgentConfig()
+        self.root_config = root_config or AgentConfig()
         self.restore = restore
         self.llm_request_timeout = llm_request_timeout
         self.system_prompt = system_prompt or DEFAULT_BUILDER
-        self.user_prompt = (
-            as_user_prompt(user_prompt) if user_prompt is not None else UserPromptBuilder()
-        )
+        self.render_fn = render_fn or default_render
         self.prompt_profiles = dict(prompt_profiles or {})
         self.prompt_router = prompt_router
         self.use_agent_tree = use_agent_tree
@@ -129,11 +119,9 @@ class Flow:
             self.add_tool(fn)
         if use_llm_query:
             self.add_tool(llm_query_batched(self), name="llm_query_batched")
-
-    @property
-    def max_depth(self) -> int:
-        """Read by the shared prompt sections that describe delegation."""
-        return self.defaults.max_depth
+        self.steps = dict(DEFAULT_STEPS)
+        self.messages = FlowMessages(self)
+        self.wrapped_runtime = WrappedRuntime(self.runtime, self.build_tools)
 
     @property
     def repls(self) -> dict[str, Repl]:
@@ -150,48 +138,45 @@ class Flow:
         if name in self.prompt_profiles:
             return self.prompt_profiles[name]
         if name == "default":
-            return PromptProfile(self.system_prompt, self.user_prompt)
+            return PromptProfile(
+                system=self.system_prompt,
+                render_fn=self.render_fn,
+            )
         raise ValueError(f"unknown prompt {name!r}")
 
-    def user_builder(self, agent: AgentStart) -> UserPromptBuilder:
-        """This agent's user prompt, from its profile or the flow's default.
-
-        Normalized here rather than at construction, since a profile is a plain
-        dataclass a caller can hand a bare ``(flow, node) -> str | None``.
-        """
-        source = self.profile(agent).user
-        return self.user_prompt if source is None else as_user_prompt(source)
-
-    def messages(self, node: Node) -> list[dict[str, str]]:
+    def build_messages(self, node: Node) -> list[dict[str, str]]:
         """The prompt as of ``node``: system message, then that agent's turns."""
         agent = node.parent_agent
         profile = self.profile(agent)
-        builder = self.user_builder(agent)
+        render_fn = profile.render_fn or self.render_fn
+        current_messages = render_fn(self.runtime, node)
         keep = agent.config.keep_n_messages
-        keep = None if keep is None else max(keep, 1)  # a prompt needs a user turn
-        # One turn past the limit, so a full prompt can be told from a truncated one.
-        turns = builder.project(self, node, keep=None if keep is None else keep + 1)
-        if keep is not None and len(turns) > keep:
-            turns = [
-                {"role": "user", "content": self.truncation_summary},
-                *turns[-keep:],
-            ]
+        if keep is not None:
+            current_messages = current_messages[-keep:] if keep > 0 else []
+        previous_keep = None if keep is None else max(keep - len(current_messages), 0)
+        previous_messages = [] if node.prev is None else node.prev.project(keep=previous_keep)
         system = as_system_prompt_fn(profile.system or self.system_prompt)(self, agent)
-        return coalesce_roles([{"role": "system", "content": system}, *turns])
+        return [
+            {"role": "system", "content": system},
+            *previous_messages,
+            *current_messages,
+        ]
 
-    def prepare_turn(self, node: Node) -> Node:
-        """Commit this turn's user content, so the model always answers a user."""
-        agent = node.parent_agent
-        builder = self.user_builder(agent)
-        content = builder.build(self, agent)
-        if content:
-            node = node.append(UserQuery(content=content))
-        if agent.llm_turns() == agent.config.max_iters - 1:
-            return node.append(UserQuery(content=self.final_action))
-        turns = builder.project(self, node, keep=1)  # only the last turn's role matters
-        if not turns or turns[-1]["role"] != "user":
-            node = node.append(UserQuery(content=self.continue_nudge))
-        return node
+    async def call_stream(
+        self,
+        messages: list[dict[str, str]],
+        model: str = "default",
+        *,
+        key: object | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[LLMChunk]:
+        client = self._create_pooled_llm(
+            model,
+            key=key,
+            request_kwargs=kwargs,
+        )
+        async for chunk in client.stream(messages):
+            yield chunk
 
     async def call_chat(
         self,
@@ -201,22 +186,36 @@ class Flow:
         key: object | None = None,
         **kwargs: Any,
     ) -> tuple[str, LLMUsage]:
+        client = self._create_pooled_llm(
+            model,
+            key=key,
+            request_kwargs=kwargs,
+        )
+        return await client.completion(messages)
+
+    def _create_pooled_llm(
+        self,
+        model: str,
+        *,
+        key: object | None = None,
+        request_kwargs: dict[str, Any] | None = None,
+    ) -> PooledLLMClient:
         if model not in self._llm_clients:
             raise ValueError(f"unknown model {model!r}")
-        client = self._llm_clients[model]
-        timeout = self.llm_request_timeout
-        if timeout is not None:
-            if "timeout" not in kwargs and accepts_kwarg(client.chat, "timeout"):
-                # Ours only frees the caller: a blocking call keeps its thread no
-                # matter what we do, so the client's own timeout ends the request.
-                kwargs["timeout"] = timeout
-            call = asyncio.wait_for(
-                self.pool.call(client.chat, messages, key=key, **kwargs),
-                timeout,
-            )
-        else:
-            call = self.pool.call(client.chat, messages, key=key, **kwargs)
-        return await call, usage_from_client(client)
+        return PooledLLMClient(
+            self._llm_clients[model],
+            self.pool,
+            timeout=self.llm_request_timeout,
+            key=key,
+            request_kwargs=request_kwargs,
+        )
+
+    def llm_for_step(self, node: Node) -> PooledLLMClient:
+        agent = node.parent_agent
+        return self._create_pooled_llm(
+            agent.config.model,
+            key=agent.id,
+        )
 
     @property
     def llm_query_batched(self):
@@ -224,6 +223,20 @@ class Flow:
         return llm_query_batched(self)
 
     # -- Steps ------------------------------------------------------------
+
+    def update_step_fn(
+        self,
+        node_type: type[Node],
+        step_type: type[StepFunction],
+    ) -> None:
+        self.steps[node_type] = step_type
+
+    def get_step_fn(self, node: Node) -> type[StepFunction]:
+        for node_type in type(node).__mro__:
+            step_type = self.steps.get(node_type)
+            if step_type is not None:
+                return step_type
+        raise TypeError(f"cannot step {type(node).__name__}")
 
     async def step(self, node: Node) -> Transition:
         """Take one complete graph step; only cancellation escapes as an exception."""
@@ -233,14 +246,14 @@ class Flow:
             try:
                 if self.budget_exceeded(node):
                     landed = node.append(DoneOutput(result=BUDGET_EXCEEDED))
-                elif isinstance(node, (AgentStart, UserQuery, ExecOutput, ErrorOutput)):
-                    landed = await self.llm_step(node)
-                elif isinstance(node, LLMOutput):
-                    landed = node.append(ExecAction(code=node.code))
-                elif isinstance(node, ExecAction):
-                    landed = await self.exec_step(node)
                 else:
-                    raise TypeError(f"cannot step {type(node).__name__}")
+                    step_type = self.get_step_fn(node)
+                    step = step_type(
+                        llm=self.llm_for_step(node),
+                        messages=self.messages,
+                        runtime=self.wrapped_runtime,
+                    )
+                    landed = await step(node)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - a failed step is a transition
@@ -257,46 +270,14 @@ class Flow:
 
         return Transition(submitted=node, created=landed, error=error)
 
-    async def llm_step(self, node: Node) -> Node:
-        agent = node.parent_agent
-        if agent.llm_turns() >= agent.config.max_iters:
-            return node.append(DoneOutput(result=MAX_ITERS_EXCEEDED))
-        turn = self.prepare_turn(node)
-        messages = self.messages(turn)
-        prompt_id = agent.record_prompt(messages[0]["content"])
-        reply, usage = await self.call_chat(
-            messages,
-            agent.config.model,
-            key=agent.id,
-        )
-        return turn.append(
-            LLMOutput(content=reply, code=code_block(reply), usage=usage, prompt_id=prompt_id)
-        )
-
-    async def exec_step(self, action: ExecAction) -> Node:
-        agent = action.parent_agent
-        self.runtime.repl_for(agent).seed(self.build_tools(action), agent.config.inputs)
-        run = await self.runtime.execute(action, action.code)
-        output = truncate_output(run.output, agent.config.max_output_length)
-        if run.status is ReplStatus.DONE:
-            return action.append(DoneOutput(content=output, result=run.answer))
-        if run.status is ReplStatus.OK:
-            return action.append(ExecOutput(content=output or "(no output)"))
-        if run.status is ReplStatus.ERROR:
-            # The agent's own code raised; the traceback is what it needs to read.
-            return action.append(ErrorOutput(content=output))
-        if run.status is ReplStatus.DEAD:
-            # A different failure, and a worse one: the next step opens an empty
-            # namespace, so say so rather than leaving it to hit NameErrors.
-            text = f"{output}\n{self.cold_repl_note}"
-            return action.append(ErrorOutput(content=text, error="repl"))
-        raise ValueError(f"unknown repl status {run.status!r}")
-
     def budget_exceeded(self, node: Node) -> bool:
         limit = node.parent_agent.config.max_budget
         if limit is None:
             return False
         return node.root.tokens().total >= limit
+
+    async def execute_action(self, node: ExecAction) -> ReplRun:
+        return await self.wrapped_runtime.execute(node)
 
     # -- Tools ------------------------------------------------------------
 
@@ -380,15 +361,16 @@ class Flow:
         mutation_lock = asyncio.Lock()
 
         @tool(
-            "Spawn or resume one named child agent.",
+            "Spawn or resume one focused child agent with an explicitly chosen "
+            "registered model; the caller remains responsible for final synthesis.",
             proxy=True,
         )
         async def launch_subagent(
             goal: str,
             *,
+            model: str,
             name: str | None = None,
             inputs: dict[str, str] | None = None,
-            model: str | None = None,
             output_schema: Any = None,
             prompt_profile: str | None = None,
             reuse_repl: bool = False,
@@ -460,6 +442,10 @@ class Flow:
             raise ValueError(f"cannot launch beyond max depth {parent.config.max_depth}")
         if len(query) > parent.config.max_query_chars:
             raise ValueError(f"subagent goal exceeds {parent.config.max_query_chars} characters")
+        model = spec["model"]
+        if model not in self._llm_clients:
+            available = ", ".join(sorted(self._llm_clients))
+            raise ValueError(f"unknown model {model!r}; available models: {available}")
         return self.new_child(action, name, spec, call_id=call_id)
 
     def submit_child(self, child: AgentStart) -> None:
@@ -610,7 +596,7 @@ class Flow:
                         if self.restore == "replay":
                             await self.replay(node)
 
-        queue = TaskQueue(self.pool)
+        queue = TaskQueue()
         self.queue = queue
         driving = {id(agent) for agent in agents}
 
@@ -675,10 +661,10 @@ class Flow:
         """A root agent carrying this flow's defaults, which keyword overrides win against.
 
         The module-level ``start`` does the building; this only supplies the defaults
-        the flow was constructed with, so ``Flow(config=...)`` reaches the roots you
+        the flow was constructed with, so ``Flow(root_config=...)`` reaches the roots you
         run on it.
         """
-        return start(query, config=self.defaults, **overrides)
+        return start(query, config=self.root_config, **overrides)
 
     async def aclose(self) -> None:
         if self.queue is not None:
@@ -700,4 +686,4 @@ class Flow:
             self.runtime.close()
 
 
-__all__ = ["Flow", "StepUntil", "code_block", "start"]
+__all__ = ["Flow", "StepUntil", "start"]

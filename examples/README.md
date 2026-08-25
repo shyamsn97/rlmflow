@@ -30,7 +30,9 @@ python examples/summarizer.py --sections 10
 | [`shepherd/`](shepherd/) | Meta-agent recovers a jammed Sokoban worker by forking its graph and replaying recovery branches in parallel, with board panels + a node trace |
 
 [`docs/shepherd.md`](../docs/shepherd.md) is the write-up of one such run: the
-jam, the plans the meta-agent wrote against it, and what each recovery branch did.
+jam, the plans the meta-agent wrote against it, what each recovery branch did,
+and how `render_fn(runtime, node)` adds the live board to only the current worker
+frontier.
 
 After a `shepherd/` run, two scripts redraw it from the saved graph and traces:
 `render_graph.py` writes an agent-level summary and a node-level picture of the
@@ -45,6 +47,7 @@ sprite tiles; `render_graph.py` needs neither.
 |---|---|
 | [`graph/`](graph/) | Offline Node API (query, navigate, save, fork) |
 | [`control/`](control/) | Delegation, branching, injection |
+| [`behavior/`](behavior/) | Grades the prompt's delegation behavior both ways against a live model |
 | [`sandboxes/`](sandboxes/) | Docker and Modal remote execution |
 | [`providers/`](providers/) | DSPy, MCP, Tinker adapters |
 
@@ -55,6 +58,23 @@ python examples/control/delegation/reuse_repl.py
 python examples/control/delegation/nonblocking.py
 ```
 
+[`behavior/delegation.py`](behavior/delegation.py) does need one. It runs
+scenarios that should fan out and scenarios that should stay local, then grades
+each run from its trajectory — child count, same-turn launch batch, and children
+that burned a turn to produce nothing — so a prompt change can be measured
+instead of argued about. The boids scenario checks whether the orchestrator derives
+independent component scopes from task context; the lookup and statistics scenarios
+guard against delegating atomic work:
+
+```bash
+python examples/behavior/delegation.py --repeat 3     # delegation is stochastic
+python examples/behavior/delegation.py --scenario boids
+```
+
+`make test-live` runs the same scenarios through
+[`tests/test_delegation_behavior.py`](../tests/test_delegation_behavior.py),
+which the normal test suite skips.
+
 ---
 
 Most compute examples (`summarizer.py`, `needle/haystack.py`, `showcase.py`,
@@ -64,7 +84,7 @@ Most compute examples (`summarizer.py`, `needle/haystack.py`, `showcase.py`,
 |---|---|---|
 | `--model MODEL` | varies | Main LLM. Prefix decides client (`claude*` → Anthropic, else OpenAI). |
 | `--fast-model MODEL` | varies | Optional cheap secondary model registered as `fast` for delegates. |
-| `--docker-image IMAGE` | unset | If set, run agent code inside this Docker image via a `DockerRuntime`. Must have `rlmflow` installed. Leaving this unset uses the in-process `LocalRuntime`. |
+| `--docker-image IMAGE` | unset | If set, run agent code inside this Docker image via a `DockerRuntime`. Must have `rlmflow` installed. Leaving this unset uses `LocalRuntime`, which runs code in a worker subprocess on the host. |
 | `--max-depth N` | `3` | Max delegation depth. |
 | `--max-iters N` | `15` | Max LLM turns per agent. |
 | `--out-dir PATH` | `_runs/<example-name>/` | Save the final run here. Defaults use flat example names under [`_runs/`](_runs/). |
@@ -92,11 +112,9 @@ directory the same way in local and Docker modes.
 
 Each agent reads its `RLMFLOW_*` metadata from its own per-REPL `ENV` mapping
 (e.g. `ENV["RLMFLOW_AGENT_ID"]`), so that metadata is isolated per agent in every
-runtime, including the in-process `LocalRuntime`. For true parallel local
-*code* execution prefer `SubprocessRuntime` (one process per agent, isolated
-cwd); `LocalRuntime` still serializes cwd changes inside the host process. Use
-`DockerRuntime` or a cloud sandbox runtime when you also need container-level
-isolation.
+runtime. `LocalRuntime` already runs each agent in a worker subprocess; use
+`SubprocessRuntime` when you also need a selected Python executable, and
+`DockerRuntime` or a cloud sandbox when you need container-level isolation.
 
 A finished run is saved automatically under `_runs/`:
 

@@ -455,14 +455,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runner", "--runners", nargs="+", default=["rlmflow-local"])
     parser.add_argument("--model", default="openai:gpt-5-mini")
     parser.add_argument("--logger", "--loggers", nargs="+", default=["jsonl", "console", "report"])
-    parser.add_argument("--seeds", default="0:5")
+    parser.add_argument("--seeds", default="0")
     parser.add_argument(
         "--seed",
         type=int,
         help="Single dataset sampling seed. Use with --limit for one shared sample set.",
     )
     parser.add_argument("--split", default="test")
-    parser.add_argument("--limit", type=int)
+    sample_size = parser.add_mutually_exclusive_group()
+    sample_size.add_argument(
+        "--limit",
+        type=int,
+        default=1,
+        help="Select N complete examples per dataset (default: 1).",
+    )
+    sample_size.add_argument(
+        "--full",
+        action="store_true",
+        help="Use every example exposed by each dataset adapter.",
+    )
     parser.add_argument("--out-dir", type=Path, default=Path("benchmarks/eval/runs"))
     parser.add_argument("--run-id")
     parser.add_argument("--resume", action="store_true")
@@ -542,7 +553,7 @@ def config_from_args(args: argparse.Namespace) -> SuiteConfig:
         ],
         seeds=[args.seed] if args.seed is not None else parse_seed_spec(args.seeds),
         split=args.split,
-        limit=args.limit,
+        limit=None if args.full else max(1, args.limit),
         output_root=args.out_dir,
         resume=args.resume,
         executor=executor,

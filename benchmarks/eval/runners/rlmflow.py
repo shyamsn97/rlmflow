@@ -40,7 +40,7 @@ class RLMFlowLocalRunner(Runner):
         work_dir.mkdir(parents=True, exist_ok=True)
         flow = Flow(
             _ModelClient(model),
-            config=AgentConfig(max_iters=self.max_iters, max_depth=self.max_depth),
+            root_config=AgentConfig(max_iters=self.max_iters, max_depth=self.max_depth),
             runtime=LocalRuntime(working_directory=work_dir),
             enable_structured_output=False,
             use_llm_query=self.use_llm_query,
@@ -60,12 +60,15 @@ class RLMFlowLocalRunner(Runner):
 
         async def drive() -> None:
             nonlocal steps
-            async for _node in flow.run_streaming(graph):
-                steps += 1
-                if self.live_save:
-                    persistence.save(graph, graph_dir)
-                if steps >= cap:
-                    raise RuntimeError(f"run exceeded step cap ({cap})")
+            try:
+                async for _node in flow.run_streaming(graph):
+                    steps += 1
+                    if self.live_save:
+                        persistence.save(graph, graph_dir)
+                    if steps >= cap:
+                        raise RuntimeError(f"run exceeded step cap ({cap})")
+            finally:
+                await flow.aclose()
 
         try:
             if self.live_save:
@@ -74,7 +77,6 @@ class RLMFlowLocalRunner(Runner):
         except Exception as exc:  # noqa: BLE001 - benchmark rows should record failures
             error = f"{type(exc).__name__}: {exc}"
         finally:
-            flow.runtime.close_repls()
             persistence.save(graph, graph_dir)
 
         spent = graph.tokens()

@@ -8,7 +8,39 @@ each one is called out under **Breaking** below.
 
 ## [Unreleased]
 
+### Changed
+
+- **LLM compute is an explicit stream-first primitive.** `PooledLLMClient`
+  wraps a raw client, pool, timeout, scheduling key, and request kwargs.
+  Production step functions receive that client and consume `stream()`; tests
+  can pass a small streaming fake with no Flow or pool. `chat()` collects the
+  same stream.
+- **Step handlers are classes with one stable ABI.** `StepFunction` subclasses
+  receive an `LLMClient`, a `MessageBuilder`, and a `WrappedRuntime`, then
+  implement `await step(node)`. The wrapper seeds tools and `INPUTS` immediately
+  before execution and exposes the underlying runtime as `.runtime`.
+  `LLMRequestStep` owns the complete control-node ordering, while
+  `LLMOutputStep` and `ExecActionStep` handle their respective transitions.
+  `Pool.run` is gone; pools place compute calls only.
+
 ### Breaking
+
+- **`AgentConfig.max_iters` defaults to `None`.** That means no iteration cap
+  and no final-answer prod. Pass an integer to restore the old 20-turn limit.
+
+- **Chat projection lives on nodes and has one current-frontier override.**
+  `Node.render()` returns zero or more messages. `Node.project()` always uses
+  canonical node rendering, flattens multi-message nodes, and bounds its
+  backward walk by rendered messages. `Flow.build_messages()` applies
+  `render_fn(runtime, node)` only to the current frontier, projects history from
+  `node.prev`, and preserves every rendered message without coalescing adjacent
+  roles. `UserPromptBuilder`, `user_prompt=`, `PromptProfile.user`, the separate
+  user-injection path, and `Flow.messages()` are gone.
+
+- **Engine nudges are nodes.** Inspect, plan, final-answer, continue,
+  truncation, and a dead REPL are `InspectQuery`, `PlanQuery`, `FinalQuery`,
+  `ContinueQuery`, `TruncationSummary`, and `ReplDead`. `Flow.step` looks up
+  `StepFunction` classes in `DEFAULT_STEPS` (override with `update_step_fn`).
 
 - **One engine, and it is the package.** The rewrite that lived under
   `rlmflow.minimal` is now `rlmflow` itself: `rlmflow.graph` holds the tree and
@@ -23,7 +55,7 @@ each one is called out under **Breaking** below.
   with no agent-id argument, and `node.walk(reverse=True)` for reading one
   agent's chain backwards. `Flow` no longer takes `max_iters`, `max_depth`, or
   `child_max_iters`: per-agent limits belong to `AgentConfig`, so pass them to
-  `flow.start(query, ...)` for one root, or as `Flow(config=...)` to set the defaults
+  `flow.start(query, ...)` for one root, or as `Flow(root_config=...)` to set the defaults
   every root from `flow.start(...)` (and every string handed to `flow.run`) picks
   up. A root built by the bare `start(...)` carries `AgentConfig`'s own defaults —
   it has no flow to inherit from.
@@ -66,12 +98,6 @@ each one is called out under **Breaking** below.
   count, waiting, error, and latest-activity panels. `GraphCheckpointer` restores
   periodic/final saving. They consume Nodes directly through
   `ConsumerGroup.handle(node)` and are imported from `rlmflow.consumers`.
-- **`PromptProfile(user=fn)` takes a bare function again**, as `as_user_prompt`
-  always claimed it did. The flow normalized its own `user_prompt=` at
-  construction but handed a profile's straight to `.build()`, so a plain
-  `(flow, node) -> str | None` raised `AttributeError: 'function' object has no
-  attribute 'project'` on the first turn. Both call sites now resolve it through
-  `Flow.user_builder(agent)`.
 - **Two roots on one flow no longer deadlock.** `parallel_run`/`parallel_stream`
   drive several `run_streaming` loops over one shared queue, and each loop took
   whichever step had landed — including the other's, which then waited forever for a
@@ -102,15 +128,45 @@ each one is called out under **Breaking** below.
 
 ### Added
 
+- **Explicit subagent model selection.** Every `launch_subagent` call requires a
+  registered `model=` key. The system prompt always lists available keys and
+  marks the current one, so the agent—not a hidden host fallback—chooses the
+  appropriate model for each workstream. Saved action code from older runs that
+  omitted `model` must be regenerated before replay.
+- **`rlmflow run` / `rlmflow tui`, and a CLI that is more than one command.**
+  Every command is a Fire class: flags on the constructor, verbs as methods.
+  `rlmflow tui` starts a coding agent over `--workdir` in the Textual dashboard,
+  checkpointing to `<workdir>/graph`; `rlmflow run tui "fix the failing test"`
+  opens it with that turn already going, and `rlmflow run print` runs the same
+  thing headless, streaming the tree and printing the answer. `--model`,
+  `--fast-model`, `--reasoning-effort`, `--docker-image`, `--max-depth`,
+  `--max-iters`, `--workers`, and `--tools {files,none}` pick the pieces;
+  `--resume DIR` continues a saved run and `--agent module:factory` swaps in
+  your own `Flow`. Settings resolve flags first, then `RLMFLOW_*`, then
+  `./rlmflow.toml`, then `~/.config/rlmflow/config.toml`, and
+  `rlmflow config {show,path,init}` reports and writes them. `rlmflow version`
+  is back. The command set moved from `rlmflow/cli.py` to a `rlmflow/cli/`
+  package on [Fire](https://github.com/google/python-fire), now a runtime
+  dependency; `from rlmflow.cli import main` and `python -m rlmflow …` are
+  unchanged.
+- **`StreamConsumer.init(flow)`.** A no-op by default, forwarded by
+  `ConsumerGroup`, and the way an interactive consumer gets hold of the flow it
+  drives. `FlowTUI` uses it: `ui.init(flow); ui.run()` replaces
+  `ui.run(drive)`, which still works. `FlowTUI(sink=consumer)` fans its nodes
+  out to another consumer — a `GraphCheckpointer`, say — and
+  `ui.run(query=...)` starts a turn as the dashboard mounts.
+- **`rlmflow.llm.client_for(model, *, reasoning_effort=None)`.** The one
+  model-name rule (`claude*` → Anthropic, else OpenAI) now lives in the package;
+  `examples/common.build_client` is an alias for it.
 - **`rlmflow.view` and the `rlmflow view` command, on the new node model.** Every
   view is a render of the graph, and they are all back: `timeline`/`steps` read a
   run in the order it happened, `graph_svg` draws it, `save_html` writes a
   single-file stepper, `replay`/`render_steps` hand back the tree as it stood at
   each step, `open_viewer` opens it in the browser, and `save_frames`/`save_gif`
-  rasterise it. From the shell: `rlmflow view runs/coding/graph` prints the agent
-  tree and the numbered timeline, with `--step N`, `--frames-only`, `--tree`,
-  `--svg`, `--html`, `--browser`, `--frames DIR`, `--gif PATH`, and `--every N`.
-  `python -m rlmflow view …` works the same.
+  rasterise it. From the shell: `rlmflow view show runs/coding/graph` prints the
+  agent tree and the numbered timeline, with `--step N`, `--frames-only`, and
+  `--tree`; the exports are their own verbs, `rlmflow render {svg,html,gif,
+  frames,browser} PATH OUT`. `python -m rlmflow view show …` works the same.
   The figure keeps the old viewer's dark ground, its colour and shape per node
   type, and its tidy-tree layout, but it is hand-written SVG: the figure, the
   timeline, the stepper, and `replay` need nothing outside the standard library.
@@ -136,7 +192,7 @@ each one is called out under **Breaking** below.
   The snapshot refreshes per action and is disabled by default, so ordinary
   flows pay no prompt or serialization cost.
 - **`Flow.start(query, **overrides)`** — a root carrying that flow's defaults, so
-  `Flow(config=AgentConfig(max_iters=5))` reaches the roots you run on it. The
+  `Flow(root_config=AgentConfig(max_iters=5))` reaches the roots you run on it. The
   module-level `start` still builds the node and remains the way to make one
   without a `Flow` (loading, forking, and tests do); `flow.start` supplies the
   defaults and forwards. It replaces `Flow.new_root`, which only accepted a query
@@ -181,9 +237,9 @@ each one is called out under **Breaking** below.
   terminal graph node while allowing cancellation to unwind. `step_task` and
   queue-side exception inspection are gone; a failed root is still re-raised to
   its stream caller.
-- **Pool orchestration is separate from compute.** `Pool.run` drives lightweight
-  transition coroutines without consuming a bounded compute slot while a parent
-  awaits children; `Pool.call` continues to place and bound blocking compute.
+- **Pool orchestration is separate from compute.** `TaskQueue` drives transition
+  coroutines directly while `Pool.stream` and `Pool.call` place and bound model
+  compute. A parent can await children without consuming a compute slot.
   `Flow(workers=...)` and custom pools retain their existing public meaning.
 - **`Flow(llm_request_timeout=...)`** — bounds every model call. The client's own
   `timeout` is set too, where it takes one: cancelling a blocking call frees the
@@ -192,9 +248,105 @@ each one is called out under **Breaking** below.
   independent one-shot prompts, which need no trajectory, no REPL, and no
   delegation. Off by default, so an agent is never offered a tool its prompt did
   not describe; `flow.llm_query_batched` calls it from host code either way.
+- **Delegation behavior is measured, not asserted in prose.**
+  `examples/behavior/delegation.py` runs scenarios in both directions against a
+  live model and grades each from its trajectory: child count, how many children
+  a single turn launched, and children that spent a turn returning nothing. One
+  scenario must fan out (three independent explainers), two must stay local (a
+  single config lookup, and four statistics over one list — separable-looking but
+  trivial), and the boids task is available with `--scenario boids`, graded on
+  fan-out plus the module contracts it must satisfy. The two
+  local scenarios also grade the answer, so "no subagents" cannot be earned by
+  answering badly. `--repeat N` reports a pass rate, since the behavior is
+  stochastic. `tests/test_delegation_behavior.py` runs the same scenarios under
+  the new `live` marker — skipped unless `RLMFLOW_LIVE_TESTS=1` and a key is
+  present, so the default suite and CI never call an API. `make test-live` runs
+  every scenario including boids and pins the model to keep runs comparable, and
+  `make test-live-boids` runs that one by node id when iterating on it. Each live
+  test is named for the scenario it runs, the live targets report verbosely, and a
+  `pytest_deselected` hook names what a filter dropped and which filter dropped it,
+  so a paid run that never reached a scenario no longer looks like one that covered
+  it. The graders are covered by unmarked tests in that module against canned
+  trajectories.
+- **The boids example asks for module contracts, not three files.** The old task
+  had three outputs but roughly one turn of work, so solving it inline was the
+  correct call and it could not tell us anything about delegation. It now
+  specifies `vec.js`, `spatial.js`, `rules.js`, `species.js`, `render.js`,
+  `main.js`, `index.html`, and `style.css`, each with the global it owns, and
+  asks for 2000 boids at 60fps — a spatial grid instead of all-pairs scanning,
+  four species with their own rule weights, and a renderer doing HiDPI scaling,
+  fading trails, and an FPS readout. The requirements name interfaces, which is
+  what a spec does; they still say nothing about subagents, so the execution
+  topology stays the model's decision. `BoidsSimulation` now returns the files
+  written and what was verified rather than echoing three file bodies back
+  through the transcript.
 
 ### Changed
 
+- **Input inspection is now the explicit RLM protocol.** With non-empty
+  `INPUTS`, the first block probes the values programmatically, binds useful
+  reads/searches to persistent names, prints a bounded task-relevant
+  observation, and stops. After that initial inspection, one short user message
+  asks for the local-or-delegated decision; there is no repeated integration
+  action or reserved plan object.
+- **Context and working memory are now an explicit prompt concept.** Adapting
+  Prime Agent's applicable RLM doctrine, the prompt describes the REPL as the
+  long-lived control environment for named working state and recursive calls.
+  The parent protects whole-task context while children receive only the context
+  needed for their scope.
+- **Inspection uses the actual format instead of sampling it.** `INPUTS` string
+  values may encode any format, so agents first inspect size and apparent
+  structure, then parse what is actually present and use query-appropriate regex,
+  indexing, field selection, filtering, grouping, joins, sorting, or aggregation.
+  Parsed data stays bound in the REPL; stdout carries only a bounded confirmation.
+  Large raw values and arbitrary previews do not stand in for inspection.
+- **Delegation uses concrete work tests.** The orchestrator chooses the smallest
+  coherent child scopes that cover independent substantive work instead of
+  assigning one child per requested artifact. Related small outputs, cross-scope
+  glue, integration, and final verification stay local; each child scope must
+  repay a full agent's inspection and coordination cost. Independent launches use
+  `asyncio.gather`, and the parent combines results without repeating child work.
+- **The input manifest is metadata-only.** It lists caller-defined keys and
+  sizes but never copies values into the model prompt, regardless of length.
+  Short queries therefore stay short and supporting material remains behind
+  the same persistent-REPL boundary used for large contexts.
+- **Examples are executable trajectories, not disconnected snippets.** Inspection
+  still covers nested task text and query-directed JSONL analysis. The
+  report trajectory groups several chapters into coherent child scopes and keeps
+  title, contents, and assembly in the parent. The shared-context trajectory
+  groups related implementation and migration outputs while preserving an
+  independent risk review. The
+  unrelated structured-subagent worked example is concise API documentation so
+  it does not dilute the central action pattern.
+- **The prompt size ceiling is enforced again.** `MAX_STATIC_PROMPT_CHARS`
+  documented a regression guard that no test actually asserted, so the statically
+  rendered `SYSTEM_PROMPT` had drifted 28% past it unnoticed. A test now enforces
+  it, and the ceiling is 12,000 to match the prompt as it stands. Raising it is
+  now a deliberate edit rather than something that happens by accretion.
+- **Each prompt rule has one owner.** API text describes mechanics, input strategy
+  owns extraction policy, delegation strategy owns the direct-versus-delegate
+  criteria and synthesis behavior, and turn guidance owns only initial inspection
+  plus one grounded orchestration decision.
+- **Examples render only where they apply.** The two inspection turns need
+  non-empty `INPUTS` and the delegation decisions need spawn budget, so an agent
+  no longer carries the walkthrough it cannot act on — worth ~2,000 chars for an
+  agent with no inputs. A leaf keeps the inspection examples, since children are
+  where filtered bulk text usually lands. The example content is fixed for an
+  agent's lifetime; only the inspection and one-time orchestration nudges are
+  dynamic, preserving the stable system-prompt prefix for caching.
+- **Prompt depth status follows each agent's config.** A root-level
+  `max_depth` override now controls delegation sections and status for its whole
+  subtree instead of being shadowed by the `Flow` default.
+- **File guidance moved onto the file tools.** `write_file` now says it replaces
+  the whole file and to `ls`/`read_file` first; `ls` says to check the workspace
+  before writing. Because these are `@tool` descriptions they reach the model
+  only when `FILE_TOOLS` is registered, so the default prompt stays usable for
+  runs with no filesystem — and it no longer mentions one.
+- **The prompt names what is not bound.** A line listing invented-looking calls
+  (`run_subagent(...)`, `call_tool(...)`, `get_result(...)`) as non-existent.
+- **Truncation says the REPL survived it.** `TRUNCATION_SUMMARY` now notes that
+  variables and imports from dropped turns are still bound, so an agent past its
+  `keep_n_messages` window reuses them instead of redefining them.
 - **Prompt selection is explicit.** Spawn specs use `prompt_profile`; children
   inherit their immediate parent's profile when omitted. `prompt_router` is an
   optional callable, and unknown profile names raise `ValueError`.
@@ -218,7 +370,7 @@ each one is called out under **Breaking** below.
   and the separate `Graph` wrapper.
 - `Flow.build_system_prompt(node)`. Render a prompt with
   `flow.system_prompt.render(flow, agent)`, or read the whole message list from
-  `flow.messages(node)`. To own prompt selection at the flow level, assign
+  `flow.build_messages(node)`. To own prompt selection at the flow level, assign
   `flow.system_prompt` rather than overriding a method.
 
 ## [0.4.0] — 2026-06-12

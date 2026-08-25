@@ -91,7 +91,8 @@ passing has to work around it, not remove it.
 
 `Node.append` raises unless `self is agent.frontier`. A step holds the node it
 was submitted with across a long `await` and appends to it afterwards —
-`llm_step` does `turn.append(LLMOutput(...))` after `call_chat` returns. If
+`LLMRequestStep` does `turn.append(LLMOutput(...))` after
+`await join_chunks(self.llm.stream(messages))`. If
 anything else appends to that agent in the meantime, the step's own append
 raises.
 
@@ -174,7 +175,7 @@ root or teach the driver about scopes narrower than a root.
 ### 5. Iteration budgets are cumulative
 
 `llm_turns()` counts every `LLMOutput` in the agent's transcript, and
-`llm_step` lands `DoneOutput(result="[max_iters exceeded]")` when that reaches
+`LLMRequestStep.chat` lands `DoneOutput(result="[max_iters exceeded]")` when that reaches
 `config.max_iters`. A resumed agent inherits its own history, so an agent that
 spent its budget answers a follow-up with `[max_iters exceeded]` before calling
 the model. Resumption has to raise the ceiling explicitly; the probe above adds
@@ -497,7 +498,7 @@ Layer 2 is a separate decision, gated on the prompt experiment.
 14. `AGENTS` reports the target `completed` again after the resume.
 15. `root.tokens()` includes the resumed turns.
 16. A framework append to an agent with a step in flight raises a specific
-    error, not a frontier `ValueError` from inside `llm_step`.
+    error, not a frontier `ValueError` from inside `LLMRequestStep` / `Flow.step`.
 17. `allow_resume` defaults to false; disabled runs have no tool and no prompt
     text.
 

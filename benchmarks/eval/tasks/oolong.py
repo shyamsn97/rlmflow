@@ -23,10 +23,12 @@ class OolongDataset(Dataset):
         data_dir: str = "evals/data",
         max_context_chars: int | None = None,
         max_context_tokens: int | None = None,
+        max_samples: int | None = 50,
     ) -> None:
         self.data_dir = Path(data_dir)
         self.max_context_chars = max_context_chars
         self.max_context_tokens = max_context_tokens
+        self.max_samples = max_samples
         self._dataset: Any | None = None
         self._eligible: list[int] | None = None
 
@@ -35,10 +37,9 @@ class OolongDataset(Dataset):
         eligible = self._eligible_indices(ds)
         if not eligible:
             raise ValueError("No OOLONG examples fit the configured limits.")
-        count = limit or 1
         positions = list(range(len(eligible)))
         random.Random(seed).shuffle(positions)
-        selected = positions[: min(count, len(positions))]
+        selected = positions if limit is None else positions[: min(limit, len(positions))]
         # Only the sampled rows are pulled out of the memory-mapped dataset;
         # the full split (~20 GB of text for `test`) is never held in RAM.
         return [self._example(dict(ds[eligible[pos]]), index=pos) for pos in selected]
@@ -96,6 +97,8 @@ class OolongDataset(Dataset):
             ):
                 continue
             eligible.append(index)
+            if self.max_samples is not None and len(eligible) >= self.max_samples:
+                break
         self._eligible = eligible
         return eligible
 

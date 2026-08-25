@@ -127,10 +127,11 @@ class LiveCodeBenchDataset(Dataset):
 def _select_rows(
     rows: list[dict[str, Any]], *, limit: int | None, seed: int
 ) -> list[dict[str, Any]]:
-    count = limit or 1
     indices = list(range(len(rows)))
     random.Random(seed).shuffle(indices)
-    return [rows[index] for index in indices[: min(count, len(indices))]]
+    if limit is not None:
+        indices = indices[: min(limit, len(indices))]
+    return [rows[index] for index in indices]
 
 
 def _load_jsonl_dir(path: Path) -> list[dict[str, Any]]:

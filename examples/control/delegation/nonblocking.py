@@ -12,8 +12,8 @@ from rlmflow import Flow, LLMUsage
 
 ROOT_REPLY = """\
 ```python
-alpha = await launch_subagent("Return alpha.", name="alpha")
-beta = await launch_subagent("Return beta.", name="beta")
+alpha = await launch_subagent("Return alpha.", model="default", name="alpha")
+beta = await launch_subagent("Return beta.", model="default", name="beta")
 print("queued:", alpha.name, beta.name)
 ```"""
 

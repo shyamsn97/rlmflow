@@ -17,11 +17,13 @@ parent_identity = id(shared)
 
 shared_child = await launch_subagent(
     "Append 'shared-child' to the existing shared list, then return its id.",
+    model="default",
     name="shared",
     reuse_repl=True,
 )
 isolated_child = await launch_subagent(
     "Report whether a global named 'shared' exists in your REPL.",
+    model="default",
     name="isolated",
 )
 shared_identity = await shared_child.wait_for_result()
@@ -44,10 +46,7 @@ ISOLATED_REPLY = """\
 finish(str("shared" in globals()))
 ```"""
 
-EXPECTED = (
-    "same_object=True; values=['parent', 'shared-child']; "
-    "isolated_sees_shared=False"
-)
+EXPECTED = "same_object=True; values=['parent', 'shared-child']; " "isolated_sees_shared=False"
 
 
 class ScriptedLLM:

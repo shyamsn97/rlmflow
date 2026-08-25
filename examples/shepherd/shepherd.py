@@ -14,7 +14,6 @@ import shutil
 import sys
 import time
 from collections.abc import AsyncIterator
-from functools import partial
 from pathlib import Path
 
 import cloudpickle
@@ -27,7 +26,8 @@ from rlmflow import (
     LLMOutput,
     Node,
     PromptProfile,
-    UserPromptBuilder,
+    Runtime,
+    default_render,
 )
 from rlmflow.consumers import LiveGraphTree
 
@@ -69,9 +69,7 @@ CONSTRUCT = (
 
 # ``--simple-moves``: the classic action, and nothing to route with.
 SIMPLE_CONSTRUCT = (
-    f"game = Sokoban({BOARD!r}, env=ENV)\n"
-    "def move(directions):\n"
-    "    print(game.move(directions))\n"
+    f"game = Sokoban({BOARD!r}, env=ENV)\ndef move(directions):\n    print(game.move(directions))\n"
 )
 
 # The geometry is the same game whichever action space the worker is given, so both
@@ -212,22 +210,27 @@ def scoreboard(state: dict, agent: AgentStart) -> str:
     so nothing discourages it from wandering.
     """
     dist = state.get("dist", 0)
-    left = max(0, agent.config.max_iters - agent.llm_turns())
+    limit = agent.config.max_iters
+    remaining = (
+        f"~{max(0, limit - agent.llm_turns())} turns left"
+        if limit is not None
+        else "no turn cap"
+    )
     return (
         f"Standing: {state.get('pushes', 0)} pushes, "
         f"{state.get('placed', 0)}/{state.get('box_count', 0)} boxes locked, "
-        f"{dist} to go, ~{left} turns left.\n"
+        f"{dist} to go, {remaining}.\n"
         "Only the best of several parallel attempts is kept: solving scores 1000 "
         f"minus total pushes, failing about {-1000 - dist}. The shortest solve "
         "wins, so don't wander or repeat a push."
     )
 
 
-def board_prompt(flow: Flow, agent: AgentStart, *, simple: bool = False) -> str | None:
+def board_prompt(runtime: Runtime, agent: AgentStart, *, simple: bool = False) -> str | None:
     # The board lives in the agent's REPL — a worker process under every runtime
     # but the in-process one — so the host reads the published state out of ENV
     # rather than reaching for the game object.
-    repl = flow.runtime.get(agent)
+    repl = runtime.get(agent)
     state = dict(repl.env) if repl is not None else {}
     if "status" not in state:  # the shepherd has no board
         return None
@@ -252,9 +255,7 @@ def board_prompt(flow: Flow, agent: AgentStart, *, simple: bool = False) -> str 
         )
     elif simple:
         walk = ", ".join(state.get("legal_moves", [])) or "nowhere"
-        step = (
-            f"Stepping {' or '.join(here)} shoves a box. " if here else "No box is against you. "
-        )
+        step = f"Stepping {' or '.join(here)} shoves a box. " if here else "No box is against you. "
         action = (
             f"You can step: {walk}. {step}Walk to the square listed for the push you "
             "want, then step into the box — one push this turn."
@@ -274,8 +275,7 @@ def board_prompt(flow: Flow, agent: AgentStart, *, simple: bool = False) -> str 
     # count of what is still legal goes next to the refusal every turn.
     if legal and not state.get("solved") and not doomed:
         action += (
-            f" {len(legal)} pushes are still legal, listed above, so do not call "
-            'done("stuck").'
+            f' {len(legal)} pushes are still legal, listed above, so do not call done("stuck").'
         )
     if state.get("blocked") and not state.get("solved"):
         action = (
@@ -319,9 +319,7 @@ async def play_jam(
     async def land(node: Node) -> Node:
         return (await flow.step(node)).created
 
-    setup = worker.frontier.append(
-        LLMOutput(content="construct the Sokoban game", code=construct)
-    )
+    setup = worker.frontier.append(LLMOutput(content="construct the Sokoban game", code=construct))
     yield setup
     action = await land(setup)
     yield action
@@ -341,8 +339,8 @@ async def play_jam(
             return
 
 
-def board(flow: Flow, agent: AgentStart) -> str:
-    return flow.runtime.get_env_var(agent, "board") or ""
+def board(runtime: Runtime, agent: AgentStart) -> str:
+    return runtime.get_env_var(agent, "board") or ""
 
 
 def branch_heading(branch) -> str:
@@ -384,17 +382,25 @@ async def run_shepherd(
     # spelled. Pushes are counted the same either way, so runs stay comparable.
     construct = SIMPLE_CONSTRUCT if simple_moves else CONSTRUCT
     jam_code = SIMPLE_JAM_CODE if simple_moves else JAM_CODE
+    def render_worker(runtime: Runtime, node: Node) -> list[dict[str, str]]:
+        messages = default_render(runtime, node)
+        content = board_prompt(runtime, node.parent_agent, simple=simple_moves)
+        if content:
+            messages.append({"role": "user", "content": content})
+        return messages
+
     flow = Flow(
         build_client(model, reasoning_effort=effort),
         llm_clients={"worker": build_client(worker_model, reasoning_effort=worker_effort)},
         prompt_profiles={
             "worker": PromptProfile(
                 system=SIMPLE_WORKER_SYSTEM if simple_moves else WORKER_SYSTEM,
-                user=UserPromptBuilder(partial(board_prompt, simple=simple_moves)),
+                render_fn=render_worker,
                 description="myopic Sokoban worker",
             )
         },
     )
+    runtime = flow.runtime
     # Each REPL runs in a worker process that has no examples directory on its
     # path, so ``sokoban`` is not importable there and pickling the class by
     # reference would arrive as a missing import. Sending the module by value ships
@@ -408,7 +414,6 @@ async def run_shepherd(
         prompt_profile="worker",
         max_depth=0,
         max_iters=max_iters,
-        keep_n_messages=15,
     )
     shepherd = flow.start(
         META_QUERY.format(n=n_branches),
@@ -432,7 +437,7 @@ async def run_shepherd(
         title="" if tree is not None else "shepherd — rewind ▸ parallel recovery",
         cols=min(n_branches, 4),
         status_of=lambda agent: panel_status(flow, agent),
-        board_of=lambda agent: board(flow, agent),
+        board_of=lambda agent: board(runtime, agent),
         frames_of=(
             (lambda agent: flow.runtime.get_env_var(agent, "frames"))
             if dashboard is not None
@@ -523,9 +528,7 @@ async def run_shepherd(
 
         async for node in flow.run_streaming(
             shepherd,
-            until=lambda node, _root: (
-                (bool(plans) and node.parent_agent is shepherd) or expired()
-            ),
+            until=lambda node, _root: (bool(plans) and node.parent_agent is shepherd) or expired(),
         ):
             show(node)
             shepherd.save(root / "shepherd")
@@ -548,10 +551,7 @@ async def run_shepherd(
             announce(branch.graph, branch.name)
         if dashboard is not None:
             dashboard.set_proposals(
-                [
-                    (branch.rewind, ", then ".join(branch.order))
-                    for branch in branches
-                ]
+                [(branch.rewind, ", then ".join(branch.order)) for branch in branches]
             )
             dashboard.set_status("running recovery branches in parallel…")
 

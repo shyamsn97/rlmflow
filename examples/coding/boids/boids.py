@@ -28,23 +28,35 @@ examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "ex
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-TASK = """Create a runnable browser-based boids simulation in plain HTML, CSS, and JavaScript.
+TASK = """Create a runnable browser-based boids simulation in plain HTML, CSS, and JavaScript."""
+
+CONTEXT = """
 Requirements:
-- The main runnable interface is `index.html`.
-- Write separate files:
-    - `index.html`
-    - `style.css`
-    - `boids.js`
-- Do not use build tools or external libraries.
-- Use a dark color background.
-- Do not use ES modules; wire scripts with `<script src="..."></script>` tags.
-- Render 100s of colorful boids on a 2D canvas. Do not add configurations, just the canvas.
-- The three files are separable components that must agree on a shared contract
-    (canvas element id, dimensions, script order). Decide that contract first, then
-    produce each file (`index.html`, `style.css`, `boids.js`) independently against it so
-    the pieces stay consistent.
-- Integrate the files and verify that all files exist, script tags are ordered correctly,
-    and the JavaScript has no obvious syntax/runtime wiring errors before returning.
+- The main runnable interface is `index.html`. No build tools and no external
+    libraries. Do not use ES modules; wire scripts with `<script src="..."></script>`
+    tags. Do not add configuration controls, just the canvas.
+- Render 2000 boids on a full-viewport 2D canvas over a dark background, at 60fps.
+- Modules and their public contracts. The names are fixed, and each file defines
+    exactly the global it is listed with:
+    - `vec.js` defines `Vec` with add, sub, scale, limit, mag, normalize, and dist.
+    - `spatial.js` defines `SpatialGrid(cellSize)` with insert(boid), clear(), and
+        neighbors(boid, radius). It must serve every boid each frame without
+        all-pairs scanning.
+    - `rules.js` defines `Rules` with align, cohere, separate, and
+        avoid(boid, obstacles). Each returns a steering `Vec`.
+    - `species.js` defines `SPECIES`: four entries, each with its own color,
+        maxSpeed, perception radius, and rule weights.
+    - `render.js` defines `Renderer(ctx)` with draw(boids, obstacles, fps): HiDPI
+        scaling, fading trails, orientation-aware boid shapes, and an on-canvas
+        FPS readout.
+    - `main.js` boots the boids across the four species, rebuilds the grid every
+        frame, applies the rules, wraps movement at the edges, and drives the
+        requestAnimationFrame loop.
+    - `index.html` loads the scripts in dependency order.
+    - `style.css` styles the full-viewport dark canvas.
+- Verify before returning: every file exists, every listed global is defined in
+    its own file, script tags are in dependency order, and no file uses a global
+    it was not given.
 """
 
 
@@ -98,9 +110,14 @@ def supported_kwargs(callable_obj, kwargs: dict) -> dict:
 
 
 class BoidsSimulation(BaseModel):
-    index_html: str
-    style_css: str
-    boids_js: str
+    """The final answer: what was written and what was checked.
+
+    The files themselves live in the workspace, so echoing their contents back
+    through the schema would only duplicate them into the transcript.
+    """
+
+    files: list[str]
+    verification: str
 
 
 def run_rlmflow(
@@ -136,6 +153,7 @@ def run_rlmflow(
     try:
         root = flow.start(
             TASK,
+            inputs={"context": CONTEXT},
             output_schema=json_schema_for(BoidsSimulation),
             max_depth=max_depth,
             max_iters=max_iters,
@@ -203,7 +221,7 @@ def run_official_rlm(
     # Official RLM's local REPL runs in-process, so cwd controls where normal
     # Python file writes land.
     with pushd(run_dir):
-        completion = rlm.completion(TASK)
+        completion = rlm.completion(CONTEXT, root_prompt=TASK)
 
     response = str(completion.response)
     (run_dir / "response.txt").write_text(response)

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from rlmflow.graph.nodes import AgentStart, Node
+from rlmflow.graph.nodes import AgentStart, ExecAction, Node
 from rlmflow.runtime.connections import DEFAULT_REPL_TIMEOUT
 from rlmflow.runtime.env import agent_process_env
 from rlmflow.runtime.repl import Repl, ReplRun, ReplStatus
@@ -100,6 +101,30 @@ class Runtime:
             repl.remove_tool(name)
 
 
+class WrappedRuntime:
+    """Prepare actions before delegating execution to the original runtime.
+
+    The original runtime remains available as ``runtime`` so custom steps can
+    reach lower-level REPL operations or extend action preparation.
+    """
+
+    def __init__(
+        self,
+        runtime: Runtime,
+        build_tools: Callable[[Node], dict[str, Any]],
+    ) -> None:
+        self.runtime = runtime
+        self.build_tools = build_tools
+
+    async def execute(self, node: ExecAction) -> ReplRun:
+        agent = node.parent_agent
+        self.runtime.repl_for(agent).seed(
+            self.build_tools(node),
+            agent.config.inputs,
+        )
+        return await self.runtime.execute(node, node.code)
+
+
 class LocalRuntime(Runtime):
     def __init__(
         self,
@@ -184,4 +209,5 @@ __all__ = [
     "Repl",
     "Runtime",
     "SubprocessRuntime",
+    "WrappedRuntime",
 ]

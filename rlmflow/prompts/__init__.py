@@ -2,11 +2,8 @@
 
 from rlmflow.prompts.messages import (
     PromptBuilder,
-    UserPromptBuilder,
-    UserPromptBuildFn,
-    UserPromptFn,
-    UserPromptSource,
-    as_user_prompt,
+    RenderFn,
+    default_render,
 )
 from rlmflow.prompts.prompts import (
     DEFAULT_BUILDER,
@@ -30,18 +27,15 @@ __all__ = [
     "SYSTEM_PROMPT",
     "PromptBuilder",
     "PromptProfile",
+    "RenderFn",
     "Section",
     "SectionBody",
     "Sections",
     "SystemPromptBuilder",
     "SystemPromptFn",
     "SystemPromptSource",
-    "UserPromptBuildFn",
-    "UserPromptBuilder",
-    "UserPromptFn",
-    "UserPromptSource",
     "as_system_prompt_fn",
-    "as_user_prompt",
+    "default_render",
     "status_section",
     "tools_section",
 ]

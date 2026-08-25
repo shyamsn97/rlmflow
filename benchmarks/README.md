@@ -13,11 +13,18 @@ around four components:
 Initial datasets:
 
 - `synthetic_needle` - deterministic needle-in-haystack smoke task.
+- `official_sniah` - RULER single-needle long-context tasks.
 - `oolong` - first real long-context dataset.
+- `official_codeqa` - the Code Repository Understanding subset of LongBench-v2.
+- `official_aime_2025` - all 30 AIME 2025 problems.
+- `official_sudoku_extreme` - exact constraint-satisfaction puzzles.
 - `official_browsecomp` - BrowseComp-Plus deep-research QA over fixed documents.
 - `official_longbench_v2` - LongBench-v2 all-domain multiple-choice/QA.
 - `official_livecodebench` - LiveCodeBench code generation with public tests.
-- `official_sudoku_extreme` - Sudoku Extreme solution checking.
+
+`rlm-core` expands to the small comparison suite: S-NIAH, AIME 2025, Sudoku
+Extreme, OOLONG, and CodeQA. The `official_` prefix follows RLM-Bench task names;
+Sudoku and AIME are useful controls but are not core RLM-paper datasets.
 
 ## Running
 
@@ -45,15 +52,27 @@ python -m benchmarks.eval \
   --runner-param rlmflow-local.max_depth=1
 ```
 
-Real run:
+Minimal official-RLM comparison:
 
 ```bash
 python -m benchmarks.eval \
   --model openai:gpt-5-mini \
-  --dataset oolong official_browsecomp official_longbench_v2 official_livecodebench official_sudoku_extreme \
+  --dataset rlm-core \
   --runner vanilla rlmflow-local official-rlm \
-  --seeds 0:20 \
-  --wandb
+  --seed 0 \
+  --limit 5
+```
+
+`--limit N` selects fewer examples, but never truncates an example's prompt or
+context. To evaluate every example exposed by each adapter:
+
+```bash
+python -m benchmarks.eval \
+  --model openai:gpt-5-mini \
+  --dataset rlm-core \
+  --runner vanilla rlmflow-local official-rlm \
+  --seed 0 \
+  --full
 ```
 
 Modal parallel run:
@@ -61,10 +80,10 @@ Modal parallel run:
 ```bash
 python -m benchmarks.eval \
   --model openai:gpt-5-mini \
-  --dataset oolong official_browsecomp official_longbench_v2 official_livecodebench official_sudoku_extreme \
+  --dataset rlm-core \
   --runner vanilla rlmflow-local official-rlm \
   --seed 0 \
-  --limit 50 \
+  --limit 5 \
   --executor modal \
   --parallel 10 \
   --best-of-n 1 \
@@ -75,6 +94,13 @@ python -m benchmarks.eval \
 Increase `--best-of-n` to duplicate each logical benchmark row and keep the
 best-scoring attempt.
 
+`--full` means the full benchmark-sized pool exposed by each adapter: 50 examples
+for S-NIAH, OOLONG, and Sudoku; all 30 AIME problems; and the complete CodeQA
+subset. The underlying Sudoku source contains millions of puzzles, so its adapter
+also bounds the streamed source pool with
+`official_sudoku_extreme.sample_window` (default 4096). Override a dataset's
+`max_samples` explicitly if a larger source-level sweep is intended.
+
 `official_browsecomp` is large. Download it once before running:
 
 ```bash
@@ -84,7 +110,7 @@ python -c "from datasets import load_dataset; load_dataset('Tevatron/browsecomp-
 Every run writes:
 
 ```text
-benchmarks/runs/<run_id>/
+benchmarks/eval/runs/<run_id>/
   config.json
   rows.jsonl
   summary.json

@@ -10,7 +10,14 @@ from typing import Any
 
 from rlmflow.engine.execution import Transition
 from rlmflow.flow import Flow
-from rlmflow.graph.nodes import AgentConfig, AgentStart, ExecAction, LLMOutput, Node
+from rlmflow.graph.nodes import (
+    AgentConfig,
+    AgentStart,
+    ExecAction,
+    LLMOutput,
+    Node,
+)
+from rlmflow.llm import PooledLLMClient
 from rlmflow.rao.credit import (
     DELEGATION_BONUS,
     IncompleteTreeError,
@@ -81,20 +88,20 @@ class RolloutFlow(Flow):
     """A ``Flow`` that shares one env across a tree, records tokens, and enforces budgets.
 
     Three narrow overrides and no runtime change: ``build_tools`` hands every
-    agent the env, ``call_chat``/``step`` record what was sampled, and
+    agent the env, ``llm_for_step``/``step`` record what was sampled, and
     ``resolve_child`` refuses launches past the budget.
     """
 
     def __init__(self, llm: Any, *, budget: Budget | None = None, **kwargs: Any) -> None:
         budget = budget or Budget()
-        kwargs.setdefault("config", budget.agent_config())
+        kwargs.setdefault("root_config", budget.agent_config())
         super().__init__(llm, **kwargs)
         self.budget = budget
         self.sessions: dict[int, EnvSession] = {}
         #: ``LLMOutput.id -> TurnSample``, so transcript order comes for free.
         self.samples: dict[str, TurnSample] = {}
         self.refusals: dict[str, int] = {}
-        self._staged: dict[str, TurnSample] = {}
+        self._sample_sinks: dict[str, list[TurnSample]] = {}
 
     # -- Env sharing ------------------------------------------------------
 
@@ -126,32 +133,31 @@ class RolloutFlow(Flow):
         """Whether this model's client hands back the tokens it sampled."""
         return bool(getattr(self._llm_clients.get(model), "records_tokens", False))
 
-    async def call_chat(
-        self,
-        messages: list[dict[str, str]],
-        model: str = "default",
-        *,
-        key: object | None = None,
-        **kwargs: Any,
-    ) -> tuple[str, Any]:
-        if key is None or not self.records(model):
-            # No key means no trajectory to attach tokens to: the fan-out tool calls
-            # this way, and a fan-out query is not a policy turn.
-            return await super().call_chat(messages, model, key=key, **kwargs)
+    def llm_for_step(self, node: Node) -> PooledLLMClient:
+        agent = node.parent_agent
+        model = agent.config.model
+        if not self.records(model):
+            return super().llm_for_step(node)
+
         sink: list[TurnSample] = []
-        text, usage = await super().call_chat(messages, model, key=key, sample_sink=sink, **kwargs)
-        if sink:
-            self._staged[str(key)] = sink[-1]
-        return text, usage
+        self._sample_sinks[agent.id] = sink
+        return self._create_pooled_llm(
+            model,
+            key=agent.id,
+            request_kwargs={"sample_sink": sink},
+        )
 
     async def step(self, node: Node) -> Transition:
         transition = await super().step(node)
         created = transition.created
+        agent = created.parent_agent
+        sink = self._sample_sinks.pop(
+            agent.id if agent is not None else "",
+            [],
+        )
         if isinstance(created, LLMOutput):
-            agent = created.parent_agent
-            staged = self._staged.pop(agent.id if agent is not None else "", None)
-            if staged is not None:
-                self.samples[created.id] = staged
+            if sink:
+                self.samples[created.id] = sink[-1]
         return transition
 
     def turns(self, agent: AgentStart) -> list[TurnSample]:

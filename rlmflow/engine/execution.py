@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
@@ -17,11 +18,6 @@ from rlmflow.graph.nodes import AgentStart, Node, running_step
 class Pool(ABC):
     """Where compute runs and how many compute calls may run at once."""
 
-    async def run(self, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-        """Run lightweight async orchestration without consuming a compute slot."""
-        result = fn(*args, **kwargs)
-        return await result if inspect.isawaitable(result) else result
-
     @abstractmethod
     async def call(
         self,
@@ -31,6 +27,16 @@ class Pool(ABC):
         **kwargs: Any,
     ) -> Any:
         """Run one compute call under this backend's placement policy."""
+
+    @abstractmethod
+    def stream(
+        self,
+        fn: Callable[..., Any],
+        *args: Any,
+        key: object | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[Any]:
+        """Run one streaming compute call under this backend's policy."""
 
     def close(self) -> None:
         """Release whatever the backend holds."""
@@ -44,6 +50,7 @@ class ThreadPool(Pool):
             raise ValueError("workers must be >= 1")
         self.workers = workers
         self._executor = ThreadPoolExecutor(max_workers=workers) if workers else None
+        self._async_slots = asyncio.Semaphore(workers) if workers else None
 
     async def call(
         self,
@@ -61,6 +68,81 @@ class ThreadPool(Pool):
             functools.partial(fn, *args, **kwargs),
         )
         return await result if inspect.isawaitable(result) else result
+
+    async def stream(
+        self,
+        fn: Callable[..., Any],
+        *args: Any,
+        key: object | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[Any]:
+        del key
+        if inspect.isasyncgenfunction(fn) or inspect.iscoroutinefunction(fn):
+            if self._async_slots is None:
+                async for item in self._iterate_async(fn, args, kwargs):
+                    yield item
+                return
+            async with self._async_slots:
+                async for item in self._iterate_async(fn, args, kwargs):
+                    yield item
+            return
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+        stopped = threading.Event()
+
+        def emit(kind: str, value: Any = None) -> None:
+            if stopped.is_set():
+                return
+            try:
+                loop.call_soon_threadsafe(queue.put_nowait, (kind, value))
+            except RuntimeError:
+                stopped.set()
+
+        def produce() -> None:
+            try:
+                result = fn(*args, **kwargs)
+                if inspect.isawaitable(result) or hasattr(result, "__aiter__"):
+                    raise TypeError("synchronous stream function returned an async stream")
+                for item in result:
+                    if stopped.is_set():
+                        break
+                    emit("item", item)
+            except BaseException as exc:  # noqa: BLE001 - cross-thread propagation
+                emit("error", exc)
+            finally:
+                emit("end")
+
+        future = loop.run_in_executor(self._executor, produce)
+        try:
+            while True:
+                kind, value = await queue.get()
+                if kind == "item":
+                    yield value
+                elif kind == "error":
+                    raise value
+                else:
+                    break
+        finally:
+            stopped.set()
+            if future.done():
+                await asyncio.gather(future, return_exceptions=True)
+
+    @staticmethod
+    async def _iterate_async(
+        fn: Callable[..., Any],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> AsyncIterator[Any]:
+        result = fn(*args, **kwargs)
+        if inspect.isawaitable(result):
+            result = await result
+        if hasattr(result, "__aiter__"):
+            async for item in result:
+                yield item
+            return
+        for item in result:
+            yield item
 
     def close(self) -> None:
         if self._executor is not None:
@@ -85,6 +167,25 @@ class SequentialPool(Pool):
             result = fn(*args, **kwargs)
             return await result if inspect.isawaitable(result) else result
 
+    async def stream(
+        self,
+        fn: Callable[..., Any],
+        *args: Any,
+        key: object | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[Any]:
+        del key
+        async with self._lock:
+            result = fn(*args, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+            if hasattr(result, "__aiter__"):
+                async for item in result:
+                    yield item
+                return
+            for item in result:
+                yield item
+
 
 @dataclass(slots=True)
 class Transition:
@@ -100,10 +201,9 @@ class Transition:
 
 
 class TaskQueue:
-    """Run leaves through a pool and report their completed transitions."""
+    """Run graph leaves and report their completed transitions."""
 
-    def __init__(self, pool: Pool) -> None:
-        self.pool = pool
+    def __init__(self) -> None:
         self.running: dict[int, tuple[Node, asyncio.Task[None]]] = {}
         self.done: asyncio.Queue[Transition] = asyncio.Queue()
         self.changed = asyncio.Condition()
@@ -132,7 +232,8 @@ class TaskQueue:
 
     async def _run(self, node: Node, fn: Callable[[Node], Any]) -> None:
         with running_step(node):
-            transition = await self.pool.run(fn, node)
+            result = fn(node)
+            transition = await result if inspect.isawaitable(result) else result
         if not isinstance(transition, Transition):
             raise TypeError(f"task returned {type(transition).__name__}, expected Transition")
 

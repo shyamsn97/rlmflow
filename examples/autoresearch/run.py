@@ -185,6 +185,7 @@ handles = [
     await launch_subagent(
         "Read INPUTS['trial_dir']/train.py in full, then write_file the complete "
         "updated file changing only the constants your hypothesis needs, then submit_trial(...).",
+        model="default",
         name=row["slug"],
         inputs={"trial_dir": row["agent_trial_dir"], "slug": row["slug"], "hypothesis": row["hypothesis"]},
     )

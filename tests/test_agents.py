@@ -147,12 +147,12 @@ def test_agent_tree_is_opt_in_for_namespace_and_prompt():
     enabled = Flow(StubLLM(lambda _messages: "unused"), use_agent_tree=True)
 
     assert "AGENTS" not in disabled.build_tools(root)
-    assert "`AGENTS` is a read-only snapshot" not in disabled.messages(root)[0]["content"]
+    assert "`AGENTS` is a read-only snapshot" not in disabled.build_messages(root)[0]["content"]
 
     directory = enabled.build_tools(root)["AGENTS"]
     assert isinstance(directory, AgentDirectory)
     assert directory.self.agent_id == root.id
-    prompt = enabled.messages(root)[0]["content"]
+    prompt = enabled.build_messages(root)[0]["content"]
     assert "`AGENTS` is a read-only snapshot" in prompt
     assert "`await agent.wait_for_result()` waits automatically" in prompt
     assert "`AGENTS.print_graph(show_results=True)`" in prompt

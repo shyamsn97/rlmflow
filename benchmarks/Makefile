@@ -1,4 +1,4 @@
-.PHONY: help eval-help eval-smoke eval-test eval-run eval-wandb eval-benchmark eval-clean
+.PHONY: help eval-help eval-smoke eval-test eval-run eval-wandb eval-benchmark eval-benchmark-full eval-benchmark-oolong eval-clean
 .DEFAULT_GOAL := help
 
 # Commands run from the repo root because the harness uses absolute imports
@@ -21,11 +21,11 @@ EVAL_PROVIDER ?= openai
 EVAL_MODEL ?= gpt-5-mini
 EVAL_DATASETS ?= oolong
 EVAL_RUNNERS ?= vanilla rlmflow-local official-rlm
-EVAL_SEEDS ?= 0:10
-EVAL_BENCHMARK_DATASETS_FULL ?= oolong official_browsecomp official_longbench_v2 official_livecodebench official_sudoku_extreme
-EVAL_BENCHMARK_DATASETS ?= oolong official_browsecomp official_longbench_v2 official_livecodebench official_sudoku_extreme
+EVAL_SEEDS ?= 0
+EVAL_BENCHMARK_DATASETS ?= rlm-core
 EVAL_BENCHMARK_RUNNERS ?= rlmflow-local vanilla official-rlm
-EVAL_BENCHMARK_SEEDS ?= 0:20
+EVAL_BENCHMARK_SEEDS ?= 0
+EVAL_SAMPLE_ARGS ?= --limit 5
 EVAL_MAX_ITERS ?= 20
 EVAL_MAX_DEPTH ?= 1
 EVAL_INCLUDE_LLM_QUERY ?= false
@@ -72,6 +72,7 @@ eval-run: ## Run real eval harness. Override EVAL_PROVIDER/MODEL/TASKS/RUNNERS/S
 		--dataset $(EVAL_DATASETS) \
 		--runner $(EVAL_RUNNERS) \
 		--seeds $(EVAL_SEEDS) \
+		$(EVAL_SAMPLE_ARGS) \
 		--out-dir $(EVAL_OUT_DIR) \
 		--executor $(EVAL_EXECUTOR) \
 		--parallel $(EVAL_PARALLEL) \
@@ -90,6 +91,7 @@ eval-wandb: ## Run real eval harness with W&B logging enabled.
 		--dataset $(EVAL_DATASETS) \
 		--runner $(EVAL_RUNNERS) \
 		--seeds $(EVAL_SEEDS) \
+		$(EVAL_SAMPLE_ARGS) \
 		--out-dir $(EVAL_OUT_DIR) \
 		--executor $(EVAL_EXECUTOR) \
 		--parallel $(EVAL_PARALLEL) \
@@ -105,12 +107,13 @@ eval-wandb: ## Run real eval harness with W&B logging enabled.
 		$(EVAL_RUNNER_PARAMS) \
 		$(EVAL_ARGS)
 
-eval-benchmark:
+eval-benchmark: ## Run a five-example canary of the minimal RLM comparison suite.
 	cd $(REPO_ROOT) && python -m benchmarks.eval \
 		--model $(EVAL_PROVIDER):$(EVAL_MODEL) \
 		--dataset $(EVAL_BENCHMARK_DATASETS) \
 		--runner $(EVAL_BENCHMARK_RUNNERS) \
 		--seeds $(EVAL_BENCHMARK_SEEDS) \
+		$(EVAL_SAMPLE_ARGS) \
 		--out-dir $(EVAL_OUT_DIR) \
 		--executor $(EVAL_EXECUTOR) \
 		--parallel $(EVAL_PARALLEL) \
@@ -126,7 +129,29 @@ eval-benchmark:
 		$(EVAL_RUNNER_PARAMS) \
 		$(EVAL_ARGS)
 
-eval-benchmark-oolong:
+eval-benchmark-full: ## Run every exposed example in the minimal RLM comparison suite.
+	cd $(REPO_ROOT) && python -m benchmarks.eval \
+		--model $(EVAL_PROVIDER):$(EVAL_MODEL) \
+		--dataset $(EVAL_BENCHMARK_DATASETS) \
+		--runner $(EVAL_BENCHMARK_RUNNERS) \
+		--seed 0 \
+		--full \
+		--out-dir $(EVAL_OUT_DIR) \
+		--executor $(EVAL_EXECUTOR) \
+		--parallel $(EVAL_PARALLEL) \
+		--best-of-n $(EVAL_BEST_OF_N) \
+		--attempt-timeout $(EVAL_ATTEMPT_TIMEOUT) \
+		--modal-app-name $(EVAL_MODAL_APP_NAME) \
+		--modal-cpu $(EVAL_MODAL_CPU) \
+		--modal-timeout $(EVAL_MODAL_TIMEOUT) \
+		--wandb \
+		--wandb-project $(EVAL_WANDB_PROJECT) \
+		$(EVAL_WANDB_ENTITY_ARG) \
+		$(EVAL_DATASET_PARAMS) \
+		$(EVAL_RUNNER_PARAMS) \
+		$(EVAL_ARGS)
+
+eval-benchmark-oolong: ## Run the 20-seed OOLONG comparison.
 	cd $(REPO_ROOT) && python -m benchmarks.eval \
 		--model $(EVAL_PROVIDER):$(EVAL_MODEL) \
 		--dataset oolong \

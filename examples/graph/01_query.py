@@ -22,8 +22,10 @@ def build_graph() -> AgentStart:
         LLMOutput(
             content="splitting into two children",
             code=(
-                "write = await launch_subagent('write module', name='write')\n"
-                "test = await launch_subagent('run pytest', name='test')"
+                "write = await launch_subagent("
+                "'write module', model='default', name='write')\n"
+                "test = await launch_subagent("
+                "'run pytest', model='default', name='test')"
             ),
             usage=LLMUsage(input_tokens=120, output_tokens=40),
         )
@@ -32,9 +34,7 @@ def build_graph() -> AgentStart:
     # the output of that same step.
     launch = turn.append(ExecAction(code="write = await launch_subagent(...)"))
 
-    writer = launch.append(
-        AgentStart(content="write module", config=root.config.child("write"))
-    )
+    writer = launch.append(AgentStart(content="write module", config=root.config.child("write")))
     writer.append(DoneOutput(result="wrote pkg/__init__.py"))
 
     tester = launch.append(AgentStart(content="run pytest", config=root.config.child("test")))

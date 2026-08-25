@@ -156,7 +156,8 @@ def test_subprocess_runtime_supports_subagent_handles():
     def reply(messages):
         if first_user(messages) == "parent":
             return block(
-                'child = await launch_subagent("child", name="c")\n'
+                "child = await launch_subagent("
+                '"child", model="default", name="c")\n'
                 "finish(await child.wait_for_result())"
             )
         return block('finish("child-done")')

@@ -55,7 +55,7 @@ def main() -> None:
         renderer=args.renderer,
         max_tokens=args.max_tokens,
     )
-    flow = Flow(llm, config=AgentConfig(max_iters=args.max_iters))
+    flow = Flow(llm, root_config=AgentConfig(max_iters=args.max_iters))
     print(f"Query: {args.query}\n")
     root = flow.start(args.query)
     out_dir = example_run_dir("tinker-agent")

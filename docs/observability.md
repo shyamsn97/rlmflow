@@ -180,25 +180,26 @@ Install `rlmflow[viewer]` for Rich output. `LiveGraphTree` falls back to the
 plain renderer when Rich is unavailable or stdout is not a terminal.
 
 `FlowTUI` is a `StreamConsumer` plus an interactive Textual shell. Install
-`rlmflow[tui]`, then pass it a drive callback that streams Nodes through
-`ui.handle(node)`:
+`rlmflow[tui]`, hand it the flow, and open it:
 
 ```python
-from rlmflow import UserQuery
-from rlmflow.consumers import FlowTUI
+from rlmflow.consumers import FlowTUI, GraphCheckpointer
 
-ui = FlowTUI()
-
-async def drive(root, *, query=None, inputs=None, until="done"):
-    root = root or flow.start(query, inputs=inputs)
-    if query is not None and root.content != query:
-        root.frontier.append(UserQuery(content=query))
-    async for node in flow.run_streaming(root, until=until):
-        ui.handle(node)
-    return root
-
-ui.run(drive)
+ui = FlowTUI(sink=GraphCheckpointer("runs/coding/graph"))
+ui.init(flow)          # Send, Run, and Step now start and step this flow
+ui.run()               # ui.run(query="fix the failing test") starts one immediately
 ```
+
+`init(flow)` is on every `StreamConsumer`, defaulting to a no-op: displays never
+need it, since each Node already carries `node.root`, but a consumer that
+*drives* a run needs the flow, because a graph is data and only a flow can step
+it. `ConsumerGroup.init` forwards to its members, so one call configures a whole
+stack. `FlowTUI(root)` attaches to a run you already have, and `sink=` is any
+other consumer that should see the same nodes.
+
+Passing your own callback — `ui.run(drive)`, where `drive(root, query=...,
+inputs=..., until=...)` streams Nodes through `ui.handle(node)` itself — still
+works for a loop the flow cannot express.
 
 ```text
 Find the needle across 500 files.
@@ -266,11 +267,16 @@ the same thing without writing a script:
 
 ```bash
 RUN=examples/_runs/shepherd/shepherd   # whatever directory you saved
-rlmflow view $RUN               # the agent tree, then the timeline
-rlmflow view $RUN --tree        # just the tree
-rlmflow view $RUN --step 12     # one step, with its content
-rlmflow view $RUN --svg run.svg --html run.html
+rlmflow view show $RUN               # the agent tree, then the timeline
+rlmflow view show $RUN --tree        # just the tree
+rlmflow view show $RUN --step 12     # one step, with its content
+rlmflow render svg $RUN run.svg
+rlmflow render html $RUN run.html
 ```
+
+`rlmflow view` reads; `rlmflow render` writes a file, so each of its verbs takes
+where to put it. `rlmflow render --help` lists them: `svg`, `html`, `gif`,
+`frames`, `browser`.
 
 In the stepper, the arrow keys move a step, `Home` and `End` jump to the ends, and
 the address bar carries the step you are on, so `run.html#12` opens on step 12.
@@ -322,4 +328,5 @@ save_frames(root, "out/", every=5)           # a PNG per fifth step
 save_gif(root, "run.gif", every=5, ms_per_frame=120)
 ```
 
-`--frames`, `--gif`, and `--every` do the same from the shell.
+`rlmflow render frames $RUN out/ --every 5` and `rlmflow render gif $RUN run.gif
+--every 5` do the same from the shell.

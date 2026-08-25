@@ -114,7 +114,7 @@ def skills_section(skill_paths: list[Path]):
 def build_flow(skills_dir: Path, *, model: str) -> Flow:
     """Create a flow whose prompt includes the installed skill."""
     skill_path = install_example_skill(skills_dir)
-    flow = Flow(OpenAIClient(model=model), config=AgentConfig(max_iters=MAX_ITERS))
+    flow = Flow(OpenAIClient(model=model), root_config=AgentConfig(max_iters=MAX_ITERS))
     prompt = SystemPromptBuilder()
     prompt.sections.add("skills", skills_section([skill_path]), title="Skills", before="tools")
     flow.system_prompt = prompt

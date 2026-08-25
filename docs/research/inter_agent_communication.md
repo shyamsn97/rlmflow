@@ -668,7 +668,7 @@ Use the viewer's root tree and the active queue to build one snapshot.
 
 Add `Flow(use_agent_tree: bool = False)`. When true, add `AGENTS` in
 `build_tools(...)`; otherwise do not build or inject it. Reserve the name in
-either mode and verify that every enabled `exec_step` refreshes it.
+either mode and verify that every enabled `ExecActionStep` refreshes it.
 
 ### 4. Prompt and Exports
 

@@ -73,15 +73,22 @@ stream driver(roots)
   -> stream resubmits that node when its agent is not terminal
 ```
 
-`Flow.step` is the complete state machine:
+`Flow.step` looks up a `StepFunction` class with `get_step_fn` (MRO over
+`self.steps`, seeded from `DEFAULT_STEPS`) and constructs it with the same
+`LLMClient`, `MessageBuilder`, and `WrappedRuntime` every time. The wrapper
+exposes the original runtime as `.runtime`, so a custom step can use lower-level
+REPL operations without making the default step ABI depend on `Flow`.
+Override a type with `update_step_fn`. `InspectQuery` / `PlanQuery` /
+`FinalQuery` / `ContinueQuery` / `TruncationSummary` inherit the `UserQuery`
+registration.
 
 ```text
-AgentStart   -> llm_step
-UserQuery    -> llm_step
-ExecOutput   -> llm_step
-ErrorOutput  -> llm_step
-LLMOutput    -> append ExecAction
-ExecAction   -> exec_step
+AgentStart   -> LLMRequestStep (InspectQuery when the agent has inputs)
+UserQuery    -> LLMRequestStep (follow-up InspectQuery after DoneOutput)
+ExecOutput   -> LLMRequestStep (PlanQuery via InspectQuery.after)
+ErrorOutput  -> LLMRequestStep
+LLMOutput    -> LLMOutputStep (ExecAction)
+ExecAction   -> ExecActionStep
 DoneOutput   -> terminal, never stepped
 ```
 
@@ -102,33 +109,32 @@ parents when a child becomes terminal; its answer remains
 `child.result()` on the graph. The child `AgentStart` is published when submitted,
 so child openings stream without a tree diff.
 
-`Pool.run` executes lightweight transition orchestration without holding a bounded
-compute slot while a parent awaits children. Blocking model work uses `Pool.call`;
+`TaskQueue` executes lightweight transition orchestration directly. Model compute
+uses `Pool.stream`; the pool holds capacity for the stream's full lifetime.
 `ThreadPool(workers)` bounds it, while `SequentialPool` runs it one at a time.
 
 ## Model and exec turns
 
-`llm_step` commits the turn's user content first, so the model always answers a
-user: the prompt builder's content, then a nudge if the last turn was not a user
-turn, or the final-answer prod on the last allowed iteration. It then renders
-messages, records the system prompt in the agent's content-addressed
-`system_prompts` table, calls the selected client, and appends one `LLMOutput`
-carrying the reply, the extracted code, usage, and the prompt id.
+`LLMRequestStep` records the system prompt, consumes `llm.stream(...)`, and appends
+one `LLMOutput`. Inspect, plan, final-answer, continue, and truncation land as
+their own nodes before the model call.
 
-`exec_step` seeds the agent's REPL with the current tool namespace and `INPUTS`,
-runs the action's code, and turns the resulting `ReplRun` into exactly one node:
+`ExecActionStep` calls `WrappedRuntime.execute`, which seeds the agent's REPL
+with the current tool namespace and `INPUTS`, delegates to the original runtime,
+and turns the resulting `ReplRun` into exactly one node:
 
 ```text
 ReplStatus.DONE   -> DoneOutput(result=run.answer)
 ReplStatus.OK     -> ExecOutput
 ReplStatus.ERROR  -> ErrorOutput(error="exec")
-ReplStatus.DEAD   -> ErrorOutput(error="repl"), plus the cold-REPL note
+ReplStatus.DEAD   -> ReplDead
 ```
 
-Synchronous clients run through the shared pool; async clients run directly on
-the event loop. `Flow(llm_request_timeout=...)` wraps the call in `wait_for` and
-also passes `timeout=` to clients that accept one, since cancelling a blocking
-call frees the caller but not its thread.
+Synchronous streams run through the shared pool; async streams run directly on
+the event loop under the same pool policy. `Flow(llm_request_timeout=...)`
+bounds the stream's full lifetime and also passes `timeout=` to clients that
+accept one, since cancelling a blocking call frees the caller but not its
+thread.
 
 ## Delegation and replay
 
@@ -166,9 +172,8 @@ entry so the next step opens a fresh one, and returns a `ReplRun` with status
 
 `flow.inject(name, value)` and `flow.add_tool(fn)` write into the flow's tool
 namespace *and* into every open REPL, so a tool added mid-run reaches agents
-that are already warm. `flow.remove_tool(name)` does the reverse. The three
-reserved names — `finish` (with `done` bound to it as an alias),
-`launch_subagent`, `INPUTS` — are rebuilt per step and cannot be overwritten.
+that are already warm. `flow.remove_tool(name)` does the reverse. Reserved names
+such as `finish`/`done`, `launch_subagent`, and `INPUTS` cannot be overwritten.
 
 Nothing in the transition path closes a REPL, so a terminal agent's worker stays
 keyed and warm: its namespace is still readable, and appending a query and
@@ -197,7 +202,7 @@ The format records what the run *was*, not what it was allowed to be: a loaded
 `AgentConfig` carries identity, inputs, model, prompt profile, and schema, while
 `max_iters`, `max_depth`, and the budget come back as `AgentConfig`'s own
 defaults. A resumed run that needs different limits gets them by setting them on
-the loaded config, since `Flow(config=...)` only supplies defaults to roots the
+the loaded config, since `Flow(root_config=...)` only supplies defaults to roots the
 flow creates itself.
 
 Per-agent projection paths accept only ASCII alphanumeric, `_`, and `-`

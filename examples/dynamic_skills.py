@@ -2,8 +2,8 @@
 
 Two pieces work together here:
 
-1. A **callable prompt section**. ``Flow`` re-renders the system prompt every
-   turn (``build_system_prompt`` resolves ``flow.system_prompt``), so a section
+1. A **callable prompt section**. ``Flow`` resolves and renders
+   ``flow.system_prompt`` every turn, so a section
    whose body is a function reflects whatever it reads *right now*. Point it at a
    mutable ``SkillLibrary`` and the rendered "Skills" section is always live.
 2. An **``add_skill`` tool**. A plain ``@tool``-decorated function passed via
@@ -153,7 +153,7 @@ class ScriptedLLM:
 def build_flow(library: SkillLibrary, llm, *, max_iters: int) -> Flow:
     flow = Flow(
         llm,
-        config=AgentConfig(max_iters=max_iters),
+        root_config=AgentConfig(max_iters=max_iters),
         tools=[make_add_skill(library)],
     )
     prompt = SystemPromptBuilder()

@@ -1,7 +1,7 @@
 """Use a Flow agent as the LM behind a DSPy program.
 
-Because `Flow` implements the `LLMClient` protocol, it drops straight into the
-DSPy adapter — every DSPy "LM call" becomes a full recursive agent run.
+`DSPyFlow` wraps `Flow` with DSPy's LM interface, so every DSPy "LM call"
+becomes a full recursive agent run.
 
 Run with:
     export OPENAI_API_KEY=...
@@ -31,7 +31,7 @@ def main() -> None:
     agent = FlowLLM(
         Flow(
             OpenAIClient(model="gpt-4o-mini"),
-            config=AgentConfig(max_depth=1, max_iters=5),
+            root_config=AgentConfig(max_depth=1, max_iters=5),
         )
     )
 

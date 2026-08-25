@@ -83,7 +83,7 @@ def main() -> None:
 
     flow = Flow(
         OpenAIClient(args.model),
-        config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
+        root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
     )
 
     query = (

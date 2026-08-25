@@ -7,10 +7,12 @@ terminal, so ``FlowTUI`` is exercised through the consumer surface instead.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import subprocess
 import sys
 
+import pytest
 from rich.console import Console
 
 from rlmflow import (
@@ -21,10 +23,13 @@ from rlmflow import (
     ExecOutput,
     LLMOutput,
     LLMUsage,
+    UserQuery,
     start,
 )
+from rlmflow.consumers import StreamConsumer
 from rlmflow.consumers.tui import (
     FlowTUI,
+    _in_chat,
     agent_table,
     error_table,
     latest_table,
@@ -164,6 +169,26 @@ def test_node_panel_prefers_the_result_of_a_done_node():
     assert "done_output" in rendered
 
 
+def test_chat_shows_printed_output_and_skips_empty_exec():
+    root = start("query")
+    printed = root.append(ExecOutput(content="hello from the repl"))
+    silent = printed.append(ExecOutput(content="   "))
+
+    assert _in_chat(printed)
+    assert not _in_chat(silent)
+    assert "hello from the repl" in _text(node_panel(printed))
+
+
+def test_chat_shows_the_root_query_and_attached_inputs():
+    root = start("add a test for parse_args", inputs={"context": "def parse_args():\n    pass\n"})
+
+    assert _in_chat(root)
+    rendered = _text(node_panel(root))
+    assert "add a test for parse_args" in rendered
+    assert "root · query" in rendered
+    assert "INPUTS: context (27 chars)" in rendered
+
+
 def test_node_panel_falls_back_to_the_node_type_when_empty():
     root = start("query")
     node = root.append(LLMOutput(content=""))
@@ -211,6 +236,83 @@ def test_flow_tui_refreshes_the_dashboard_while_open():
     ui.close()
 
     assert ui.app.refreshes == 2
+
+
+class FakeFlow:
+    """Enough of a Flow for the dashboard: it can start a root and stream it."""
+
+    def __init__(self) -> None:
+        self.started: list[str] = []
+        self.inputs: list[dict | None] = []
+
+    def start(self, query, **overrides):
+        self.started.append(query)
+        self.inputs.append(overrides.get("inputs") or {})
+        return start(query, inputs=overrides.get("inputs") or {})
+
+    async def run_streaming(self, root, until="done"):
+        self.until = until
+        thinking = root.frontier.append(LLMOutput(content="thinking"))
+        yield thinking
+        yield thinking.append(DoneOutput(result="answered"))
+
+
+def test_flow_tui_turn_starts_a_run_then_continues_the_same_one():
+    ui = FlowTUI()
+    flow = FakeFlow()
+    ui.init(flow)
+
+    root = asyncio.run(ui.turn(query="first"))
+    asyncio.run(ui.turn(query="second"))
+
+    assert flow.started == ["first"], "the second turn should continue the first root"
+    assert ui.root is root
+    queries = [node.content for node in root.walk() if isinstance(node, UserQuery)]
+    assert queries == ["second"], "the follow-up should land on the existing transcript"
+    assert len(ui.latest) == 4
+
+
+def test_flow_tui_turn_passes_context_as_inputs():
+    ui = FlowTUI()
+    flow = FakeFlow()
+    ui.init(flow)
+
+    root = asyncio.run(ui.turn(query="do the thing", inputs={"context": "existing code"}))
+
+    assert flow.inputs == [{"context": "existing code"}]
+    assert root.config.inputs == {"context": "existing code"}
+    assert "INPUTS: context (13 chars)" in _text(node_panel(root))
+
+
+def test_flow_tui_turn_without_a_flow_says_so():
+    ui = FlowTUI()
+
+    with pytest.raises(RuntimeError, match="init"):
+        asyncio.run(ui.turn(query="hi"))
+
+
+def test_flow_tui_forwards_to_its_sink():
+    """A checkpointer or renderer composed onto the dashboard sees every node."""
+    root = start("query")
+    node = root.append(LLMOutput(content="thinking"))
+    seen: list[str] = []
+
+    class Recorder(StreamConsumer):
+        def init(self, flow):
+            seen.append("init")
+
+        def handle(self, incoming):
+            seen.append(incoming.type)
+
+        def close(self):
+            seen.append("close")
+
+    ui = FlowTUI(sink=Recorder())
+    ui.init(FakeFlow())
+    ui.handle(node)
+    ui.close()
+
+    assert seen == ["init", "llm_output", "close"]
 
 
 def test_importing_rlmflow_does_not_pull_in_textual():

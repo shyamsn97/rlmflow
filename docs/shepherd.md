@@ -4,7 +4,7 @@
 <p align="center">
   <img
     src="static/shepherd/tiers.gif"
-    alt="A stuck worker, the shepherd that reads its trace, one card per recovery plan, and four workers reverting to different depths and running in parallel"
+    alt="A stuck worker, the shepherd that reads its trace, one card per recovery plan, and eight recovery branches reverting to different depths and running in parallel"
     width="920"
   />
 </p>
@@ -53,6 +53,36 @@ push("up")
 walked (3, 2)->(4, 3) in 2 cells
 pushed B1 up: (3, 3)->(2, 3)
 ```
+
+#### Live board context without coupling nodes to Flow
+
+The worker needs the current board in every model request, but that state lives
+in its REPL rather than in the durable node graph. The example therefore uses a
+current-frontier `render_fn`. `Flow` passes its runtime to the renderer:
+
+```python
+def render_worker(runtime: Runtime, node: Node) -> list[dict[str, str]]:
+    messages = default_render(runtime, node)
+    content = board_prompt(runtime, node.parent_agent, simple=simple_moves)
+    if content:
+        messages.append({"role": "user", "content": content})
+    return messages
+
+
+flow = Flow(
+    client,
+    prompt_profiles={
+        "worker": PromptProfile(render_fn=render_worker),
+    },
+)
+```
+
+`Node.render()` remains canonical and runtime-independent, while this renderer
+can read the live REPL `ENV` for the node currently being sent. The runtime
+argument makes that transient dependency explicit without coupling the node
+graph to `Flow`. `board_prompt` also stamps the upcoming turn in `ENV` so the
+game's one-push guard applies to the next live action; replay does not need that
+live-turn guard.
 
 This run starts jammed on purpose: the worker shoves `B1` right eight times until
 it sits flat against the wall, where nothing can stand behind it.
@@ -198,6 +228,6 @@ different box-to-goal order.
 
 ```bash
 python examples/shepherd/shepherd.py                  # --gradio for the live board
-python examples/shepherd/shepherd.py --simple-moves   # one move(directions) action instead
+python examples/shepherd/shepherd.py --simple-moves   # move([...]) instead of goto + push
 python examples/shepherd/render_graph.py              # redraw the diagrams above
 ```

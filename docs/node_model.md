@@ -18,17 +18,25 @@ auditable: the tree says what the engine decided to do and what happened next.
 Node
 ├── AgentStart      (an agent's opening query; also the root of a run)
 ├── UserQuery
+│   ├── InspectQuery
+│   ├── PlanQuery
+│   ├── FinalQuery
+│   ├── ContinueQuery
+│   └── TruncationSummary
 ├── LLMOutput
 ├── ExecAction
 ├── ExecOutput
 ├── ErrorOutput
+│   └── ReplDead
 └── DoneOutput
 ```
 
-There are seven concrete node types and one base class. Every node is a
-dataclass carrying `content`; there is no separate observation/action base. The
-model "turn" is the `LLMOutput` observation itself — there is no `LLMAction`
-node; `ExecAction` records the code the engine then ran.
+Every node is a dataclass carrying `content`; there is no separate
+observation/action base. The model "turn" is the `LLMOutput` observation
+itself — there is no `LLMAction` node; `ExecAction` records the code the
+engine then ran. Inspect, plan, final-answer, continue, and truncation
+are `UserQuery` subclasses the engine commits; a dead REPL is a
+`ReplDead`.
 
 An `AgentStart` is both a node in its parent's tree and the handle for a whole
 agent: it owns that agent's `frontier`, `config`, `sub_agents`, and system
@@ -54,10 +62,16 @@ The concrete payloads are:
 | --- | --- | --- |
 | `AgentStart` | `agent_start` | `content` (the agent's query), `config`, `system_prompts` |
 | `UserQuery` | `user_query` | `content` |
+| `InspectQuery` | `inspect_query` | inspect prompt (default) |
+| `PlanQuery` | `plan_query` | size-up prompt (default) |
+| `FinalQuery` | `final_query` | last-iter prompt (default) |
+| `ContinueQuery` | `continue_query` | continue nudge (default) |
+| `TruncationSummary` | `truncation_summary` | keep_n notice (default) |
 | `LLMOutput` | `llm_output` | `content` (the reply), `code`, `usage`, `prompt_id` |
 | `ExecAction` | `exec_action` | `code` |
 | `ExecOutput` | `exec_output` | `content` (the REPL's stdout) |
-| `ErrorOutput` | `error_output` | `content`, `error` (`"exec"` or `"repl"`) |
+| `ErrorOutput` | `error_output` | execution error text, `error="exec"` |
+| `ReplDead` | `repl_dead` | crash text plus the cold-REPL note, `error="repl"` |
 | `DoneOutput` | `done_output` | `result`, `content` |
 
 `LLMOutput.code` is the block extracted from the reply; `ExecAction.code` is
@@ -88,6 +102,21 @@ agent.leaves()     # the frontier of this agent and of every agent below it
 and moves the agent's frontier there, so appending anywhere but the frontier
 raises. Appending an `AgentStart` opens a sub-agent instead: it branches off
 without moving the parent's frontier.
+
+## Chat Projection
+
+`node.render()` is how a node becomes zero or more chat messages. User-like nodes
+(`AgentStart`, `UserQuery`, `ExecOutput`, `ErrorOutput`) render as `user`;
+`LLMOutput` as `assistant`; bookkeeping (`ExecAction`, `DoneOutput`) as
+an empty list. A `UserQuery` subclass inherits the user turn, and a custom node
+may return an assistant/user pair or any other ordered message list.
+
+`node.project(keep=...)` walks `prev`, calls each node's canonical `render()`,
+flattens the results, and stops after `keep` messages. `Flow.build_messages`
+projects history from `node.prev`, renders only the current frontier through
+the Flow or prompt profile's `render_fn(runtime, node)`, and prepends the system
+prompt. It preserves rendered messages in order, including adjacent messages
+with the same role.
 
 ## Normal Flow
 
@@ -122,13 +151,15 @@ LLMOutput(code="1 / 0")
   -> LLMOutput(code="finish(...)")
 ```
 
-`error="exec"` means the agent's own code raised. `error="repl"` means the REPL
-itself died and took the namespace with it; the agent is told so in the same
-node, because its variables are gone.
+An `ErrorOutput` means the agent's own code raised. A `ReplDead` means the REPL
+itself died and took the namespace with it; the agent is told that its variables
+are gone before the next model request.
 
-A turn can also land a `UserQuery` before its `LLMOutput`: the prompt builder's
-content for that turn, a nudge when the previous node did not end on a user
-turn, or the final-answer prod on the last allowed iteration.
+A turn can also land a typed `UserQuery` before its `LLMOutput`:
+`InspectQuery` / `PlanQuery` once per task, `FinalQuery` on the last
+allowed iteration, `ContinueQuery` when the previous node did not end on
+a user turn, `TruncationSummary` when `keep_n` overflows, or a generic
+`UserQuery` explicitly appended by application code.
 
 ## Delegation
 
@@ -137,6 +168,7 @@ Agents delegate with:
 ```python
 search = await launch_subagent(
     "Find the evidence",
+    model="default",
     name="search",
     inputs={"chunk": chunk},
 )

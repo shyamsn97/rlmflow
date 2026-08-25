@@ -12,13 +12,19 @@ from rlmflow.graph.nodes import (
     AgentConfig,
     AgentStart,
     AppendChild,
+    ContinueQuery,
     DoneOutput,
     ErrorOutput,
     ExecAction,
     ExecOutput,
+    FinalQuery,
+    InspectQuery,
     LLMOutput,
     LLMUsage,
     Node,
+    PlanQuery,
+    ReplDead,
+    TruncationSummary,
     UserQuery,
 )
 
@@ -29,11 +35,17 @@ NODE_TYPES: dict[str, type[Node]] = {
     for cls in (
         AgentStart,
         UserQuery,
+        InspectQuery,
+        PlanQuery,
+        FinalQuery,
+        ContinueQuery,
+        TruncationSummary,
         LLMOutput,
         ExecAction,
         AppendChild,
         ExecOutput,
         ErrorOutput,
+        ReplDead,
         DoneOutput,
     )
 }

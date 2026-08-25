@@ -30,9 +30,15 @@ returns a future-like handle immediately:
 
 ```python
 handles = [
-    await launch_subagent("scan first third", name="chunk_0", inputs={"chunk": chunk_0}),
-    await launch_subagent("scan middle third", name="chunk_1", inputs={"chunk": chunk_1}),
-    await launch_subagent("scan final third", name="chunk_2", inputs={"chunk": chunk_2}),
+    await launch_subagent(
+        "scan first third", model="default", name="chunk_0", inputs={"chunk": chunk_0}
+    ),
+    await launch_subagent(
+        "scan middle third", model="default", name="chunk_1", inputs={"chunk": chunk_1}
+    ),
+    await launch_subagent(
+        "scan final third", model="default", name="chunk_2", inputs={"chunk": chunk_2}
+    ),
 ]
 results = [await handle.wait_for_result() for handle in handles]
 finish(extract_answer(results))
@@ -43,8 +49,18 @@ Then `chunk_2` can recursively delegate again:
 ```python
 hits = find_candidate_windows(INPUTS["chunk"])
 handles = [
-    await launch_subagent("inspect window A", name="candidate_a", inputs={"window": hits[0]}),
-    await launch_subagent("inspect window B", name="candidate_b", inputs={"window": hits[1]}),
+    await launch_subagent(
+        "inspect window A",
+        model="default",
+        name="candidate_a",
+        inputs={"window": hits[0]},
+    ),
+    await launch_subagent(
+        "inspect window B",
+        model="default",
+        name="candidate_b",
+        inputs={"window": hits[1]},
+    ),
 ]
 results = [await handle.wait_for_result() for handle in handles]
 finish(select_candidate(results))
@@ -155,7 +171,7 @@ flow = Flow(
     OpenAIClient(model="gpt-5"),
     runtime=LocalRuntime(working_directory=workdir),
     tools=FILE_TOOLS,
-    config=AgentConfig(max_depth=2, max_iters=20),
+    root_config=AgentConfig(max_depth=2, max_iters=20),
     llm_clients={"fast": OpenAIClient(model="gpt-5-mini")},
 )
 
@@ -178,6 +194,68 @@ child work runs concurrently.
 
 A saved run is a directory rooted at `graph.json` plus `agents/` logs. Reopen it
 later with `AgentStart.load(path)` and keep running it.
+
+## Command line
+
+`rlmflow tui` is the coding agent above, without writing any of that. It edits
+`--workdir` (`.` by default), checkpoints to `<workdir>/graph`, and opens the
+dashboard — install it with `pip install "rlmflow[tui]"`.
+
+```bash
+pip install "rlmflow[tui]"
+
+rlmflow tui                                   # the dashboard, waiting for a query
+rlmflow tui --query "add a test for parse_args"
+rlmflow tui --workdir ./proj --model gpt-5 --docker-image rlmflow:local
+rlmflow tui --resume ./proj/graph             # pick a saved run back up
+rlmflow tui --agent mypkg.agents:build        # your own Flow instead of the coding one
+
+rlmflow run print "fix the failing test"      # no dashboard: stream it, print the answer
+```
+
+`--model` / `--fast-model` pick the clients (`claude*` → Anthropic, else
+OpenAI), `--reasoning-effort` reaches OpenAI reasoning models, and
+`--tools {files,none}` chooses whether the agent gets `FILE_TOOLS`. Anything
+the flags cannot say — custom prompts, tools, runtimes — stays in Python:
+point `--agent` at a `module:factory` that returns a `Flow`.
+
+```python
+# mypkg/agents.py
+from rlmflow import FILE_TOOLS, AgentConfig, Flow, LocalRuntime
+from rlmflow.llm import client_for
+
+def build() -> Flow:
+    return Flow(
+        client_for("gpt-5", reasoning_effort="low"),
+        runtime=LocalRuntime(working_directory="."),
+        tools=FILE_TOOLS,
+    root_config=AgentConfig(max_depth=2, max_iters=40),
+    )
+```
+
+Settings resolve flags first, then `RLMFLOW_*`, then `./rlmflow.toml`, then
+`~/.config/rlmflow/config.toml`:
+
+```bash
+rlmflow config show    # every setting, its value, which source won
+rlmflow config path    # the files that are read
+rlmflow config init    # write a starter rlmflow.toml
+```
+
+```toml
+# rlmflow.toml
+[run]
+model = "gpt-5"
+fast_model = "gpt-5-mini"
+reasoning_effort = "low"
+max_iters = 30
+```
+
+A finished run is what `rlmflow view` and `rlmflow render` read — the tree and
+timeline, or a figure / stepper / GIF / browser viewer. See
+[Visualization](#visualization) below, and [`docs/cli.md`](docs/cli.md) for the
+full flag list. `python -m rlmflow …` works the same; `rlmflow --help` lists
+every command.
 
 ## Drop-in `LLMClient`
 
@@ -331,21 +409,32 @@ would rather hand them nodes as they land.
 
 ### Full-screen TUI
 
-`FlowTUI` is a stream consumer too: feed it your own
-`async for node in flow.run_streaming(...)` loop, or hand that loop to
-`FlowTUI().run(drive)` for the interactive prompt. Separate query and context
-inputs, live chat bubbles, and side tabs for the execution tree, agents, counts,
-waiting supervisors, errors, and latest nodes. Ctrl+S sends, Ctrl+R continues a
-paused run, Ctrl+T steps once — see
-[`examples/coding/agent.py`](examples/coding/agent.py).
+```bash
+pip install "rlmflow[tui]"
+rlmflow tui --query "add a test for parse_args"
+```
+
+Chat on the left with a tab per agent; clickable tree on the right. Send (or
+Ctrl+S) submits query and context. Ctrl+R continues a paused run, Ctrl+T steps
+once.
 
 <p align="center">
   <img src="docs/static/tui.png" alt="The rlmflow TUI: a chat pane on the left showing the root agent's system prompt and query, and a side panel on the right with a Tree tab listing every step of the root and its two sub-agents" width="820" />
 </p>
 
-```bash
-pip install rlmflow[tui]
+Or hand `FlowTUI` a flow yourself:
+
+```python
+from rlmflow.consumers import FlowTUI, GraphCheckpointer
+
+ui = FlowTUI(sink=GraphCheckpointer("runs/coding/graph"))
+ui.init(flow)
+ui.run()                       # ui.run(query="fix the tests") starts one immediately
 ```
+
+It is a stream consumer like the rest, so the checkpointer sees every node, and
+feeding it from your own `async for node in flow.run_streaming(...)` loop still
+works.
 
 ### Browser viewer
 
@@ -360,7 +449,7 @@ open_viewer("examples/_runs/shepherd/shepherd")   # needs: pip install rlmflow[v
 ```
 
 <p align="center">
-  <img src="docs/static/gradio_ui.png" alt="The browser viewer on the shepherd run: the node graph with the shepherd trunk fanning into eight branch chains, the final done_output beside it reporting the picked branch, a step slider over all 514 steps, and an agent picker above the selected agent's transcript" width="820" />
+  <img src="docs/static/gradio_ui.png" alt="The browser viewer on the shepherd run: the node graph with the shepherd trunk fanning into eight branch chains, the final done_output beside it reporting the picked branch, a step slider over the full run, and an agent picker above the selected agent's transcript" width="820" />
 </p>
 
 ### Figures, steppers, and frames
@@ -389,17 +478,17 @@ Or from the shell, on any saved run — here the one the shepherd example wrote:
 
 ```bash
 RUN=examples/_runs/shepherd/shepherd
-rlmflow view $RUN                  # the agent tree, then the timeline
-rlmflow view $RUN --step 12        # one step, with its content
-rlmflow view $RUN --frames-only    # every step as an ASCII tree
-rlmflow view $RUN --svg g.svg      # the figure
-rlmflow view $RUN --html run.html  # steppable single file
-rlmflow view $RUN --browser        # the viewer above
-rlmflow view $RUN --gif run.gif    # animated (needs [image])
-rlmflow view $RUN --frames out/    # a PNG per step (needs [image])
+rlmflow view show $RUN               # the agent tree, then the timeline
+rlmflow view show $RUN --step 12     # one step, with its content
+rlmflow view show $RUN --frames-only # every step as an ASCII tree
+rlmflow render svg $RUN g.svg        # the figure
+rlmflow render html $RUN run.html    # steppable single file
+rlmflow render browser $RUN          # the viewer above
+rlmflow render gif $RUN run.gif      # animated (needs [image])
+rlmflow render frames $RUN out/      # a PNG per step (needs [image])
 ```
 
-`python -m rlmflow view …` works the same. Everything here needs nothing beyond
+`python -m rlmflow view show …` works the same. Everything here needs nothing beyond
 the standard library except the two that say otherwise: the viewer wants
 `rlmflow[viewer]`, and PNG/GIF export wants `rlmflow[image]`. See
 [`docs/observability.md`](docs/observability.md).
@@ -415,7 +504,9 @@ read an earlier node, rewind to it, fork, and re-instruct the copy.
 [`examples/shepherd/`](examples/shepherd/) does that to a real failure. A small
 model jams a Sokoban board past saving; a larger one reads the trace, reverts to
 eight different earlier pushes, and gives each fork its own plan to try in
-parallel. The forks are its own children, so the search is one agent tree.
+parallel. The forks are its own children, so the search is one agent tree. A
+runtime-bound current-frontier renderer adds each worker's live board without
+putting runtime state on graph nodes or closing over the `Flow`.
 
 <p align="center">
   <img src="docs/static/shepherd/tiers.gif" alt="A stuck Sokoban worker, the meta-agent that reads its trace, one card per recovery plan, and four workers reverting to different depths and playing on in parallel" width="920" />
@@ -438,7 +529,7 @@ from rlmflow.adapters import DSPyFlow, FlowLLM
 
 flow = rlmflow.Flow(
     OpenAIClient(model="gpt-4o-mini"),
-    config=AgentConfig(max_depth=1, max_iters=5),
+    root_config=AgentConfig(max_depth=1, max_iters=5),
 )
 
 dspy.configure(lm=DSPyFlow(FlowLLM(flow), model="rlmflow/gpt-4o-mini"))
@@ -531,12 +622,15 @@ in [`docs/internals.md`](docs/internals.md). Research notes live under
   recursive agents, why graphs beat flat traces, and walkthroughs.
 - [Positioning](docs/positioning.md): when to use rlmflow vs
   rlm-minimal, ypi, LangGraph, CrewAI, AutoGen, SWE-agent, Aider.
+- [Command line](docs/cli.md): `rlmflow tui` for a coding agent in the
+  dashboard, `run print` headless, `view` / `render` for a saved run, and how
+  settings resolve.
 - [Control](docs/control.md): streaming loop, per-agent limits, multi-turn runs,
   save/load resume, forks, `INPUTS`, `launch_subagent`, custom tools.
 - [Streaming and scheduling](docs/streaming.md): `run_streaming(..., until=...)`,
   `TaskQueue`, transition diagrams, delegation, parallel roots, boundaries,
   cancellation, and Pool/Runtime placement.
-- [Node model](docs/node_model.md): the seven node types, the transitions
+- [Node model](docs/node_model.md): the typed node hierarchy, the transitions
   between them, and how delegation is recorded.
 - [Skills](docs/skills.md): workspace `SKILL.md` files, query-selected
   skills, child-only skills, and run-memory skills.

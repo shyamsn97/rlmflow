@@ -191,7 +191,7 @@ def main() -> None:
     # One Flow drives both variants and merges their Node streams.
     flow = Flow(
         build_client(args.model),
-        config=AgentConfig(max_depth=2, max_iters=30),
+        root_config=AgentConfig(max_depth=2, max_iters=30),
     )
 
     out = args.out.resolve()

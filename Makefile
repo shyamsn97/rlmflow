@@ -1,4 +1,4 @@
-.PHONY: clean clean-build clean-pyc clean-test coverage dist docs help install lint lint/flake8 format-md lint-md test test-all examples examples-list examples-optional examples-live examples-sandbox examples-all eval-help eval-smoke eval-test eval-run eval-wandb eval-benchmark eval-clean animation animation-preview animation-mp4 animation-gif animation-gif-small animation-clean bump-version release-check release-tag release-push release
+.PHONY: clean clean-build clean-pyc clean-test coverage dist docs help install lint lint/flake8 format-md lint-md test test-all test-live test-live-boids examples examples-list examples-optional examples-live examples-sandbox examples-all eval-help eval-smoke eval-test eval-run eval-wandb eval-benchmark eval-benchmark-full eval-benchmark-oolong eval-clean animation animation-preview animation-mp4 animation-gif animation-gif-small animation-clean bump-version release-check release-tag release-push release
 	{%- if cookiecutter.use_black == 'y' %} lint/black{% endif %}
 .DEFAULT_GOAL := help
 
@@ -128,6 +128,28 @@ test: ## Run the default test suite.
 test-all: build-docker-image ## Run all tests, including Docker-gated integration tests.
 	RECURSIVE_FLOW_DOCKER_TEST=1 python -m pytest
 
+# Behavioral checks against a real model: does the prompt delegate substantial
+# independent work, and does it stay local on trivial work? Pinned to one model
+# so results stay comparable across prompt changes. Override with
+#   make test-live LIVE_MODEL=gpt-5 LIVE_ARGS="-k explainers"
+LIVE_MODEL ?= gpt-5-mini
+LIVE_ARGS ?= -m live
+
+# These runs cost money, so name each scenario as it goes rather than printing
+# dots. `-vv` because the config's `-q` (pyproject `addopts`) cancels the first
+# `-v`; the second one is what actually reaches verbose. Names of tests a filter
+# dropped come from the `pytest_deselected` hook in `tests/conftest.py`.
+LIVE_PYTEST = RLMFLOW_LIVE_TESTS=1 RLMFLOW_LIVE_MODEL=$(LIVE_MODEL) \
+	python -m pytest tests/test_delegation_behavior.py
+
+test-live: ## Run every live delegation-behavior check, boids included (needs an API key, costs money).
+	$(LIVE_PYTEST) $(LIVE_ARGS) -s -vv -ra
+
+# Selected by node id rather than by marker, so the one scenario you asked for is
+# the only thing collected and nothing is reported as deselected.
+test-live-boids: ## Run only the boids delegation check (slow: an 8-module task).
+	$(LIVE_PYTEST)::test_boids_delegates_the_substantial_modules -s -vv -ra
+
 test-html: test
 	$(BROWSER) tests/cov-report/index.html
 
@@ -164,7 +186,7 @@ build-docker-image:
 # ── Eval harness ─────────────────────────────────────────────────────
 # Eval/benchmark targets now live in benchmarks/Makefile. Run them with
 # `make -C benchmarks <target>` (or `cd benchmarks && make <target>`).
-eval-help eval-smoke eval-test eval-run eval-wandb eval-benchmark eval-clean:
+eval-help eval-smoke eval-test eval-run eval-wandb eval-benchmark eval-benchmark-full eval-benchmark-oolong eval-clean:
 	$(MAKE) -C benchmarks $@
 
 # ── Animation (manim) ────────────────────────────────────────────────
