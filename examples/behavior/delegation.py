@@ -35,9 +35,10 @@ examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "ex
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import add_model_args, build_client, example_run_dir  # noqa: E402
+from common import add_model_args, example_run_dir  # noqa: E402
 
 from rlmflow import FILE_TOOLS, AgentStart, Flow, LocalRuntime  # noqa: E402
+from rlmflow.llm import client_for  # noqa: E402
 
 RUN_NAME = "delegation-behavior"
 
@@ -112,7 +113,7 @@ def observe(root: AgentStart, answer: Any, *, seconds: float, workdir: Path) -> 
         root_turns=root.llm_turns(),
         max_launch_batch=max(per_action.values(), default=0),
         wasted_children=len(wasted),
-        tokens=root.tokens().total,
+        tokens=root.usage.total,
         seconds=seconds,
         workdir=workdir,
     )
@@ -514,11 +515,11 @@ def run_scenario(
 
     additional_client = additional_llm
     if additional_client is None and additional_model is not None:
-        additional_client = build_client(additional_model)
+        additional_client = client_for(additional_model)
     additional_key = additional_model or "additional"
 
     flow = Flow(
-        llm if llm is not None else build_client(model),
+        llm if llm is not None else client_for(model),
         llm_clients=(
             {additional_key: additional_client} if additional_client is not None else None
         ),

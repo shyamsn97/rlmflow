@@ -1,4 +1,4 @@
-"""Small compatibility adapters for examples built on ``rlmflow``."""
+"""Small integration adapters for examples built on ``rlmflow``."""
 
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ class FlowLLM:
         graph = start(messages_to_query(messages))
         result = self.flow.run(graph)
         self.last_graph = graph
-        self.last_usage = graph.tokens()
+        self.last_usage = graph.usage
         return result
 
     def completion(self, prompt: str, *args: Any, **kwargs: Any) -> str:

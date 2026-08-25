@@ -33,7 +33,7 @@ examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "ex
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import example_run_dir, save_example_graph  # noqa: E402
+from common import checkpoint_stream, example_run_dir, save_example_graph  # noqa: E402
 
 
 def ask(llm, question: str) -> str:
@@ -61,7 +61,7 @@ def demo_flow_as_llm():
             root_config=AgentConfig(max_iters=5),
         )
     )
-    answer = ask(agent, "Compute 17 * 23 using a ```repl``` block, then call done().")
+    answer = ask(agent, "Compute 17 * 23 using a ```repl``` block, then call finish().")
     print(answer, "\n")
     if agent.last_graph is not None:
         save_example_graph(
@@ -85,9 +85,8 @@ def demo_nested_flow():
     run_dir = example_run_dir("drop-in-llm") / "nested-flow"
 
     async def drive() -> None:
-        async for node in outer.run_streaming(root):
+        async for node in checkpoint_stream(outer.run_streaming(root), run_dir):
             print(f"{node.parent_agent.config.path}  {node.type}")
-            root.save(run_dir)
 
     asyncio.run(drive())
     print(root.result())

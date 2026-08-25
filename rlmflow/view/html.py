@@ -176,7 +176,7 @@ def render_html(root: AgentStart, *, title: str = "") -> str:
     # than a node type that would go stale the moment you press prev.
     figure = graph_svg(ordered, title=root.config.path, interactive=True)
     heading = title or f"{root.config.path} · {len(ordered)} nodes"
-    tokens = root.tokens()
+    tokens = root.usage
     agents = sum(1 for node in ordered if isinstance(node, AgentStart)) - 1
     turns = sum(1 for node in ordered if node.type == "llm_output")
     sub = (

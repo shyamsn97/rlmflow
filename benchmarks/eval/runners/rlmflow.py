@@ -11,6 +11,7 @@ from benchmarks.eval.types import Example, Model, Prediction, RunContext, Runner
 from rlmflow import (
     AgentConfig,
     Flow,
+    GraphCheckpointer,
     LocalRuntime,
     persistence,
     start,
@@ -57,17 +58,20 @@ class RLMFlowLocalRunner(Runner):
         cap = self.max_steps or max(200, self.max_iters * max(1, self.max_depth + 1) * 25)
         steps = 0
         error = None
+        checkpointer = GraphCheckpointer(graph_dir) if self.live_save else None
 
         async def drive() -> None:
             nonlocal steps
             try:
-                async for _node in flow.run_streaming(graph):
+                async for node in flow.run_streaming(graph):
                     steps += 1
-                    if self.live_save:
-                        persistence.save(graph, graph_dir)
+                    if checkpointer is not None:
+                        checkpointer.handle(node)
                     if steps >= cap:
                         raise RuntimeError(f"run exceeded step cap ({cap})")
             finally:
+                if checkpointer is not None:
+                    checkpointer.close()
                 await flow.aclose()
 
         try:
@@ -77,9 +81,10 @@ class RLMFlowLocalRunner(Runner):
         except Exception as exc:  # noqa: BLE001 - benchmark rows should record failures
             error = f"{type(exc).__name__}: {exc}"
         finally:
-            persistence.save(graph, graph_dir)
+            if checkpointer is None:
+                persistence.save(graph, graph_dir)
 
-        spent = graph.tokens()
+        spent = graph.usage
         return Prediction(
             answer=graph.result(),
             usage={

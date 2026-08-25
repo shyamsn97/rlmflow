@@ -40,7 +40,7 @@ ROOT_REPLY = (
     "f\"Classify {name} as 'citrus' or 'not_citrus'.\", "
     "model='default', name=f'classify_{name}') for name in fruits]\n"
     "results = [await handle.wait_for_result() for handle in handles]\n"
-    "done(', '.join(f'{name}={r}' for name, r in zip(fruits, results)))\n"
+    "finish(', '.join(f'{name}={r}' for name, r in zip(fruits, results)))\n"
     "```"
 )
 
@@ -63,7 +63,7 @@ class MockLLM:
                 answer = correct
                 if name == "apple":
                     answer = self.APPLE_CANDIDATES[self.seed % len(self.APPLE_CANDIDATES)]
-                return f'```repl\ndone("{answer}")\n```'
+                return f'```repl\nfinish("{answer}")\n```'
         return ROOT_REPLY
 
 

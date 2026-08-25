@@ -30,13 +30,11 @@ from rlmflow import (
     SubprocessRuntime,
 )
 from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
+from rlmflow.llm import client_for
 
 examples_dir = next(path for path in Path(__file__).resolve().parents if path.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
-
-from common import build_client  # noqa: E402, RUF100
-
 
 def generate_haystack(directory: Path, num_files: int = 500, lines_per_file: int = 200) -> str:
     words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"]
@@ -124,10 +122,10 @@ def main():
 
         llm_clients = None
         if args.fast_model:
-            llm_clients = {"fast": build_client(args.fast_model)}
+            llm_clients = {"fast": client_for(args.fast_model)}
 
         flow = Flow(
-            build_client(args.model),
+            client_for(args.model),
             llm_clients=llm_clients,
             runtime=runtime,
             tools=FILE_TOOLS,

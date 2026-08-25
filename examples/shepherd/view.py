@@ -85,22 +85,25 @@ def trace_line(node: Node, labels: dict[str, str]) -> str:
     if isinstance(node, LLMOutput):
         detail = node.code
     elif isinstance(node, DoneOutput):
-        detail = f"done({node.result!r})"
+        detail = f"finish({node.result!r})"
     else:
         detail = node.content
     head = next((line for line in (detail or "").splitlines() if line.strip()), "")
     return f"[{lane:>9}] {node.type:<13} {head.strip()[:88]}"
 
 
-def export_run_traces(root: Path, named_games: list[tuple[str, object]]) -> None:
+def export_run_traces(
+    root: Path,
+    named_traces: list[tuple[str, list[tuple[str, str]]]],
+) -> None:
     """Write frame JSON and optional GIFs for each game."""
     import sprites
 
     out = root / "traces"
     out.mkdir(parents=True, exist_ok=True)
     have_tiles = sprites.available()
-    for name, game in named_games:
-        steps = list(getattr(game, "step_frames", []))
+    for name, saved_steps in named_traces:
+        steps = list(saved_steps)
         trace = [{"label": label, "board": board} for label, board in steps]
         (out / f"{name}.json").write_text(json.dumps(trace, indent=2))
         renders = [board for _label, board in steps]

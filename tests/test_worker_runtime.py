@@ -160,11 +160,36 @@ def test_worker_calls_async_host_tools(repl):
     assert result.output == "42"
 
 
+def test_host_rejects_executable_worker_tool_arguments(repl, tmp_path):
+    marker = tmp_path / "host-code-executed"
+    called = False
+
+    @tool("Accept one data value.", proxy=True)
+    def accept(_value):
+        nonlocal called
+        called = True
+
+    repl.seed({"accept": accept}, {})
+    result = run(
+        repl,
+        "import os\n"
+        "class Payload:\n"
+        "    def __reduce__(self):\n"
+        f"        return (os.system, ({f'touch {marker}'!r},))\n"
+        "accept(Payload())",
+    )
+
+    assert result.status is ReplStatus.ERROR
+    assert "valid JSON" in result.output
+    assert not called
+    assert not marker.exists()
+
+
 def test_worker_completion_returns_answer(repl):
     def finish(answer):
         raise DoneSignal(answer)
 
-    repl.seed({"finish": finish, "done": finish}, {})
+    repl.seed({"finish": finish}, {})
     result = run(repl, "finish({'value': 42})")
     assert result.status is ReplStatus.DONE
     assert result.answer == {"value": 42}

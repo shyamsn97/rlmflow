@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 
 class WireModel(BaseModel):
@@ -61,8 +61,8 @@ class ReplResponse(WireModel):
     output: str = ""
     errored: bool = False
     error: str | None = None
-    value: str | None = None
-    env: str | None = None
+    value: JsonValue = None
+    env: dict[str, JsonValue] | None = None
 
 
 class ProxyCall(WireModel):
@@ -71,7 +71,8 @@ class ProxyCall(WireModel):
     tenant_id: str
     proxy: str
     call_id: int
-    payload: str
+    args: list[JsonValue]
+    kwargs: dict[str, JsonValue]
 
 
 class ProxyResponse(WireModel):

@@ -13,29 +13,24 @@ starts with a tiny bootstrap that puts the ``examples/`` directory on
     if str(examples_dir) not in sys.path:
         sys.path.insert(0, str(examples_dir))
 
-    from common import build_client, example_run_dir, save_example_graph
+    from common import example_run_dir, save_example_graph
 
-This module centralizes the bits every example was duplicating: building an LLM
-client from a model name, resolving a per-example ``_runs`` directory, saving a
-trajectory, and adding the common CLI flags. Run directories are anchored to this
-file's location, so callers pass a name only (never ``__file__``).
+This module centralizes the bits every example was duplicating: resolving a
+per-example ``_runs`` directory, saving a trajectory, and adding the common CLI
+flags. Run directories are anchored to this file's location, so callers pass a
+name only (never ``__file__``).
 """
 
 from __future__ import annotations
 
 import argparse
+from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import Path
 
-from rlmflow import Node, persistence
-from rlmflow.llm import client_for
+from rlmflow import GraphCheckpointer, Node, persistence
 
 # The directory this module lives in, i.e. the repo's ``examples/`` folder.
 EXAMPLES_DIR = Path(__file__).resolve().parent
-
-
-# The examples' historical name for it; the rule itself now lives in rlmflow so
-# the CLI and the examples resolve a model string the same way.
-build_client = client_for
 
 
 def example_run_dir(name: str) -> Path:
@@ -57,6 +52,20 @@ def save_example_graph(
     )
     print(f"{label} {path}")
     return path
+
+
+async def checkpoint_stream(
+    nodes: AsyncIterable[Node],
+    path: str | Path,
+) -> AsyncIterator[Node]:
+    """Yield every streamed Node while periodically checkpointing its run."""
+    checkpointer = GraphCheckpointer(path)
+    try:
+        async for node in nodes:
+            checkpointer.handle(node)
+            yield node
+    finally:
+        checkpointer.close()
 
 
 def add_model_args(
@@ -104,7 +113,7 @@ __all__ = [
     "add_flow_args",
     "add_model_args",
     "add_out_dir_arg",
-    "build_client",
+    "checkpoint_stream",
     "example_run_dir",
     "save_example_graph",
 ]

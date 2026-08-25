@@ -9,7 +9,7 @@ import sys
 import pytest
 
 import rlmflow
-from rlmflow import AgentConfig, Flow, persistence
+from rlmflow import DoneOutput, ExecAction, ExecOutput, LLMOutput, persistence
 from rlmflow.cli import main
 from rlmflow.graph.nodes import AgentStart, Node, UserQuery, start
 from rlmflow.view import (
@@ -28,30 +28,22 @@ from rlmflow.view import (
     timeline,
 )
 from rlmflow.view.figure import LABEL_ADVANCE, LABEL_SIZE, layout_graph
-from tests.test_flow import ScriptedLLM, block
 
 
 @pytest.fixture
 def ran() -> AgentStart:
     """A run with a sub-agent, so the figure has a fan in it."""
-    llm = ScriptedLLM(
-        [
-            (
-                "do a thing",
-                block(
-                    "child = await launch_subagent("
-                    "'sub', model='default', name='count')\n"
-                    "print(await child.wait_for_result())"
-                ),
-            ),
-            ("sub", block("print(2 + 2)")),
-            ("4", block("done('four')")),
-            ("four", block("done('finished')")),
-        ]
+    root = start("do a thing", max_depth=2)
+    action = root.append(LLMOutput(content="delegate")).append(
+        ExecAction(code="await launch_subagent('sub')")
     )
-    flow = Flow(llm, root_config=AgentConfig(max_depth=2))
-    root = flow.start("do a thing")
-    flow.run(root)
+    child = action.append(AgentStart(content="sub", config=root.config.child("count")))
+    child.append(LLMOutput(content="calculate")).append(ExecAction(code="print(2 + 2)")).append(
+        ExecOutput(content="4")
+    ).append(DoneOutput(content="four", result="four"))
+    action.append(ExecOutput(content="four")).append(
+        DoneOutput(content="finished", result="finished")
+    )
     return root
 
 
@@ -110,6 +102,27 @@ def test_deep_chains_stay_a_readable_size() -> None:
         node = node.append(UserQuery(content=f"step {i}"))
     _, height = dimensions(graph_svg(timeline(root), title="deep"))
     assert height <= 4000, f"figure is {height}px tall"
+
+
+def test_svg_and_html_render_past_the_recursion_limit() -> None:
+    root = start("deep")
+    node: Node = root
+    for i in range(2_000):
+        node = node.append(UserQuery(content=f"step {i}"))
+
+    assert graph_svg(timeline(root), title="deep").startswith("<svg")
+    assert render_html(root).startswith("<!doctype html>")
+
+
+def test_layout_handles_ten_thousand_node_chain() -> None:
+    root = start("deep")
+    node: Node = root
+    for i in range(9_999):
+        node = node.append(UserQuery(content=f"step {i}"))
+
+    layout = layout_graph(list(root.walk()))
+
+    assert len(layout.placed) == 10_000
 
 
 def test_empty_graph_renders_a_placeholder() -> None:
@@ -265,20 +278,10 @@ def test_cli_view_prints_every_ascii_step(ran: AgentStart, tmp_path, capsys) -> 
 def test_cli_view_exports_images(ran: AgentStart, tmp_path, capsys) -> None:
     pytest.importorskip("cairosvg")
     persistence.save(ran, tmp_path / "graph")
-    code = main(
-        [
-            "view",
-            str(tmp_path / "graph"),
-            "--tree",
-            "--frames",
-            str(tmp_path / "frames"),
-            "--gif",
-            str(tmp_path / "run.gif"),
-            "--every",
-            "2",
-        ]
-    )
-    assert code == 0
+    graph = str(tmp_path / "graph")
+    assert main(["view", "show", graph, "--tree"]) == 0
+    assert main(["render", "frames", graph, str(tmp_path / "frames"), "--every", "2"]) == 0
+    assert main(["render", "gif", graph, str(tmp_path / "run.gif"), "--every", "2"]) == 0
     assert "wrote" in capsys.readouterr().out
     assert list((tmp_path / "frames").glob("*.png"))
     assert (tmp_path / "run.gif").exists()

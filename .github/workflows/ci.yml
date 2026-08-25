@@ -30,6 +30,51 @@ jobs:
       - run: pip install ruff==0.16.0
       - run: ruff check .
 
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[docs]"
+      - run: python -m mdformat --wrap no --check README.md CHANGELOG.md UPGRADING.md docs/*.md
+      - run: mkdocs build --strict
+
+  providers:
+    name: providers (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: minimum
+            openai: openai==3.0.0
+            anthropic: anthropic==1.0.0
+          - name: latest
+            openai: openai
+            anthropic: anthropic
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e . pytest "${{ matrix.openai }}" "${{ matrix.anthropic }}"
+      - run: pytest -q tests/test_llm.py
+      - name: Construct both provider clients
+        env:
+          OPENAI_API_KEY: test
+          ANTHROPIC_API_KEY: test
+        run: |
+          python - <<'PY'
+          from rlmflow.llm import AnthropicClient, OpenAIClient
+
+          OpenAIClient("test")
+          AnthropicClient("test")
+          PY
+
   test:
     name: pytest (${{ matrix.python }})
     runs-on: ubuntu-latest

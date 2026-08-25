@@ -27,12 +27,13 @@ from rlmflow import (
     tool,
 )
 from rlmflow.consumers import WorkspaceSync
+from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import build_client  # noqa: E402
+from common import checkpoint_stream  # noqa: E402
 
 try:  # Allow both `python examples/autoresearch/run.py` and imports.
     from .modal_runner import ModalConfig, preflight, submit, validate_gpu
@@ -120,20 +121,20 @@ Build on what worked; never repeat a trial:
   of an idea already tried — that is wasted budget.
 
 Spend the WHOLE budget — a plateau means pivot, not stop:
-- The ONLY reason to call `done(...)` is `submission_status()["remaining_submissions"]
+- The ONLY reason to call `finish(...)` is `submission_status()["remaining_submissions"]
   == 0`. While it is > 0 you are NOT finished, no matter how the last wave went.
   A flat wave is not a stopping signal — it is a signal to change direction.
 - Plan ONE wave per turn, then FINISH the turn (print your results and stop the
   code block) so your NEXT turn can reason about the newest results and invent
   fresh hypotheses. Do NOT write a single script with a `while` loop that
-  pre-enumerates many waves from a fixed candidate list and calls `done()` at
+  pre-enumerates many waves from a fixed candidate list and calls `finish()` at
   the end — that hardcodes a finite menu and quits the moment it is drained.
   Returning between waves is NOT stopping; the run continues on your next turn.
 - Running out of ideas is NOT a stop condition. If your candidate list dedups to
   empty, that means you must BRAINSTORM genuinely new hypotheses, not quit:
   reach for an untried knob, a larger/opposite perturbation, an architecture
   change (attention/normalization/activation/weight-tying/init), or a fresh
-  COMBINATION of two prior winners. NEVER break out of planning or call `done()`
+  COMBINATION of two prior winners. NEVER break out of planning or call `finish()`
   with the reasoning "no new ideas / only duplicates left" while budget remains
   — there is always another untried direction within the task Constraints.
 - Keep waves wide: launch up to your `parallel` limit and up to
@@ -165,7 +166,7 @@ run_baseline()
 status = submission_status()
 remaining = status["remaining_submissions"]
 if remaining == 0:
-    done(str({"status": "complete", "best": best_run(), "runs": list_runs()}))
+    finish(str({"status": "complete", "best": best_run(), "runs": list_runs()}))
 runs = list_runs()                 # everything already tried (slug, hypothesis, val_bpb)
 print(get_run(0))                  # cite a number from a log in each hypothesis
 best, sample = best_run(), sample_valid_run()   # exploit the leader; diversify from a random winner
@@ -196,7 +197,7 @@ results = [await handle.wait_for_result() for handle in handles]
 # in a `while` loop over a fixed candidate list; finishing the turn lets your
 # NEXT turn reason about `results` and brainstorm genuinely new hypotheses. If
 # submission_status()["remaining_submissions"] > 0 you are not done; plan another
-# wave next turn (pivot to a new/untried direction). Only call done() at 0.
+# wave next turn (pivot to a new/untried direction). Only call finish() at 0.
 print(results, list_runs(), best_run(), submission_status())
 ```
 """
@@ -653,7 +654,7 @@ def run(args: argparse.Namespace) -> None:
     runtime = build_runtime(args.agent_runtime, args.docker_image, args.out)
 
     flow = Flow(
-        build_client(args.model),
+        client_for(args.model),
         runtime=runtime,
         tools=[*FILE_TOOLS, *build_autoresearch_tools(state)],
         workers=args.parallel,
@@ -673,7 +674,7 @@ several trials at once, not one at a time. Collect those handles and plan the
 next wave from their results.
 
 Keep launching waves until submission_status()["remaining_submissions"] == 0.
-That is the ONLY stop condition — do NOT call done() while submissions remain,
+That is the ONLY stop condition — do NOT call finish() while submissions remain,
 even if the last wave did not improve on the best (a plateau means pivot to a
 new direction, not stop). After each wave, re-check submission_status() and
 launch the next one.
@@ -692,9 +693,8 @@ launch the next one.
     )
 
     async def drive(root: AgentStart) -> None:
-        async for node in flow.run_streaming(root):
+        async for node in checkpoint_stream(flow.run_streaming(root), graph_dir):
             print(f"{node.parent_agent.config.path:<20} {node.type}", flush=True)
-            root.save(graph_dir)
             if sync is not None:
                 sync.handle(node)
 

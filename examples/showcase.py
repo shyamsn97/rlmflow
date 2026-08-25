@@ -6,7 +6,7 @@ This walks through the pieces that matter in the engine:
 2. Persisting a run with ``persistence.save()`` / ``persistence.load()``.
 3. Latest-state inspection across agents.
 4. In-process history by keeping tree snapshots.
-5. Node summary helpers (``root.walk()``, ``root.tokens()``).
+5. Node summary helpers (``root.walk()``, ``root.usage``).
 6. Gym-style stepping with a scalar reward.
 
 Usage:
@@ -19,7 +19,6 @@ import argparse
 import asyncio
 import shutil
 import sys
-from copy import deepcopy
 from pathlib import Path
 
 from rlmflow import (
@@ -27,17 +26,19 @@ from rlmflow import (
     AgentConfig,
     AgentStart,
     Flow,
+    GraphCheckpointer,
     LLMUsage,
     LocalRuntime,
     Node,
     persistence,
+    snapshot,
 )
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import example_run_dir  # noqa: E402
+from common import checkpoint_stream, example_run_dir  # noqa: E402
 
 BOLD = "\033[1m"
 DIM = "\033[2m"
@@ -64,16 +65,16 @@ class DemoLLM:
                 "    await hello.wait_for_result(),\n"
                 "    await goodbye.wait_for_result(),\n"
                 "]\n"
-                'done("\\n".join(results))\n'
+                'finish("\\n".join(results))\n'
                 "```"
             )
         if "hello.py" in prompt:
-            return '```repl\nwrite_file("hello.py", "print(\\"hello\\")\\n")\ndone("hello.py")\n```'
+            return '```repl\nwrite_file("hello.py", "print(\\"hello\\")\\n")\nfinish("hello.py")\n```'
         if "goodbye.py" in prompt:
-            return '```repl\nwrite_file("goodbye.py", "print(\\"goodbye\\")\\n")\ndone("goodbye.py")\n```'
+            return '```repl\nwrite_file("goodbye.py", "print(\\"goodbye\\")\\n")\nfinish("goodbye.py")\n```'
         if "haiku" in prompt:
-            return '```repl\nwrite_file("haiku.txt", "Calls fold into calls\\nNodes branch, wait, and then resume\\nFlow returns a leaf\\n")\ndone("wrote haiku.txt")\n```'
-        return '```repl\ndone("ok")\n```'
+            return '```repl\nwrite_file("haiku.txt", "Calls fold into calls\\nNodes branch, wait, and then resume\\nFlow returns a leaf\\n")\nfinish("wrote haiku.txt")\n```'
+        return '```repl\nfinish("ok")\n```'
 
 
 def file_flow(workdir: Path, config: AgentConfig) -> Flow:
@@ -97,26 +98,28 @@ def agents(root: Node) -> list[AgentStart]:
 
 
 async def run(flow: Flow, root: AgentStart, out_dir: Path) -> list[AgentStart]:
-    """Stream the run, saving and snapshotting the tree after every node."""
-    history = [deepcopy(root)]
-    async for node in flow.run_streaming(root):
+    """Stream the run, checkpointing periodically and snapshotting every node."""
+    history = [snapshot([root])]
+    async for node in checkpoint_stream(flow.run_streaming(root), out_dir):
         print(f"{node.parent_agent.config.path}  {node.type}")
-        root.save(out_dir)
-        history.append(deepcopy(root))
+        history.append(snapshot(list(root.walk())))
     return history
 
 
 async def gym_loop(flow: Flow, root: AgentStart, out_dir: Path) -> list[float]:
     rewards: list[float] = []
     step = 0
-    while not root.terminal:
-        async for _node in flow.run_streaming(root, until="next"):
-            pass
-        root.save(out_dir)
-        step += 1
-        reward = 1.0 if root.terminal else 0.0
-        rewards.append(reward)
-        print(f"step {step}: state={root.frontier.type} reward={reward}")
+    checkpoint = GraphCheckpointer(out_dir)
+    try:
+        while not root.terminal:
+            async for node in flow.run_streaming(root, until="next"):
+                checkpoint.handle(node)
+            step += 1
+            reward = 1.0 if root.terminal else 0.0
+            rewards.append(reward)
+            print(f"step {step}: state={root.frontier.type} reward={reward}")
+    finally:
+        checkpoint.close()
     return rewards
 
 
@@ -156,14 +159,14 @@ def main() -> None:
         print(f"  {agent.config.path}: {agent.frontier.type}")
 
     banner("4. Time travel — kept snapshots")
-    for idx, snapshot in enumerate(history):
+    for idx, snap in enumerate(history):
         print(
-            f"{CYAN}step {idx}{RESET}: root [{snapshot.frontier.type}]  "
-            f"agents={len(agents(snapshot))}"
+            f"{CYAN}step {idx}{RESET}: root [{snap.frontier.type}]  "
+            f"agents={len(agents(snap))}"
         )
 
     banner("5. Node summary")
-    usage = final.tokens()
+    usage = final.root.usage
     print(f"Agents:  {len(agents(final))}")
     print(f"States:  {node_count(final)}")
     print(f"Tokens:  {usage.total:,} ({usage.input_tokens:,} in / {usage.output_tokens:,} out)")

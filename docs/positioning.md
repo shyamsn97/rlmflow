@@ -10,17 +10,17 @@ It gives an LLM a REPL and recursive delegation tools, then persists every query
 
 ## Decision matrix
 
-| You want to... | Use |
-|----------------|-----|
-| Build a recursive agent where sub-agents spawn sub-agents | **rlmflow** |
-| Inspect the actual execution graph produced by a recursive agent | **rlmflow** |
-| Persist/fork/rewind agent execution mid-run | **rlmflow** |
-| Run a one-off coding task from your terminal | Codex CLI, Claude Code, Aider |
-| Build a graph of heterogeneous agents with complex routing | LangGraph |
-| Assemble a team of role-based agents (researcher + writer + reviewer) | CrewAI |
-| Optimize prompts/programs against a metric | DSPy |
-| Run SWE-bench evaluations with minimal setup | SWE-agent, OpenHands |
-| Pair-program with git integration and auto-commits | Aider |
+| You want to...                                                        | Use                           |
+| --------------------------------------------------------------------- | ----------------------------- |
+| Build a recursive agent where sub-agents spawn sub-agents             | **rlmflow**                   |
+| Inspect the actual execution graph produced by a recursive agent      | **rlmflow**                   |
+| Persist/fork/rewind agent execution mid-run                           | **rlmflow**                   |
+| Run a one-off coding task from your terminal                          | Codex CLI, Claude Code, Aider |
+| Build a graph of heterogeneous agents with complex routing            | LangGraph                     |
+| Assemble a team of role-based agents (researcher + writer + reviewer) | CrewAI                        |
+| Optimize prompts/programs against a metric                            | DSPy                          |
+| Run SWE-bench evaluations with minimal setup                          | SWE-agent, OpenHands          |
+| Pair-program with git integration and auto-commits                    | Aider                         |
 
 ## rlmflow vs specific alternatives
 
@@ -31,6 +31,7 @@ It gives an LLM a REPL and recursive delegation tools, then persists every query
 **Choose rlm-minimal** when you want the simplest possible recursive agent to study or fork.
 
 **Choose rlmflow** when you need:
+
 - Step-level control (pause, inspect, resume)
 - Typed graph state with save/load persistence, fork, and time-travel
 - Parallel child execution with a thread pool
@@ -47,6 +48,7 @@ It gives an LLM a REPL and recursive delegation tools, then persists every query
 **Choose ypi** when you want a polished CLI coding agent with jj workspace isolation per child.
 
 **Choose rlmflow** when you want an **embeddable Python library** with:
+
 - Typed config and Pydantic state (not env vars and subprocess orchestration)
 - First-class typed graph state you can serialize/replay
 - Fine-grained stepping visible to your own code
@@ -57,12 +59,14 @@ It gives an LLM a REPL and recursive delegation tools, then persists every query
 [LangGraph](https://github.com/langchain-ai/langgraph) is a graph DSL with channel-based state, durable checkpointing (SQLite/Postgres), and a huge ecosystem.
 
 **Choose LangGraph** when you need:
+
 - Complex graph topologies beyond recursive trees
 - Production-grade durable checkpointing to databases
 - Large ecosystem of prebuilt integrations
 - Enterprise features (LangSmith tracing, deployment)
 
 **Choose rlmflow** when:
+
 - Your problem is naturally recursive (one agent type, spawning copies of itself)
 - You want the mental model to be "LLM + REPL + delegation" not "graph nodes + channels"
 - You want the graph to emerge from model delegation instead of being hand-authored
@@ -83,8 +87,7 @@ It gives an LLM a REPL and recursive delegation tools, then persists every query
 
 **Choose AutoGen** when you need async multi-agent messaging at scale, OpenTelemetry, or Microsoft ecosystem integration.
 
-**Choose rlmflow** when you want a direct Node step/stream API where the entire
-recursive execution is one inspectable tree.
+**Choose rlmflow** when you want a direct Node step/stream API where the entire recursive execution is one inspectable tree.
 
 ### vs SWE-agent / OpenHands
 
@@ -105,7 +108,7 @@ These are task-specific harnesses for coding agents with Docker sandboxes and be
 ## What rlmflow is NOT
 
 - **Not a product** — it's a library. You bring your own LLM keys, runtime, and UI.
-- **Not a sandbox** — `LocalRuntime` runs code in your process. Use `ModalRuntime` or a custom `Runtime` for isolation.
+- **Not a sandbox** — `LocalRuntime` uses a subprocess with your host user's permissions. Use `DockerRuntime`, `ModalRuntime`, or a hardened custom runtime for untrusted code.
 - **Not an integration platform** — we don't ship 100 tool connectors. Register your own tools with `@tool` + `Flow(tools=[...])`, or use the built-in filesystem tools.
 - **Not a prompt optimizer** — we provide sensible defaults, but prompt tuning is your job (or pair with DSPy).
 

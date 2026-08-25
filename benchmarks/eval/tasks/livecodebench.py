@@ -6,8 +6,9 @@ import html
 import json
 import random
 import re
+import shutil
 import subprocess
-import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -34,10 +35,12 @@ class LiveCodeBenchDataset(Dataset):
         data_dir: str = "evals/data",
         max_samples: int | None = None,
         test_timeout: int = 10,
+        test_image: str = "python:3.12.11-slim-bookworm",
     ) -> None:
         self.data_dir = Path(data_dir)
         self.max_samples = max_samples
         self.test_timeout = test_timeout
+        self.test_image = test_image
         self._rows: list[dict[str, Any]] | None = None
 
     def examples(self, *, split: str, limit: int | None, seed: int) -> list[Example]:
@@ -55,6 +58,7 @@ class LiveCodeBenchDataset(Dataset):
             code,
             test_cases if isinstance(test_cases, list) else [],
             timeout=self.test_timeout,
+            image=self.test_image,
         )
         value = passed / total if total else 0.0
         return Score(
@@ -187,16 +191,49 @@ def _execute_against_tests(
     test_cases: list[dict[str, Any]],
     *,
     timeout: int,
+    image: str,
 ) -> tuple[bool, int, int]:
     passed = 0
     total = len(test_cases)
     if not code or total == 0:
         return False, 0, total
+    if shutil.which("docker") is None:
+        raise RuntimeError(
+            "LiveCodeBench scoring requires Docker; generated code is never executed on the host"
+        )
     for test in test_cases:
         expected = str(test.get("output") or test.get("expected_output", "")).strip()
+        container = f"rlmflow-livecodebench-{uuid.uuid4().hex}"
         try:
             result = subprocess.run(
-                [sys.executable, "-c", code],
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--name",
+                    container,
+                    "--network",
+                    "none",
+                    "--read-only",
+                    "--cap-drop",
+                    "ALL",
+                    "--security-opt",
+                    "no-new-privileges",
+                    "--pids-limit",
+                    "64",
+                    "--memory",
+                    "256m",
+                    "--cpus",
+                    "1",
+                    "--tmpfs",
+                    "/tmp:rw,noexec,nosuid,size=16m",
+                    "-i",
+                    image,
+                    "python",
+                    "-I",
+                    "-c",
+                    code,
+                ],
                 input=str(test.get("input", "")),
                 capture_output=True,
                 text=True,
@@ -205,6 +242,12 @@ def _execute_against_tests(
             )
         except (subprocess.TimeoutExpired, OSError):
             continue
+        finally:
+            subprocess.run(
+                ["docker", "rm", "--force", container],
+                capture_output=True,
+                check=False,
+            )
         if result.stdout.strip() == expected:
             passed += 1
     return passed == total, passed, total

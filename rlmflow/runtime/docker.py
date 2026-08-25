@@ -16,15 +16,15 @@ def build_docker_argv(
     *,
     mounts: dict[str, str] | None = None,
     env: dict[str, str] | None = None,
-    network: str | None = None,
-    cpus: float | None = None,
-    memory: str | None = None,
-    user: str | None = None,
+    network: str | None = "none",
+    cpus: float | None = 1.0,
+    memory: str | None = "512m",
+    user: str | None = "1000:1000",
     workdir: str | None = None,
     extra_args: list[str] | None = None,
     docker_bin: str = "docker",
 ) -> list[str]:
-    """Build a stdio-attached, automatically removed worker container."""
+    """Build a bounded, stdio-attached, automatically removed worker container."""
     argv = [docker_bin, "run", "-i", "--rm"]
     for host, container in (mounts or {}).items():
         argv += ["-v", f"{Path(host).resolve()}:{container}"]
@@ -40,7 +40,19 @@ def build_docker_argv(
         argv += ["--user", user]
     if workdir is not None:
         argv += ["--workdir", workdir]
-    argv += list(extra_args or [])
+    if extra_args is None:
+        extra_args = [
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "256",
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,size=64m",
+        ]
+    argv += extra_args
     argv += [image, "python", "-u", "-m", "rlmflow.runtime.repl_server"]
     return argv
 
@@ -55,10 +67,10 @@ class DockerRuntime(Runtime):
         working_directory: str | Path | None = None,
         mounts: dict[str, str] | None = None,
         env: dict[str, str] | None = None,
-        network: str | None = None,
-        cpus: float | None = None,
-        memory: str | None = None,
-        user: str | None = None,
+        network: str | None = "none",
+        cpus: float | None = 1.0,
+        memory: str | None = "512m",
+        user: str | None = "1000:1000",
         workdir: str | None = None,
         extra_args: list[str] | None = None,
         docker_bin: str = "docker",

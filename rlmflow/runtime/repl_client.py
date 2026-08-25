@@ -28,7 +28,7 @@ from rlmflow.runtime.protocol import (
 from rlmflow.runtime.repl import MISSING_REPL_NOTE, DoneSignal, Repl, ReplRun, ReplStatus
 from rlmflow.tools import get_tool_metadata
 from rlmflow.tools.agents import AGENTS_BINDING
-from rlmflow.utils.serial import decode_object, encode_object
+from rlmflow.utils.serial import encode_host_value
 
 _NO_ANSWER = object()
 _RPC_CALL_ID: ContextVar[int] = ContextVar("rlmflow_rpc_call_id", default=0)
@@ -194,13 +194,11 @@ class WorkerSession:
             self._send_proxy_error(message, "RPC belongs to no active execution")
             return
         try:
-            args, kwargs = decode_object(message.payload)
-
             def invoke() -> Any:
                 token = _RPC_CALL_ID.set(message.call_id)
                 try:
                     fn = state.proxied[message.proxy]
-                    value = fn(*args, **kwargs)
+                    value = fn(*message.args, **message.kwargs)
                     if inspect.isawaitable(value):
                         value = self._await_host(value, state.loop)
                     return value
@@ -224,7 +222,7 @@ class WorkerSession:
                 error=f"{type(exc).__name__}: {exc}",
             )
         else:
-            response = ProxyResponse(id=message.id, value=encode_object(value))
+            response = ProxyResponse(id=message.id, value=encode_host_value(value))
         with self._send_lock:
             self.connection.send(response)
 
@@ -261,14 +259,14 @@ class WorkerSession:
             id=run_id,
             tenant_id=tenant.tenant_id,
             code=code,
-            binding=encode_object(binding),
+            binding=encode_host_value(binding),
         )
         try:
             response = self.request(request, timeout=self.execution_timeout)
             if not response.ok:
                 raise RuntimeError(response.error or "worker execution failed")
             if response.env is not None:
-                tenant.env = decode_object(response.env)
+                tenant.env = dict(response.env)
             if state.answer is not _NO_ANSWER:
                 return ReplRun(
                     output=response.output,
@@ -323,7 +321,7 @@ class WorkerRepl(Repl):
     def inject(self, name: str, value: Any) -> None:
         self.namespace[name] = value
         metadata = get_tool_metadata(value) if callable(value) else None
-        if name in {"finish", "done"} or (metadata is not None and metadata.proxy):
+        if name == "finish" or (metadata is not None and metadata.proxy):
             self.proxied[name] = value
             request: WireModel = InjectProxyRequest(
                 id=self.session._next_id("inject_proxy"),
@@ -337,7 +335,7 @@ class WorkerRepl(Repl):
                 id=self.session._next_id("inject"),
                 tenant_id=self.tenant_id,
                 name=name,
-                value=encode_object(value),
+                value=encode_host_value(value),
             )
         response = self.session.request(request, timeout=self.session.timeout)
         if not response.ok:
@@ -352,9 +350,9 @@ class WorkerRepl(Repl):
             ),
             timeout=self.session.timeout,
         )
-        if not response.ok or response.value is None:
-            raise KeyError(name)
-        return decode_object(response.value)
+        if not response.ok:
+            raise KeyError(response.error or name)
+        return response.value
 
     def remove_tool(self, name: str) -> None:
         self.namespace.pop(name, None)

@@ -25,12 +25,13 @@ from rlmflow import (
     DockerRuntime,
     Flow,
 )
+from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import build_client, example_run_dir  # noqa: E402
+from common import checkpoint_stream, example_run_dir  # noqa: E402
 
 _TOPICS = [
     "the migration to the new billing system",
@@ -103,7 +104,7 @@ it with a map-reduce strategy instead of reading it all at once:
    does not serialize their execution.
 3. Combine the child summaries into a single coherent summary of the whole
    document (a short intro paragraph plus bullet points), then call
-   done(final_summary).
+   finish(final_summary).
 """
 
 
@@ -143,10 +144,10 @@ def main() -> None:
 
     llm_clients = None
     if args.fast_model:
-        llm_clients = {"fast": build_client(args.fast_model)}
+        llm_clients = {"fast": client_for(args.fast_model)}
 
     flow = Flow(
-        build_client(args.model),
+        client_for(args.model),
         llm_clients=llm_clients,
         runtime=runtime,
         root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
@@ -156,9 +157,8 @@ def main() -> None:
     out_dir = Path(args.out_dir)
 
     async def drive() -> None:
-        async for node in flow.run_streaming(root):
+        async for node in checkpoint_stream(flow.run_streaming(root), out_dir):
             print(f"{node.parent_agent.config.path}  {node.type}")
-            root.save(out_dir)
 
     asyncio.run(drive())
 

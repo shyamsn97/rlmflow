@@ -66,13 +66,6 @@ def test_truncate_output_preserves_traceback_tail():
     assert truncated.endswith("boxes has no items")
 
 
-def _walk(node):
-    """Every node of a saved graph, which nests children the way the tree does."""
-    yield node
-    for child in node["children"]:
-        yield from _walk(child)
-
-
 def test_finish():
     llm = ScriptedLLM([("count", block("x = 2\nprint(x)")), ("2", block("finish(x * 3)"))])
     flow = Flow(llm)
@@ -80,12 +73,45 @@ def test_finish():
     assert llm.calls[0][0]["role"] == "system"
 
 
+def test_finish_is_the_only_completion_tool():
+    flow = Flow(ScriptedLLM([]))
+    tools = flow.build_tools(start("count"))
+
+    assert "finish" in tools
+    assert "done" not in tools
+
+
 def test_error_then_recovery():
-    llm = ScriptedLLM([("boom", block("1 / 0")), ("ZeroDivisionError", block("done('recovered')"))])
+    llm = ScriptedLLM([("boom", block("1 / 0")), ("ZeroDivisionError", block("finish('recovered')"))])
     root = start("boom")
     assert Flow(llm).run(root) == "recovered"
     types = [type(n).__name__ for n in root.walk()]
     assert "ErrorOutput" in types
+
+
+def test_execution_guard_rejects_code_before_it_reaches_the_runtime():
+    seen = []
+
+    async def guard(action):
+        seen.append(action.code)
+        if "forbidden" in action.code:
+            return "rejected by execution guard"
+        return None
+
+    llm = ScriptedLLM(
+        [
+            ("start", block("forbidden()")),
+            ("rejected by execution guard", block("finish('safe')")),
+        ]
+    )
+    root = start("start")
+
+    assert Flow(llm, execution_guard=guard).run(root) == "safe"
+    assert seen == ["forbidden()", "finish('safe')"]
+    assert any(
+        isinstance(node, ErrorOutput) and node.content == "rejected by execution guard"
+        for node in root.walk()
+    )
 
 
 def test_max_iters():
@@ -95,15 +121,19 @@ def test_max_iters():
     assert sum(isinstance(n, LLMOutput) for n in root.walk()) == 3
 
 
-def test_max_iters_defaults_to_unlimited():
-    llm = ScriptedLLM([("loop", block("print('again')")), ("again", block("done('ok')"))])
+def test_max_iters_has_a_safe_default_and_none_opts_out():
+    llm = ScriptedLLM([("loop", block("print('again')")), ("again", block("finish('ok')"))])
     root = start("loop")
-    assert root.config.max_iters is None
+    assert root.config.max_iters == 30
+    assert root.config.max_budget == 100_000
+    unbounded = start("unbounded", max_iters=None, max_budget=None)
+    assert unbounded.config.max_iters is None
+    assert unbounded.config.max_budget is None
     assert Flow(llm).run(root) == "ok"
 
 
 def test_inputs():
-    llm = ScriptedLLM([("", block("done(INPUTS['doc'].upper())"))])
+    llm = ScriptedLLM([("", block("finish(INPUTS['doc'].upper())"))])
     root = start("shout", inputs={"doc": "hi"})
     assert Flow(llm).run(root) == "HI"
     assert "- doc: str, 2 chars" in Flow(llm).build_messages(root.frontier)[0]["content"]
@@ -183,7 +213,7 @@ async def stream(flow, root, until):
 
 
 def test_streaming_until_idle():
-    llm = ScriptedLLM([("look", block("print('peek')")), ("peek", block("done('finished')"))])
+    llm = ScriptedLLM([("look", block("print('peek')")), ("peek", block("finish('finished')"))])
     flow = Flow(llm)
     root = start("look")
     seen = asyncio.run(stream(flow, root, "idle"))
@@ -205,9 +235,9 @@ def test_children_run_in_parallel():
     llm = ScriptedLLM(
         [
             ("split", parent),
-            ("do a", block("done('A')")),
-            ("do b", block("done('B')")),
-            ("['A', 'B']", block("done('AB')")),
+            ("do a", block("finish('A')")),
+            ("do b", block("finish('B')")),
+            ("['A', 'B']", block("finish('AB')")),
         ]
     )
     root = start("split this up")
@@ -241,15 +271,15 @@ def test_save_writes_a_run_directory(tmp_path):
         "child = await launch_subagent('do a', model='default', name='a')\n"
         "print(await child.wait_for_result())"
     )
-    llm = ScriptedLLM([("split", parent), ("do a", block("done('A')")), ("A", block("done('AB')"))])
+    llm = ScriptedLLM([("split", parent), ("do a", block("finish('A')")), ("A", block("finish('AB')"))])
     root = start("split this up", inputs={"doc": "hi"})
     assert Flow(llm).run(root) == "AB"
 
     run = root.save(tmp_path / "run")
     graph = json.loads((run / "graph.json").read_text())
-    assert (graph["version"], graph["node_count"], graph["metadata"]) == (2, 13, {})
-    assert graph["root"]["payload"]["inputs"] == {"doc": "hi"}
-    assert [node["order"] for node in graph["root"]["children"]] == [1]
+    assert (graph["version"], graph["node_count"], graph["metadata"]) == (3, 13, {})
+    assert graph["nodes"][0]["payload"]["inputs"] == {"doc": "hi"}
+    assert graph["nodes"][0]["parent_id"] is None
 
     summary = json.loads((run / "latest.json").read_text())
     assert summary["agent_ids"] == ["root", "root.a"]
@@ -257,9 +287,9 @@ def test_save_writes_a_run_directory(tmp_path):
     assert (summary["finished"], summary["result"]) == (True, "AB")
 
     action = next(n for n in root.transcript() if isinstance(n, ExecAction))
-    saved = next(node for node in _walk(graph["root"]) if node["id"] == action.id)
-    assert [node["type"] for node in saved["children"]] == ["agent_start", "exec_output"]
-    assert saved["children"][0]["agent_id"] == "root.a"
+    children = [node for node in graph["nodes"] if node["parent_id"] == action.id]
+    assert [node["type"] for node in children] == ["agent_start", "exec_output"]
+    assert children[0]["agent_id"] == "root.a"
 
     child = root.sub_agents[0]
     child_dir = run / "agents" / "root" / "a"
@@ -271,7 +301,7 @@ def test_save_writes_a_run_directory(tmp_path):
     lines = (child_dir / "session.jsonl").read_text().splitlines()
     session = [json.loads(line) for line in lines]
     assert [node["id"] for node in session] == [node.id for node in child.transcript()]
-    assert all(node["agent_id"] == "root.a" and node["children"] == [] for node in session)
+    assert all(node["agent_id"] == "root.a" and "children" not in node for node in session)
     assert json.loads((child_dir / "latest.json").read_text())["id"] == child.frontier.id
 
 
@@ -285,9 +315,9 @@ def test_run_records_prompts_seq_and_timing():
     llm = ScriptedLLM(
         [
             ("split", parent),
-            ("do a", block("done('A')")),
-            ("do b", block("done('B')")),
-            ("['A', 'B']", block("done('AB')")),
+            ("do a", block("finish('A')")),
+            ("do b", block("finish('B')")),
+            ("['A', 'B']", block("finish('AB')")),
         ]
     )
     root = start("split this up")
@@ -314,12 +344,12 @@ def test_run_records_prompts_seq_and_timing():
     assert root.latest_system_prompt() == last
     # The text is stored once per distinct prompt, and turns only keep the id.
     assert sorted(root.system_prompts) == sorted({turn.prompt_id for turn in turns})
-    assert turns[0].to_dict()["metadata"]["system_prompt"] == turns[0].prompt_id
+    assert turns[0].to_record()["metadata"]["system_prompt"] == turns[0].prompt_id
     assert turns[0].timing()["duration_ms"] >= 0
 
 
 def test_appending_off_the_frontier_is_refused():
-    llm = ScriptedLLM([("count", block("x = 2\nprint(x)")), ("2", block("done(x * 3)"))])
+    llm = ScriptedLLM([("count", block("x = 2\nprint(x)")), ("2", block("finish(x * 3)"))])
     root = start("count for me")
     assert Flow(llm).run(root) == "6"
 
@@ -334,7 +364,7 @@ def test_structured_output_is_stored_parsed():
     llm = ScriptedLLM([("count", block("finish({'n': 41})"))])
     root = start("count", output_schema=schema)
     assert Flow(llm).run(root) == {"n": 41}
-    assert root.frontier.to_dict()["payload"]["result"] == {"n": 41}
+    assert root.frontier.to_record()["payload"]["result"] == {"n": 41}
 
 
 def test_prose_only_reply_is_told_to_send_a_block_and_recovers():
@@ -370,13 +400,13 @@ def test_save_load_roundtrip(tmp_path):
         "child = await launch_subagent('do a', model='default', name='a')\n"
         "print(await child.wait_for_result())"
     )
-    llm = ScriptedLLM([("split", parent), ("do a", block("done('A')")), ("A", block("done('AB')"))])
+    llm = ScriptedLLM([("split", parent), ("do a", block("finish('A')")), ("A", block("finish('AB')"))])
     root = start("split this up", inputs={"doc": "hi"})
     Flow(llm).run(root)
 
     loaded = AgentStart.load(root.save(tmp_path / "run"))
-    assert persistence.to_dict(loaded) == persistence.to_dict(root)
-    assert persistence.summary(loaded) == persistence.summary(root)
+    assert persistence.to_document(loaded) == persistence.to_document(root)
+    assert loaded.stats == root.stats
     assert (loaded.result(), loaded.terminal) == ("AB", True)
     assert [sub.config.path for sub in loaded.sub_agents] == ["root.a"]
     assert loaded.sub_agents[0].result() == "A"
@@ -394,7 +424,7 @@ def paused_run(tmp_path, name="run"):
 
 def test_resuming_a_saved_run_replays_its_repl(tmp_path):
     loaded = paused_run(tmp_path)
-    llm = ScriptedLLM([("stored", block("done(secret + 1)"))])
+    llm = ScriptedLLM([("stored", block("finish(secret + 1)"))])
     assert Flow(llm).run(loaded) == "42"
     assert not [node for node in loaded.walk() if isinstance(node, ErrorOutput)]
     assert len(llm.calls) == 1  # the replay itself asks the model nothing
@@ -402,7 +432,7 @@ def test_resuming_a_saved_run_replays_its_repl(tmp_path):
 
 def test_lazy_restore_waits_until_code_needs_the_repl(tmp_path):
     loaded = paused_run(tmp_path)
-    llm = ScriptedLLM([("stored", block("done(secret + 1)"))])
+    llm = ScriptedLLM([("stored", block("finish(secret + 1)"))])
     flow = Flow(llm, restore="lazy")
 
     async def stop_before_execution():
@@ -423,7 +453,7 @@ def test_replay_reads_recorded_child_answers_instead_of_relaunching(tmp_path):
         "child = await launch_subagent('add up', model='default', name='kid')\n"
         "answer = await child.wait_for_result()\nprint(answer)"
     )
-    llm = ScriptedLLM([("delegate", parent), ("add up", block("done('20')"))])
+    llm = ScriptedLLM([("delegate", parent), ("add up", block("finish('20')"))])
     root = start("delegate", max_depth=2)
 
     def parent_turn_ended(node, root):
@@ -432,7 +462,7 @@ def test_replay_reads_recorded_child_answers_instead_of_relaunching(tmp_path):
     asyncio.run(stream(Flow(llm), root, parent_turn_ended))
     loaded = AgentStart.load(root.save(tmp_path / "run"))
 
-    resumed = ScriptedLLM([("20", block("done('parent saw ' + answer)"))])
+    resumed = ScriptedLLM([("20", block("finish('parent saw ' + answer)"))])
     assert Flow(resumed).run(loaded) == "parent saw 20"
     # The child ran once, when it was recorded: no second launch, no second model call.
     assert [child.config.name for child in loaded.sub_agents] == ["kid"]
@@ -448,8 +478,8 @@ def test_append_child_runs_a_prebuilt_subtree():
     flow = Flow(
         ScriptedLLM(
             [
-                ("child", block("done('finished')")),
-                ("finished", block("done('finished')")),
+                ("child", block("finish('finished')")),
+                ("finished", block("finish('finished')")),
             ]
         )
     )
@@ -463,10 +493,10 @@ def test_append_child_runs_a_prebuilt_subtree():
 def test_controller_attaches_multiple_subtrees_between_streams():
     llm = ScriptedLLM(
         [
-            ("['A', 'B']", block("done('AB')")),
+            ("['A', 'B']", block("finish('AB')")),
             ("prepare", block("print('prepared')")),
-            ("child a", block("done(value)")),
-            ("child b", block("done(value)")),
+            ("child a", block("finish(value)")),
+            ("child b", block("finish(value)")),
         ]
     )
     flow = Flow(llm)
@@ -508,8 +538,8 @@ def test_resume_uses_an_unfinished_subtree_already_on_the_launch_action():
 
     llm = ScriptedLLM(
         [
-            ("finished child", block("done('parent saw finished child')")),
-            ("child", block("done('finished child')")),
+            ("finished child", block("finish('parent saw finished child')")),
+            ("child", block("finish('finished child')")),
         ]
     )
     assert Flow(llm).run(root) == "parent saw finished child"
@@ -547,14 +577,14 @@ def test_replaying_agents_can_skip_their_own_unrepeatable_work(tmp_path):
     assert trace == ["live"]
 
     loaded = AgentStart.load(root.save(tmp_path / "run"))
-    resumed = Flow(ScriptedLLM([("set up", block("done('ok')"))]))
+    resumed = Flow(ScriptedLLM([("set up", block("finish('ok')"))]))
     resumed.inject("log", log)
     assert resumed.run(loaded) == "ok"
     assert trace == ["live"]  # the replay saw RLMFLOW_REPLAY=1 and skipped it
 
 
 def test_a_finished_run_resumes_to_its_recorded_answer(tmp_path):
-    llm = ScriptedLLM([("count", block("done('six')"))])
+    llm = ScriptedLLM([("count", block("finish('six')"))])
     root = start("count for me")
     assert Flow(llm).run(root) == "six"
 
@@ -582,7 +612,7 @@ def test_a_dead_repl_is_an_observation_and_is_replaced():
             return repl
 
     llm = ScriptedLLM(
-        [("count", block("x = 1")), ("ConnectionResetError", block("done('recovered')"))]
+        [("count", block("x = 1")), ("ConnectionResetError", block("finish('recovered')"))]
     )
     runtime = OneDeadRepl()
     root = start("count for me")
@@ -596,7 +626,7 @@ def test_a_dead_repl_is_an_observation_and_is_replaced():
     # namespace went with it, and the record says which kind of failure it was.
     assert errors[0].error == "repl"
     assert errors[0].content.endswith(ReplDead().content)
-    assert errors[0].to_dict()["payload"]["error"] == "repl"
+    assert errors[0].to_record()["payload"]["error"] == "repl"
 
 
 def test_repeated_launch_on_one_action_reuses_its_direct_child():
@@ -609,8 +639,8 @@ def test_repeated_launch_on_one_action_reuses_its_direct_child():
     llm = ScriptedLLM(
         [
             ("delegate", parent),
-            ("once", block("done('reused')")),
-            ("do it", block("done('once')")),
+            ("once", block("finish('reused')")),
+            ("do it", block("finish('once')")),
         ]
     )
     root = start("delegate", max_depth=2)
@@ -623,7 +653,7 @@ def test_saving_a_smaller_tree_prunes_stale_agents(tmp_path):
         "child = await launch_subagent('do a', model='default', name='a')\n"
         "print(await child.wait_for_result())"
     )
-    llm = ScriptedLLM([("split", parent), ("do a", block("done('A')")), ("A", block("done('AB')"))])
+    llm = ScriptedLLM([("split", parent), ("do a", block("finish('A')")), ("A", block("finish('AB')"))])
     root = start("split this up")
     Flow(llm).run(root)
 
@@ -639,7 +669,7 @@ def test_max_depth_refusal():
     llm = ScriptedLLM(
         [
             ("deep", block("print(await launch_subagent('x', model='default'))")),
-            ("max depth", block("done('stopped')")),
+            ("max depth", block("finish('stopped')")),
         ]
     )
     root = start("go deep", max_depth=0)
@@ -666,9 +696,9 @@ def test_grandchildren():
                     "print(await leaf.wait_for_result())"
                 ),
             ),
-            ("go leaf", block("done('leaf')")),
-            ("leaf", block("done('mid')")),
-            ("mid", block("done('root')")),
+            ("go leaf", block("finish('leaf')")),
+            ("leaf", block("finish('mid')")),
+            ("mid", block("finish('root')")),
         ]
     )
     root = start("plan the work", max_depth=2)
@@ -712,8 +742,8 @@ def test_children_step_concurrently():
                     "*[h.wait_for_result() for h in handles]))"
                 ),
             ),
-            *[(f"child {i}", block(f"done({i})")) for i in range(3)],
-            ("['0', '1', '2']", block("done('all')")),
+            *[(f"child {i}", block(f"finish({i})")) for i in range(3)],
+            ("['0', '1', '2']", block("finish('all')")),
         ],
     )
     root = start("fan out", max_depth=1)
@@ -734,11 +764,11 @@ def test_background_child_outlives_root_and_stream_drains_it():
             last = messages[-1]["content"]
             if "slow child" in last:
                 assert release_child.wait(timeout=5)
-                return block("done('child finished')")
+                return block("finish('child finished')")
             return block(
                 "child = await launch_subagent("
                 "'slow child', model='default', name='background')\n"
-                "done(child.status)"
+                "finish(child.status)"
             )
 
     flow = Flow(BackgroundLLM(), workers=2)
@@ -772,7 +802,7 @@ def test_background_child_outlives_root_and_stream_drains_it():
 
 
 def test_child_handle_waits_on_a_later_turn():
-    wait = block("done(await later.wait_for_result())")
+    wait = block("finish(await later.wait_for_result())")
     llm = ScriptedLLM(
         [
             (
@@ -783,7 +813,7 @@ def test_child_handle_waits_on_a_later_turn():
                     "print('queued', later.name)"
                 ),
             ),
-            ("child task", block("done('child answer')")),
+            ("child task", block("finish('child answer')")),
             ("queued later", wait),
         ]
     )
@@ -801,7 +831,7 @@ def test_launch_subagent_rejects_removed_wait_parameter():
                 "delegate",
                 block("await launch_subagent('child', model='default', wait=False)"),
             ),
-            ("unexpected keyword", block("done('recovered')")),
+            ("unexpected keyword", block("finish('recovered')")),
         ]
     )
     root = start("delegate", max_depth=1)
@@ -821,8 +851,8 @@ def test_user_prompt_reports_background_subagent_status_without_action_guidance(
                     "print('queued')"
                 ),
             ),
-            ("child task", block("done('child answer')")),
-            ("child answer", block("done('finished')")),
+            ("child task", block("finish('child answer')")),
+            ("child answer", block("finish('finished')")),
             (
                 "Background subagents:",
                 block("print(await child.wait_for_result())"),
@@ -855,10 +885,10 @@ def test_agents_result_matches_a_collected_child():
                     "print(await waited.wait_for_result())"
                 ),
             ),
-            ("child task", block("done('child answer')")),
+            ("child task", block("finish('child answer')")),
             (
                 "child answer",
-                block("done(await AGENTS.get('waited').wait_for_result())"),
+                block("finish(await AGENTS.get('waited').wait_for_result())"),
             ),
         ]
     )
@@ -908,7 +938,7 @@ def test_custom_tool_is_injected_and_documented():
     def shout(text: str) -> str:
         return text.upper()
 
-    llm = ScriptedLLM([("", block("done(shout('hi'))"))])
+    llm = ScriptedLLM([("", block("finish(shout('hi'))"))])
     flow = Flow(llm, tools=[shout])
     root = start("say it")
     assert flow.run(root) == "HI"
@@ -931,8 +961,8 @@ def test_child_output_schema_comes_back_parsed():
     llm = ScriptedLLM(
         [
             ("measure", parent),
-            ("count", block("done({'n': 41})")),
-            ("42", block("done('42')")),
+            ("count", block("finish({'n': 41})")),
+            ("42", block("finish('42')")),
         ]
     )
     root = start("measure it", max_depth=1)
@@ -947,7 +977,7 @@ def test_prompt_profile_picks_a_child_system_prompt():
         "print(await child.wait_for_result())"
     )
     llm = ScriptedLLM(
-        [("delegate", parent), ("be brief", block("done('ok')")), ("ok", block("done('done')"))]
+        [("delegate", parent), ("be brief", block("finish('ok')")), ("ok", block("finish('done')"))]
     )
     profiles = {"terse": PromptProfile(system="Answer in one word.", description="brief")}
     flow = Flow(llm, prompt_profiles=profiles)
@@ -959,7 +989,7 @@ def test_prompt_profile_picks_a_child_system_prompt():
 
 
 def test_a_profile_takes_a_current_node_renderer():
-    llm = ScriptedLLM([("the board so far", block("done('solved')"))])
+    llm = ScriptedLLM([("the board so far", block("finish('solved')"))])
 
     def render_board(_runtime: Runtime, node: Node) -> list[dict[str, str]]:
         return [
@@ -975,8 +1005,8 @@ def test_a_profile_takes_a_current_node_renderer():
 
 
 def test_named_model_routes_to_another_client():
-    default = ScriptedLLM([("", block("done('wrong client')"))])
-    fast = ScriptedLLM([("", block("done('fast client')"))])
+    default = ScriptedLLM([("", block("finish('wrong client')"))])
+    fast = ScriptedLLM([("", block("finish('fast client')"))])
     root = start("who answers", model="fast")
     assert Flow(default, llm_clients={"fast": fast}).run(root) == "fast client"
     assert default.calls == []
@@ -1046,7 +1076,7 @@ def test_long_child_query_is_refused():
                 "delegate",
                 block("print(await launch_subagent('far too long', model='default'))"),
             ),
-            ("exceeds", block("done('stopped')")),
+            ("exceeds", block("finish('stopped')")),
         ]
     )
     root = start("delegate this", max_depth=1, max_query_chars=4)
@@ -1072,7 +1102,7 @@ def test_child_failure_reaches_the_parent():
                 ),
             ),
             ("boom", RuntimeError("child is down")),
-            ("child is down", block("done('recovered')")),
+            ("child is down", block("finish('recovered')")),
         ]
     )
     root = start("delegate this", max_depth=1)
@@ -1086,7 +1116,7 @@ def test_aclose_drops_the_work_and_the_repls():
         async def aclose(self):
             self.closed = True
 
-    llm = ClosingLLM([("count", block("done('six')"))])
+    llm = ClosingLLM([("count", block("finish('six')"))])
     flow = Flow(llm)
 
     async def run_then_close():
@@ -1101,7 +1131,7 @@ def test_aclose_drops_the_work_and_the_repls():
 
 
 def test_parallel_roots_use_parallel_stream_not_competing_stream_drivers():
-    llm = ScriptedLLM([("one", block("done('first')")), ("two", block("done('second')"))])
+    llm = ScriptedLLM([("one", block("finish('first')")), ("two", block("finish('second')"))])
     flow = Flow(llm)
     first, second = start("one"), start("two")
 
@@ -1152,7 +1182,7 @@ def test_llm_query_batched_is_an_opt_in_tool():
     def reply(messages):
         if len(messages) == 1:  # a one-shot query, with no system turn of its own
             return messages[0]["content"].upper()
-        return block('done("|".join(await llm_query_batched(["a", "b"])))')
+        return block('finish("|".join(await llm_query_batched(["a", "b"])))')
 
     flow = Flow(ReplyLLM(reply), use_llm_query=True)
     assert flow.run("fan out") == "A|B"
@@ -1190,10 +1220,10 @@ def test_llm_request_timeout_gives_up_on_a_slow_call():
 
 
 def test_llm_request_timeout_is_handed_to_clients_that_take_one():
-    llm = ReplyLLM(lambda _messages: block("done('ok')"))
+    llm = ReplyLLM(lambda _messages: block("finish('ok')"))
     assert Flow(llm, llm_request_timeout=5).run("go") == "ok"
     assert [call["timeout"] for call in llm.calls] == [5]
 
     # A client with no timeout parameter is called the way it was written.
-    lean = ScriptedLLM([("", block("done('ok')"))])
+    lean = ScriptedLLM([("", block("finish('ok')"))])
     assert Flow(lean, llm_request_timeout=5).run("go") == "ok"

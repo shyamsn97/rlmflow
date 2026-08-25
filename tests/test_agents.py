@@ -73,6 +73,7 @@ def test_directory_reports_statuses_and_completed_results():
     assert agents.get("root").status == "waiting"
     assert agents.get(researcher.id).status == "completed"
     assert agents.get(researcher.id).result() == {"finding": "duplicate keys"}
+    assert not hasattr(agents.get(researcher.id), "get_result")
     assert agents.get(reviewer.id).status == "running"
     assert agents.get(checker.id).status == "idle"
 

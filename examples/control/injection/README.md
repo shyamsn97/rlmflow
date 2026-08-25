@@ -48,7 +48,7 @@ for node in root.walk():
 
 Both edits are prompts. The example does not inject precomputed answers; it
 changes the route and lets the model continue to a structured
-`done({"found": ..., "missing": ...})` result.
+`finish({"found": ..., "missing": ...})` result.
 
 The baseline prompt explicitly forbids a root-level all-direction scan so the
 saved trace is structurally different from the direct-scan variant: the original

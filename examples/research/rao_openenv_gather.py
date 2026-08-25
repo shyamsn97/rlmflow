@@ -22,7 +22,8 @@ import socket
 import threading
 import time
 
-from examples.common import add_model_args, build_client
+from examples.common import add_model_args
+from rlmflow.llm import client_for
 from rlmflow.rao import Budget, Collector, RolloutFlow, TaskSpec
 from rlmflow.rao.export import stats, trajectories
 
@@ -130,7 +131,7 @@ async def main() -> None:
         return await open_env(base_url=base_url)
 
     flow = RolloutFlow(
-        build_client(args.model),
+        client_for(args.model),
         budget=Budget(max_depth=2, max_iters=8, max_children_per_agent=3, max_env_steps=24),
     )
     collector = Collector(flow, connect, rollouts_per_task=args.rollouts)

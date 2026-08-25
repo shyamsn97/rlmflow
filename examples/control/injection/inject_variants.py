@@ -37,16 +37,18 @@ from rlmflow import (
     AgentStart,
     ExecAction,
     Flow,
+    GraphCheckpointer,
     UserQuery,
     parallel_stream,
     persistence,
 )
+from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import build_client, example_run_dir, save_example_graph  # noqa: E402
+from common import example_run_dir, save_example_graph  # noqa: E402
 
 
 class WordHit(BaseModel):
@@ -100,7 +102,7 @@ def default_source() -> Path:
 
 def delegating_action(agent: AgentStart) -> ExecAction:
     """The most recent block this agent ran that launched sub-agents."""
-    for node in agent.frontier.walk(reverse=True):
+    for node in agent.frontier.iter_backwards():
         launched = isinstance(node, ExecAction) and any(
             isinstance(child, AgentStart) for child in node.children
         )
@@ -190,7 +192,7 @@ def main() -> None:
 
     # One Flow drives both variants and merges their Node streams.
     flow = Flow(
-        build_client(args.model),
+        client_for(args.model),
         root_config=AgentConfig(max_depth=2, max_iters=30),
     )
 
@@ -198,10 +200,15 @@ def main() -> None:
     dirs = {id(cols_graph): out / "variant-cols", id(root_graph): out / "variant-root"}
 
     async def run_variants() -> None:
-        async for node in parallel_stream(flow, cols_graph, root_graph):
-            root = node.root
-            root.save(dirs[id(root)])  # checkpoint on every step, like the baseline
-            print(f"step: {dirs[id(root)].name} -> {node.type}")
+        checkpoints = {identity: GraphCheckpointer(path) for identity, path in dirs.items()}
+        try:
+            async for node in parallel_stream(flow, cols_graph, root_graph):
+                root = node.root
+                checkpoints[id(root)].handle(node)
+                print(f"step: {dirs[id(root)].name} -> {node.type}")
+        finally:
+            for checkpoint in checkpoints.values():
+                checkpoint.close()
 
     asyncio.run(run_variants())
     flow.runtime.close_repls()

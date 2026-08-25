@@ -371,6 +371,7 @@ class Sokoban:
         # This turn's per-sub-step board renders (walk frames + the shove) for the
         # live grid to animate; empty on a turn that moved nothing (a rejected push).
         self.env["frames"] = list(self.turn_frames)
+        self.env["step_frames"] = list(self.step_frames)
         # Box positions in stable id order = the branch's box->goal ASSIGNMENT,
         # the signature used to count distinct solutions across the fan-out.
         self.env["assignment"] = ";".join(f"{r},{c}" for r, c in self._pos_by_id)

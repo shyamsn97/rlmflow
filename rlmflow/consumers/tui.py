@@ -4,8 +4,6 @@
 
 from __future__ import annotations
 
-from collections import Counter
-from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
 
 from rlmflow.consumers.base import StreamConsumer
@@ -18,10 +16,9 @@ from rlmflow.graph.nodes import (
     ExecOutput,
     LLMOutput,
     Node,
+    RunStats,
     UserQuery,
 )
-
-DriveFn = Callable[..., Awaitable[AgentStart | None]]
 
 
 class FlowTUI(StreamConsumer):
@@ -32,12 +29,19 @@ class FlowTUI(StreamConsumer):
         root: AgentStart | None = None,
         *,
         sink: StreamConsumer | None = None,
+        refresh_interval_s: float = 0.10,
     ) -> None:
+        if refresh_interval_s < 0:
+            raise ValueError("refresh_interval_s must be non-negative")
         self.root = root
         self.sink = sink
+        self.refresh_interval_s = refresh_interval_s
         self.flow: Any = None
         self.app: Any = None
         self.latest: list[Node] = []
+        self._pending_chat: list[Node] = []
+        self._refresh_pending = False
+        self._dirty = False
         self.busy = False
 
     def init(self, flow: Any) -> None:
@@ -75,31 +79,46 @@ class FlowTUI(StreamConsumer):
             self.root = node.root
         self.latest.append(node)
         del self.latest[:-100]
+        self._pending_chat.append(node)
+        self._dirty = True
         if self.app is not None:
-            self.app.refresh_dashboard()
+            if self.refresh_interval_s == 0 or isinstance(node, (DoneOutput, ErrorOutput)):
+                self.refresh()
+            else:
+                self._request_refresh()
         if self.sink is not None:
             self.sink.handle(node)
 
+    def _request_refresh(self) -> None:
+        if self.app is None or self._refresh_pending:
+            return
+        self._refresh_pending = True
+        self.app.set_timer(self.refresh_interval_s, self.refresh)
+
+    def refresh(self) -> None:
+        """Immediately render the latest accumulated state."""
+        self._refresh_pending = False
+        if self.app is None or not self._dirty:
+            return
+        self._dirty = False
+        self.app.refresh_dashboard()
+
     def close(self) -> None:
         if self.app is not None:
-            self.app.refresh_dashboard()
+            self._dirty = True
+            self.refresh()
         if self.sink is not None:
             self.sink.close()
 
-    def run(self, drive: DriveFn | None = None, *, query: str | None = None) -> AgentStart | None:
+    def run(self, *, query: str | None = None) -> AgentStart | None:
         """Open the dashboard. Send, Run, and Step drive the flow from :meth:`init`.
 
         ``query`` starts a first turn as soon as the dashboard mounts, which is
         what ``rlmflow run "fix the tests"`` wants: the run underway, and the
         panels still there to watch it.
-
-        ``drive`` is the older way in: a callable taking
-        ``(root, query=..., inputs=..., until=...)`` that calls :meth:`handle`
-        itself. It still works, and wins over the flow when both are present.
         """
-        if drive is None and self.flow is None:
-            raise RuntimeError("FlowTUI needs init(flow) or run(drive=...).")
-        turn: DriveFn = drive or (lambda _root, **kwargs: self.turn(**kwargs))
+        if self.flow is None:
+            raise RuntimeError("FlowTUI needs init(flow) before run().")
         try:
             from rich.panel import Panel
             from textual import work
@@ -227,14 +246,19 @@ class FlowTUI(StreamConsumer):
                         self.query_one(selector, Static).update("No run yet.")
                     return
 
-                self.query_one("#overview", Static).update(overview_table(root, consumer.busy))
-                self.query_one("#agents", Static).update(agent_table(root))
-                self.query_one("#counts", Static).update(node_counts_table(root))
-                self.query_one("#waiting", Static).update(waiting_table(root))
-                self.query_one("#errors", Static).update(error_table(root))
+                stats = root.stats
+                agents = list(root.iter_agents())
+                errors = root.errors()
+                self.query_one("#overview", Static).update(
+                    overview_table(root, consumer.busy, stats=stats, agents=agents)
+                )
+                self.query_one("#agents", Static).update(agent_table(root, agents=agents))
+                self.query_one("#counts", Static).update(node_counts_table(root, stats=stats))
+                self.query_one("#waiting", Static).update(waiting_table(root, agents=agents))
+                self.query_one("#errors", Static).update(error_table(root, errors=errors))
                 self.query_one("#latest", Static).update(latest_table(consumer.latest))
                 self._sync_tree(root)
-                self.call_later(self._sync_tabs, _agents(root))
+                self.call_later(self._sync_tabs, agents)
                 self._append_chat()
 
             def _visible(self, node: Node) -> bool:
@@ -249,7 +273,12 @@ class FlowTUI(StreamConsumer):
                 root = consumer.root
                 if root is None:
                     return
-                for node in root.walk():
+                pending: list[Node] = []
+                if root.id not in self.seen:
+                    pending.append(root)
+                pending.extend(consumer._pending_chat)
+                consumer._pending_chat.clear()
+                for node in pending:
                     if node.id in self.seen or not self._visible(node):
                         continue
                     self.seen.add(node.id)
@@ -372,8 +401,7 @@ class FlowTUI(StreamConsumer):
                 self.query_one("#send", Button).disabled = True
                 self.refresh_dashboard()
                 try:
-                    root = await turn(
-                        consumer.root,
+                    root = await consumer.turn(
                         query=query,
                         inputs=inputs,
                         until=until,
@@ -399,24 +427,31 @@ class FlowTUI(StreamConsumer):
         return self.root
 
 
-def overview_table(root: AgentStart, busy: bool = False):
+def overview_table(
+    root: AgentStart,
+    busy: bool = False,
+    *,
+    stats: RunStats | None = None,
+    agents: list[AgentStart] | None = None,
+):
     from rich.table import Table
 
-    agents = _agents(root)
-    usage = root.tokens()
+    stats = stats or root.stats
+    agents = agents or _agents(root)
+    usage = stats.usage
     table = Table.grid(expand=True)
     table.add_column(style="dim")
     table.add_column(justify="right")
     table.add_row("status", "running" if busy else ("done" if root.terminal else "ready"))
     table.add_row("agents", str(len(agents)))
-    table.add_row("nodes", str(sum(1 for _node in root.walk())))
+    table.add_row("nodes", str(stats.node_count))
     table.add_row("max depth", str(max(agent.config.depth for agent in agents)))
     table.add_row("tokens in", str(usage.input_tokens))
     table.add_row("tokens out", str(usage.output_tokens))
     return table
 
 
-def agent_table(root: AgentStart):
+def agent_table(root: AgentStart, *, agents: list[AgentStart] | None = None):
     from rich.table import Table
 
     table = Table(show_header=True, header_style="bold dim", expand=True)
@@ -424,7 +459,7 @@ def agent_table(root: AgentStart):
     table.add_column("status")
     table.add_column("frontier")
     table.add_column("turns", justify="right")
-    for agent in _agents(root):
+    for agent in agents or _agents(root):
         table.add_row(
             agent.config.path,
             "done" if agent.terminal else "active",
@@ -434,10 +469,10 @@ def agent_table(root: AgentStart):
     return table
 
 
-def node_counts_table(root: AgentStart):
+def node_counts_table(root: AgentStart, *, stats: RunStats | None = None):
     from rich.table import Table
 
-    counts = Counter(node.type for node in root.walk())
+    counts = (stats or root.stats).node_counts
     table = Table(show_header=True, header_style="bold dim", expand=True)
     table.add_column("node")
     table.add_column("count", justify="right")
@@ -446,14 +481,14 @@ def node_counts_table(root: AgentStart):
     return table
 
 
-def waiting_table(root: AgentStart):
+def waiting_table(root: AgentStart, *, agents: list[AgentStart] | None = None):
     from rich.table import Table
 
     table = Table(show_header=True, header_style="bold dim", expand=True)
     table.add_column("agent")
     table.add_column("children")
     found = False
-    for agent in _agents(root):
+    for agent in agents or _agents(root):
         frontier = agent.frontier
         if not isinstance(frontier, ExecAction):
             continue
@@ -468,10 +503,10 @@ def waiting_table(root: AgentStart):
     return table
 
 
-def error_table(root: AgentStart):
+def error_table(root: AgentStart, *, errors: tuple[ErrorOutput, ...] | None = None):
     from rich.table import Table
 
-    errors = [node for node in root.walk() if isinstance(node, ErrorOutput)]
+    errors = errors if errors is not None else root.errors()
     table = Table(show_header=True, header_style="bold dim", expand=True)
     table.add_column("agent")
     table.add_column("error", overflow="fold")
@@ -553,7 +588,7 @@ def node_panel(node: Node):
 
 
 def _agents(root: AgentStart) -> list[AgentStart]:
-    return [node for node in root.walk() if isinstance(node, AgentStart)]
+    return list(root.iter_agents())
 
 
 def _one_line(value: Any, limit: int) -> str:
@@ -562,7 +597,6 @@ def _one_line(value: Any, limit: int) -> str:
 
 
 __all__ = [
-    "DriveFn",
     "FlowTUI",
     "agent_table",
     "error_table",

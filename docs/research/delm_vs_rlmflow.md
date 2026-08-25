@@ -1,5 +1,8 @@
 # DeLM and rlmflow: Research and Adoption Plan
 
+> **Status:** Comparison and unimplemented proposal. Current rlmflow coordination
+> remains parent-centered; this document is not a shipped DeLM API.
+>
 > **Current API:** the engine is `Flow`. Inputs live on `AgentConfig.inputs`
 > and appear in the REPL as `INPUTS`. Per-agent prompt selection is
 > `prompt_profile`. See `docs/control.md` and `docs/internals.md`.

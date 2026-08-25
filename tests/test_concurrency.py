@@ -28,7 +28,7 @@ def fanout(*names):
     return block(
         f"handles = [\n{calls}\n]\n"
         "answers = [await h.wait_for_result() for h in handles]\n"
-        "done(','.join(answers))"
+        "finish(','.join(answers))"
     )
 
 
@@ -42,7 +42,7 @@ class BarrierLLM:
         if first_user(messages) == "parent":
             return fanout("a", "b")
         self.barrier.wait(timeout=5)
-        return block("done('c')")
+        return block("finish('c')")
 
 
 def test_blocking_children_get_a_thread_each():
@@ -58,7 +58,7 @@ def test_ten_subprocess_children_can_launch_concurrently():
     class LLM:
         def chat(self, messages):
             query = first_user(messages)
-            return fanout(*names) if query == "parent" else block(f"done({query!r})")
+            return fanout(*names) if query == "parent" else block(f"finish({query!r})")
 
     flow = Flow(LLM(), runtime=SubprocessRuntime())
     try:
@@ -80,7 +80,7 @@ def test_a_finished_child_keeps_its_repl():
             query = first_user(messages)
             if query == "parent":
                 return fanout("a", "b")
-            return block(f"kept = {query!r}\ndone({query!r})")
+            return block(f"kept = {query!r}\nfinish({query!r})")
 
     flow = Flow(LLM(), runtime=SubprocessRuntime())
     try:
@@ -107,7 +107,7 @@ def test_prebuilt_subtrees_get_a_thread_each():
         "    await launch_subagent('', model='default', name='b'),\n"
         "]\n"
         "answers = [await h.wait_for_result() for h in handles]\n"
-        "done(','.join(answers))"
+        "finish(','.join(answers))"
     )
 
     assert Flow(BarrierLLM(2), workers=2).run(root) == "c,c"
@@ -130,7 +130,7 @@ def test_prebuilt_children_are_not_submitted_twice():
             calls += 1
             assert messages[-1]["content"].endswith("current board")
             await asyncio.sleep(0.05)
-            return block("done('ok')")
+            return block("finish('ok')")
 
     root = start("parent", max_depth=1)
     first = start("first", prompt_profile="worker")
@@ -145,7 +145,7 @@ def test_prebuilt_children_are_not_submitted_twice():
         "    await launch_subagent('', model='default', name='second'),\n"
         "]\n"
         "answers = [await h.wait_for_result() for h in handles]\n"
-        "done(','.join(answers))"
+        "finish(','.join(answers))"
     )
     flow = Flow(
         LLM(),
@@ -177,7 +177,7 @@ def test_sequential_pool_does_not_hold_its_slot_while_parent_awaits_children():
             query = first_user(messages)
             if query == "parent":
                 return fanout("a", "b")
-            return block(f"done({query!r})")
+            return block(f"finish({query!r})")
 
     root = start("parent", max_depth=1)
     assert Flow(LLM(), pool=SequentialPool()).run(root) == "a,b"
@@ -192,7 +192,7 @@ def test_a_failing_child_does_not_cancel_its_sibling():
             await asyncio.sleep(0)  # both children are in flight when one raises
             if query == "bad":
                 raise RuntimeError("exploded")
-            return block("done('good')")
+            return block("finish('good')")
 
     root = start("parent", max_depth=1)
     failed = "[child failed: RuntimeError: exploded]"
@@ -222,7 +222,7 @@ def test_cancelling_a_run_cancels_the_children_it_launched():
             except asyncio.CancelledError:
                 self.cancelled.add(query)
                 raise
-            return block("done('unexpected')")
+            return block("finish('unexpected')")
 
     async def main():
         llm = Probe()

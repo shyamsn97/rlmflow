@@ -35,13 +35,14 @@ from rlmflow import (
     LLMUsage,
     SystemPromptBuilder,
 )
+from rlmflow.llm import client_for
 from rlmflow.tools import tool
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import build_client, example_run_dir  # noqa: E402
+from common import example_run_dir  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -118,7 +119,7 @@ class ScriptedLLM:
 
     It keys its reply on the *incoming system prompt*: turn one has an empty
     Skills section, so it installs the skill; turn two sees that skill now in
-    the prompt (proof the section grew), so it solves and calls ``done``.
+    the prompt (proof the section grew), so it solves and calls ``finish``.
     """
 
     def chat(self, messages, *args, **kwargs) -> str:
@@ -145,7 +146,7 @@ class ScriptedLLM:
             ")\n"
             "assert best == brute, (best, brute)\n"
             'print("kadane =", best, "brute =", brute)\n'
-            "done(str(best))\n"
+            "finish(str(best))\n"
             "```"
         )
 
@@ -191,7 +192,7 @@ def main() -> None:
         llm = ScriptedLLM()
         print("Using the deterministic ScriptedLLM (offline).")
     else:
-        llm = build_client(args.model)
+        llm = client_for(args.model)
         print(f"Using live client ({args.model}).")
     flow = build_flow(library, llm, max_iters=args.max_iters)
 

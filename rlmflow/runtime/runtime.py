@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,8 @@ from rlmflow.graph.nodes import AgentStart, ExecAction, Node
 from rlmflow.runtime.connections import DEFAULT_REPL_TIMEOUT
 from rlmflow.runtime.env import agent_process_env
 from rlmflow.runtime.repl import Repl, ReplRun, ReplStatus
+
+ExecutionGuard = Callable[[ExecAction], str | None | Awaitable[str | None]]
 
 
 def _agent(value: AgentStart | Node) -> AgentStart:
@@ -112,11 +115,19 @@ class WrappedRuntime:
         self,
         runtime: Runtime,
         build_tools: Callable[[Node], dict[str, Any]],
+        execution_guard: ExecutionGuard | None = None,
     ) -> None:
         self.runtime = runtime
         self.build_tools = build_tools
+        self.execution_guard = execution_guard
 
     async def execute(self, node: ExecAction) -> ReplRun:
+        if self.execution_guard is not None:
+            reason = self.execution_guard(node)
+            if inspect.isawaitable(reason):
+                reason = await reason
+            if reason is not None:
+                return ReplRun(output=reason, status=ReplStatus.ERROR)
         agent = node.parent_agent
         self.runtime.repl_for(agent).seed(
             self.build_tools(node),

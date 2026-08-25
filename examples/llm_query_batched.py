@@ -24,7 +24,7 @@ examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "ex
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import example_run_dir, save_example_graph  # noqa: E402
+from common import checkpoint_stream, example_run_dir, save_example_graph  # noqa: E402
 
 REVIEWS = [
     "The new search UI is fast and surprisingly easy to use.",
@@ -71,7 +71,7 @@ def root_repl_block() -> str:
         "]\n"
         "labels = await llm_query_batched(prompts)\n"
         "print('llm_query_batched returned:', labels)\n"
-        "done('\\n'.join(f'{label}: {review}' for label, review in zip(labels, reviews)))\n"
+        "finish('\\n'.join(f'{label}: {review}' for label, review in zip(labels, reviews)))\n"
         "```"
     )
 
@@ -88,14 +88,13 @@ def main() -> None:
     root = flow.start(
         "Classify the reviews. You must use `await "
         "llm_query_batched(prompts)` for the per-review classifications, "
-        "then call done(...) with one line per review."
+        "then call finish(...) with one line per review."
     )
     out_dir = example_run_dir("llm-query-batched")
 
     async def drive() -> None:
-        async for node in flow.run_streaming(root):
+        async for node in checkpoint_stream(flow.run_streaming(root), out_dir):
             print(f"{node.parent_agent.config.path}  {node.type}")
-            root.save(out_dir)
 
     asyncio.run(drive())
 

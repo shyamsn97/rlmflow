@@ -1,5 +1,10 @@
 # Implementation Plan: REPL Correctness and Shared REPLs
 
+> **Status:** Historical design record. The current beta implements shared
+> worker placement with `reuse_repl=True`; see
+> [`docs/runtimes.md`](../runtimes.md#isolated-and-shared-agents). API names and
+> stage status below describe the engine at the time of the investigation.
+>
 > **Covers** every defect found while designing shared REPLs, plus the sharing
 > work itself. Companion to `shared_repls.md` (design and validation) and
 > `persistent_agents.md` (agent addressing).

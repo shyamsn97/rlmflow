@@ -10,7 +10,7 @@ async def collect(flow, root, **kwargs):
 
 
 def test_full_stream_yields_every_step_in_order():
-    flow = Flow(StubLLM(lambda _messages: '```repl\ndone("ok")\n```'))
+    flow = Flow(StubLLM(lambda _messages: '```repl\nfinish("ok")\n```'))
     root = start("query")
 
     events = asyncio.run(collect(flow, root))
@@ -24,7 +24,7 @@ def test_full_stream_yields_every_step_in_order():
 
 
 def test_next_stops_before_starting_another_step():
-    flow = Flow(StubLLM(lambda _messages: '```repl\ndone("ok")\n```'))
+    flow = Flow(StubLLM(lambda _messages: '```repl\nfinish("ok")\n```'))
     root = start("query")
 
     first = asyncio.run(collect(flow, root, until="next"))
@@ -41,7 +41,7 @@ def test_idle_heals_an_error_and_stops_at_exec_output():
             counting_replies(
                 "no repl",
                 "```repl\nprint('recovered')\n```",
-                "```repl\ndone('ok')\n```",
+                "```repl\nfinish('ok')\n```",
             )
         )
     )
@@ -71,10 +71,10 @@ def test_callable_boundary_sees_child_events():
                 "child = await launch_subagent("
                 "'child', model='default', name='c')\n"
                 "value = await child.wait_for_result()\n"
-                "done('p:' + value)\n"
+                "finish('p:' + value)\n"
                 "```"
             )
-        return "```repl\ndone('c')\n```"
+        return "```repl\nfinish('c')\n```"
 
     flow = Flow(StubLLM(reply))
     root = start("parent", max_depth=1)
@@ -92,7 +92,7 @@ def test_callable_boundary_sees_child_events():
 
 
 def test_a_string_query_gets_a_root_of_its_own():
-    flow = Flow(StubLLM(lambda _messages: '```repl\ndone("ok")\n```'))
+    flow = Flow(StubLLM(lambda _messages: '```repl\nfinish("ok")\n```'))
 
     events = asyncio.run(collect(flow, "query", until="next"))
 

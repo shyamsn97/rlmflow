@@ -21,13 +21,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from examples.common import build_client  # noqa: E402
+from examples.common import checkpoint_stream  # noqa: E402
 from rlmflow import (  # noqa: E402
     AgentConfig,
     AgentStart,
     DockerRuntime,
     Flow,
 )
+from rlmflow.llm import client_for  # noqa: E402
 
 PLATFORMER_QUERY = """\
 Build a simple 2D side-scrolling platformer in plain HTML/CSS/JS under output/.
@@ -58,9 +59,8 @@ def parse_args() -> argparse.Namespace:
 
 
 async def run_turn(flow: Flow, root: AgentStart, out_dir: Path) -> AgentStart:
-    async for node in flow.run_streaming(root):
+    async for node in checkpoint_stream(flow.run_streaming(root), out_dir):
         print(f"{node.parent_agent.config.path}  {node.type}")
-        root.save(out_dir)
     return root
 
 
@@ -68,8 +68,8 @@ def main() -> None:
     args = parse_args()
     runtime = DockerRuntime(args.docker_image)
     flow = Flow(
-        build_client(args.model),
-        llm_clients={"fast": build_client(args.fast_model)},
+        client_for(args.model),
+        llm_clients={"fast": client_for(args.fast_model)},
         runtime=runtime,
         root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
     )

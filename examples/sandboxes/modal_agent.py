@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from examples.common import save_example_graph  # noqa: E402
+from examples.common import checkpoint_stream, save_example_graph  # noqa: E402
 from rlmflow import (  # noqa: E402
     AgentConfig,
     AgentStart,
@@ -89,9 +89,8 @@ def parse_args() -> argparse.Namespace:
 
 
 async def run_turn(flow: Flow, root: AgentStart, out_dir: Path) -> AgentStart:
-    async for node in flow.run_streaming(root):
+    async for node in checkpoint_stream(flow.run_streaming(root), out_dir / "graph"):
         print(f"{node.parent_agent.config.path}  {node.type}")
-        root.save(out_dir / "graph")
     return root
 
 

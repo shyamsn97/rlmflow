@@ -1,8 +1,6 @@
 # Streaming and task scheduling
 
-`Flow.run_streaming(...)` is the execution driver. It mutates one or more Node
-trees, yields each durable Node as it is created, applies stream boundaries, and
-feeds unfinished leaves back into one `TaskQueue`.
+`Flow.run_streaming(...)` is the execution driver. It mutates one or more Node trees, yields each durable Node as it is created, applies stream boundaries, and feeds unfinished leaves back into one `TaskQueue`.
 
 ```python
 from rlmflow import Flow
@@ -67,8 +65,7 @@ Pool / Runtime
   Decide where model calls and code execution run.
 ```
 
-`TaskQueue` does not inspect roots, boundaries, transcripts, or graph topology.
-It can run Nodes from several independent graphs in the same queue.
+`TaskQueue` does not inspect roots, boundaries, transcripts, or graph topology. It can run Nodes from several independent graphs in the same queue.
 
 ## One step, one Transition
 
@@ -100,8 +97,7 @@ class Transition:
 
 - `submitted` is the frontier passed to `Flow.step`.
 - `created` is the durable Node returned by that step.
-- `error` carries an infrastructure exception after the failure has been recorded
-  in the graph.
+- `error` carries an infrastructure exception after the failure has been recorded in the graph.
 
 For a normal model turn:
 
@@ -119,16 +115,13 @@ created   = ExecOutput("...")
 
 ### Why child starts are special
 
-A child `AgentStart` must appear in the stream immediately, while its first model
-step is already running. `TaskQueue.submit(..., publish=True)` therefore publishes:
+A child `AgentStart` must appear in the stream immediately, while its first model step is already running. `TaskQueue.submit(..., publish=True)` therefore publishes:
 
 ```python
 Transition(submitted=child, created=child)
 ```
 
-This is a child-start notification, not the completion of the child's first step.
-`Transition.is_agent_start` identifies it. The queue leaves the child's active task
-tracked, and the driver does not submit the child a second time.
+This is a child-start notification, not the completion of the child's first step. `Transition.is_agent_start` identifies it. The queue leaves the child's active task tracked, and the driver does not submit the child a second time.
 
 Later, the real first-step transition arrives:
 
@@ -179,13 +172,11 @@ task = asyncio.create_task(self._run(node, fn))
 self.running[key] = (node, task)
 ```
 
-The identity check prevents the driver from stepping the same frontier twice.
-The queue keys work by submitted Node identity, not by root or agent.
+The identity check prevents the driver from stepping the same frontier twice. The queue keys work by submitted Node identity, not by root or agent.
 
 ### `_run`
 
-The private runner invokes transition orchestration directly and publishes
-the result:
+The private runner invokes transition orchestration directly and publishes the result:
 
 ```python
 result = fn(node)
@@ -193,8 +184,7 @@ transition = await result if inspect.isawaitable(result) else result
 self.done.put_nowait(transition)
 ```
 
-If the transition made an agent terminal, `_run` notifies every task waiting on
-the queue's condition:
+If the transition made an agent terminal, `_run` notifies every task waiting on the queue's condition:
 
 ```python
 agent = transition.created.parent_agent
@@ -203,8 +193,7 @@ if agent.terminal:
         self.changed.notify_all()
 ```
 
-The notification contains no answer. The answer remains `agent.result()` in the
-graph.
+The notification contains no answer. The answer remains `agent.result()` in the graph.
 
 ### `next`
 
@@ -214,9 +203,7 @@ The driver has one consumer:
 transition = await queue.next()
 ```
 
-For a completed step, `next()` removes `transition.submitted` from `running`.
-For the immediate child `AgentStart` publication, it keeps the task tracked
-because that child's first step has not completed.
+For a completed step, `next()` removes `transition.submitted` from `running`. For the immediate child `AgentStart` publication, it keeps the task tracked because that child's first step has not completed.
 
 ### `join`
 
@@ -237,39 +224,32 @@ return child.result()
 `asyncio.Condition.wait_for`:
 
 1. checks `child.terminal`;
-2. registers the task as a waiter if false;
-3. releases the Condition lock while sleeping;
-4. reacquires it after a notification;
-5. checks the predicate again.
+1. registers the task as a waiter if false;
+1. releases the Condition lock while sleeping;
+1. reacquires it after a notification;
+1. checks the predicate again.
 
-One child completing wakes all joiners, but each joiner checks its own child.
-Unfinished children go back to sleep. This supports siblings and nested
-delegation without a future dictionary or polling loop.
+One child completing wakes all joiners, but each joiner checks its own child. Unfinished children go back to sleep. This supports siblings and nested delegation without a future dictionary or polling loop.
 
 ### `cancel`
 
-`TaskQueue.cancel()` cancels every active transition. Passing Nodes selects a
-subset:
+`TaskQueue.cancel()` cancels every active transition. Passing Nodes selects a subset:
 
 ```python
 await queue.cancel(root.walk())
 ```
 
-Selective cancellation is what lets one parallel root hit a boundary without
-stopping the other roots sharing the queue.
+Selective cancellation is what lets one parallel root hit a boundary without stopping the other roots sharing the queue.
 
 ## The driver loop
 
-`Flow.run_streaming(root, *roots)` is both the single-root and multi-root driver.
-`parallel_stream` is a public convenience wrapper around this function.
+`Flow.run_streaming(root, *roots)` is both the single-root and multi-root driver. `parallel_stream` is a public convenience wrapper around this function.
 
 The driver performs six phases.
 
 ### 1. Normalize and validate roots
 
-String inputs become new `AgentStart` roots carrying the flow's defaults. The
-same root object cannot be driven twice, and one Flow permits one active driver
-queue:
+String inputs become new `AgentStart` roots carrying the flow's defaults. The same root object cannot be driven twice, and one Flow permits one active driver queue:
 
 ```python
 agents = [
@@ -281,13 +261,11 @@ if self.queue is not None:
     raise RuntimeError("this Flow is already driving a stream")
 ```
 
-Use `parallel_stream(flow, *roots)` instead of opening competing
-`run_streaming` generators on one Flow.
+Use `parallel_stream(flow, *roots)` instead of opening competing `run_streaming` generators on one Flow.
 
 ### 2. Restore cold graphs
 
-A graph loaded from disk has durable Nodes but no live REPL namespace.
-Before scheduling, the Flow either:
+A graph loaded from disk has durable Nodes but no live REPL namespace. Before scheduling, the Flow either:
 
 - replays recorded `ExecAction`s when `restore="replay"`; or
 - appends a cold-REPL notice when `restore="lazy"`.
@@ -306,8 +284,7 @@ for agent in agents:
             queue.submit(leaf, self.step)
 ```
 
-The roots are only used to discover initial leaves. Once submitted, `TaskQueue`
-treats every item as an independent Node.
+The roots are only used to discover initial leaves. Once submitted, `TaskQueue` treats every item as an independent Node.
 
 ### 4. Consume one transition
 
@@ -335,8 +312,7 @@ root C leaves ─>                        │
                                                   └─> root C boundary/feed
 ```
 
-There is one queue and one consumer, so transitions cannot be stolen by competing
-stream loops.
+There is one queue and one consumer, so transitions cannot be stolen by competing stream loops.
 
 ### 5. Yield, check the boundary, or feed the successor
 
@@ -356,8 +332,7 @@ elif not transition.is_agent_start and not node.parent_agent.terminal:
 The cases are:
 
 - **boundary matched**: stop this root and cancel only its active work;
-- **root terminal**: do not submit another root step, but keep draining any
-  non-blocking descendants;
+- **root terminal**: do not submit another root step, but keep draining any non-blocking descendants;
 - **child start publication**: its first step is already running, so do nothing;
 - **ordinary nonterminal transition**: submit the created Node as the next leaf.
 
@@ -379,8 +354,7 @@ Transition.created
 
 ### 6. Clean up
 
-Every exit path cancels remaining queue tasks and clears `flow.queue`.
-`close_repls=True` additionally closes every agent REPL under every driven root.
+Every exit path cancels remaining queue tasks and clears `flow.queue`. `close_repls=True` additionally closes every agent REPL under every driven root.
 
 ```python
 finally:
@@ -392,8 +366,7 @@ finally:
 
 ## Delegation timeline
 
-`launch_subagent` runs inside the parent agent's `ExecAction` step. A parent can
-start independent calls together with `asyncio.gather`.
+`launch_subagent` runs inside the parent agent's `ExecAction` step. A parent can start independent calls together with `asyncio.gather`.
 
 ```text
 parent ExecAction task
@@ -419,12 +392,9 @@ driver: B start, B transitions        │
               parent ExecOutput / DoneOutput
 ```
 
-The parent task remains suspended at an ordinary `await`. It does not block the
-event-loop thread and does not occupy a bounded Pool compute slot. Child steps use
-the same queue and Pool as every other step.
+The parent task remains suspended at an ordinary `await`. It does not block the event-loop thread and does not occupy a bounded Pool compute slot. Child steps use the same queue and Pool as every other step.
 
-Child results preserve input order because `asyncio.gather` returns values in the
-order of its awaitables, even when children complete in a different order.
+Child results preserve input order because `asyncio.gather` returns values in the order of its awaitables, even when children complete in a different order.
 
 ## Pool versus Runtime
 
@@ -444,20 +414,15 @@ TaskQueue._run
                                               REPL/runtime placement
 ```
 
-`ThreadPool.stream` sends synchronous producers to a thread executor and holds
-the placement slot until iteration ends. Async streams are consumed directly
-under the same lifetime policy. `SequentialPool.stream` holds one lock for the
-full stream.
+`ThreadPool.stream` sends synchronous producers to a thread executor and holds the placement slot until iteration ends. Async streams are consumed directly under the same lifetime policy. `SequentialPool.stream` holds one lock for the full stream.
 
-`TaskQueue` invokes orchestration directly. `Pool` is used only around compute
-calls, so a parent awaiting children cannot reserve a scarce compute slot.
+`TaskQueue` invokes orchestration directly. `Pool` is used only around compute calls, so a parent awaiting children cannot reserve a scarce compute slot.
 
 ```python
 flow = Flow(client, workers=16)
 ```
 
-`workers=16` bounds synchronous model calls to sixteen threads. A custom Pool can
-apply a different capacity or placement policy.
+`workers=16` bounds synchronous model calls to sixteen threads. A custom Pool can apply a different capacity or placement policy.
 
 ## Stream boundaries
 
@@ -489,8 +454,7 @@ async for node in flow.run_streaming(root, until=parent_idle):
     ...
 ```
 
-For several roots, the same boundary is evaluated with the root belonging to each
-created Node. A match stops only that root.
+For several roots, the same boundary is evaluated with the root belonging to each created Node. A match stops only that root.
 
 Call `run_streaming` again with a stopped root to resume from its current leaves.
 
@@ -522,8 +486,7 @@ All roots share:
 - the Flow's Pool capacity;
 - model clients, tools, and Runtime.
 
-The roots must be distinct objects. Trees that reuse agent ids may also share REPL
-identity and should not be driven together.
+The roots must be distinct objects. Trees that reuse agent ids may also share REPL identity and should not be driven together.
 
 ## Ordering
 
@@ -535,12 +498,9 @@ completed: B1, A1
 yielded:   B1.created, A1.created
 ```
 
-Within one agent, `Node.append` preserves a single transcript chain and `seq`
-preserves that agent's local order. Across agents and roots, completion order is
-intentionally nondeterministic.
+Within one agent, `Node.append` preserves a single transcript chain and `seq` preserves that agent's local order. Across agents and roots, completion order is intentionally nondeterministic.
 
-`parallel_run` returns roots in input order. `asyncio.gather` returns child
-answers in call order. Neither promise changes stream completion order.
+`parallel_run` returns roots in input order. `asyncio.gather` returns child answers in call order. Neither promise changes stream completion order.
 
 ## Failure behavior
 
@@ -548,8 +508,7 @@ Agent code failure and infrastructure failure are different.
 
 ### Agent code failure
 
-An exception raised by code inside the REPL becomes an `ErrorOutput`. The agent
-can read the traceback and recover on its next model turn.
+An exception raised by code inside the REPL becomes an `ErrorOutput`. The agent can read the traceback and recover on its next model turn.
 
 ```text
 ExecAction -> ErrorOutput -> LLMOutput -> ...
@@ -560,18 +519,15 @@ ExecAction -> ErrorOutput -> LLMOutput -> ...
 An exception from model/runtime orchestration is caught by `Flow.step`. The step:
 
 1. appends a terminal `DoneOutput` containing the failure;
-2. returns `Transition(..., error=exception)`.
+1. returns `Transition(..., error=exception)`.
 
-A child failure is therefore a durable child result that its parent can receive.
-A root failure is yielded as a Node and then re-raised to the stream caller.
+A child failure is therefore a durable child result that its parent can receive. A root failure is yielded as a Node and then re-raised to the stream caller.
 
-`asyncio.CancelledError` is not converted into a Node. Cancellation means the
-caller stopped live work; the unchanged frontier can be resumed later.
+`asyncio.CancelledError` is not converted into a Node. Cancellation means the caller stopped live work; the unchanged frontier can be resumed later.
 
 ## Cancellation and explicit close
 
-Breaking from an async loop does not communicate a durable boundary by itself.
-Close the generator when managing it manually:
+Breaking from an async loop does not communicate a durable boundary by itself. Close the generator when managing it manually:
 
 ```python
 stream = flow.run_streaming(root)
@@ -583,27 +539,22 @@ finally:
     await stream.aclose()
 ```
 
-Prefer `until=` when the stop condition is known. The driver then yields the
-matching Node, cancels that root's active tasks, and leaves the graph at a clear
-resume point.
+Prefer `until=` when the stop condition is known. The driver then yields the matching Node, cancels that root's active tasks, and leaves the graph at a clear resume point.
 
-Stopping while a parent `ExecAction` awaits children cancels that parent block.
-Resuming re-executes the block from its frontier, so boundaries on the parent's
-own `ExecOutput` or `DoneOutput` are safer pause points for delegated work.
+Stopping while a parent `ExecAction` awaits children cancels that parent block. Resuming re-executes the block from its frontier, so boundaries on the parent's own `ExecOutput` or `DoneOutput` are safer pause points for delegated work.
 
 ## Scheduler invariants
 
 The implementation relies on these invariants:
 
 1. An agent has one frontier and one transcript successor chain.
-2. Only a frontier is submitted for a step.
-3. A submitted Node has at most one active queue task.
-4. Every non-cancelled step creates a durable Node.
-5. A child `AgentStart` publication does not complete or duplicate its first step.
-6. The graph owns terminal status and results; the Condition only wakes waiters.
-7. One driver consumes one queue, including for parallel roots.
-8. Boundaries are applied by the driver, never by `TaskQueue`.
-9. Pool slots are used for compute, not while parents wait for children.
+1. Only a frontier is submitted for a step.
+1. A submitted Node has at most one active queue task.
+1. Every non-cancelled step creates a durable Node.
+1. A child `AgentStart` publication does not complete or duplicate its first step.
+1. The graph owns terminal status and results; the Condition only wakes waiters.
+1. One driver consumes one queue, including for parallel roots.
+1. Boundaries are applied by the driver, never by `TaskQueue`.
+1. Pool slots are used for compute, not while parents wait for children.
 
-These constraints keep the queue small: it executes leaves and reports
-transitions, while the graph and driver retain all domain behavior.
+These constraints keep the queue small: it executes leaves and reports transitions, while the graph and driver retain all domain behavior.

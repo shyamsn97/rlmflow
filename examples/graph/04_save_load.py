@@ -40,7 +40,7 @@ def main() -> None:
     print(f"saved: {run_dir}")
     print("agents:", [node.config.path for node in loaded.walk() if isinstance(node, AgentStart)])
     print("result:", loaded.result())
-    print("roundtrip:", persistence.to_dict(graph) == persistence.to_dict(loaded))
+    print("roundtrip:", persistence.to_document(graph) == persistence.to_document(loaded))
 
 
 if __name__ == "__main__":

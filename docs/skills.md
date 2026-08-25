@@ -1,13 +1,8 @@
 # Customizable Skills
 
-Skills are ordinary repo files that become part of an agent's prompt when they
-matter. Use them for stable guidance you want to reuse across runs: project
-style guides, domain playbooks, child-agent contracts, benchmark heuristics, or
-lessons distilled from previous traces.
+Skills are ordinary repo files that become part of an agent's prompt when they matter. Use them for stable guidance you want to reuse across runs: project style guides, domain playbooks, child-agent contracts, benchmark heuristics, or lessons distilled from previous traces.
 
-rlmflow keeps skills as files. Add a callable prompt section that decides which
-files belong in the current agent's context. See
-[`examples/skills.py`](../examples/skills.py) for a small runnable version.
+rlmflow keeps skills as files. Add a callable prompt section that decides which files belong in the current agent's context. See [`examples/skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/skills.py) for a small runnable version.
 
 ## Suggested Layout
 
@@ -24,8 +19,7 @@ skills/
     `-- eval-lessons.md
 ```
 
-Each `SKILL.md` should be short, concrete, and action-oriented. Prefer rules the
-agent can follow during a run over long background explanations.
+Each `SKILL.md` should be short, concrete, and action-oriented. Prefer rules the agent can follow during a run over long background explanations.
 
 ## Always-On Project Skills
 
@@ -148,8 +142,7 @@ flow.system_prompt = prompt
 
 ## Combining Skills With Other Prompt Changes
 
-Skills are prompt sections, so they compose with the rest of the prompt builder —
-just keep editing `.sections`:
+Skills are prompt sections, so they compose with the rest of the prompt builder — just keep editing `.sections`:
 
 ```python
 prompt = SystemPromptBuilder()
@@ -160,5 +153,4 @@ prompt.sections.add("run_memory", run_memory, title="Run Memory", before="exampl
 flow.system_prompt = prompt
 ```
 
-For lower-level prompt mechanics, see
-[`prompt_customization.md`](prompt_customization.md).
+For lower-level prompt mechanics, see [`prompt_customization.md`](prompt_customization.md).

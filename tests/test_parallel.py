@@ -10,7 +10,7 @@ def block(code):
 
 
 def test_parallel_stream_merges_the_nodes_of_every_run():
-    flow = Flow(StubLLM(lambda _messages: block("done('ok')")))
+    flow = Flow(StubLLM(lambda _messages: block("finish('ok')")))
     left, right = start("left"), start("right")
 
     async def collect():
@@ -30,7 +30,7 @@ def test_parallel_stream_overlaps_the_runs_it_drives():
 
         async def chat(self, _messages):
             await self.barrier.wait()
-            return block("done('ok')")
+            return block("finish('ok')")
 
     roots = [start(f"q{index}") for index in range(3)]
     flow = Flow(BarrierLLM(len(roots)))
@@ -47,7 +47,7 @@ def test_parallel_stream_overlaps_the_runs_it_drives():
 def test_parallel_stream_uses_one_task_queue():
     class ProbeFlow(Flow):
         def __init__(self):
-            super().__init__(StubLLM(lambda _messages: block("done('ok')")))
+            super().__init__(StubLLM(lambda _messages: block("finish('ok')")))
             self.queues = set()
 
         async def step(self, node):
@@ -61,7 +61,7 @@ def test_parallel_stream_uses_one_task_queue():
 
 def test_one_parallel_root_can_stop_without_cancelling_another():
     def reply(messages):
-        return block(f"done({first_user(messages)!r})")
+        return block(f"finish({first_user(messages)!r})")
 
     flow = Flow(StubLLM(reply))
     short, long = start("short"), start("long")
@@ -84,7 +84,7 @@ def test_one_parallel_root_can_stop_without_cancelling_another():
 
 def test_parallel_run_returns_the_roots_in_argument_order():
     def reply(messages):
-        return block(f"done({first_user(messages)!r})")
+        return block(f"finish({first_user(messages)!r})")
 
     roots = asyncio.run(parallel_run(Flow(StubLLM(reply)), "a", "b", "c"))
     assert [root.result() for root in roots] == ["a", "b", "c"]

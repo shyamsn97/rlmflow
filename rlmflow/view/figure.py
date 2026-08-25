@@ -124,34 +124,54 @@ def tidy_tree(nodes: list[Node]) -> dict[str, tuple[float, float]]:
             children[parent.id].append(node)
 
     leaves: dict[str, int] = {}
-
-    def leaf_count(node: Node) -> int:
-        if node.id not in leaves:
-            kids = children[node.id]
-            leaves[node.id] = sum(leaf_count(kid) for kid in kids) if kids else 1
-        return leaves[node.id]
+    for origin in nodes:
+        if origin.id in leaves:
+            continue
+        active: set[str] = set()
+        stack: list[tuple[Node, bool]] = [(origin, False)]
+        while stack:
+            node, expanded = stack.pop()
+            if node.id in leaves:
+                continue
+            if expanded:
+                active.discard(node.id)
+                leaves[node.id] = (
+                    sum(leaves.get(kid.id, 1) for kid in children[node.id])
+                    if children[node.id]
+                    else 1
+                )
+                continue
+            if node.id in active:
+                leaves[node.id] = 1
+                continue
+            active.add(node.id)
+            stack.append((node, True))
+            stack.extend(
+                (kid, False) for kid in reversed(children[node.id]) if kid.id not in leaves
+            )
 
     pos: dict[str, tuple[float, float]] = {}
-
-    def place(node: Node, left: float, right: float, depth: int) -> None:
-        pos[node.id] = ((left + right) / 2, float(depth))
-        kids = children[node.id]
-        if not kids:
-            return
-        span = right - left
-        total = sum(leaf_count(kid) for kid in kids) or 1
-        cursor = left
-        for kid in kids:
-            width = span * (leaf_count(kid) / total)
-            place(kid, cursor, cursor + width, depth + 1)
-            cursor += width
 
     cursor = 0.0
     for node in nodes:
         parent = node.parent
         if parent is None or parent.id not in present:
-            width = float(max(leaf_count(node), 1))
-            place(node, cursor, cursor + width, 0)
+            width = float(max(leaves[node.id], 1))
+            pending: list[tuple[Node, float, float, int]] = [(node, cursor, cursor + width, 0)]
+            while pending:
+                current, left, right, depth = pending.pop()
+                if current.id in pos:
+                    continue
+                pos[current.id] = ((left + right) / 2, float(depth))
+                kids = children[current.id]
+                total = sum(leaves[kid.id] for kid in kids) or 1
+                child_left = left
+                placements: list[tuple[Node, float, float, int]] = []
+                for kid in kids:
+                    child_width = (right - left) * (leaves[kid.id] / total)
+                    placements.append((kid, child_left, child_left + child_width, depth + 1))
+                    child_left += child_width
+                pending.extend(reversed(placements))
             cursor += width + 1.0
     for node in nodes:  # cycles or broken edges, parked rather than dropped
         if node.id not in pos:

@@ -5,7 +5,7 @@ from rlmflow import (
 
 
 def test_minimal_code_block_extraction_handles_runtime_edge_cases():
-    assert code_block("```repl   \ndone('ok')```\ntrailing") == "done('ok')"
+    assert code_block("```repl   \nfinish('ok')```\ntrailing") == "finish('ok')"
     assert code_block("```python\nx = 1\n```") == "x = 1"
 
     text = '```repl\ns = """\n```bash\nls\n```\n"""\nprint(s)\n```'

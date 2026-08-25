@@ -22,6 +22,11 @@ Initial datasets:
 `rlm-core` is the minimal shared comparison suite: S-NIAH, AIME 2025, Sudoku
 Extreme, OOLONG, and CodeQA.
 
+`official_livecodebench` requires Docker for scoring. Model-generated code runs
+only in a fresh network-disabled, read-only, capability-dropped container with
+CPU, memory, process, and wall-clock limits; the harness never executes it with
+the host Python interpreter.
+
 ## Smoke
 
 ```bash

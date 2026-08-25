@@ -32,7 +32,7 @@ examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "ex
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import example_run_dir, save_example_graph  # noqa: E402
+from common import checkpoint_stream, example_run_dir, save_example_graph  # noqa: E402
 
 MAX_ITERS = 5
 
@@ -168,9 +168,8 @@ def main() -> None:
             print("\n--- live run ---\n")
 
         async def drive() -> None:
-            async for node in flow.run_streaming(root):
+            async for node in checkpoint_stream(flow.run_streaming(root), args.out_dir):
                 print(f"{node.parent_agent.config.path}  {node.type}")
-                root.save(args.out_dir)
 
         asyncio.run(drive())
         print(root.result())

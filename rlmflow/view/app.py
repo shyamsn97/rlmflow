@@ -105,7 +105,7 @@ def open_viewer(
         raise ValueError("nothing to view: that graph has no nodes")
     ordered = [step.node for step in walked]
     agents = [node.config.path for node in ordered if isinstance(node, AgentStart)]
-    tokens = root.tokens()
+    tokens = root.usage
 
     def figure(at: int) -> str:
         return figure_html(ordered, at, title=root.config.path, height=height)

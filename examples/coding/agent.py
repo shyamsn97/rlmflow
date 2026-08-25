@@ -23,12 +23,13 @@ from rlmflow import (
     Flow,
     LocalRuntime,
 )
+from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import build_client  # noqa: E402
+from common import checkpoint_stream  # noqa: E402
 
 
 def main():
@@ -72,8 +73,8 @@ def main():
         runtime = LocalRuntime(working_directory=workdir)
 
     flow = Flow(
-        build_client(args.model),
-        llm_clients={"fast": build_client(args.fast_model)},
+        client_for(args.model),
+        llm_clients={"fast": client_for(args.fast_model)},
         runtime=runtime,
         tools=FILE_TOOLS,
         workers=args.max_concurrency,
@@ -87,9 +88,8 @@ def main():
 
 async def _stream(flow: Flow, root: AgentStart, graph_dir: Path) -> None:
     """Drive one query to done, printing each node and checkpointing the tree."""
-    async for node in flow.run_streaming(root):
+    async for node in checkpoint_stream(flow.run_streaming(root), graph_dir):
         print(f"{node.parent_agent.config.path:<20} {node.type}")
-        root.save(graph_dir)
 
 
 def _run_cli(flow: Flow, workdir: Path, *, max_depth: int, max_iters: int) -> None:

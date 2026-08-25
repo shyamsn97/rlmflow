@@ -336,10 +336,19 @@ def skip_reason(example: Example) -> str | None:
     return None
 
 
-def run_example(example: Example, tmpdir: Path, *, verbose: bool) -> tuple[str, float]:
+def run_example(
+    example: Example,
+    tmpdir: Path,
+    *,
+    verbose: bool,
+    installed_package: bool,
+) -> tuple[str, float]:
     command = example.command(tmpdir)
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    if installed_package:
+        env.pop("PYTHONPATH", None)
+    else:
+        env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     env.update(example.extra_env)
 
     start = time.perf_counter()
@@ -506,6 +515,11 @@ def parse_args() -> argparse.Namespace:
         "--verbose", action="store_true", help="print full output for successful examples"
     )
     parser.add_argument(
+        "--installed-package",
+        action="store_true",
+        help="run examples against the installed rlmflow package instead of the source tree",
+    )
+    parser.add_argument(
         "--report",
         type=Path,
         default=DEFAULT_REPORT,
@@ -551,7 +565,12 @@ def main() -> int:
             command = " ".join(example.command(tmpdir)).replace(f"{REPO_ROOT}{os.sep}", "")
             started = time.perf_counter()
             try:
-                _output, elapsed = run_example(example, tmpdir, verbose=args.verbose)
+                _output, elapsed = run_example(
+                    example,
+                    tmpdir,
+                    verbose=args.verbose,
+                    installed_package=args.installed_package,
+                )
             except subprocess.TimeoutExpired:
                 detail = f"timed out after {example.timeout}s"
                 print(f"FAIL {example.name}: {detail}")

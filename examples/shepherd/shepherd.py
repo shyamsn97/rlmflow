@@ -30,13 +30,19 @@ from rlmflow import (
     default_render,
 )
 from rlmflow.consumers import LiveGraphTree
+from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
 import sokoban  # noqa: E402
-from common import add_flow_args, add_model_args, add_out_dir_arg, build_client  # noqa: E402
+from common import (  # noqa: E402
+    add_flow_args,
+    add_model_args,
+    add_out_dir_arg,
+    checkpoint_stream,
+)
 from recovery import Plan, prepare_branch, push_turns, recovery_tools  # noqa: E402
 from sokoban import Sokoban  # noqa: E402
 from view import (  # noqa: E402
@@ -96,8 +102,8 @@ misread square, not a lost position — so read the board, take your position fr
 and pick a push from the list it gives you. A refused turn is the one turn you must
 not give up on.
 
-The board is the only authority on how the game is going. Call done("solved") only
-when it printed SOLVED, and done("stuck") only when its list of possible pushes says
+The board is the only authority on how the game is going. Call finish("solved") only
+when it printed SOLVED, and finish("stuck") only when its list of possible pushes says
 none. While it lists even one push you have something to do, and a false claim
 scores the same as failing, while another turn costs almost nothing."""
 
@@ -198,7 +204,7 @@ There are more goals than boxes, so some goals stay empty and no box is owed the
 goal sharing its number. Two plans that pair the same boxes with the same goals
 are one plan however you sequence them, so spend the {n} slots on different
 pairings — including the goals an obvious plan would leave out.
-Do not call done() or launch_subagent().
+Do not call finish() or launch_subagent().
 """
 
 
@@ -212,9 +218,7 @@ def scoreboard(state: dict, agent: AgentStart) -> str:
     dist = state.get("dist", 0)
     limit = agent.config.max_iters
     remaining = (
-        f"~{max(0, limit - agent.llm_turns())} turns left"
-        if limit is not None
-        else "no turn cap"
+        f"~{max(0, limit - agent.llm_turns())} turns left" if limit is not None else "no turn cap"
     )
     return (
         f"Standing: {state.get('pushes', 0)} pushes, "
@@ -242,15 +246,15 @@ def board_prompt(runtime: Runtime, agent: AgentStart, *, simple: bool = False) -
     here = state.get("pushes_here", [])
     doomed = state.get("doomed", [])
     if state.get("solved"):
-        action = 'Call done("solved").'
+        action = 'Call finish("solved").'
     elif not legal:
-        action = 'Call done("stuck").'
+        action = 'Call finish("stuck").'
     elif doomed:
         # Other boxes can still be shoved around for another twenty turns, so without
         # being told, a branch spends its whole budget on a board it has already lost.
         action = (
             f"This board can no longer be solved: {', '.join(doomed)} can never reach "
-            'any goal from where it sits. Call done("stuck") now — pushing the other '
+            'any goal from where it sits. Call finish("stuck") now — pushing the other '
             "boxes cannot undo it, and only a rewind can."
         )
     elif simple:
@@ -275,7 +279,7 @@ def board_prompt(runtime: Runtime, agent: AgentStart, *, simple: bool = False) -
     # count of what is still legal goes next to the refusal every turn.
     if legal and not state.get("solved") and not doomed:
         action += (
-            f' {len(legal)} pushes are still legal, listed above, so do not call done("stuck").'
+            f' {len(legal)} pushes are still legal, listed above, so do not call finish("stuck").'
         )
     if state.get("blocked") and not state.get("solved"):
         action = (
@@ -382,6 +386,7 @@ async def run_shepherd(
     # spelled. Pushes are counted the same either way, so runs stay comparable.
     construct = SIMPLE_CONSTRUCT if simple_moves else CONSTRUCT
     jam_code = SIMPLE_JAM_CODE if simple_moves else JAM_CODE
+
     def render_worker(runtime: Runtime, node: Node) -> list[dict[str, str]]:
         messages = default_render(runtime, node)
         content = board_prompt(runtime, node.parent_agent, simple=simple_moves)
@@ -390,8 +395,8 @@ async def run_shepherd(
         return messages
 
     flow = Flow(
-        build_client(model, reasoning_effort=effort),
-        llm_clients={"worker": build_client(worker_model, reasoning_effort=worker_effort)},
+        client_for(model, reasoning_effort=effort),
+        llm_clients={"worker": client_for(worker_model, reasoning_effort=worker_effort)},
         prompt_profiles={
             "worker": PromptProfile(
                 system=SIMPLE_WORKER_SYSTEM if simple_moves else WORKER_SYSTEM,
@@ -403,9 +408,8 @@ async def run_shepherd(
     runtime = flow.runtime
     # Each REPL runs in a worker process that has no examples directory on its
     # path, so ``sokoban`` is not importable there and pickling the class by
-    # reference would arrive as a missing import. Sending the module by value ships
-    # the code itself, which is also what lets the host read a finished game back
-    # out at the end for the trace export.
+    # reference would arrive as a missing import. Sending the module by value
+    # ships the code itself; the worker publishes host-readable trace data in ENV.
     cloudpickle.register_pickle_by_value(sokoban)
     flow.inject("Sokoban", Sokoban)
     worker = flow.start(
@@ -481,11 +485,17 @@ async def run_shepherd(
         announce(worker, "worker", root=True)
         if dashboard is not None:
             dashboard.set_status("worker playing the bad plan…")
-        async for node in play_jam(
-            flow, worker, jam_pushes, construct=construct, jam_code=jam_code
+        async for node in checkpoint_stream(
+            play_jam(
+                flow,
+                worker,
+                jam_pushes,
+                construct=construct,
+                jam_code=jam_code,
+            ),
+            root / "worker",
         ):
             show(node)
-            worker.save(root / "worker")
 
         if flow.runtime.get_env_var(worker, "solved"):
             worker.save(root / "best")
@@ -526,12 +536,15 @@ async def run_shepherd(
         if dashboard is not None:
             dashboard.set_status("shepherd planning recovery branches…")
 
-        async for node in flow.run_streaming(
-            shepherd,
-            until=lambda node, _root: (bool(plans) and node.parent_agent is shepherd) or expired(),
+        async for node in checkpoint_stream(
+            flow.run_streaming(
+                shepherd,
+                until=lambda node, _root: (bool(plans) and node.parent_agent is shepherd)
+                or expired(),
+            ),
+            root / "shepherd",
         ):
             show(node)
-            shepherd.save(root / "shepherd")
         if not plans:
             close_view()
             ran_out = " before the time budget" if expired() else ""
@@ -559,14 +572,16 @@ async def run_shepherd(
         for branch in branches:
             anchor.append_child(branch.graph, name=branch.name)
 
-        async for node in flow.run_streaming(
-            shepherd,
-            until=lambda node, _root: (
-                (node.parent_agent is shepherd and isinstance(node, ExecOutput)) or expired()
+        async for node in checkpoint_stream(
+            flow.run_streaming(
+                shepherd,
+                until=lambda node, _root: (
+                    (node.parent_agent is shepherd and isinstance(node, ExecOutput)) or expired()
+                ),
             ),
+            root / "shepherd",
         ):
             show(node)
-            shepherd.save(root / "shepherd")
 
         best = max(branches, key=lambda branch: branch.score)
         cut_short = " · stopped at the time budget" if expired() else ""
@@ -584,8 +599,11 @@ async def run_shepherd(
         print(grid_of_blocks(final_panels, cols=min(len(final_panels), 4)))
         export_run_traces(
             root,
-            [("worker", flow.runtime.get_var(worker, "game"))]
-            + [(branch.name, flow.runtime.get_var(branch.graph, "game")) for branch in branches],
+            [("worker", flow.runtime.get_env_var(worker, "step_frames"))]
+            + [
+                (branch.name, flow.runtime.get_env_var(branch.graph, "step_frames"))
+                for branch in branches
+            ],
         )
         best.graph.save(root / "best")
         print(f"\n{summary}\n{best.board()}")

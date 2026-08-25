@@ -27,13 +27,11 @@ from rlmflow import (
     Flow,
 )
 from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
+from rlmflow.llm import client_for
 
 examples_dir = next(path for path in Path(__file__).resolve().parents if path.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
-
-from common import build_client  # noqa: E402, RUF100
-
 
 def generate_massive_context(
     num_lines: int = 1_000_000,
@@ -91,10 +89,10 @@ def main():
 
     runtime = DockerRuntime(args.docker_image) if args.docker_image else None
 
-    llm = build_client(args.model)
+    llm = client_for(args.model)
     llm_clients = None
     if args.fast_model:
-        llm_clients = {"fast": build_client(args.fast_model)}
+        llm_clients = {"fast": client_for(args.fast_model)}
 
     flow = Flow(
         llm,

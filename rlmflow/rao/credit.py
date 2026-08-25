@@ -53,7 +53,7 @@ def agent_id(agent: AgentStart) -> str:
 
 
 def agents(root: AgentStart) -> list[AgentStart]:
-    return [node for node in root.walk() if isinstance(node, AgentStart)]
+    return list(root.iter_agents())
 
 
 def mean(values: Sequence[float]) -> float:

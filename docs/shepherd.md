@@ -1,6 +1,5 @@
 ### Recursive Shepherd: RLMs as meta-agents
 
-
 <p align="center">
   <img
     src="static/shepherd/tiers.gif"
@@ -9,28 +8,15 @@
   />
 </p>
 
+[Shepherd: Enabling Programmable Meta-Agents via Reversible Agentic Execution Traces](https://arxiv.org/abs/2605.10913) (Yu et al., 2026) argues that an agent's execution should be a reversible object rather than a one-way transcript. Record the run as a Git-like trace, and you can program a second model against it — a *meta-agent* that inspects any earlier point, reverts to it, then plans and steers parallel alternative routes.
 
-[Shepherd: Enabling Programmable Meta-Agents via Reversible Agentic Execution
-Traces](https://arxiv.org/abs/2605.10913) (Yu et al., 2026) argues that an agent's
-execution should be a reversible object rather than a one-way transcript. Record
-the run as a Git-like trace, and you can program a second model against it — a
-*meta-agent* that inspects any earlier point, reverts to it, then plans and steers
-parallel alternative routes.
+`rlmflow` already keeps a run as a durable graph of typed nodes, so Shepherd's four operations — observe, rewind, fork, re-instruct — are graph edits, and the meta-agent's forks are simply its own children.
 
-`rlmflow` already keeps a run as a durable graph of typed nodes, so Shepherd's four
-operations — observe, rewind, fork, re-instruct — are graph edits, and the
-meta-agent's forks are simply its own children.
-
-Only the revert itself works differently. The paper checkpoints the worker's
-process and filesystem, so any program comes back byte-identical. `rlmflow`
-already tracks every action as a node, so the cheap route is to fork the graph and
-replay those actions — no snapshot to take, and exactly as faithful whenever the
-environment is deterministic.
+Only the revert itself works differently. The paper checkpoints the worker's process and filesystem, so any program comes back byte-identical. `rlmflow` already tracks every action as a node, so the cheap route is to fork the graph and replay those actions — no snapshot to take, and exactly as faithful whenever the environment is deterministic.
 
 #### Irreversible Sokoban
 
-For this example we augment our RLMs with tools to play Sokoban, where boxes can be pushed but never
-pulled. This means a single wrong shove can make the puzzle unsolvable.
+For this example we augment our RLMs with tools to play Sokoban, where boxes can be pushed but never pulled. This means a single wrong shove can make the puzzle unsolvable.
 
 For simplicity, we introduce two main tools in the worker's REPL:
 
@@ -56,9 +42,7 @@ pushed B1 up: (3, 3)->(2, 3)
 
 #### Live board context without coupling nodes to Flow
 
-The worker needs the current board in every model request, but that state lives
-in its REPL rather than in the durable node graph. The example therefore uses a
-current-frontier `render_fn`. `Flow` passes its runtime to the renderer:
+The worker needs the current board in every model request, but that state lives in its REPL rather than in the durable node graph. The example therefore uses a current-frontier `render_fn`. `Flow` passes its runtime to the renderer:
 
 ```python
 def render_worker(runtime: Runtime, node: Node) -> list[dict[str, str]]:
@@ -77,15 +61,9 @@ flow = Flow(
 )
 ```
 
-`Node.render()` remains canonical and runtime-independent, while this renderer
-can read the live REPL `ENV` for the node currently being sent. The runtime
-argument makes that transient dependency explicit without coupling the node
-graph to `Flow`. `board_prompt` also stamps the upcoming turn in `ENV` so the
-game's one-push guard applies to the next live action; replay does not need that
-live-turn guard.
+`Node.render()` remains canonical and runtime-independent, while this renderer can read the live REPL `ENV` for the node currently being sent. The runtime argument makes that transient dependency explicit without coupling the node graph to `Flow`. `board_prompt` also stamps the upcoming turn in `ENV` so the game's one-push guard applies to the next live action; replay does not need that live-turn guard.
 
-This run starts jammed on purpose: the worker shoves `B1` right eight times until
-it sits flat against the wall, where nothing can stand behind it.
+This run starts jammed on purpose: the worker shoves `B1` right eight times until it sits flat against the wall, where nothing can stand behind it.
 
 <p align="center">
   <img
@@ -107,11 +85,7 @@ def branch(specs: list[Plan]) -> str:
     """Each plan is one revert depth plus the box-to-goal order for that worker."""
 ```
 
-`preview(k)` forks the graph, replays it to `k` pushes ago and returns that state;
-the failed run is untouched, so the shepherd can look at every earlier board for
-free. `branch(plans)` takes one `{rewind, order}` per attempt and ends the
-shepherd's turn: each plan becomes a worker of its own, rewound to that depth and
-carrying that order.
+`preview(k)` forks the graph, replays it to `k` pushes ago and returns that state; the failed run is untouched, so the shepherd can look at every earlier board for free. `branch(plans)` takes one `{rewind, order}` per attempt and ends the shepherd's turn: each plan becomes a worker of its own, rewound to that depth and carrying that order.
 
 #### Step 1 — observe: `preview(k)`
 
@@ -163,8 +137,7 @@ branch(plans)
 ['stuck', 'stuck', 'solved', 'solved', 'solved', 'solved', 'stuck', 'stuck']
 ```
 
-A plan is two decisions: where to revert back to, and what strategy to hand the worker
-instead. It contains no moves — those stay the worker's job.
+A plan is two decisions: where to revert back to, and what strategy to hand the worker instead. It contains no moves — those stay the worker's job.
 
 #### Step 3 — rewind and fork
 
@@ -176,14 +149,11 @@ fork = cut.fork()
 await flow.replay(fork)
 ```
 
-`fork()` copies the graph and drops everything after the point it reverted to;
-`replay` re-runs the retained actions into a new REPL.
+`fork()` copies the graph and drops everything after the point it reverted to; `replay` re-runs the retained actions into a new REPL.
 
 #### Step 4 — resume: each fork is a sub-agent
 
-The forks launch as children of the shepherd, so the search is itself one
-recursive agent tree. Each child wakes in a rewound REPL with its instruction
-appended:
+The forks launch as children of the shepherd, so the search is itself one recursive agent tree. Each child wakes in a rewound REPL with its instruction appended:
 
 ```text
 Rewound 7 pushes. This is a fresh recovery attempt, so abandon the plan you
@@ -212,9 +182,7 @@ From there the subagents make their moves, all eight at once:
 
 #### Overall Results
 
-Four of the eight branches solved the board, each from a different depth and a
-different box-to-goal order.
-
+Four of the eight branches solved the board, each from a different depth and a different box-to-goal order.
 
 <p align="center">
   <img

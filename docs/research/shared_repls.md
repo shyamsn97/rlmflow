@@ -1,7 +1,10 @@
 # Shared REPLs: Per-Agent State in a Shared Namespace
 
-> **Status:** Prototyped and validated end to end against the current engine,
-> local and remote. Not implemented.
+> **Status:** Historical pre-0.5 design record. Shared worker placement is now
+> implemented as `reuse_repl=True`; use
+> [`docs/runtimes.md`](../runtimes.md#isolated-and-shared-agents) for the current
+> behavior and API. Names such as `done` and implementation sketches below are
+> retained as design evidence, not supported API documentation.
 >
 > **Scope:** letting several agents share one `Repl` — one Python namespace, one
 > process, shared variables — while every piece of per-agent state stays

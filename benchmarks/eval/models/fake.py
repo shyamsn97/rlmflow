@@ -24,14 +24,14 @@ class FakeModel(Model):
             "output_tokens": 32,
         }
         answer = _extract_synthetic_secret(prompt)
-        wants_repl = "```repl" in prompt or "done(" in prompt or "Python REPL" in prompt
+        wants_repl = "```repl" in prompt or "finish(" in prompt or "Python REPL" in prompt
         # The needle task references its input as INPUTS['haystack'] (single
         # quotes); match the key loosely so the secret hasn't-been-seen branch
-        # fires regardless of quote style before falling back to done(...).
+        # fires regardless of quote style before falling back to finish(...).
         if wants_repl and answer == "UNKNOWN" and "haystack" in prompt:
             return '```repl\nprint(INPUTS["haystack"])\n```'
         if wants_repl:
-            return f'```repl\ndone("{answer}")\n```'
+            return f'```repl\nfinish("{answer}")\n```'
         return answer
 
     def usage(self) -> dict[str, int]:

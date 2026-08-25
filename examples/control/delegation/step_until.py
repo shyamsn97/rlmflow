@@ -28,18 +28,19 @@ from rlmflow import (
     Flow,
     Node,
 )
+from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import build_client, save_example_graph  # noqa: E402
+from common import checkpoint_stream, save_example_graph  # noqa: E402
 
 QUERY = """\
 Show minimal `Flow.run_streaming(..., until=...)` boundaries with delegated child agents.
 
 In your first REPL block, launch two child handles before waiting for either,
-then collect both results and call done. Use exactly these child names:
+then collect both results and call finish. Use exactly these child names:
 
 - `slow`: ask it to solve a tiny task after sleeping briefly with
   `await asyncio.sleep(1)`.
@@ -69,15 +70,17 @@ def print_nodes(title: str, nodes: list[Node], graph: Node) -> None:
 
 
 async def run_example(args: argparse.Namespace) -> AgentStart:
-    flow = Flow(build_client(args.model), workers=args.max_concurrency)
+    flow = Flow(client_for(args.model), workers=args.max_concurrency)
     graph = flow.start(QUERY, max_depth=args.max_depth, max_iters=args.max_iters)
     observed: list[Node] = []
     out_dir = Path(args.out_dir)
 
     async def collect(graph: AgentStart, **flow_kwargs) -> list[Node]:
         nodes: list[Node] = []
-        async for node in flow.run_streaming(graph, **flow_kwargs):
-            graph.save(out_dir)  # checkpoint as nodes land
+        async for node in checkpoint_stream(
+            flow.run_streaming(graph, **flow_kwargs),
+            out_dir,
+        ):
             nodes.append(node)
         return nodes
 

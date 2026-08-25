@@ -81,10 +81,9 @@ def plain(value: Any) -> Any:
     package installed. ``GenericEnvClient`` already hands back dicts; a typed
     client does not.
     """
-    for name in ("model_dump", "dict"):
-        method = getattr(value, name, None)
-        if callable(method):
-            return method()
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return model_dump()
     if is_dataclass(value) and not isinstance(value, type):
         return asdict(value)
     return value

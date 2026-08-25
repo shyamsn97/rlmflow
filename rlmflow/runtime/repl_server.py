@@ -36,7 +36,7 @@ from rlmflow.runtime.repl import (
     current_binding,
 )
 from rlmflow.tools.agents import AGENT_WAIT_TOOL
-from rlmflow.utils.serial import decode_object, encode_object
+from rlmflow.utils.serial import decode_host_value
 
 
 class ReplServer:
@@ -94,7 +94,8 @@ class ReplServer:
                     tenant_id=binding["tenant_id"],
                     proxy=name,
                     call_id=call_id,
-                    payload=encode_object((args, kwargs)),
+                    args=list(args),
+                    kwargs=kwargs,
                 )
             )
             return request_id, future
@@ -109,7 +110,7 @@ class ReplServer:
                 raise DoneSignal()
             if not response.ok or response.error is not None:
                 raise RuntimeError(response.error or f"{name} failed")
-            return decode_object(response.value) if response.value is not None else None
+            return decode_host_value(response.value) if response.value is not None else None
 
         if is_async:
 
@@ -124,7 +125,7 @@ class ReplServer:
                     raise DoneSignal()
                 if not response.ok or response.error is not None:
                     raise RuntimeError(response.error or f"{name} failed")
-                return decode_object(response.value) if response.value is not None else None
+                return decode_host_value(response.value) if response.value is not None else None
 
             return async_proxy
 
@@ -147,7 +148,7 @@ class ReplServer:
             return
         try:
             if isinstance(message, InjectRequest):
-                self._namespace[message.name] = decode_object(message.value)
+                self._namespace[message.name] = decode_host_value(message.value)
                 response = ReplResponse(id=message.id)
             elif isinstance(message, RetrieveRequest):
                 if message.name not in self._namespace:
@@ -159,7 +160,7 @@ class ReplServer:
                 else:
                     response = ReplResponse(
                         id=message.id,
-                        value=encode_object(self._namespace[message.name]),
+                        value=self._namespace[message.name],
                     )
             elif isinstance(message, RemoveRequest):
                 self._namespace.pop(message.name, None)
@@ -182,7 +183,7 @@ class ReplServer:
 
     def _run(self, message: RunRequest) -> None:
         tenant = self._tenant(message.tenant_id)
-        binding = decode_object(message.binding)
+        binding = decode_host_value(message.binding)
         tenant.inputs = binding["inputs"]
         tenant.env = binding["env"]
         wait_agent = self._namespace.get(AGENT_WAIT_TOOL)
@@ -197,7 +198,7 @@ class ReplServer:
                     id=message.id,
                     output=run.output,
                     errored=run.status is ReplStatus.ERROR,
-                    env=encode_object(binding["env"]),
+                    env=binding["env"],
                 )
             )
         except BaseException as exc:  # noqa: BLE001 - keep the worker dispatcher alive

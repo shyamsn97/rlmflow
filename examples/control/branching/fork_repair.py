@@ -18,6 +18,7 @@ from pathlib import Path
 from rlmflow import (
     FILE_TOOLS,
     Flow,
+    GraphCheckpointer,
     LLMUsage,
     LocalRuntime,
 )
@@ -79,7 +80,7 @@ class RepairLLM:
     def chat(self, messages, *args, **kwargs):
         self.last_usage = LLMUsage(input_tokens=100, output_tokens=50)
         return (
-            f"```repl\nwrite_file('slugify.py', {self.implementation!r})\ndone({self.label!r})\n```"
+            f"```repl\nwrite_file('slugify.py', {self.implementation!r})\nfinish({self.label!r})\n```"
         )
 
 
@@ -113,9 +114,12 @@ def run_branch(root: Path, name: str, implementation: str, label: str):
     graph = flow.start(TASK, max_depth=0, max_iters=3)
 
     async def drive() -> None:
-        # Checkpoint as nodes land, so the branch dir holds the run either way.
-        async for _node in flow.run_streaming(graph):
-            graph.save(workdir / "graph")
+        checkpoint = GraphCheckpointer(workdir / "graph")
+        try:
+            async for node in flow.run_streaming(graph):
+                checkpoint.handle(node)
+        finally:
+            checkpoint.close()
 
     asyncio.run(drive())
     passed, output = run_tests(workdir)

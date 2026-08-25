@@ -330,7 +330,7 @@ def test_flow_consumes_the_pooled_stream_primitive():
 
         async def stream(self, messages, **_kwargs):
             yield LLMChunk(
-                text='```repl\ndone("ok")\n```',
+                text='```repl\nfinish("ok")\n```',
                 usage=LLMUsage(2, 2),
             )
 
@@ -347,7 +347,7 @@ def test_flow_consumes_the_pooled_stream_primitive():
 
 
 def test_chat_only_fake_still_runs():
-    llm = StubLLM(lambda _messages: '```repl\ndone("ok")\n```')
+    llm = StubLLM(lambda _messages: '```repl\nfinish("ok")\n```')
     assert Flow(llm).run("go") == "ok"
 
 

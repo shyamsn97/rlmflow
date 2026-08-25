@@ -21,7 +21,7 @@ from rlmflow import (
 
 
 def test_step_advances_exactly_one_state_transition():
-    flow = Flow(StubLLM(lambda _messages: '```repl\ndone("ok")\n```'))
+    flow = Flow(StubLLM(lambda _messages: '```repl\nfinish("ok")\n```'))
     root = start("query")
 
     transition = asyncio.run(flow.step(root))
@@ -36,7 +36,7 @@ def test_step_advances_exactly_one_state_transition():
 
 
 def test_a_run_can_be_driven_by_hand_one_step_at_a_time():
-    flow = Flow(StubLLM(lambda _messages: '```repl\ndone("ok")\n```'))
+    flow = Flow(StubLLM(lambda _messages: '```repl\nfinish("ok")\n```'))
     root = start("query")
 
     produced = [asyncio.run(flow.step(root.frontier)).created for _ in range(3)]

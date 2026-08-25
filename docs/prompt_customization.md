@@ -1,16 +1,12 @@
 # Prompt Customization
 
-`Flow` builds a system prompt from named sections. Most customization should
-derive from the default builder instead of replacing the whole prompt, because
-the default sections carry the REPL protocol, delegation API, and runtime
-manifests while leaving planning free-form.
+`Flow` builds a system prompt from named sections. Most customization should derive from the default builder instead of replacing the whole prompt, because the default sections carry the REPL protocol, delegation API, and runtime manifests while leaving planning free-form.
 
 Use full replacement only when you want to own that entire protocol yourself.
 
 ## Inspect The Prompt
 
-Before changing the prompt, render the one your agent already sees. Nothing has
-to run first — a root from `flow.start(...)` is enough:
+Before changing the prompt, render the one your agent already sees. Nothing has to run first — a root from `flow.start(...)` is enough:
 
 ```python
 import rlmflow
@@ -20,45 +16,34 @@ root = flow.start("Summarize this document.", inputs={"document": document})
 print(flow.system_prompt.render(flow, root))
 ```
 
-`render(flow, agent)` renders against that agent's config — its query, inputs,
-model, and output schema — and the flow's current prompt and tool configuration.
-To see the whole conversation instead, `flow.build_messages(root.frontier)` returns the
-message list the model receives, whose first entry is this same text.
+`render(flow, agent)` renders against that agent's config — its query, inputs, model, and output schema — and the flow's current prompt and tool configuration. To see the whole conversation instead, `flow.build_messages(root.frontier)` returns the message list the model receives, whose first entry is this same text.
 
 ## Default Builder Shape
 
 The default builder has these sections, in order:
 
-| Section | Purpose |
-| --- | --- |
-| `role` | Opening recursive-agent contract. |
-| `builtins` | Runtime-aware `finish(...)` and delegation API. |
-| `context` | Persistent REPL working memory and bounded observations. |
-| `format` | One `repl` block per turn; use `print(...)` for short observations only. |
-| `examples` | Input inspection, bounded local work, and coherent fan-out trajectories, rendered only when the agent can use them. |
-| `final` | `finish(...)` contract and repair discipline. |
-| `structured-output` | Per-agent `finish(value)` schema when the agent has an `output_schema`. |
-| `structured-output-option` | How to request structured output from subagents (only when `enable_structured_output=True` and the agent can spawn children). |
-| `tools` | Runtime-generated tool list (custom tools registered with the runtime, plus extra model aliases). |
-| `inputs` | Runtime-generated metadata-only manifest of the agent's `INPUTS` (keys and sizes, never values). |
-| `status` | Runtime-generated agent depth / spawn-budget status. |
-| `strategy` | Final stable system instruction: inspect inputs, keep small work local, orchestrate substantial independent work, and retain parent synthesis. |
+| Section                    | Purpose                                                                                                                                        |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `role`                     | Opening recursive-agent contract.                                                                                                              |
+| `builtins`                 | Runtime-aware `finish(...)` and delegation API.                                                                                                |
+| `context`                  | Persistent REPL working memory and bounded observations.                                                                                       |
+| `format`                   | One `repl` block per turn; use `print(...)` for short observations only.                                                                       |
+| `examples`                 | Input inspection, bounded local work, and coherent fan-out trajectories, rendered only when the agent can use them.                            |
+| `final`                    | `finish(...)` contract and repair discipline.                                                                                                  |
+| `structured-output`        | Per-agent `finish(value)` schema when the agent has an `output_schema`.                                                                        |
+| `structured-output-option` | How to request structured output from subagents (only when `enable_structured_output=True` and the agent can spawn children).                  |
+| `tools`                    | Runtime-generated tool list (custom tools registered with the runtime, plus extra model aliases).                                              |
+| `inputs`                   | Runtime-generated metadata-only manifest of the agent's `INPUTS` (keys and sizes, never values).                                               |
+| `status`                   | Runtime-generated agent depth / spawn-budget status.                                                                                           |
+| `strategy`                 | Final stable system instruction: inspect inputs, keep small work local, orchestrate substantial independent work, and retain parent synthesis. |
 
-The static text sections render back-to-back so the prompt reads as one
-continuous narrative; the split exists so each piece is independently swappable
-via `prompt.sections.update(name, ...)`. `builtins`, `strategy`, `examples`,
-`tools`, `inputs`, `status`, and `structured-output*` are callable sections
-filled from the current Flow and Node at build time.
+The static text sections render back-to-back so the prompt reads as one continuous narrative; the split exists so each piece is independently swappable via `prompt.sections.update(name, ...)`. `builtins`, `strategy`, `examples`, `tools`, `inputs`, `status`, and `structured-output*` are callable sections filled from the current Flow and Node at build time.
 
 ## Recommended: Edit `SystemPromptBuilder().sections`
 
-The system prompt is a `SystemPromptBuilder`. Its `.sections` is a mutable,
-name-addressable list (`Sections`); edit it in place and hand the builder to the
-flow. Construct a fresh `SystemPromptBuilder()` rather than mutating the shared
-`DEFAULT_BUILDER`.
+The system prompt is a `SystemPromptBuilder`. Its `.sections` is a mutable, name-addressable list (`Sections`); edit it in place and hand the builder to the flow. Construct a fresh `SystemPromptBuilder()` rather than mutating the shared `DEFAULT_BUILDER`.
 
-The `.sections` editing methods (`add`, `update`, `drop`) mutate in place and
-return the list, so edits read top-to-bottom.
+The `.sections` editing methods (`add`, `update`, `drop`) mutate in place and return the list, so edits read top-to-bottom.
 
 ### Add Project Rules
 
@@ -114,9 +99,7 @@ prompt.sections.add(
 
 ### Remove A Section
 
-`drop` removes a section by name — but removing core sections like `role`,
-`strategy`, `format`, or `final` strips the delegation/REPL protocol. Prefer
-dropping only sections you added.
+`drop` removes a section by name — but removing core sections like `role`, `strategy`, `format`, or `final` strips the delegation/REPL protocol. Prefer dropping only sections you added.
 
 ```python
 prompt = SystemPromptBuilder()
@@ -125,8 +108,7 @@ prompt.sections.drop("project_rules")
 
 ### Reusable Customization: Subclass
 
-For a customization you want every time, subclass and override
-`default_sections` (the static baseline).
+For a customization you want every time, subclass and override `default_sections` (the static baseline).
 
 ```python
 from rlmflow import SystemPromptBuilder
@@ -142,10 +124,9 @@ flow = rlmflow.Flow(llm, system_prompt=AuditPrompt())
 
 ### Build A Prompt From Scratch
 
-Override `default_sections` to return your own `Sections`. Include the built-in
-callable sections if you want the standard runtime-generated tools/status blocks.
+Override `default_sections` to return your own `Sections`. Include the built-in callable sections if you want the standard runtime-generated tools/status blocks.
 
-```python
+````python
 from rlmflow import SystemPromptBuilder
 from rlmflow.prompts import Sections, status_section, tools_section
 
@@ -168,20 +149,17 @@ class MinimalPrompt(SystemPromptBuilder):
         )
 
 flow = rlmflow.Flow(llm, system_prompt=MinimalPrompt())
-```
+````
 
 ## The `system_prompt` Source
 
-`system_prompt` (constructor arg or settable attribute) accepts any of three
-things — a `SystemPromptBuilder`, a plain string, or a `(flow, agent) -> str`
-function — and is resolved fresh on every turn:
+`system_prompt` (constructor arg or settable attribute) accepts any of three things — a `SystemPromptBuilder`, a plain string, or a `(flow, agent) -> str` function — and is resolved fresh on every turn:
 
-- **`SystemPromptBuilder`** (the default, `DEFAULT_BUILDER`) — the section
-  machinery described above.
+- **`SystemPromptBuilder`** (the default, `DEFAULT_BUILDER`) — the section machinery described above.
 - **string** — a constant prompt, bypassing the builder entirely.
 - **function** — a dynamic prompt without subclassing anything.
 
-```python
+````python
 import rlmflow
 
 # constant string (most fragile — you own the whole protocol)
@@ -203,20 +181,13 @@ def prompt_for(flow, agent):
     return f"You are an auditor. {tail}"
 
 flow = rlmflow.Flow(llm, system_prompt=prompt_for)
-```
+````
 
-A string that omits `launch_subagent`, `INPUTS`, `HISTORY`, or the `finish(...)`
-rule means the model will not reliably use those features — prefer a
-`SystemPromptBuilder` unless you intend to own the entire protocol.
+A string that omits `launch_subagent`, `INPUTS`, `HISTORY`, or the `finish(...)` rule means the model will not reliably use those features — prefer a `SystemPromptBuilder` unless you intend to own the entire protocol.
 
 ## Dynamic Prompts
 
-When the prompt should depend on the current agent, depth, query, available
-tools, or project state, override `render` on a `SystemPromptBuilder` subclass.
-It receives `(flow, agent)` — the `AgentStart` whose prompt is being built —
-assembles `Sections`, and renders them with `self.build(...)`. The agent's query
-is `agent.content`, and its model, inputs, depth, and output schema are on
-`agent.config`.
+When the prompt should depend on the current agent, depth, query, available tools, or project state, override `render` on a `SystemPromptBuilder` subclass. It receives `(flow, agent)` — the `AgentStart` whose prompt is being built — assembles `Sections`, and renders them with `self.build(...)`. The agent's query is `agent.content`, and its model, inputs, depth, and output schema are on `agent.config`.
 
 ```python
 import rlmflow
@@ -253,30 +224,22 @@ prompt = SystemPromptBuilder()
 prompt.sections.update("tools", careful_tools)
 ```
 
-(Assigning `flow.system_prompt` — a builder, or any `(flow, agent) -> str`
-callable — still works if you'd rather own the whole prompt at the flow level,
-and `prompt_profiles` with a `prompt_router` picks one per agent.)
+(Assigning `flow.system_prompt` — a builder, or any `(flow, agent) -> str` callable — still works if you'd rather own the whole prompt at the flow level, and `prompt_profiles` with a `prompt_router` picks one per agent.)
 
 ## Callable Sections
 
-The dynamic prompt hook above works, but it is heavier than it needs to be for
-small additions like project rules or runtime notes. A prompt section can be
-either static text or a function:
+The dynamic prompt hook above works, but it is heavier than it needs to be for small additions like project rules or runtime notes. A prompt section can be either static text or a function:
 
 ```python
 def section(flow: rlmflow.Flow, agent: rlmflow.AgentStart) -> str:
     ...
 ```
 
-The signature is intentionally just `flow, agent`. There is no context dict
-and no separate prompt context object. If a section needs runtime tools, model
-registrations, config, or the current agent id, those are already reachable
-from `flow` and `agent`.
+The signature is intentionally just `flow, agent`. There is no context dict and no separate prompt context object. If a section needs runtime tools, model registrations, config, or the current agent id, those are already reachable from `flow` and `agent`.
 
 ## Child-Specific Prompts
 
-The easiest way to steer a child is the goal you pass to `launch_subagent`.
-Use the global prompt for stable behavior and child goals for local contracts.
+The easiest way to steer a child is the goal you pass to `launch_subagent`. Use the global prompt for stable behavior and child goals for local contracts.
 
 ```python
 api = await launch_subagent(
@@ -296,9 +259,7 @@ results = [await api.wait_for_result(), await tests.wait_for_result()]
 
 ## Per-child prompts
 
-Sometimes a child agent should run under a *different* prompt than its parent — an
-orchestrator RLM spawning coding agents, say. Register named **prompt profiles**
-on the flow, parallel to `llm_clients`/`model`:
+Sometimes a child agent should run under a *different* prompt than its parent — an orchestrator RLM spawning coding agents, say. Register named **prompt profiles** on the flow, parallel to `llm_clients`/`model`:
 
 ```python
 import rlmflow
@@ -316,15 +277,9 @@ flow = rlmflow.Flow(
 )
 ```
 
-A `PromptProfile` bundles a `system` source and a current-node `render_fn`;
-`None` on either side
-inherits the flow default. When omitted from `prompt_profiles`, `"default"`
-means the flow's own `system_prompt`/`render_fn`; callers may also define it
-explicitly.
+A `PromptProfile` bundles a `system` source and a current-node `render_fn`; `None` on either side inherits the flow default. When omitted from `prompt_profiles`, `"default"` means the flow's own `system_prompt`/`render_fn`; callers may also define it explicitly.
 
-By default, Flow reads the profile name from the agent's config. With a
-non-empty registry, profile names and descriptions are
-advertised in the orchestrator's system prompt, so it can name one per child:
+By default, Flow reads the profile name from the agent's config. With a non-empty registry, profile names and descriptions are advertised in the orchestrator's system prompt, so it can name one per child:
 
 ```python
 impl = await launch_subagent(
@@ -335,8 +290,7 @@ review = await launch_subagent(
 )
 ```
 
-Pass a callable `prompt_router` only when host policy should choose the profile
-dynamically. A custom router also suppresses profile advertising:
+Pass a callable `prompt_router` only when host policy should choose the profile dynamically. A custom router also suppresses profile advertising:
 
 ```python
 flow = rlmflow.Flow(
@@ -346,35 +300,20 @@ flow = rlmflow.Flow(
 )
 ```
 
-The launch call's `prompt_profile` is stored on `UserQuery.prompt_profile` and
-serialized. When omitted, a cold child inherits its immediate parent agent's
-profile; a prepared branch keeps its own profile. Without a router, that stamp
-is authoritative. With a router, the callable's result is authoritative.
-Unknown names raise `ValueError`.
+The launch call's `prompt_profile` is stored on `UserQuery.prompt_profile` and serialized. When omitted, a cold child inherits its immediate parent agent's profile; a prepared branch keeps its own profile. Without a router, that stamp is authoritative. With a router, the callable's result is authoritative. Unknown names raise `ValueError`.
 
 ## Customizing The User Turns
 
-Everything above shapes the *system* message. The rest of the conversation — the
-user query, the assistant's replies, and the REPL/observation turns fed back in
-— has two explicit layers:
+Everything above shapes the *system* message. The rest of the conversation — the user query, the assistant's replies, and the REPL/observation turns fed back in — has two explicit layers:
 
-- **canonical history** — each `Node.render()` returns a list of messages, and
-  `node.project()` flattens those lists while walking history;
-- **current frontier** — `Flow(render_fn=...)` or
-  `PromptProfile(render_fn=...)` may render the node currently being sent
-  differently without rewriting historical projection.
+- **canonical history** — each `Node.render()` returns a list of messages, and `node.project()` flattens those lists while walking history;
+- **current frontier** — `Flow(render_fn=...)` or `PromptProfile(render_fn=...)` may render the node currently being sent differently without rewriting historical projection.
 
-The default current renderer calls `node.render()` and adds live
-background-agent status. Inspect, plan, final, continue, and truncation
-instructions are typed nodes, not injected strings.
+The default current renderer calls `node.render()` and adds live background-agent status. Inspect, plan, final, continue, and truncation instructions are typed nodes, not injected strings.
 
-`Flow.build_messages` reserves the current renderer's messages inside
-`keep_n_messages`, projects the remaining capacity from `node.prev`, prepends
-the system message, and preserves every rendered message in order. Adjacent
-messages with the same role remain separate.
+`Flow.build_messages` reserves the current renderer's messages inside `keep_n_messages`, projects the remaining capacity from `node.prev`, prepends the system message, and preserves every rendered message in order. Adjacent messages with the same role remain separate.
 
-Override a node's canonical `render()` when the representation must persist in
-future history:
+Override a node's canonical `render()` when the representation must persist in future history:
 
 ```python
 import rlmflow
@@ -391,10 +330,7 @@ class LabeledOutput(ExecOutput):
         ]
 ```
 
-Use a `render_fn` for live material which applies only to the current frontier.
-`Flow` passes its runtime explicitly, so the renderer can inspect the current
-agent's REPL without closing over the flow. This is the renderer used by the
-Shepherd example:
+Use a `render_fn` for live material which applies only to the current frontier. `Flow` passes its runtime explicitly, so the renderer can inspect the current agent's REPL without closing over the flow. This is the renderer used by the Shepherd example:
 
 ```python
 def render_worker(runtime: Runtime, node: Node) -> list[dict[str, str]]:
@@ -413,11 +349,6 @@ flow = rlmflow.Flow(
 )
 ```
 
-`RenderFn` is `(Runtime, Node) -> list[dict[str, str]]`. Keep `Node.render()`
-runtime-independent so saved graphs retain a canonical projection; use the
-current renderer for transient state such as REPL `ENV`.
+`RenderFn` is `(Runtime, Node) -> list[dict[str, str]]`. Keep `Node.render()` runtime-independent so saved graphs retain a canonical projection; use the current renderer for transient state such as REPL `ENV`.
 
-A `UserQuery` subclass inherits the user turn with no builder edit. Node types
-that are tree bookkeeping rather than turns (`ExecAction`, `DoneOutput`)
-render as `[]`. To customize an engine instruction, subclass its typed node or
-replace the relevant `StepFunction`.
+A `UserQuery` subclass inherits the user turn with no builder edit. Node types that are tree bookkeeping rather than turns (`ExecAction`, `DoneOutput`) render as `[]`. To customize an engine instruction, subclass its typed node or replace the relevant `StepFunction`.

@@ -145,6 +145,21 @@ def test_error_table_lists_failures_and_says_none_when_clean():
     assert "root" in rendered
 
 
+def test_dashboard_tables_do_not_walk_all_transcript_nodes():
+    root, _action, _child = _delegating_run()
+
+    def fail_walk():
+        raise AssertionError("dashboard performed a full Node walk")
+
+    root.walk = fail_walk  # type: ignore[method-assign]
+
+    assert overview_table(root) is not None
+    assert agent_table(root) is not None
+    assert node_counts_table(root) is not None
+    assert waiting_table(root) is not None
+    assert error_table(root) is not None
+
+
 def test_latest_table_reports_recent_nodes_and_is_bounded():
     root = start("query")
     node = root.append(LLMOutput(content="thinking"))
@@ -218,21 +233,32 @@ def test_flow_tui_keeps_only_the_last_hundred_nodes():
     assert len(ui.latest) == 100
 
 
-def test_flow_tui_refreshes_the_dashboard_while_open():
+def test_flow_tui_coalesces_dashboard_refreshes():
     root = start("query")
     node = root.append(LLMOutput(content="thinking"))
 
     class FakeApp:
         def __init__(self) -> None:
             self.refreshes = 0
+            self.timers = []
 
         def refresh_dashboard(self) -> None:
             self.refreshes += 1
+
+        def set_timer(self, interval, callback) -> None:
+            self.timers.append((interval, callback))
 
     ui = FlowTUI(root)
     ui.app = FakeApp()
 
     ui.handle(node)
+    ui.handle(node)
+    assert len(ui.app.timers) == 1
+    assert ui.app.refreshes == 0
+
+    interval, callback = ui.app.timers[0]
+    assert interval == 0.10
+    callback()
     ui.close()
 
     assert ui.app.refreshes == 2
@@ -289,6 +315,11 @@ def test_flow_tui_turn_without_a_flow_says_so():
 
     with pytest.raises(RuntimeError, match="init"):
         asyncio.run(ui.turn(query="hi"))
+
+
+def test_flow_tui_run_has_no_legacy_drive_callback():
+    with pytest.raises(TypeError):
+        FlowTUI().run(lambda: None)  # type: ignore[misc]
 
 
 def test_flow_tui_forwards_to_its_sink():

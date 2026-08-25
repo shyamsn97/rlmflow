@@ -68,7 +68,7 @@ def main() -> None:
     banner("frontier / result / tokens")
     print("root frontier:", root.frontier.type)
     print("result:", root.result())
-    print("tokens:", root.tokens())
+    print("tokens:", root.usage)
 
 
 def _failed(node: Node) -> bool:

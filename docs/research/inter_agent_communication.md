@@ -1,6 +1,6 @@
 # `AGENTS`: Tree-Based Agent Discovery
 
-> **Status:** Implemented, unreleased.
+> **Status:** Implemented, experimental beta.
 >
 > **Scope:** A read-only `AGENTS` variable for inspecting the agents in one
 > recursive run. This design does not add message passing or control.

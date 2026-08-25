@@ -26,12 +26,13 @@ from rlmflow import (
     LocalRuntime,
     tool,
 )
+from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import build_client  # noqa: E402
+from common import checkpoint_stream  # noqa: E402
 
 DEFAULT_QUERY = """I will be in Seattle today, Austin 3 days after that, and San Francisco 5 days after that. Check the weather and tell me what to pack for each city.
 """
@@ -246,9 +247,8 @@ def mcp_tools(client: MCPStdioClient) -> list[Any]:
 
 
 async def run_until_done(flow: Flow, root: AgentStart, out_dir: Path) -> AgentStart:
-    async for node in flow.run_streaming(root):
+    async for node in checkpoint_stream(flow.run_streaming(root), out_dir):
         print(f"{node.parent_agent.config.path}  {node.type}")
-        root.save(out_dir)
     return root
 
 
@@ -272,7 +272,7 @@ def main() -> None:
         # Expose the MCP-backed tools to every agent by handing them to the Flow
         # (each is already named by its MCP spec).
         flow = Flow(
-            build_client(args.model),
+            client_for(args.model),
             runtime=LocalRuntime(),
             tools=mcp_tools(mcp_client),
             root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),

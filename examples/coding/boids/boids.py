@@ -71,9 +71,9 @@ def pushd(path: Path) -> Iterator[None]:
 
 
 def build_rlmflow_llm(model: str):
-    from common import build_client
+    from rlmflow.llm import client_for
 
-    return build_client(model)
+    return client_for(model)
 
 
 def reset_run_dir(path: Path, *, force: bool) -> None:
@@ -129,6 +129,8 @@ def run_rlmflow(
     max_iters: int,
     max_concurrency: int,
 ) -> None:
+    from common import checkpoint_stream
+
     from rlmflow import (
         FILE_TOOLS,
         AgentStart,
@@ -161,9 +163,8 @@ def run_rlmflow(
         graph_dir = run_dir / "graph"
 
         async def drive(root: AgentStart) -> None:
-            async for node in flow.run_streaming(root):
+            async for node in checkpoint_stream(flow.run_streaming(root), graph_dir):
                 print(f"{node.parent_agent.config.path:<20} {node.type}")
-                root.save(graph_dir)
 
         asyncio.run(drive(root))
 

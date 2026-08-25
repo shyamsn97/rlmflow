@@ -30,12 +30,13 @@ from typing import Literal
 from pydantic import BaseModel
 
 from rlmflow import AgentStart, Flow, Node, json_schema_for
+from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import build_client, save_example_graph  # noqa: E402
+from common import checkpoint_stream, save_example_graph  # noqa: E402
 
 TARGET_WORD = "AGENT"
 
@@ -130,7 +131,7 @@ def print_tree(node: Node, depth: int = 0) -> None:
 
 
 def run(model: str, out_dir: Path) -> None:
-    flow = Flow(build_client(model))
+    flow = Flow(client_for(model))
 
     graph = flow.start(
         QUERY,
@@ -141,9 +142,7 @@ def run(model: str, out_dir: Path) -> None:
     print_tree(graph)
 
     async def run_to_done() -> None:
-        async for node in flow.run_streaming(graph):
-            # Checkpointing as nodes land keeps the run directory current.
-            graph.save(out_dir)
+        async for node in checkpoint_stream(flow.run_streaming(graph), out_dir):
             print(f"- {node.parent_agent.config.path}: {node.type}")
 
     asyncio.run(run_to_done())
@@ -152,7 +151,7 @@ def run(model: str, out_dir: Path) -> None:
     print("=== TREE ===")
     print_tree(graph)
 
-    # With an output_schema, done(...) records the parsed value, not raw text.
+    # With an output_schema, finish(...) records the parsed value, not raw text.
     result = WordSearchResult.model_validate(graph.result())
     actual = {_hit_key(hit) for hit in result.found}
     missing = set(result.missing)

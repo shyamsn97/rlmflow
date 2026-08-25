@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rlmflow"
-version = "0.4.2"
+version = "0.5.0"
 description = "Build recursive agents as inspectable execution graphs."
 readme = "README.md"
 license = "MIT"
@@ -35,8 +35,8 @@ dependencies = [
 rlmflow = "rlmflow.cli:main"
 
 [project.optional-dependencies]
-openai = ["openai>=1.0"]
-anthropic = ["anthropic>=0.20"]
+openai = ["openai>=3.0"]
+anthropic = ["anthropic>=1.0"]
 tinker = ["tinker", "tinker-cookbook"]
 openenv = ["openenv>=0.4"]
 dspy = ["dspy"]
@@ -60,9 +60,19 @@ viewer = ["gradio>=4.44", "rich>=13.0"]
 # Rasterising those figures into PNG frames or a GIF.
 image = ["cairosvg>=2.7", "pillow>=10.0"]
 tui = ["textual>=0.70", "rich>=13.0"]
+docs = [
+    "mdformat>=0.7",
+    "mdformat-gfm>=0.3",
+    "mkdocs>=1.6",
+    "mkdocs-jupyter>=0.25",
+    "mkdocs-literate-nav>=0.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
+    "pdocs>=1.2",
+]
 all = [
-    "openai>=1.0",
-    "anthropic>=0.20",
+    "openai>=3.0",
+    "anthropic>=1.0",
     "tinker",
     "tinker-cookbook",
     "dspy",
@@ -83,6 +93,14 @@ all = [
     "gradio>=4.44",
     "cairosvg>=2.7",
     "pillow>=10.0",
+    "mdformat>=0.7",
+    "mdformat-gfm>=0.3",
+    "mkdocs>=1.6",
+    "mkdocs-jupyter>=0.25",
+    "mkdocs-literate-nav>=0.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
+    "pdocs>=1.2",
 ]
 dev = [
     "pytest>=7.0",

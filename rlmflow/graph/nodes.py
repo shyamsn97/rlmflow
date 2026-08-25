@@ -5,12 +5,14 @@ from __future__ import annotations
 import contextvars
 import hashlib
 import time
-from collections.abc import Iterator
+from collections import Counter
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, ClassVar
 from uuid import uuid4
 
@@ -20,7 +22,7 @@ DEFAULT_QUERY = (
     "Please read through the provided INPUTS if present and answer any queries or respond to any "
     "instructions contained within it."
 )
-DEFAULT_MAX_QUERY_CHARS = 2_000
+DEFAULT_MAX_QUERY_CHARS = 4_000
 
 
 def new_agent_id() -> str:
@@ -97,10 +99,10 @@ class AgentConfig:
     #: Stable ordinal of the launch call that created this child.
     launch_call_id: int | None = None
     max_depth: int = 1
-    #: How many model turns this agent may take. ``None`` means no cap.
-    max_iters: int | None = None
+    #: How many model turns this agent may take. ``None`` explicitly opts out.
+    max_iters: int | None = 30
     child_max_iters: int | None = None
-    max_budget: int | None = None
+    max_budget: int | None = 100_000
     #: How many of the agent's own transcript turns a prompt carries. ``None``
     #: keeps the full history. The system message and the truncation notice sit
     #: on top of this count when it is set.
@@ -121,6 +123,52 @@ class AgentConfig:
             "max_iters": self.child_max_iters or self.max_iters,
         }
         return replace(self, **{**values, **overrides})
+
+
+@dataclass(frozen=True)
+class RunStats:
+    """Immutable aggregate facts about one complete run."""
+
+    revision: int
+    node_count: int
+    agent_count: int
+    node_counts: Mapping[str, int]
+    usage: LLMUsage
+    error_count: int
+
+
+@dataclass
+class RunIndex:
+    """Rebuildable live-run aggregates; never persisted or exposed directly."""
+
+    revision: int = 0
+    node_count: int = 0
+    node_counts: Counter[str] = field(default_factory=Counter)
+    usage: LLMUsage = field(default_factory=LLMUsage)
+    agents_by_id: dict[str, AgentStart] = field(default_factory=dict)
+    errors: list[ErrorOutput] = field(default_factory=list)
+
+    def register(self, node: Node) -> None:
+        self.node_count += 1
+        self.node_counts[node.type] += 1
+        if isinstance(node, AgentStart):
+            if node.id in self.agents_by_id:
+                raise ValueError(f"duplicate agent id {node.id!r}")
+            self.agents_by_id[node.id] = node
+        if isinstance(node, LLMOutput):
+            self.usage = self.usage + node.usage
+        if isinstance(node, ErrorOutput):
+            self.errors.append(node)
+
+    def snapshot(self) -> RunStats:
+        return RunStats(
+            revision=self.revision,
+            node_count=self.node_count,
+            agent_count=len(self.agents_by_id),
+            node_counts=MappingProxyType(dict(self.node_counts)),
+            usage=LLMUsage(self.usage.input_tokens, self.usage.output_tokens),
+            error_count=len(self.errors),
+        )
 
 
 @dataclass
@@ -174,18 +222,39 @@ class Node:
         ):
             raise ValueError(f"duplicate child name {node.config.name!r}")
 
+        root = agent.root
+        if root is None:
+            raise RuntimeError("agent is detached")
+        appended = list(node.walk()) if isinstance(node, AgentStart) else [node]
+        appended_agent_ids = [child.id for child in appended if isinstance(child, AgentStart)]
+        if len(appended_agent_ids) != len(set(appended_agent_ids)):
+            raise ValueError("appended subtree contains duplicate agent ids")
+        duplicate = next(
+            (
+                child.id
+                for child in appended
+                if isinstance(child, AgentStart) and child.id in root._index.agents_by_id
+            ),
+            None,
+        )
+        if duplicate is not None:
+            raise ValueError(f"duplicate agent id {duplicate!r}")
+
         self.children.append(node)
         node.parent = self
 
         if isinstance(node, AgentStart):
-            node.root = agent.root
+            node.root = root
             agent.sub_agents.append(node)
-            return node
+        else:
+            node.parent_agent = agent
+            node.root = root
+            node.seq = self.seq + 1  # a sub-agent keeps its own 0-based sequence
+            agent.frontier = node
 
-        node.parent_agent = agent
-        node.root = agent.root
-        node.seq = self.seq + 1  # a sub-agent keeps its own 0-based sequence
-        agent.frontier = node
+        for child in appended:
+            root._index.register(child)
+        root._index.revision += 1
         return node
 
     def append_child(
@@ -232,22 +301,25 @@ class Node:
         """
         return None if isinstance(self, AgentStart) else self.parent
 
-    def walk(self, *, reverse: bool = False) -> Iterator[Node]:
-        """Every node from here down, or with ``reverse`` back to this agent's start.
-
-        The two directions cover different ground, since only the forward one can
-        branch: down is the whole subtree including sub-agents, back is a single
-        chain through this node's own agent.
-        """
-        if reverse:
-            node: Node | None = self
-            while node is not None:
-                yield node
-                node = node.prev
-            return
+    def walk(self) -> Iterator[Node]:
+        """Yield this subtree in structural pre-order without Python recursion."""
         yield self
-        for child in self.children:
-            yield from child.walk()
+        stack: list[Iterator[Node]] = [iter(self.children)]
+        while stack:
+            try:
+                node = next(stack[-1])
+            except StopIteration:
+                stack.pop()
+                continue
+            yield node
+            stack.append(iter(node.children))
+
+    def iter_backwards(self) -> Iterator[Node]:
+        """Yield this node through its same-agent predecessors."""
+        node: Node | None = self
+        while node is not None:
+            yield node
+            node = node.prev
 
     def render(self) -> list[dict[str, str]]:
         """This node as zero or more canonical chat messages."""
@@ -268,7 +340,7 @@ class Node:
 
         groups: list[list[dict[str, str]]] = []
         remaining = keep
-        for node in self.walk(reverse=True):
+        for node in self.iter_backwards():
             messages = node.render()
             if remaining is not None:
                 messages = messages[-remaining:]
@@ -282,8 +354,8 @@ class Node:
 
         return [message for messages in reversed(groups) for message in messages]
 
-    def tokens(self) -> LLMUsage:
-        """What every model call from here down cost, added up."""
+    def subtree_usage(self) -> LLMUsage:
+        """Model usage below this node, computed in O(subtree size)."""
         spent = (node.usage for node in self.walk() if isinstance(node, LLMOutput))
         return sum(spent, LLMUsage())
 
@@ -297,8 +369,8 @@ class Node:
             "duration_ms": round((self.finished_at - self.started_at) * 1000, 3),
         }
 
-    def to_dict(self, *, nested: bool = True) -> dict[str, Any]:
-        """This node as run-format data; each type extends payload and metadata."""
+    def to_record(self) -> dict[str, Any]:
+        """This node as one shallow persistence record."""
         agent = self.parent_agent
         timing = self.timing()
         metadata: dict[str, Any] = {"created_at": _isoformat(self.created_at)}
@@ -306,40 +378,21 @@ class Node:
             metadata["timing"] = timing
         return {
             "id": self.id,
+            "parent_id": self.parent.id if self.parent is not None else None,
             "type": self.type,
             "agent_id": agent.config.path if agent is not None else None,
             "order": self.seq,
             "metadata": metadata,
             "payload": {"content": self.content},
-            "children": [child.to_dict() for child in self.children] if nested else [],
         }
 
-    def fork(self, new_ids: bool = True) -> AgentStart:
-        """Copy the whole graph, then cut everything after this node."""
+    def fork(self) -> AgentStart:
+        """Create an independent, fresh-identity branch ending at this node."""
         if self.root is None or self.parent_agent is None:
             raise RuntimeError("node is detached")
+        from rlmflow.graph.persistence import clone_until
 
-        root = deepcopy(self.root)
-        node = next(n for n in root.walk() if n.id == self.id)
-        node.children = []
-
-        agent = node.parent_agent
-        agent.frontier = node
-        kept = {id(n) for n in root.walk()}
-        agent.sub_agents = [sub for sub in agent.sub_agents if id(sub) in kept]
-
-        if new_ids:
-            # These are new nodes with new ids, so they were created now. Keeping the
-            # original stamps would date a copy earlier than the node it now hangs
-            # from, and walk order keeps the copy internally ordered.
-            nodes = list(root.walk())
-            id_map = {
-                n.id: new_agent_id() if isinstance(n, AgentStart) else new_node_id() for n in nodes
-            }
-            for n in nodes:
-                n.id = id_map[n.id]
-                n.created_at = time.time()
-        return root
+        return clone_until(self)
 
 
 @dataclass
@@ -357,11 +410,14 @@ class AgentStart(Node):
     #: The node whose step is currently running for this agent, if any. Engine
     #: bookkeeping, not transcript state: never saved, never compared.
     in_flight: Node | None = field(default=None, init=False, repr=False, compare=False)
+    _index: RunIndex = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self.root = self
         self.parent_agent = self
         self.frontier = self
+        self._index = RunIndex()
+        self._index.register(self)
 
     def render(self) -> list[dict[str, str]]:
         return [{"role": "user", "content": self.content}]
@@ -376,14 +432,55 @@ class AgentStart(Node):
 
     def leaves(self) -> list[Node]:
         out: list[Node] = []
-        for child in self.sub_agents:
-            out.extend(child.leaves())
-        out.append(self.frontier)
+        stack: list[tuple[AgentStart, bool]] = [(self, False)]
+        while stack:
+            agent, expanded = stack.pop()
+            if expanded:
+                out.append(agent.frontier)
+                continue
+            stack.append((agent, True))
+            stack.extend((child, False) for child in reversed(agent.sub_agents))
         return out
 
     def transcript(self) -> list[Node]:
         """This agent's own nodes, start to frontier; sub-agent branches are skipped."""
-        return list(self.frontier.walk(reverse=True))[::-1]
+        return list(self.frontier.iter_backwards())[::-1]
+
+    def _require_run_root(self) -> None:
+        if self.root is not self:
+            raise RuntimeError("run aggregates belong to agent.root")
+
+    @property
+    def usage(self) -> LLMUsage:
+        """Total model usage for this complete run in O(1)."""
+        self._require_run_root()
+        value = self._index.usage
+        return LLMUsage(value.input_tokens, value.output_tokens)
+
+    @property
+    def stats(self) -> RunStats:
+        """Immutable aggregate facts for this complete run."""
+        self._require_run_root()
+        return self._index.snapshot()
+
+    def iter_agents(self) -> Iterator[AgentStart]:
+        """Yield agents in structural depth-first order."""
+        self._require_run_root()
+        stack = [self]
+        while stack:
+            agent = stack.pop()
+            yield agent
+            stack.extend(reversed(agent.sub_agents))
+
+    def find_agent(self, agent_id: str) -> AgentStart | None:
+        """Find an agent by exact runtime ID without scanning transcript nodes."""
+        self._require_run_root()
+        return self._index.agents_by_id.get(agent_id)
+
+    def errors(self) -> tuple[ErrorOutput, ...]:
+        """Errors in append order without scanning the graph."""
+        self._require_run_root()
+        return tuple(self._index.errors)
 
     def llm_turns(self) -> int:
         return sum(isinstance(node, LLMOutput) for node in self.transcript())
@@ -400,14 +497,14 @@ class AgentStart(Node):
         return self.system_prompts.get(prompt_id) if prompt_id else None
 
     def latest_system_prompt(self) -> str | None:
-        for node in self.frontier.walk(reverse=True):
+        for node in self.frontier.iter_backwards():
             text = self.system_prompt_for(node)
             if text:
                 return text
         return None
 
-    def to_dict(self, *, nested: bool = True) -> dict[str, Any]:
-        data = super().to_dict(nested=nested)
+    def to_record(self) -> dict[str, Any]:
+        data = super().to_record()
         data["payload"].update(agent_payload(self))
         data["payload"]["system_prompts"] = dict(self.system_prompts)
         return data
@@ -471,8 +568,8 @@ class UserQuery(Node):
     def render(self) -> list[dict[str, str]]:
         return [{"role": "user", "content": self.content}]
 
-    def to_dict(self, *, nested: bool = True) -> dict[str, Any]:
-        data = super().to_dict(nested=nested)
+    def to_record(self) -> dict[str, Any]:
+        data = super().to_record()
         data["payload"].update(agent_payload(self.parent_agent))
         return data
 
@@ -522,8 +619,8 @@ class LLMOutput(Node):
     def render(self) -> list[dict[str, str]]:
         return [{"role": "assistant", "content": self.content}]
 
-    def to_dict(self, *, nested: bool = True) -> dict[str, Any]:
-        data = super().to_dict(nested=nested)
+    def to_record(self) -> dict[str, Any]:
+        data = super().to_record()
         data["payload"]["code"] = self.code
         agent = self.parent_agent
         config = agent.config if agent is not None else AgentConfig()
@@ -545,8 +642,8 @@ class ExecAction(Node):
     #: Submission order within the action's worker session, used for shared replay.
     repl_execution_order: int | None = None
 
-    def to_dict(self, *, nested: bool = True) -> dict[str, Any]:
-        data = super().to_dict(nested=nested)
+    def to_record(self) -> dict[str, Any]:
+        data = super().to_record()
         data["payload"] = {
             "code": self.code,
             "repl_execution_order": self.repl_execution_order,
@@ -616,7 +713,7 @@ class AppendChild(ExecAction):
 
     def _refresh_code(self) -> None:
         calls = [
-            ("launch_subagent(" f"'', model={child.config.model!r}, name={child.config.name!r})")
+            (f"launch_subagent('', model={child.config.model!r}, name={child.config.name!r})")
             for child in self.child_agents
         ]
         if len(calls) == 1:
@@ -636,8 +733,8 @@ class ExecOutput(Node):
     def render(self) -> list[dict[str, str]]:
         return [{"role": "user", "content": self.content}]
 
-    def to_dict(self, *, nested: bool = True) -> dict[str, Any]:
-        data = super().to_dict(nested=nested)
+    def to_record(self) -> dict[str, Any]:
+        data = super().to_record()
         data["payload"]["output"] = self.content
         return data
 
@@ -650,8 +747,8 @@ class ErrorOutput(Node):
     def render(self) -> list[dict[str, str]]:
         return [{"role": "user", "content": self.content}]
 
-    def to_dict(self, *, nested: bool = True) -> dict[str, Any]:
-        data = super().to_dict(nested=nested)
+    def to_record(self) -> dict[str, Any]:
+        data = super().to_record()
         data["payload"].update({"error": self.error, "output": self.content})
         return data
 
@@ -668,8 +765,8 @@ class DoneOutput(Node):
     type: ClassVar[str] = "done_output"
     result: Any = None
 
-    def to_dict(self, *, nested: bool = True) -> dict[str, Any]:
-        data = super().to_dict(nested=nested)
+    def to_record(self) -> dict[str, Any]:
+        data = super().to_record()
         data["payload"].update({"result": self.result, "output": self.content})
         return data
 
@@ -684,6 +781,13 @@ def agent_payload(agent: AgentStart | None) -> dict[str, Any]:
         "output_schema": config.output_schema,
         "reuse_repl": config.reuse_repl,
         "launch_call_id": config.launch_call_id,
+        "max_depth": config.max_depth,
+        "max_iters": config.max_iters,
+        "child_max_iters": config.child_max_iters,
+        "max_budget": config.max_budget,
+        "keep_n_messages": config.keep_n_messages,
+        "max_output_length": config.max_output_length,
+        "max_query_chars": config.max_query_chars,
     }
 
 
@@ -695,6 +799,16 @@ def validate_agent_name(name: str) -> None:
         or any(not (char.isalnum() or char in "_-") for char in name)
     ):
         raise ValueError(f"invalid child name {name!r}")
+
+
+def _rebuild_index(root: AgentStart) -> RunIndex:
+    """Recompute private run aggregates after isolated direct graph construction."""
+    index = RunIndex()
+    for node in root.walk():
+        index.register(node)
+    index.revision = max(index.node_count - 1, 0)
+    root._index = index
+    return index
 
 
 def start(query: str = "", *, config: AgentConfig | None = None, **overrides: Any) -> AgentStart:
@@ -744,6 +858,7 @@ __all__ = [
     "Node",
     "PlanQuery",
     "ReplDead",
+    "RunStats",
     "TruncationSummary",
     "UserQuery",
     "new_agent_id",

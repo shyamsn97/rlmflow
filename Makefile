@@ -109,11 +109,9 @@ install: clean lint
 	python -m pip install . --upgrade
 
 doc:
-	rm -r docs/reference/
+	rm -rf docs/reference/
 	pdocs as_markdown rlmflow -o docs/reference
-	rm docs/reference/rlmflow/index.md
 	cp examples/*.ipynb docs/examples/
-	cp README.md docs/index.md
 
 serve-docs:
 	mkdocs serve
@@ -222,8 +220,7 @@ release-check: ## Validate VERSION matches pyproject and working tree is clean.
 	@test -n "$(VERSION)" || (echo "VERSION is required, e.g. make release VERSION=0.4.1" >&2; exit 1)
 	@python -c "import re,sys; v='$(VERSION)'; sys.exit(0 if re.fullmatch(r'\d+\.\d+\.\d+', v) else 'VERSION must be MAJOR.MINOR.PATCH, e.g. 0.4.1')"
 	@python -c "import pathlib,sys,tomllib; v=tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version']; exp='$(VERSION)'; sys.exit(0 if v == exp else f'pyproject version {v} != VERSION {exp}')"
-	@git diff --quiet || (echo "working tree has unstaged changes; commit the release first" >&2; exit 1)
-	@git diff --cached --quiet || (echo "working tree has staged changes; commit the release first" >&2; exit 1)
+	@test -z "$$(git status --porcelain --untracked-files=all)" || (echo "working tree has tracked or untracked changes; commit the complete release first" >&2; exit 1)
 	@! git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null || (echo "tag v$(VERSION) already exists locally" >&2; exit 1)
 
 release-tag: release-check ## Create git tag v$(VERSION) for the current commit.

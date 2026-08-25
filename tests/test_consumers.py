@@ -1,4 +1,14 @@
-from rlmflow import AgentStart, DoneOutput, ExecAction, LLMOutput, start
+import pytest
+
+from rlmflow import (
+    AgentStart,
+    DoneOutput,
+    ErrorOutput,
+    ExecAction,
+    LLMOutput,
+    UserQuery,
+    start,
+)
 from rlmflow.consumers import (
     ConsumerGroup,
     FlowTUI,
@@ -84,3 +94,46 @@ def test_consumer_group_renders_and_checkpoints(tmp_path, capsys):
     loaded = AgentStart.load(tmp_path / "run")
     assert loaded.frontier.type == "llm_output"
     assert "root: planning" in capsys.readouterr().out
+
+
+def test_checkpointer_flushes_by_node_count_and_on_close(tmp_path):
+    root = start("query")
+    checkpoint = GraphCheckpointer(
+        tmp_path / "run",
+        interval_s=None,
+        interval_nodes=2,
+    )
+
+    first = root.append(UserQuery(content="one"))
+    checkpoint.handle(first)
+    assert not (tmp_path / "run" / "graph.json").exists()
+
+    second = first.append(UserQuery(content="two"))
+    checkpoint.handle(second)
+    assert AgentStart.load(tmp_path / "run").stats.node_count == 3
+
+    checkpoint.handle(second.append(UserQuery(content="three")))
+    checkpoint.close()
+    assert AgentStart.load(tmp_path / "run").stats.node_count == 4
+
+
+def test_checkpointer_rejects_ambiguous_zero_thresholds(tmp_path):
+    with pytest.raises(ValueError, match="interval_s"):
+        GraphCheckpointer(tmp_path, interval_s=0)
+    with pytest.raises(ValueError, match="interval_nodes"):
+        GraphCheckpointer(tmp_path, interval_nodes=0)
+
+
+@pytest.mark.parametrize("terminal", [DoneOutput(result="ok"), ErrorOutput(content="boom")])
+def test_checkpointer_flushes_terminal_events_immediately(tmp_path, terminal):
+    root = start("query")
+    node = root.append(terminal)
+    checkpoint = GraphCheckpointer(
+        tmp_path / "run",
+        interval_s=None,
+        interval_nodes=None,
+    )
+
+    checkpoint.handle(node)
+
+    assert AgentStart.load(tmp_path / "run").frontier.type == node.type

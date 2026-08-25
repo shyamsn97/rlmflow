@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from benchmarks.eval.run import build_parser, config_from_args
 from benchmarks.eval.tasks.aime import AIME2025Dataset
+from benchmarks.eval.tasks.livecodebench import _execute_against_tests
 from benchmarks.eval.tasks.longbench import CodeQADataset
 from benchmarks.eval.tasks.sniah import RulerSNIAHDataset
 from benchmarks.eval.types import Prediction
@@ -120,3 +121,35 @@ def test_sniah_extracts_ground_truth_from_complete_ruler_prompt():
     assert example.context == {"context": "A long context.\nWhat is the code?"}
     assert example.expected == ["purple-17"]
     assert dataset.score(example, Prediction(answer="purple-17")).correct
+
+
+def test_livecodebench_scores_generated_code_only_in_hardened_docker(monkeypatch):
+    calls = []
+
+    class Result:
+        stdout = "42\n"
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return Result()
+
+    monkeypatch.setattr("benchmarks.eval.tasks.livecodebench.shutil.which", lambda _name: "docker")
+    monkeypatch.setattr("benchmarks.eval.tasks.livecodebench.subprocess.run", run)
+
+    outcome = _execute_against_tests(
+        "print(42)",
+        [{"input": "", "output": "42"}],
+        timeout=3,
+        image="python:test",
+    )
+
+    assert outcome == (True, 1, 1)
+    command = calls[0][0]
+    assert command[:2] == ["docker", "run"]
+    assert "--network" in command and command[command.index("--network") + 1] == "none"
+    assert "--read-only" in command
+    assert ["--cap-drop", "ALL"] == command[
+        command.index("--cap-drop") : command.index("--cap-drop") + 2
+    ]
+    assert command[-4:] == ["python", "-I", "-c", "print(42)"]
+    assert calls[-1][0][:3] == ["docker", "rm", "--force"]

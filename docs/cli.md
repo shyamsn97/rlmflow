@@ -1,12 +1,8 @@
 # Command line
 
-`rlmflow` runs an agent and reads the graph it leaves behind. Everything here
-also works as `python -m rlmflow …`, and `rlmflow --help` (or `--help` on any
-command) prints the same information from the source.
+`rlmflow` runs an agent and reads the graph it leaves behind. Everything here also works as `python -m rlmflow …`, and `rlmflow --help` (or `--help` on any command) prints the same information from the source.
 
-Every command is a Fire class: constructor arguments are flags, methods are
-verbs. `rlmflow run --model gpt-5 tui "fix the tests"` instantiates `Run` with
-`--model`, then calls `tui` with the query.
+Every command is a Fire class: constructor arguments are flags, methods are verbs. `rlmflow run --model gpt-5 tui "fix the tests"` instantiates `Run` with `--model`, then calls `tui` with the query.
 
 ```bash
 rlmflow tui                                   # coding agent, in the dashboard
@@ -19,9 +15,7 @@ rlmflow version                               # version, Python, installed extra
 
 ## `rlmflow tui` and `rlmflow run`
 
-Both drive a coding agent with `FILE_TOOLS` over `--workdir` (the current
-directory by default), checkpointing the graph to `<workdir>/graph`. The
-dashboard needs `pip install "rlmflow[tui]"`.
+Both drive a coding agent with `FILE_TOOLS` over `--workdir` (the current directory by default), checkpointing the graph to `<workdir>/graph`. The dashboard needs `pip install "rlmflow[tui]"`.
 
 ```bash
 rlmflow tui                                     # dashboard, waiting for a query
@@ -34,26 +28,22 @@ rlmflow tui --resume ./proj/graph               # continue a saved run
 rlmflow tui --agent mypkg.agents:build          # your own Flow instead of this one
 ```
 
-| Flag | What it changes |
-|---|---|
-| `--query` | Opening turn. On `run`, the verb can take this as a positional instead. |
-| `--model`, `--fast-model` | The main client and the one registered as `fast`. `claude*` goes to Anthropic, anything else to OpenAI. |
-| `--reasoning-effort` | `minimal`, `low`, `medium`, `high`. Reaches OpenAI reasoning models; ignored elsewhere. |
-| `--workdir` | The directory the agent reads and edits, and where `graph/` lands. |
-| `--docker-image` | Swaps `LocalRuntime` for `DockerRuntime` on that image. |
-| `--max-depth`, `--max-iters` | The `AgentConfig` every root picks up. |
-| `--workers` | How many agents may run at once. |
-| `--tools` | `files` (the default) or `none` for a bare REPL. |
-| `--resume DIR` | Continue a saved run instead of starting a new one. |
-| `--agent module:factory` | Import a zero-argument callable returning a `Flow`. |
+| Flag                         | What it changes                                                                                         |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `--query`                    | Opening turn. On `run`, the verb can take this as a positional instead.                                 |
+| `--model`, `--fast-model`    | The main client and the one registered as `fast`. `claude*` goes to Anthropic, anything else to OpenAI. |
+| `--reasoning-effort`         | `minimal`, `low`, `medium`, `high`. Reaches OpenAI reasoning models; ignored elsewhere.                 |
+| `--workdir`                  | The directory the agent reads and edits, and where `graph/` lands.                                      |
+| `--docker-image`             | Swaps `LocalRuntime` for `DockerRuntime` on that image.                                                 |
+| `--max-depth`, `--max-iters` | The `AgentConfig` every root picks up.                                                                  |
+| `--workers`                  | How many agents may run at once.                                                                        |
+| `--tools`                    | `files` (the default) or `none` for a bare REPL.                                                        |
+| `--resume DIR`               | Continue a saved run instead of starting a new one.                                                     |
+| `--agent module:factory`     | Import a zero-argument callable returning a `Flow`.                                                     |
 
-`run print` is the one to reach for in a pipe, a CI job, or anywhere without a
-terminal. It streams the same nodes through `LiveTreeRenderer` and exits with
-`0` on success, `1` on a handled error, `2` on bad usage.
+`run print` is the one to reach for in a pipe, a CI job, or anywhere without a terminal. It streams the same nodes through `LiveTreeRenderer` and exits with `0` on success, `1` on a handled error, `2` on bad usage.
 
-Anything the flags cannot say stays in Python: write a factory that returns the
-`Flow` you want — custom prompts, tools, runtimes, profiles — and point
-`--agent` at it.
+Anything the flags cannot say stays in Python: write a factory that returns the `Flow` you want — custom prompts, tools, runtimes, profiles — and point `--agent` at it.
 
 ```python
 # mypkg/agents.py
@@ -71,8 +61,7 @@ def build() -> Flow:
 
 ## `rlmflow view` and `rlmflow render`
 
-`view` reads a saved run and prints; `render` writes it somewhere, so each verb
-takes a destination.
+`view` reads a saved run and prints; `render` writes it somewhere, so each verb takes a destination.
 
 ```bash
 RUN=runs/coding/graph
@@ -88,19 +77,17 @@ rlmflow render gif $RUN run.gif       # animated, --every N    (rlmflow[image])
 rlmflow render frames $RUN out/       # a PNG per step         (rlmflow[image])
 ```
 
-See [Observability](observability.md) for the Python equivalents and for what
-each view is good at.
+See [Observability](observability.md) for the Python equivalents and for what each view is good at.
 
 ## Configuration
 
 Settings resolve in this order, first one wins:
 
 1. flags on the command
-2. environment: `RLMFLOW_MODEL`, `RLMFLOW_WORKDIR`, `RLMFLOW_MAX_ITERS`, … (one
-   per flag, upper-cased with the prefix)
-3. `./rlmflow.toml` in the directory you are in
-4. `~/.config/rlmflow/config.toml`, or wherever `RLMFLOW_CONFIG` points
-5. the defaults
+1. environment: `RLMFLOW_MODEL`, `RLMFLOW_WORKDIR`, `RLMFLOW_MAX_ITERS`, … (one per flag, upper-cased with the prefix)
+1. `./rlmflow.toml` in the directory you are in
+1. `~/.config/rlmflow/config.toml`, or wherever `RLMFLOW_CONFIG` points
+1. the defaults
 
 ```toml
 # rlmflow.toml
@@ -117,15 +104,8 @@ rlmflow config path   # the files that are read, and whether they exist
 rlmflow config init   # write a starter rlmflow.toml holding what is in effect
 ```
 
-Provider keys stay the clients' business: set `OPENAI_API_KEY` or
-`ANTHROPIC_API_KEY` as usual. `run` / `tui` check the one your model needs is
-present and say so plainly if it is not, rather than failing inside the SDK.
+Provider keys stay the clients' business: set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` as usual. `run` / `tui` check the one your model needs is present and say so plainly if it is not, rather than failing inside the SDK.
 
 ## Extending it
 
-The CLI is a [Fire](https://github.com/google/python-fire) component in
-[`rlmflow/cli/`](https://github.com/shyamsn97/rlmflow/tree/main/rlmflow/cli).
-`RlmflowCLI` composes `RunCLI`, `TuiCLI`, `ViewCLI`, `RenderCLI`,
-`ConfigCLI`, and `VersionCLI` onto one root. Fire turns each constructor into
-flags, each method into a verb, and each docstring into help. Adding a command
-is a class plus a line in `RlmflowCLI.__init__`.
+The CLI is a [Fire](https://github.com/google/python-fire) component in [`rlmflow/cli/`](https://github.com/shyamsn97/rlmflow/tree/main/rlmflow/cli). `RlmflowCLI` composes `RunCLI`, `TuiCLI`, `ViewCLI`, `RenderCLI`, `ConfigCLI`, and `VersionCLI` onto one root. Fire turns each constructor into flags, each method into a verb, and each docstring into help. Adding a command is a class plus a line in `RlmflowCLI.__init__`.

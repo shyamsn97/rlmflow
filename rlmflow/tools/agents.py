@@ -104,10 +104,6 @@ class AgentInfo:
             raise asyncio.InvalidStateError(f"agent {self.path!r} is not completed")
         return self._result
 
-    def get_result(self) -> object | None:
-        """Compatibility alias for :meth:`result`."""
-        return self.result()
-
     async def wait_for_result(self) -> object | None:
         """Wait for completion and return the result."""
         from rlmflow.runtime.repl import current_binding
@@ -291,10 +287,9 @@ def build_agent_directory(
     running_by_agent = {
         node.parent_agent.id: node for node in running_nodes if node.parent_agent is not None
     }
-    agents = [node for node in root.walk() if isinstance(node, AgentStart)]
     info: list[AgentInfo] = []
 
-    for agent in agents:
+    for agent in root.iter_agents():
         parent = _supervisor(agent)
         running = running_by_agent.get(agent.id)
         if agent.terminal:

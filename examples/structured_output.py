@@ -28,7 +28,7 @@ examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "ex
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import example_run_dir  # noqa: E402
+from common import checkpoint_stream, example_run_dir  # noqa: E402
 
 
 class CityForecast(BaseModel):
@@ -100,13 +100,12 @@ def main() -> None:
     out_dir = Path(args.out_dir)
 
     async def drive() -> None:
-        async for node in flow.run_streaming(root):
+        async for node in checkpoint_stream(flow.run_streaming(root), out_dir):
             print(f"{node.parent_agent.config.path}  {node.type}")
-            root.save(out_dir)
 
     asyncio.run(drive())
 
-    # `done(value)` parsed the answer against the schema, so the result is a
+    # `finish(value)` parsed the answer against the schema, so the result is a
     # dict; the Pydantic model is the typed view of that same value.
     plan = PackingPlan.model_validate(root.result())
 

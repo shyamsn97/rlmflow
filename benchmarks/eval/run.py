@@ -616,9 +616,10 @@ def main(argv: list[str] | None = None) -> int:
     config = config_from_args(args)
     rows = run_suite(config)
     summary = summarize(rows)
-    print(json.dumps(summary.get("overall", {}), indent=2, sort_keys=True))
+    overall = summary.get("overall", {})
+    print(json.dumps(overall, indent=2, sort_keys=True))
     print(f"Saved results to {config.root}")
-    return 0
+    return 1 if overall.get("errors", 0) else 0
 
 
 def _flatten(values: list[str]) -> list[str]:

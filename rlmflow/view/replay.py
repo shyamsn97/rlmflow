@@ -17,7 +17,7 @@ from copy import copy
 from pathlib import Path
 
 from rlmflow.consumers.ui import render_tree
-from rlmflow.graph.nodes import AgentStart, Node
+from rlmflow.graph.nodes import AgentStart, Node, _rebuild_index
 from rlmflow.view.steps import timeline
 
 
@@ -74,6 +74,7 @@ def snapshot(nodes: Sequence[Node]) -> AgentStart:
                 agent.frontier = clone
 
     assert root is not None
+    _rebuild_index(root)
     return root
 
 

@@ -32,7 +32,7 @@ from rlmflow.prompts import (
     as_system_prompt_fn,
     default_render,
 )
-from rlmflow.runtime import LocalRuntime, Runtime, WrappedRuntime
+from rlmflow.runtime import ExecutionGuard, LocalRuntime, Runtime, WrappedRuntime
 from rlmflow.runtime.env import RLMFLOW_REPLAY
 from rlmflow.runtime.repl import DoneSignal, Repl, ReplRun
 from rlmflow.runtime.repl_client import current_rpc_call_id
@@ -87,6 +87,7 @@ class Flow:
         prompt_router: Callable[[Flow, AgentStart], str] | None = None,
         tools: list[Any] | None = None,
         runtime: Runtime | None = None,
+        execution_guard: ExecutionGuard | None = None,
         llm_clients: dict[str, Any] | None = None,
         llm_request_timeout: float | None = None,
         workers: int | None = None,
@@ -109,6 +110,7 @@ class Flow:
         self.use_agent_tree = use_agent_tree
         self.enable_structured_output = enable_structured_output
         self.runtime = runtime or LocalRuntime()
+        self.execution_guard = execution_guard
         self.pool = pool or ThreadPool(workers)
         self.queue: TaskQueue | None = None
         self._restored_agents: set[int] = set()
@@ -121,7 +123,11 @@ class Flow:
             self.add_tool(llm_query_batched(self), name="llm_query_batched")
         self.steps = dict(DEFAULT_STEPS)
         self.messages = FlowMessages(self)
-        self.wrapped_runtime = WrappedRuntime(self.runtime, self.build_tools)
+        self.wrapped_runtime = WrappedRuntime(
+            self.runtime,
+            self.build_tools,
+            self.execution_guard,
+        )
 
     @property
     def repls(self) -> dict[str, Repl]:
@@ -274,7 +280,8 @@ class Flow:
         limit = node.parent_agent.config.max_budget
         if limit is None:
             return False
-        return node.root.tokens().total >= limit
+        root = node.root
+        return root is not None and root.usage.total >= limit
 
     async def execute_action(self, node: ExecAction) -> ReplRun:
         return await self.wrapped_runtime.execute(node)
@@ -311,7 +318,6 @@ class Flow:
         namespace = {
             **self.tools,
             "finish": finish,
-            "done": finish,  # compatibility for saved runs and existing agent code
             "launch_subagent": self.launch_tool(node),
             "asyncio": asyncio,
             "INPUTS": node.parent_agent.config.inputs,
@@ -326,14 +332,9 @@ class Flow:
         @tool("Wait for an existing agent and return its result.", proxy=True)
         async def wait_agent(agent_id: str) -> Any:
             root = node.root
-            target = next(
-                (
-                    candidate
-                    for candidate in root.walk()
-                    if isinstance(candidate, AgentStart) and candidate.id == agent_id
-                ),
-                None,
-            )
+            if root is None:
+                raise RuntimeError("node is detached")
+            target = root.find_agent(agent_id)
             if target is None:
                 raise KeyError(f"unknown agent {agent_id!r}")
             if not target.terminal:

@@ -1,5 +1,9 @@
 # Recursive Agent Optimization: Implementation Plan
 
+> **Status:** The `rlmflow.rao` utilities are implemented but experimental. This
+> is their original design record, not evidence of a validated RAO reproduction
+> or training improvement.
+>
 > **Current API:** `Flow` drives a recursive Node tree. Active task settings live
 > on `AgentConfig`, supplied via `flow.start(...)` or `Flow(root_config=...)`.
 > Agent code reads its inputs through `INPUTS` (`AgentConfig.inputs`). Cold spawn

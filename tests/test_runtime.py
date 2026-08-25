@@ -193,14 +193,14 @@ def test_worker_executes_await_in_comprehensions(tmp_path):
     async def run():
         repl.seed({"double": double}, {})
         return await repl.run(
-            "by_key = {i: await double(i) for i in range(3)}\n"
+            "by_key = {str(i): await double(i) for i in range(3)}\n"
             "values = [await double(i) for i in range(3)]"
         )
 
     try:
         result = asyncio.run(run())
         assert result.status is ReplStatus.OK
-        assert repl.get_var("by_key") == {0: 0, 1: 2, 2: 4}
+        assert repl.get_var("by_key") == {"0": 0, "1": 2, "2": 4}
         assert repl.get_var("values") == [0, 2, 4]
     finally:
         runtime.close()
@@ -231,12 +231,13 @@ def test_worker_inject_ships_a_live_object_by_value(tmp_path):
     async def run():
         repl.seed({}, {})
         repl.inject("counter", counter)
-        await repl.run("counter.bump(6)")
+        await repl.run("counter.bump(6)\ncount = counter.n")
 
     try:
         asyncio.run(run())
-        got = repl.get_var("counter")
-        assert got.n == 6
+        assert repl.get_var("count") == 6
+        with pytest.raises(KeyError, match="valid JSON"):
+            repl.get_var("counter")
         assert counter.n == 0
     finally:
         runtime.close()
@@ -252,3 +253,9 @@ def test_docker_argv_runs_worker(tmp_path):
     assert argv[-4:] == ["python", "-u", "-m", "rlmflow.runtime.repl_server"]
     assert argv[:4] == ["docker", "run", "-i", "--rm"]
     assert not any(":50001" in part for part in argv)
+    assert ["--network", "none"] == argv[argv.index("--network") : argv.index("--network") + 2]
+    assert ["--user", "1000:1000"] == argv[argv.index("--user") : argv.index("--user") + 2]
+    assert "--read-only" in argv
+    assert ["--cap-drop", "ALL"] == argv[
+        argv.index("--cap-drop") : argv.index("--cap-drop") + 2
+    ]

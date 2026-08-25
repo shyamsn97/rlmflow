@@ -257,7 +257,7 @@ def _run_headless(flow: Any, query: str | None, root: Any, graph_dir: Path) -> N
 
     if root is None and not query:
         raise CliError("nothing to run: pass a query, or --resume a saved run")
-    consumers = ConsumerGroup([LiveTreeRenderer(), GraphCheckpointer(graph_dir, every_s=2.0)])
+    consumers = ConsumerGroup([LiveTreeRenderer(), GraphCheckpointer(graph_dir)])
     consumers.init(flow)
     if root is None:
         root = flow.start(query or "")
@@ -285,7 +285,7 @@ def _run_tui(flow: Any, query: str | None, root: Any, graph_dir: Path) -> None:
     from rlmflow.consumers import GraphCheckpointer
     from rlmflow.consumers.tui import FlowTUI
 
-    ui = FlowTUI(root, sink=GraphCheckpointer(graph_dir, every_s=2.0))
+    ui = FlowTUI(root, sink=GraphCheckpointer(graph_dir))
     ui.init(flow)
     try:
         ui.run(query=query)

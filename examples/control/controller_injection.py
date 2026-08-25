@@ -29,7 +29,7 @@ examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "ex
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import example_run_dir, save_example_graph  # noqa: E402
+from common import checkpoint_stream, example_run_dir, save_example_graph  # noqa: E402
 
 OBSERVATION = "Injected controller observation: finalize using this note."
 
@@ -41,9 +41,9 @@ class DemoLLM:
         self.last_usage = LLMUsage(input_tokens=80, output_tokens=20)
         convo = "\n".join(m["content"] for m in messages)
         if "Injected controller observation" in convo:
-            return '```repl\ndone("used the injected controller observation")\n```'
+            return '```repl\nfinish("used the injected controller observation")\n```'
         if "Controller stop request" in convo:
-            return '```repl\ndone("controller stopped the run")\n```'
+            return '```repl\nfinish("controller stopped the run")\n```'
         return '```repl\nprint("waiting for controller input")\n```'
 
 
@@ -89,9 +89,8 @@ def observation_injection() -> None:
     run_dir = example_run_dir("controller-injection") / "observation-injection"
 
     async def drive() -> None:
-        # Saving as nodes land keeps the run directory current step by step.
-        async for _node in flow.run_streaming(graph):
-            graph.save(run_dir)
+        async for _node in checkpoint_stream(flow.run_streaming(graph), run_dir):
+            pass
 
     asyncio.run(drive())
     assert graph.result() == "used the injected controller observation"
@@ -116,17 +115,23 @@ def controller_stop_instruction() -> None:
         # ``until`` halts the run at the boundary (the driver does not run ahead),
         # the instruction we inject is guaranteed to be the next thing the agent
         # reads when we resume it.
-        async for _node in flow.run_streaming(graph, until="idle"):
-            graph.save(run_dir)
+        async for _node in checkpoint_stream(
+            flow.run_streaming(graph, until="idle"),
+            run_dir,
+        ):
+            pass
         graph.frontier.append(
             UserQuery(content="Controller stop request: finalize now with current state.")
         )
-        async for _node in flow.run_streaming(graph, until="done"):
-            graph.save(run_dir)
+        async for _node in checkpoint_stream(
+            flow.run_streaming(graph, until="done"),
+            run_dir,
+        ):
+            pass
 
     asyncio.run(run_with_controller_stop())
     assert graph.result() == "controller stopped the run"
-    print_states("after controller stop instruction: clean done(...)", graph)
+    print_states("after controller stop instruction: clean finish(...)", graph)
     print(f"result={graph.result()!r}")
     save_example_graph(
         graph,

@@ -225,7 +225,7 @@ tree is load-bearing here in ways it is not elsewhere:
 - **Termination.** A run ends when the root answers. With a mesh, "everyone is
   waiting for someone" is a reachable state and constraint 1 makes it reachable
   cheaply.
-- **Accounting.** `max_budget` charges `node.root.tokens()`, and
+- **Accounting.** `max_budget` charges `node.root.usage`, and
   `AgentConfig.child` derives limits down the tree. Both assume work has an
   owner.
 - **Cancellation.** `queue.cancel(root.walk())` assumes the tree is the extent
@@ -496,7 +496,7 @@ Layer 2 is a separate decision, gated on the prompt experiment.
     appends nothing.
 13. `steps()` and `timeline()` place resumed turns last.
 14. `AGENTS` reports the target `completed` again after the resume.
-15. `root.tokens()` includes the resumed turns.
+15. `root.usage` includes the resumed turns.
 16. A framework append to an agent with a step in flight raises a specific
     error, not a frontier `ValueError` from inside `LLMRequestStep` / `Flow.step`.
 17. `allow_resume` defaults to false; disabled runs have no tool and no prompt
