@@ -5,11 +5,12 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextvars
+import importlib
 import inspect
 import io
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Callable, MutableMapping
+from collections.abc import Callable, Iterable, MutableMapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -29,11 +30,9 @@ class MissingReplError(ValueError):
 
 
 #: Observation returned for a reply with no code, so the retry knows what to fix.
-MISSING_REPL_NOTE = (
-    f"{MissingReplError.__name__}: missing ```repl``` block, so nothing ran and this "
-    "turn produced no observation. Reply with exactly one fenced ```repl``` block "
-    "that carries out the next step instead of describing it."
-)
+MISSING_REPL_NOTE = f"""{MissingReplError.__name__}: missing ```repl``` block, so
+nothing ran and this turn produced no observation. Reply with exactly
+one fenced ```repl``` block that carries out the next step instead of describing it."""
 
 
 class ReplStatus(StrEnum):
@@ -58,6 +57,7 @@ class Repl(ABC):
 
     namespace: dict[str, Any]
     env: dict[str, Any]
+    structured_output: bool
 
     @abstractmethod
     def seed(self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]) -> None: ...
@@ -87,6 +87,44 @@ class Repl(ABC):
 
 
 REPL_FILENAME = "<rlmflow>"
+
+#: Modules bound in every REPL namespace before any agent code runs, under their own
+#: name. Models reach for these reflexively — ``json.loads``, ``re.findall`` — and a
+#: ``NameError`` costs a whole turn to recover from. Keep the default set to cheap,
+#: side-effect-free stdlib: importing is not free and the namespace is shared by every
+#: tenant in a worker. An explicit ``preimports`` may name anything importable,
+#: third-party packages included.
+DEFAULT_PREIMPORTS: tuple[str, ...] = (
+    "asyncio",
+    "collections",
+    "csv",
+    "datetime",
+    "itertools",
+    "json",
+    "math",
+    "os",
+    "pathlib",
+    "re",
+    "statistics",
+    "sys",
+    "textwrap",
+    "time",
+)
+
+
+def base_namespace(preimports: Iterable[str] | None = None) -> dict[str, Any]:
+    """Build a fresh REPL global namespace with ``preimports`` bound by module name.
+
+    ``None`` means ``DEFAULT_PREIMPORTS``; an empty iterable means bind nothing. An
+    unimportable name raises rather than being skipped, so a bad configuration fails
+    at worker startup instead of surfacing later as a puzzling ``NameError``.
+    """
+    names = DEFAULT_PREIMPORTS if preimports is None else tuple(preimports)
+    namespace: dict[str, Any] = {"__builtins__": __builtins__}
+    for name in names:
+        namespace[name] = importlib.import_module(name)
+    return namespace
+
 
 _BINDING: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "rlmflow_binding", default=None
@@ -176,12 +214,13 @@ class LocalRepl:
         *,
         namespace: dict[str, Any] | None = None,
     ) -> None:
-        self.namespace = namespace if namespace is not None else {"__builtins__": __builtins__}
+        self.namespace = namespace if namespace is not None else base_namespace()
         self.env: dict[str, Any] = {}
         self.inputs: dict[str, str] = {}
         self.working_directory = (
             Path(working_directory).resolve() if working_directory is not None else None
         )
+        self.structured_output = False
         if self.working_directory is not None:
             self.working_directory.mkdir(parents=True, exist_ok=True)
         self.namespace.setdefault("INPUTS", CurrentMapping("inputs"))
@@ -252,6 +291,7 @@ class LocalRepl:
 
 
 __all__ = [
+    "DEFAULT_PREIMPORTS",
     "CurrentMapping",
     "CurrentObject",
     "MISSING_REPL_NOTE",
@@ -261,5 +301,6 @@ __all__ = [
     "Repl",
     "ReplRun",
     "ReplStatus",
+    "base_namespace",
     "current_binding",
 ]

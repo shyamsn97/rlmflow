@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from helpers import StubLLM
 
-from rlmflow import Flow, LLMOutput
+from rlmflow import Flow, LLMOutput, PlanQuery
+from rlmflow.graph.nodes import PLANNING_ACTION
 
 
 def repl(code: str) -> str:
@@ -20,17 +21,13 @@ def test_input_backed_tasks_remain_free_form():
         assert "## Turn Guidance" not in system
         assert "Inspection turn only" not in system
         assert "Post-inspection orchestration turn" not in system
-        assert "inspect the complete relevant content of `INPUTS`" in system
-        assert "Inspect the complete relevant content of `INPUTS` now" in messages[-1]["content"]
-        assert "Preserve explicit requirements in REPL state" in messages[-1]["content"]
-        assert "Do not produce deliverables or finish on this turn" in messages[-1]["content"]
-        return repl(
-            """
+        assert "## REPL and Delegation" in system
+        assert messages[-1]["content"] == PLANNING_ACTION
+        return repl("""
 text = INPUTS["context"]
 answer = {"characters": len(text), "contains_requirement": "required" in text}
 finish(answer)
-""".strip()
-        )
+""".strip())
 
     flow = Flow(StubLLM(reply))
     root = flow.start(
@@ -56,4 +53,5 @@ finish(answer)
     outputs = [node for node in root.walk() if isinstance(node, LLMOutput)]
     assert len(calls) == 1
     assert len(outputs) == 1
+    assert sum(isinstance(node, PlanQuery) for node in root.transcript()) == 1
     assert result == {"characters": 28, "contains_requirement": True}

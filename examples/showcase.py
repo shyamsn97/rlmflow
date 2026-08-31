@@ -80,7 +80,7 @@ class DemoLLM:
 def file_flow(workdir: Path, config: AgentConfig) -> Flow:
     """A Flow whose agents get the filesystem tools, running inside ``workdir``."""
     runtime = LocalRuntime(working_directory=workdir)
-    return Flow(DemoLLM(), runtime=runtime, tools=FILE_TOOLS, root_config=config)
+    return Flow(DemoLLM(), runtime=runtime, tools=[FILE_TOOLS], root_config=config)
 
 
 def banner(msg: str) -> None:

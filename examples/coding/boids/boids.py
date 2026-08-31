@@ -147,7 +147,7 @@ def run_rlmflow(
         build_rlmflow_llm(model),
         llm_clients={"fast": build_rlmflow_llm(fast_model)},
         runtime=runtime,
-        tools=FILE_TOOLS,
+        tools=[FILE_TOOLS],
         workers=max_concurrency,
     )
 

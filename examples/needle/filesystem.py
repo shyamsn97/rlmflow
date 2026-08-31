@@ -128,7 +128,7 @@ def main():
             client_for(args.model),
             llm_clients=llm_clients,
             runtime=runtime,
-            tools=FILE_TOOLS,
+            tools=[FILE_TOOLS],
             root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
         )
 

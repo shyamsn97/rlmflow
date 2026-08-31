@@ -72,9 +72,9 @@ Pool / Runtime
 `Flow.step(node)` consumes one frontier Node and creates its next durable Node:
 
 ```text
-AgentStart ──> LLMRequestStep ─> InspectQuery | LLMOutput
-UserQuery  ──> LLMRequestStep ─> InspectQuery | LLMOutput
-ExecOutput ──> LLMRequestStep ─> PlanQuery | FinalQuery | LLMOutput
+AgentStart ──> LLMRequestStep ─> PlanQuery | LLMOutput
+UserQuery  ──> LLMRequestStep ─> PlanQuery | LLMOutput
+ExecOutput ──> LLMRequestStep ─> FinalQuery | LLMOutput
 ErrorOutput─> LLMRequestStep  ─> LLMOutput
 
 LLMOutput  ──> LLMOutputStep ─> ExecAction

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -21,7 +22,6 @@ from rlmflow.graph.nodes import (
     ExecAction,
     ExecOutput,
     FinalQuery,
-    InspectQuery,
     LLMOutput,
     LLMUsage,
     Node,
@@ -34,6 +34,8 @@ from rlmflow.graph.nodes import (
 )
 
 VERSION = 3
+INPUT_BLOB_THRESHOLD_BYTES = 64 * 1024
+INPUT_BLOB_REF_KEY = "$rlmflow_input_blob"
 NodeT = TypeVar("NodeT", bound=Node)
 
 
@@ -63,7 +65,6 @@ for _node_type in (
     Node,
     AgentStart,
     UserQuery,
-    InspectQuery,
     PlanQuery,
     FinalQuery,
     ContinueQuery,
@@ -170,23 +171,25 @@ def save(root: AgentStart, path: str | Path) -> Path:
     """Write derived views, then atomically commit the authoritative graph."""
     run = Path(path)
     agents = run / "agents"
+    blobs = _InputBlobStore(run / "input_blobs")
     agents.mkdir(parents=True, exist_ok=True)
-    _write_agents(root, agents)
+    _write_agents(root, agents, blobs)
     _write_json(run / "latest.json", _summary_document(root))
-    _write_json(run / "graph.json", to_document(root))
+    _write_json(run / "graph.json", _encode_document(to_document(root), blobs))
     return run
 
 
 def load(path: str | Path) -> AgentStart:
     """Load a strict v3 run directory."""
-    graph_path = Path(path) / "graph.json"
+    run = Path(path)
+    graph_path = run / "graph.json"
     try:
         data = json.loads(graph_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         raise ValueError(f"{graph_path} is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise TypeError(f"{graph_path} must contain a JSON object")
-    return from_document(data)
+    return from_document(_resolve_document(data, run / "input_blobs"))
 
 
 def clone_until(stop: Node) -> AgentStart:
@@ -262,21 +265,103 @@ def _summary_document(root: AgentStart) -> dict[str, Any]:
     }
 
 
-def _write_agents(root: AgentStart, agents_path: Path) -> None:
+def _write_agents(
+    root: AgentStart,
+    agents_path: Path,
+    blobs: _InputBlobStore,
+) -> None:
     pending = [(root, agents_path / root.config.name)]
     while pending:
         agent, path = pending.pop()
         path.mkdir(parents=True, exist_ok=True)
-        _write_json(path / "agent.json", _agent_document(agent))
-        _write_json(path / "latest.json", agent.frontier.to_record())
+        agent_document = _agent_document(agent)
+        agent_document["inputs"] = blobs.encode_inputs(agent_document["inputs"])
+        _write_json(path / "agent.json", agent_document)
+        _write_json(path / "latest.json", _encode_record(agent.frontier.to_record(), blobs))
         lines = [
-            json.dumps(node.to_record(), default=str, ensure_ascii=False)
+            json.dumps(_encode_record(node.to_record(), blobs), default=str, ensure_ascii=False)
             for node in agent.transcript()
         ]
         _write_text(path / "session.jsonl", "".join(line + "\n" for line in lines))
         _prune(path, {sub.config.name for sub in agent.sub_agents})
         pending.extend((sub, path / sub.config.name) for sub in reversed(agent.sub_agents))
     _prune(agents_path, {root.config.name})
+
+
+class _InputBlobStore:
+    """Content-address large agent inputs once per persisted graph."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def encode_inputs(self, inputs: dict[str, Any]) -> dict[str, Any]:
+        return {name: self.encode(value) for name, value in inputs.items()}
+
+    def encode(self, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        encoded = value.encode("utf-8")
+        if len(encoded) < INPUT_BLOB_THRESHOLD_BYTES:
+            return value
+        digest = hashlib.sha256(encoded).hexdigest()
+        self.path.mkdir(parents=True, exist_ok=True)
+        blob_path = self.path / f"{digest}.txt"
+        if not blob_path.exists():
+            _write_text(blob_path, value)
+        return {
+            INPUT_BLOB_REF_KEY: digest,
+            "encoding": "utf-8",
+            "bytes": len(encoded),
+        }
+
+
+def _encode_document(data: dict[str, Any], blobs: _InputBlobStore) -> dict[str, Any]:
+    for record in data.get("nodes", []):
+        _encode_record(record, blobs)
+    return data
+
+
+def _encode_record(record: dict[str, Any], blobs: _InputBlobStore) -> dict[str, Any]:
+    if record.get("type") != AgentStart.type:
+        return record
+    payload = record.get("payload")
+    if isinstance(payload, dict) and isinstance(payload.get("inputs"), dict):
+        payload["inputs"] = blobs.encode_inputs(payload["inputs"])
+    return record
+
+
+def _resolve_document(data: dict[str, Any], blob_path: Path) -> dict[str, Any]:
+    for record in data.get("nodes", []):
+        if record.get("type") != AgentStart.type:
+            continue
+        payload = record.get("payload")
+        if not isinstance(payload, dict) or not isinstance(payload.get("inputs"), dict):
+            continue
+        payload["inputs"] = {
+            name: _resolve_input(value, blob_path) for name, value in payload["inputs"].items()
+        }
+    return data
+
+
+def _resolve_input(value: Any, blob_path: Path) -> Any:
+    if not isinstance(value, dict) or set(value) != {
+        INPUT_BLOB_REF_KEY,
+        "encoding",
+        "bytes",
+    }:
+        return value
+    digest = value.get(INPUT_BLOB_REF_KEY)
+    if not isinstance(digest, str) or len(digest) != 64:
+        raise ValueError(f"invalid input blob digest {digest!r}")
+    path = blob_path / f"{digest}.txt"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise ValueError(f"missing input blob {digest}") from exc
+    encoded = text.encode("utf-8")
+    if len(encoded) != value.get("bytes") or hashlib.sha256(encoded).hexdigest() != digest:
+        raise ValueError(f"input blob {digest} failed integrity validation")
+    return text
 
 
 def _prune(path: Path, keep: set[str]) -> None:
@@ -378,6 +463,7 @@ def _write_text(path: Path, text: str) -> None:
 
 
 __all__ = [
+    "INPUT_BLOB_THRESHOLD_BYTES",
     "VERSION",
     "UnsupportedGraphVersion",
     "from_document",

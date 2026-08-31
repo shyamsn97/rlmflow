@@ -55,12 +55,12 @@ stream driver(roots)
   -> stream resubmits that node when its agent is not terminal
 ```
 
-`Flow.step` looks up a `StepFunction` class with `get_step_fn` (MRO over `self.steps`, seeded from `DEFAULT_STEPS`) and constructs it with the same `LLMClient`, `MessageBuilder`, and `WrappedRuntime` every time. The wrapper exposes the original runtime as `.runtime`, so a custom step can use lower-level REPL operations without making the default step ABI depend on `Flow`. Override a type with `update_step_fn`. `InspectQuery` / `PlanQuery` / `FinalQuery` / `ContinueQuery` / `TruncationSummary` inherit the `UserQuery` registration.
+`Flow.step` looks up a `StepFunction` class with `get_step_fn` (MRO over `self.steps`, seeded from `DEFAULT_STEPS`) and constructs it with the same `LLMClient`, `MessageBuilder`, and `WrappedRuntime` every time. The wrapper exposes the original runtime as `.runtime`, so a custom step can use lower-level REPL operations without making the default step ABI depend on `Flow`. Override a type with `update_step_fn`. `PlanQuery` / `FinalQuery` / `ContinueQuery` / `TruncationSummary` inherit the `UserQuery` registration.
 
 ```text
-AgentStart   -> LLMRequestStep (InspectQuery when the agent has inputs)
-UserQuery    -> LLMRequestStep (follow-up InspectQuery after DoneOutput)
-ExecOutput   -> LLMRequestStep (PlanQuery via InspectQuery.after)
+AgentStart   -> LLMRequestStep (PlanQuery when the agent has inputs)
+UserQuery    -> LLMRequestStep (follow-up PlanQuery after DoneOutput)
+ExecOutput   -> LLMRequestStep
 ErrorOutput  -> LLMRequestStep
 LLMOutput    -> LLMOutputStep (ExecAction)
 ExecAction   -> ExecActionStep

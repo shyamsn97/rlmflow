@@ -14,15 +14,18 @@ from rlmflow import (
     ErrorOutput,
     ExecAction,
     ExecOutput,
+    FinalQuery,
     Flow,
     LLMOutput,
     Node,
+    PlanQuery,
     ReplDead,
     SequentialPool,
     UserQuery,
     persistence,
     start,
 )
+from rlmflow.graph.nodes import CONTINUE_NUDGE, PLANNING_ACTION
 from rlmflow.prompts import PromptProfile, default_render
 from rlmflow.runtime import LocalRuntime, Runtime
 from rlmflow.tools import tool
@@ -44,6 +47,11 @@ class ScriptedLLM:
                 break
             trailing.append(message["content"])
         last = "\n\n".join(reversed(trailing))
+        # Standing control text rides on every turn for every agent, so matching it
+        # makes a needle fire for the wrong one: once the planning turn mentioned
+        # delegation, a child answering "boom" matched its parent's "delegate" entry
+        # and tried to launch past max_depth. Script against task content only.
+        last = last.replace(PLANNING_ACTION, "").replace(CONTINUE_NUDGE, "")
         for needle, reply in self.script:
             if needle in last:
                 if isinstance(reply, Exception):
@@ -82,7 +90,9 @@ def test_finish_is_the_only_completion_tool():
 
 
 def test_error_then_recovery():
-    llm = ScriptedLLM([("boom", block("1 / 0")), ("ZeroDivisionError", block("finish('recovered')"))])
+    llm = ScriptedLLM(
+        [("boom", block("1 / 0")), ("ZeroDivisionError", block("finish('recovered')"))]
+    )
     root = start("boom")
     assert Flow(llm).run(root) == "recovered"
     types = [type(n).__name__ for n in root.walk()]
@@ -168,10 +178,7 @@ def test_flow_start_copies_the_defaults_it_hands_out():
 def test_a_string_root_inherits_the_flow_defaults():
     llm = ScriptedLLM([("", block("print('again')"))])
 
-    assert (
-        Flow(llm, root_config=AgentConfig(max_iters=2)).run("loop")
-        == "[max_iters exceeded]"
-    )
+    assert Flow(llm, root_config=AgentConfig(max_iters=2)).run("loop") == "[max_iters exceeded]"
     assert len(llm.calls) == 2
 
 
@@ -266,12 +273,52 @@ def test_children_run_in_parallel():
     assert sum(isinstance(n, AgentStart) for n in streamed) == 2
 
 
+def test_plan_query_allows_iterative_investigation_before_delegation():
+    launch = block(
+        "handles = await asyncio.gather("
+        "launch_subagent('alpha-workstream', model='default', name='a'), "
+        "launch_subagent('beta-workstream', model='default', name='b'))\n"
+        "print([await h.wait_for_result() for h in handles])"
+    )
+    llm = ScriptedLLM(
+        [
+            (
+                "build the requested system",
+                block("print(INPUTS['task'][:7])"),
+            ),
+            (
+                "preview",
+                block("requirements = INPUTS['task'].splitlines()[1:]\nprint(requirements)"),
+            ),
+            ("requirement A", launch),
+            ("alpha-workstream", block("finish('A')")),
+            ("beta-workstream", block("finish('B')")),
+            ("['A', 'B']", block("finish('done')")),
+        ]
+    )
+    root = start(
+        "build the requested system",
+        inputs={"task": "preview\nrequirement A\nrequirement B"},
+        max_depth=1,
+    )
+
+    assert Flow(llm).run(root) == "done"
+    assert sum(isinstance(node, PlanQuery) for node in root.transcript()) == 1
+    assert [child.config.name for child in root.sub_agents] == ["a", "b"]
+    parent_outputs = [
+        node.content.strip() for node in root.transcript() if isinstance(node, ExecOutput)
+    ]
+    assert parent_outputs[:2] == ["preview", "['requirement A', 'requirement B']"]
+
+
 def test_save_writes_a_run_directory(tmp_path):
     parent = block(
         "child = await launch_subagent('do a', model='default', name='a')\n"
         "print(await child.wait_for_result())"
     )
-    llm = ScriptedLLM([("split", parent), ("do a", block("finish('A')")), ("A", block("finish('AB')"))])
+    llm = ScriptedLLM(
+        [("split", parent), ("do a", block("finish('A')")), ("A", block("finish('AB')"))]
+    )
     root = start("split this up", inputs={"doc": "hi"})
     assert Flow(llm).run(root) == "AB"
 
@@ -337,8 +384,8 @@ def test_run_records_prompts_seq_and_timing():
 
     turns = [node for node in root.transcript() if isinstance(node, LLMOutput)]
     first, last = root.system_prompt_for(turns[0]), root.system_prompt_for(turns[-1])
-    assert "Recursive Coding Agent" in first
-    assert "act as an orchestrator" in first
+    assert "Python REPL" in " ".join(first.split())
+    assert "## REPL and Delegation" in first
     assert "## Turn Guidance" not in first
     assert first == last
     assert root.latest_system_prompt() == last
@@ -365,6 +412,56 @@ def test_structured_output_is_stored_parsed():
     root = start("count", output_schema=schema)
     assert Flow(llm).run(root) == {"n": 41}
     assert root.frontier.to_record()["payload"]["result"] == {"n": 41}
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("'text'", "text"),
+        ("41", "41"),
+        ("True", "True"),
+        ("None", "None"),
+        ("[1, 'é']", "[1, 'é']"),
+        ("{'n': 41}", "{'n': 41}"),
+    ],
+)
+def test_unstructured_finish_returns_plain_text(expression, expected):
+    llm = ScriptedLLM([("value", block(f"finish({expression})"))])
+    root = start("return value")
+
+    assert Flow(llm).run(root) == expected
+    assert root.frontier.to_record()["payload"]["result"] == expected
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("{1, 2}", "{1, 2}"),
+        ("b'bytes'", "b'bytes'"),
+        ("type('Thing', (), {'__str__': lambda self: 'thing'})()", "thing"),
+        ("float('nan')", "nan"),
+        ("float('inf')", "inf"),
+    ],
+)
+def test_unstructured_finish_does_not_require_json(expression, expected):
+    llm = ScriptedLLM([("return value", block(f"finish({expression})"))])
+
+    assert Flow(llm).run(start("return value")) == expected
+
+
+@pytest.mark.parametrize(
+    ("expression", "error"),
+    [("{1, 2}", "JSON serializable"), ("float('nan')", "Out of range float")],
+)
+def test_explicit_output_schema_requires_json_compatible_values(expression, error):
+    llm = ScriptedLLM(
+        [
+            ("return value", block(f"finish({expression})")),
+            (error, block("finish(1)")),
+        ]
+    )
+
+    assert Flow(llm).run(start("return value", output_schema={})) == 1
 
 
 def test_prose_only_reply_is_told_to_send_a_block_and_recovers():
@@ -400,7 +497,9 @@ def test_save_load_roundtrip(tmp_path):
         "child = await launch_subagent('do a', model='default', name='a')\n"
         "print(await child.wait_for_result())"
     )
-    llm = ScriptedLLM([("split", parent), ("do a", block("finish('A')")), ("A", block("finish('AB')"))])
+    llm = ScriptedLLM(
+        [("split", parent), ("do a", block("finish('A')")), ("A", block("finish('AB')"))]
+    )
     root = start("split this up", inputs={"doc": "hi"})
     Flow(llm).run(root)
 
@@ -653,7 +752,9 @@ def test_saving_a_smaller_tree_prunes_stale_agents(tmp_path):
         "child = await launch_subagent('do a', model='default', name='a')\n"
         "print(await child.wait_for_result())"
     )
-    llm = ScriptedLLM([("split", parent), ("do a", block("finish('A')")), ("A", block("finish('AB')"))])
+    llm = ScriptedLLM(
+        [("split", parent), ("do a", block("finish('A')")), ("A", block("finish('AB')"))]
+    )
     root = start("split this up")
     Flow(llm).run(root)
 
@@ -681,7 +782,7 @@ def test_grandchildren():
     llm = ScriptedLLM(
         [
             (
-                "plan",
+                "plan the work",
                 block(
                     "mid = await launch_subagent("
                     "'go mid', model='default', name='mid')\n"
@@ -718,7 +819,12 @@ class BarrierLLM:
         self.replies = replies
 
     async def chat(self, messages):
-        last = messages[-1]["content"]
+        trailing = []
+        for message in reversed(messages):
+            if message["role"] != "user":
+                break
+            trailing.append(message["content"])
+        last = "\n\n".join(reversed(trailing))
         for needle, reply in self.replies:
             if needle in last:
                 if needle.startswith("child"):
@@ -761,7 +867,9 @@ def test_background_child_outlives_root_and_stream_drains_it():
 
     class BackgroundLLM:
         def chat(self, messages):
-            last = messages[-1]["content"]
+            last = "\n\n".join(
+                message["content"] for message in messages if message["role"] == "user"
+            )
             if "slow child" in last:
                 assert release_child.wait(timeout=5)
                 return block("finish('child finished')")
@@ -799,6 +907,7 @@ def test_background_child_outlives_root_and_stream_drains_it():
         if node.parent_agent is child and isinstance(node, DoneOutput)
     )
     assert root_done < child_done
+    assert child.id not in root.retrieved_agent_ids()
 
 
 def test_child_handle_waits_on_a_later_turn():
@@ -822,6 +931,35 @@ def test_child_handle_waits_on_a_later_turn():
     assert Flow(llm).run(root) == "child answer"
     assert len(root.sub_agents) == 1
     assert root.sub_agents[0].result() == "child answer"
+
+
+def test_completed_child_result_access_satisfies_finish_gate():
+    llm = ScriptedLLM(
+        [
+            (
+                "start child",
+                block(
+                    "child = await launch_subagent("
+                    "'child task', model='default', name='child')\n"
+                    "print('queued')"
+                ),
+            ),
+            ("child task", block("finish(42)")),
+            ("result ready", block("finish(child.result())")),
+            ("queued", block("print(child.status)")),
+            ("running", block("print(child.status)")),
+        ]
+    )
+    root = start("start child", max_depth=1)
+
+    assert Flow(llm).run(root) == "42"
+    child = root.sub_agents[0]
+    assert child.id in root.retrieved_agent_ids()
+    assert any(
+        child.id in node.retrieved_agent_ids
+        for node in root.transcript()
+        if isinstance(node, ExecAction)
+    )
 
 
 def test_launch_subagent_rejects_removed_wait_parameter():
@@ -896,11 +1034,7 @@ def test_agents_result_matches_a_collected_child():
     root = flow.start("inspect waited", max_depth=1)
 
     assert flow.run(root) == "child answer"
-    assert any(
-        "result ready" in message["content"]
-        for call in llm.calls
-        for message in call
-    )
+    assert any("result ready" in message["content"] for call in llm.calls for message in call)
 
 
 def test_break_cancels_the_run():
@@ -1001,7 +1135,7 @@ def test_a_profile_takes_a_current_node_renderer():
     root = start("play", prompt_profile="board")
 
     assert Flow(llm, prompt_profiles=profiles).run(root) == "solved"
-    assert not any(isinstance(node, UserQuery) for node in root.transcript())
+    assert sum(isinstance(node, PlanQuery) for node in root.transcript()) == 1
 
 
 def test_named_model_routes_to_another_client():
@@ -1089,6 +1223,34 @@ def test_budget_stops_the_run():
     llm.last_usage = SimpleNamespace(input_tokens=8, output_tokens=8)
     root = start("spend it all", max_budget=10)
     assert Flow(llm).run(root) == "[budget exceeded]"
+
+
+def test_a_nearly_spent_budget_asks_for_an_answer_instead_of_dropping_the_run():
+    # Iteration exhaustion always got a FinalQuery to answer in, but token
+    # exhaustion ended the run holding nothing: arc_agi burned 97k of its 100k
+    # tokens and scored zero with 13 of its 20 iterations still unused.
+    llm = ScriptedLLM(
+        [
+            ("last turn", block("finish('best guess')")),
+            ("one", block("print('two')")),
+            ("", block("print('one')")),
+        ]
+    )
+    llm.last_usage = SimpleNamespace(input_tokens=4, output_tokens=4)
+    root = start("spend most of it", max_budget=20)
+
+    assert Flow(llm).run(root) == "best guess"
+    assert sum(isinstance(node, FinalQuery) for node in root.transcript()) == 1
+
+
+def test_the_budget_gate_never_discards_an_answer_already_paid_for():
+    # The gate used to fire on any node, so a reply that finished the task could be
+    # dropped between generation and the exec that lands it.
+    llm = ScriptedLLM([("", block("finish('landed')"))])
+    llm.last_usage = SimpleNamespace(input_tokens=40, output_tokens=40)
+    root = start("answer immediately", max_budget=10)
+
+    assert Flow(llm).run(root) == "landed"
 
 
 def test_child_failure_reaches_the_parent():

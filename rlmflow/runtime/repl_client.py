@@ -194,6 +194,7 @@ class WorkerSession:
             self._send_proxy_error(message, "RPC belongs to no active execution")
             return
         try:
+
             def invoke() -> Any:
                 token = _RPC_CALL_ID.set(message.call_id)
                 try:
@@ -250,6 +251,7 @@ class WorkerSession:
             "tenant_id": tenant.tenant_id,
             "inputs": dict(tenant.inputs),
             "env": dict(tenant.env),
+            "structured_output": tenant.structured_output,
         }
         agents = tenant.namespace.get(AGENTS_BINDING)
         if agents is not None:
@@ -306,6 +308,7 @@ class WorkerRepl(Repl):
         self.namespace: dict[str, Any] = {}
         self.env: dict[str, Any] = {}
         self.inputs: dict[str, str] = {}
+        self.structured_output = False
         self.proxied: dict[str, Callable[..., object]] = {}
         self.closed = False
         self._run_lock = threading.Lock()

@@ -12,6 +12,7 @@ from rlmflow.graph.nodes import AgentStart, ExecAction, Node
 AgentStatus = Literal["running", "waiting", "idle", "completed"]
 AGENTS_BINDING = "__rlmflow_agents__"
 AGENT_WAIT_TOOL = "__rlmflow_wait_agent__"
+AGENT_OBSERVE_TOOL = "__rlmflow_observe_agent__"
 
 
 def _json_safe(value: object) -> object:
@@ -25,6 +26,20 @@ def _json_safe(value: object) -> object:
 def _supervisor(agent: AgentStart) -> AgentStart | None:
     """The agent whose action launched ``agent``, or ``None`` for a root."""
     return agent.parent.parent_agent if agent.parent is not None else None
+
+
+def _record_result_access(agent_id: str) -> None:
+    """Notify the host that this REPL action read an agent result."""
+    from rlmflow.runtime.repl import current_binding
+
+    try:
+        binding = current_binding()
+    except RuntimeError:
+        return  # Host-side snapshot inspection is not an agent result retrieval.
+    observer = binding.get("observe_agent")
+    if observer is None:
+        return
+    observer(agent_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +117,7 @@ class AgentInfo:
         """Return the completed result or raise when it is not ready."""
         if not self.done():
             raise asyncio.InvalidStateError(f"agent {self.path!r} is not completed")
+        _record_result_access(self.agent_id)
         return self._result
 
     async def wait_for_result(self) -> object | None:
@@ -330,6 +346,7 @@ def build_agent_directory(
 
 __all__ = [
     "AGENTS_BINDING",
+    "AGENT_OBSERVE_TOOL",
     "AGENT_WAIT_TOOL",
     "AgentDirectory",
     "AgentFrontier",

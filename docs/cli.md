@@ -54,7 +54,7 @@ def build() -> Flow:
     return Flow(
         client_for("gpt-5", reasoning_effort="low"),
         runtime=LocalRuntime(working_directory="."),
-        tools=[*FILE_TOOLS, my_tool],
+        tools=[FILE_TOOLS, my_tool],
     root_config=AgentConfig(max_depth=2, max_iters=40),
     )
 ```

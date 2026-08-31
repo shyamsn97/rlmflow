@@ -12,6 +12,7 @@ from rlmflow import (
     LLMRequestStep,
     LLMUsage,
     MessageBuilder,
+    PlanQuery,
     ReplRun,
     ReplStatus,
     Runtime,
@@ -27,7 +28,7 @@ def test_step_advances_exactly_one_state_transition():
     transition = asyncio.run(flow.step(root))
     produced = transition.created
 
-    assert produced.type == "llm_output"
+    assert produced.type == "plan_query"
     assert transition.submitted is root
     assert not transition.is_agent_start
     assert transition.error is None
@@ -41,7 +42,13 @@ def test_a_run_can_be_driven_by_hand_one_step_at_a_time():
 
     produced = [asyncio.run(flow.step(root.frontier)).created for _ in range(3)]
 
-    assert [node.type for node in produced] == ["llm_output", "exec_action", "done_output"]
+    assert [node.type for node in produced] == [
+        "plan_query",
+        "llm_output",
+        "exec_action",
+    ]
+    final = asyncio.run(flow.step(root.frontier)).created
+    assert final.type == "done_output"
     assert root.terminal and root.result() == "ok"
 
 
@@ -74,11 +81,13 @@ def test_llm_request_step_runs_with_plain_fake_primitives():
         runtime=WrappedRuntime(UnusedRuntime(), lambda _node: {}),
     )
 
-    landed = asyncio.run(step(root))
+    plan = asyncio.run(step(root))
+    landed = asyncio.run(step(plan))
 
+    assert isinstance(plan, PlanQuery)
     assert isinstance(landed, LLMOutput)
     assert landed.usage == LLMUsage(1, 2)
-    assert seen[0][-1]["content"] == "query"
+    assert seen[0][-1]["content"] == plan.content
 
 
 def test_exec_action_step_runs_with_the_same_primitive_abi():

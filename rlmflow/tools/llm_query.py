@@ -10,6 +10,44 @@ from rlmflow.tools.tools import tool
 from rlmflow.utils import sampling_kwargs
 
 
+def llm_query(flow: Any):
+    """Build the one-shot query tool bound to ``flow``."""
+
+    @tool(
+        "Make one model completion for extraction, summarization, or Q&A over "
+        "the text you pass. The call sees no REPL, history, or tools.",
+        proxy=True,
+    )
+    async def llm_query(
+        prompt: str,
+        *,
+        model: str = "default",
+        output_schema: Schema | None = None,
+        temperature: float | None = None,
+        top_p: float | None = None,
+        max_tokens: int | None = None,
+        stop: list[str] | None = None,
+    ):
+        if not isinstance(prompt, str):
+            raise TypeError("llm_query(prompt) takes a str")
+        schema = json_schema_for(output_schema) if output_schema is not None else None
+        if schema is not None:
+            prompt = f"{prompt}\n\nReturn JSON matching this schema:\n{system_prompt_hint(schema)}"
+        reply, _usage = await flow.call_chat(
+            [{"role": "user", "content": prompt}],
+            model,
+            **sampling_kwargs(
+                temperature=temperature,
+                top_p=top_p,
+                max_tokens=max_tokens,
+                stop=stop,
+            ),
+        )
+        return reply if schema is None else parse_structured_output(reply, schema)
+
+    return llm_query
+
+
 def llm_query_batched(flow: Any):
     """Build the batched one-shot query tool bound to ``flow``.
 
@@ -18,9 +56,9 @@ def llm_query_batched(flow: Any):
     """
 
     @tool(
-        "Run a list of independent one-shot prompts as concurrent model calls; "
-        "blocking calls are bounded by Flow's worker pool. Returns a list of "
-        "results.",
+        "Run a list of independent one-shot prompts as concurrent model calls, "
+        "returning their results in prompt order. Each call sees only the text you "
+        "pass it: no REPL, no history, no tools. The cheap way to read at volume.",
         proxy=True,
     )
     async def llm_query_batched(
@@ -60,4 +98,4 @@ def llm_query_batched(flow: Any):
     return llm_query_batched
 
 
-__all__ = ["llm_query_batched"]
+__all__ = ["llm_query", "llm_query_batched"]

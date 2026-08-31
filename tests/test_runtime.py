@@ -14,7 +14,7 @@ from rlmflow import (
     WorkerRepl,
     start,
 )
-from rlmflow.runtime import build_docker_argv
+from rlmflow.runtime import DEFAULT_PREIMPORTS, base_namespace, build_docker_argv
 
 
 def block(code):
@@ -241,6 +241,70 @@ def test_worker_inject_ships_a_live_object_by_value(tmp_path):
         assert counter.n == 0
     finally:
         runtime.close()
+
+
+def test_worker_preimports_core_modules(tmp_path):
+    # Models reach for these without importing; a NameError costs a turn to recover.
+    runtime = LocalRuntime(working_directory=tmp_path)
+    repl = runtime.repl_for(start("q"))
+
+    async def run():
+        repl.seed({}, {})
+        return await repl.run(
+            "sizes = json.loads('{\"a\": 1}')\n"
+            "digits = re.findall(r'\\d+', 'a1b22')\n"
+            "here = os.path.basename(os.getcwd())\n"
+            "rounded = math.floor(2.7)\n"
+            "rows = list(csv.reader(['x,y']))\n"
+            "counted = collections.Counter('aab')['a']"
+        )
+
+    try:
+        assert asyncio.run(run()).status is ReplStatus.OK
+        assert repl.get_var("sizes") == {"a": 1}
+        assert repl.get_var("digits") == ["1", "22"]
+        assert repl.get_var("here") == tmp_path.name
+        assert repl.get_var("rounded") == 2
+        assert repl.get_var("rows") == [["x", "y"]]
+        assert repl.get_var("counted") == 2
+    finally:
+        runtime.close()
+
+
+def test_preimports_are_configurable_per_runtime(tmp_path):
+    runtime = LocalRuntime(working_directory=tmp_path, preimports=["json"])
+    repl = runtime.repl_for(start("q"))
+
+    async def run(code):
+        repl.seed({}, {})
+        return await repl.run(code)
+
+    try:
+        assert "--preimport" in runtime.worker_command()
+        assert asyncio.run(run("kept = json.dumps([1])")).status is ReplStatus.OK
+        assert repl.get_var("kept") == "[1]"
+
+        dropped = asyncio.run(run("re.findall('a', 'a')"))
+        assert dropped.status is ReplStatus.ERROR
+        assert "NameError" in dropped.output
+    finally:
+        runtime.close()
+
+
+def test_preimports_default_to_absent_flag_and_empty_binds_nothing():
+    assert "--preimport" not in LocalRuntime().worker_command()
+    assert SubprocessRuntime(preimports=()).worker_command()[-2:] == ["--preimport", ""]
+    assert base_namespace(()) == {"__builtins__": __builtins__}
+    assert set(base_namespace()) == {"__builtins__", *DEFAULT_PREIMPORTS}
+    with pytest.raises(ModuleNotFoundError):
+        base_namespace(["definitely_not_a_real_module"])
+
+
+def test_docker_argv_carries_configured_preimports(tmp_path):
+    argv = build_docker_argv("rlmflow:minimal", preimports=["json", "re"])
+
+    assert argv[-2:] == ["--preimport", "json,re"]
+    assert "rlmflow.runtime.repl_server" in argv
 
 
 def test_docker_argv_runs_worker(tmp_path):

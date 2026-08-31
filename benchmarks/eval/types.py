@@ -158,6 +158,9 @@ class Model:
     def usage(self) -> dict[str, int]:
         return {}
 
+    def close(self) -> None:
+        return None
+
 
 class Runner:
     name = ""

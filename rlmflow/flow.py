@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from contextlib import contextmanager
 from typing import Any, Literal
 
@@ -18,6 +18,7 @@ from rlmflow.graph.nodes import (
     AgentStart,
     DoneOutput,
     ExecAction,
+    LLMOutput,
     LLMUsage,
     Node,
     start,
@@ -39,15 +40,36 @@ from rlmflow.runtime.repl_client import current_rpc_call_id
 from rlmflow.structured import json_schema_for, parse_structured_answer
 from rlmflow.tools import RESERVED_TOOLS, tool
 from rlmflow.tools.agents import (
+    AGENT_OBSERVE_TOOL,
     AGENT_WAIT_TOOL,
     AGENTS_BINDING,
     AgentHandle,
     build_agent_directory,
 )
-from rlmflow.tools.llm_query import llm_query_batched
+from rlmflow.tools.builtins import BuiltIns
+from rlmflow.tools.llm_query import llm_query, llm_query_batched
+from rlmflow.tools.tools import is_toolset, toolset_members
 from rlmflow.utils.helpers import tool_name
 
 BUDGET_EXCEEDED = "[budget exceeded]"
+
+
+def as_tool_items(tools: Any) -> list[Any]:
+    """Normalize ``Flow(tools=...)`` to a list of tools and toolsets.
+
+    A toolset is one item, same as a function. ``tools=[FILE_TOOLS, grep_extra]``
+    and ``tools=FILE_TOOLS`` both work; the list is not "one toolset or many
+    functions."
+    """
+    if tools is None:
+        return []
+    if is_toolset(tools) or callable(tools):
+        return [tools]
+    if isinstance(tools, Iterable) and not isinstance(tools, (str, bytes)):
+        return list(tools)
+    raise TypeError(
+        f"tools must be a tool, a toolset, or a sequence of them, not {type(tools).__name__}"
+    )
 
 
 class FlowMessages(MessageBuilder):
@@ -85,7 +107,7 @@ class Flow:
         render_fn: RenderFn | None = None,
         prompt_profiles: dict[str, PromptProfile] | None = None,
         prompt_router: Callable[[Flow, AgentStart], str] | None = None,
-        tools: list[Any] | None = None,
+        tools: Any = None,
         runtime: Runtime | None = None,
         execution_guard: ExecutionGuard | None = None,
         llm_clients: dict[str, Any] | None = None,
@@ -94,7 +116,7 @@ class Flow:
         pool: Pool | None = None,
         use_llm_query: bool = False,
         use_agent_tree: bool = False,
-        enable_structured_output: bool = True,
+        enable_structured_output: bool = False,
     ) -> None:
         if restore not in ("replay", "lazy"):
             raise ValueError(f"restore must be 'replay' or 'lazy', not {restore!r}")
@@ -108,6 +130,7 @@ class Flow:
         self.prompt_profiles = dict(prompt_profiles or {})
         self.prompt_router = prompt_router
         self.use_agent_tree = use_agent_tree
+        self.use_llm_query = use_llm_query
         self.enable_structured_output = enable_structured_output
         self.runtime = runtime or LocalRuntime()
         self.execution_guard = execution_guard
@@ -117,9 +140,12 @@ class Flow:
         self._restore_lock = asyncio.Lock()
         self._llm_clients = {"default": llm, **(llm_clients or {})}
         self.tools: dict[str, Any] = {}
-        for fn in tools or []:
-            self.add_tool(fn)
+        self.toolsets: list[Any] = []
+        self._bind_toolset(BuiltIns())
+        for item in as_tool_items(tools):
+            self.add_tool(item)
         if use_llm_query:
+            self.add_tool(llm_query(self), name="llm_query")
             self.add_tool(llm_query_batched(self), name="llm_query_batched")
         self.steps = dict(DEFAULT_STEPS)
         self.messages = FlowMessages(self)
@@ -161,7 +187,7 @@ class Flow:
             current_messages = current_messages[-keep:] if keep > 0 else []
         previous_keep = None if keep is None else max(keep - len(current_messages), 0)
         previous_messages = [] if node.prev is None else node.prev.project(keep=previous_keep)
-        system = as_system_prompt_fn(profile.system or self.system_prompt)(self, agent)
+        system = as_system_prompt_fn(profile.system or self.system_prompt)(self, node)
         return [
             {"role": "system", "content": system},
             *previous_messages,
@@ -224,6 +250,11 @@ class Flow:
         )
 
     @property
+    def llm_query(self):
+        """The one-shot query tool bound to this flow."""
+        return llm_query(self)
+
+    @property
     def llm_query_batched(self):
         """The fan-out tool, bound to this flow — callable with or without opting in."""
         return llm_query_batched(self)
@@ -280,6 +311,12 @@ class Flow:
         limit = node.parent_agent.config.max_budget
         if limit is None:
             return False
+        # Never discard a reply already paid for. The answer arrives in an LLMOutput
+        # and only lands once its ExecAction runs finish(), so stopping at either one
+        # spends the tokens and throws the result away. The gate belongs in front of
+        # the next model call, which is where `budget_nearly_spent` asks for an answer.
+        if isinstance(node, (LLMOutput, ExecAction)):
+            return False
         root = node.root
         return root is not None and root.usage.total >= limit
 
@@ -295,7 +332,32 @@ class Flow:
         self.runtime.inject_live(name, value)
 
     def add_tool(self, fn: Any, *, name: str | None = None) -> None:
+        if is_toolset(fn):
+            instance = fn() if isinstance(fn, type) else fn
+            self._bind_toolset(instance)
+            return
         self.inject(name or tool_name(fn), fn)
+
+    def _bind_toolset(self, instance: Any) -> None:
+        for existing in self.toolsets:
+            if type(existing) is type(instance):
+                raise ValueError(f"toolset {type(instance).__name__!r} is already bound")
+        pending: list[tuple[str, Any]] = []
+        for tool_name_, method in toolset_members(instance):
+            meta = getattr(getattr(method, "__func__", method), "_tool_meta", None)
+            if meta is None or not meta.inject:
+                continue
+            if tool_name_ in RESERVED_TOOLS:
+                raise ValueError(f"{tool_name_!r} is reserved")
+            if tool_name_ in self.tools:
+                raise ValueError(
+                    f"tool {tool_name_!r} from {type(instance).__name__} collides "
+                    f"with an already-bound name"
+                )
+            pending.append((tool_name_, method))
+        self.toolsets.append(instance)
+        for tool_name_, method in pending:
+            self.inject(tool_name_, method)
 
     def remove_tool(self, name: str) -> Any:
         if name in RESERVED_TOOLS:
@@ -322,6 +384,7 @@ class Flow:
             "asyncio": asyncio,
             "INPUTS": node.parent_agent.config.inputs,
             AGENTS_BINDING: agents,
+            AGENT_OBSERVE_TOOL: self.observe_agent_tool(node),
             AGENT_WAIT_TOOL: self.wait_agent_tool(node),
         }
         if self.use_agent_tree:
@@ -342,19 +405,35 @@ class Flow:
                 if queue is None:
                     raise RuntimeError("waiting for an agent requires an active stream")
                 await queue.join(target)
+            if isinstance(node, ExecAction):
+                node.mark_agent_retrieved(agent_id)
             return target.result()
 
         return wait_agent
+
+    def observe_agent_tool(self, node: Node):
+        @tool("Record access to one completed agent result.", proxy=True)
+        def observe_agent(agent_id: str) -> None:
+            root = node.root
+            if root is None:
+                raise RuntimeError("node is detached")
+            target = root.find_agent(agent_id)
+            if target is None:
+                raise KeyError(f"unknown agent {agent_id!r}")
+            if not target.terminal:
+                raise asyncio.InvalidStateError(f"agent {target.config.path!r} is not completed")
+            if isinstance(node, ExecAction):
+                node.mark_agent_retrieved(agent_id)
+
+        return observe_agent
 
     def finish_tool(self, node: Node):
         schema = node.parent_agent.config.output_schema
 
         @tool("Submit this agent's final answer and end its run.", proxy=True)
         def finish(answer: object) -> None:
-            if schema is None:
-                raise DoneSignal(str(answer))
-            # Carry the parsed value, so the run records what callers receive.
-            raise DoneSignal(parse_structured_answer(answer, schema))
+            value = parse_structured_answer(answer, schema) if schema is not None else str(answer)
+            raise DoneSignal(value)
 
         return finish
 
@@ -538,6 +617,7 @@ class Flow:
             if agent.terminal and not agent.config.reuse_repl:
                 continue  # it answered; nothing will run in this namespace again
             repl = self.runtime.repl_for(agent)
+            repl.structured_output = agent.config.output_schema is not None
             repl.seed(self.build_tools(node), agent.config.inputs)
             repl.update_env({RLMFLOW_REPLAY: "1"})
             try:

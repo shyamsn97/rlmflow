@@ -12,6 +12,12 @@ import time
 from pathlib import Path
 
 from benchmarks.eval import runner
+from benchmarks.eval.runners.shared import (
+    FACT_LOOKUP_DESCRIPTION,
+    example_inputs,
+    fact_lookup_data,
+    materialize_fixtures,
+)
 from benchmarks.eval.types import Example, Model, Prediction, RunContext, Runner
 
 
@@ -23,15 +29,26 @@ class OfficialRLMRunner(Runner):
     errors instead of installing a temp venv behind the user's back.
     """
 
-    def __init__(self, python: str | None = None, max_iters: int = 20) -> None:
+    def __init__(
+        self,
+        python: str | None = None,
+        max_iters: int = 20,
+        max_depth: int = 2,
+        max_budget: int | None = 100_000,
+    ) -> None:
         self.python = python or sys.executable
         self.max_iters = max_iters
+        self.max_depth = max_depth
+        self.max_budget = max_budget
 
     def run(self, example: Example, model: Model, ctx: RunContext) -> Prediction:
         start = time.perf_counter()
         log_dir = ctx.artifact_dir / "official_rlm_logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        context_file = _write_temp(_render_context(example))
+        work_dir = ctx.artifact_dir / "workdir"
+        work_dir.mkdir(parents=True, exist_ok=True)
+        materialize_fixtures(example, work_dir)
+        context_file = _write_temp(json.dumps(_render_context(example), ensure_ascii=False))
         task_file = _write_temp(example.prompt)
         try:
             proc = subprocess.run(
@@ -44,11 +61,15 @@ class OfficialRLMRunner(Runner):
                         model=model.name,
                         log_dir=log_dir,
                         max_iters=self.max_iters,
+                        max_depth=self.max_depth,
+                        max_budget=self.max_budget,
+                        facts=fact_lookup_data(example),
                     ),
                 ],
                 capture_output=True,
                 text=True,
                 timeout=max(300, self.max_iters * 60),
+                cwd=work_dir,
                 env={**os.environ, "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", "")},
             )
             if proc.returncode != 0:
@@ -93,11 +114,9 @@ class OfficialRLMRunner(Runner):
             _unlink(task_file)
 
 
-def _render_context(example: Example) -> str:
-    inputs = example.inputs()
-    if set(inputs) == {"context"}:
-        return inputs["context"]
-    return "\n\n".join(f"INPUT {key}:\n{value}" for key, value in sorted(inputs.items()))
+def _render_context(example: Example) -> dict[str, str]:
+    """Return the same key/value input mapping used by rlmflow."""
+    return example_inputs(example)
 
 
 def _official_script(
@@ -107,6 +126,9 @@ def _official_script(
     model: str,
     log_dir: Path,
     max_iters: int,
+    max_depth: int,
+    max_budget: int | None,
+    facts: dict[str, object] | None,
 ) -> str:
     return textwrap.dedent(
         f"""
@@ -117,9 +139,30 @@ def _official_script(
         from rlm.logger import RLMLogger
 
         with open({json.dumps(context_file)}, encoding="utf-8") as handle:
-            context = handle.read()
+            context = json.load(handle)
         with open({json.dumps(task_file)}, encoding="utf-8") as handle:
             task = handle.read()
+
+        raw_facts = {facts!r}
+        custom_tools = None
+        if raw_facts is not None:
+            facts = {{str(key).casefold(): value for key, value in raw_facts.items()}}
+
+            def fact_lookup(entity):
+                try:
+                    return str(facts[str(entity).strip().casefold()])
+                except KeyError as exc:
+                    choices = ", ".join(sorted(facts))
+                    raise KeyError(
+                        f"unknown entity {{entity!r}}; available: {{choices}}"
+                    ) from exc
+
+            custom_tools = {{
+                "fact_lookup": {{
+                    "tool": fact_lookup,
+                    "description": {json.dumps(FACT_LOOKUP_DESCRIPTION)},
+                }}
+            }}
 
         logger = RLMLogger(log_dir={json.dumps(str(log_dir))})
         start = time.time()
@@ -128,6 +171,10 @@ def _official_script(
             backend_kwargs={{"model_name": {json.dumps(model)}}},
             environment="local",
             max_iterations={max_iters},
+            max_depth={max_depth},
+            max_tokens={max_budget!r},
+            custom_tools=custom_tools,
+            custom_sub_tools=custom_tools,
             verbose=False,
             logger=logger,
         )

@@ -256,7 +256,7 @@ Pass fixed tools to the flow, which describes them in the system prompt and seed
 ```python
 from rlmflow import FILE_TOOLS, Flow, LocalRuntime
 
-flow = Flow(client, tools=FILE_TOOLS, runtime=LocalRuntime(working_directory="."))
+flow = Flow(client, tools=[FILE_TOOLS], runtime=LocalRuntime(working_directory="."))
 ```
 
 Add or remove them later; both reach REPLs that are already open:

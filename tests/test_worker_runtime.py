@@ -189,6 +189,7 @@ def test_worker_completion_returns_answer(repl):
     def finish(answer):
         raise DoneSignal(answer)
 
+    repl.structured_output = True
     repl.seed({"finish": finish}, {})
     result = run(repl, "finish({'value': 42})")
     assert result.status is ReplStatus.DONE
@@ -216,7 +217,12 @@ def test_worker_runtime_integrates_with_flow():
 def test_runtime_delegates_without_sharing_workers():
     class ScriptedLLM:
         def chat(self, messages):
-            last = messages[-1]["content"]
+            trailing = []
+            for message in reversed(messages):
+                if message["role"] != "user":
+                    break
+                trailing.append(message["content"])
+            last = "\n\n".join(reversed(trailing))
             if "child answer" in last:
                 return "```python\nfinish('parent answer')\n```"
             if "child task" in last:
@@ -274,7 +280,12 @@ def test_workers_share_heap_but_keep_agent_bindings_separate(tmp_path):
 def test_reuse_repl_places_child_in_parent_worker(tmp_path):
     class ScriptedLLM:
         def chat(self, messages):
-            last = messages[-1]["content"]
+            trailing = []
+            for message in reversed(messages):
+                if message["role"] != "user":
+                    break
+                trailing.append(message["content"])
+            last = "\n\n".join(reversed(trailing))
             if "child task" in last:
                 return "```python\nshared.append('child')\nfinish('child answer')\n```"
             if "child answer" in last:
@@ -305,5 +316,9 @@ def test_reuse_repl_places_child_in_parent_worker(tmp_path):
         assert [
             node.repl_execution_order for node in loaded.walk() if isinstance(node, ExecAction)
         ] == orders
+        assert [
+            node.retrieved_agent_ids for node in loaded.walk() if isinstance(node, ExecAction)
+        ] == [node.retrieved_agent_ids for node in root.walk() if isinstance(node, ExecAction)]
+        assert loaded.sub_agents[0].id in loaded.retrieved_agent_ids()
     finally:
         asyncio.run(flow.aclose())

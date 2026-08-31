@@ -200,7 +200,7 @@ def build_flow(options: RunOptions, *, workdir: Path, agent: str | None = None) 
         client_for(options.model, reasoning_effort=effort),
         llm_clients={"fast": client_for(options.fast_model, reasoning_effort=effort)},
         runtime=runtime,
-        tools=FILE_TOOLS if options.tools == "files" else None,
+        tools=[FILE_TOOLS] if options.tools == "files" else None,
         workers=options.workers,
         root_config=AgentConfig(max_depth=options.max_depth, max_iters=options.max_iters),
     )

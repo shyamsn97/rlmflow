@@ -16,6 +16,7 @@ def test_full_stream_yields_every_step_in_order():
     events = asyncio.run(collect(flow, root))
 
     assert [node.type for node in events] == [
+        "plan_query",
         "llm_output",
         "exec_action",
         "done_output",
@@ -30,8 +31,8 @@ def test_next_stops_before_starting_another_step():
     first = asyncio.run(collect(flow, root, until="next"))
     second = asyncio.run(collect(flow, root, until="next"))
 
-    assert [node.type for node in first] == ["llm_output"]
-    assert [node.type for node in second] == ["exec_action"]
+    assert [node.type for node in first] == ["plan_query"]
+    assert [node.type for node in second] == ["llm_output"]
     assert not root.terminal
 
 
@@ -98,5 +99,5 @@ def test_a_string_query_gets_a_root_of_its_own():
 
     # A root is where a stream starts rather than something it lands, so the only
     # handle a string caller gets on it is through the node it produced.
-    assert [node.type for node in events] == ["llm_output"]
+    assert [node.type for node in events] == ["plan_query"]
     assert events[0].root.content == "query"

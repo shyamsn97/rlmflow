@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -50,9 +51,15 @@ def load_rows(path: Path) -> list[Row]:
     ]
 
 
+def write_rows(path: Path, rows: Iterable[Row]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps(row.to_dict(), sort_keys=True) for row in rows]
+    path.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+
+
 def write_json(path: Path, data: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-__all__ = ["JsonlLogger", "load_rows", "row_artifact_path", "write_json"]
+__all__ = ["JsonlLogger", "load_rows", "row_artifact_path", "write_json", "write_rows"]

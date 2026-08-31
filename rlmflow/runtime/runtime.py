@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import os
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -31,9 +31,27 @@ class Runtime:
     a child tenant in its parent's worker and shared Python heap.
     """
 
-    def __init__(self, working_directory: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        working_directory: str | Path | None = None,
+        *,
+        preimports: Sequence[str] | None = None,
+    ) -> None:
         self.working_directory = Path(working_directory) if working_directory is not None else None
+        self.preimports = preimports
         self.repls: dict[str, Repl] = {}
+
+    def worker_command(self, python: str | Path | None = None) -> list[str]:
+        """Argv for one worker process, carrying this runtime's preimport choice.
+
+        ``preimports=None`` leaves the flag off so the worker applies
+        ``DEFAULT_PREIMPORTS``; an empty sequence sends an empty value, which binds
+        nothing.
+        """
+        command = [str(python or sys.executable), "-u", "-m", "rlmflow.runtime.repl_server"]
+        if self.preimports is not None:
+            command += ["--preimport", ",".join(self.preimports)]
+        return command
 
     def open(self, agent: AgentStart) -> Repl:
         raise NotImplementedError
@@ -129,7 +147,9 @@ class WrappedRuntime:
             if reason is not None:
                 return ReplRun(output=reason, status=ReplStatus.ERROR)
         agent = node.parent_agent
-        self.runtime.repl_for(agent).seed(
+        repl = self.runtime.repl_for(agent)
+        repl.structured_output = agent.config.output_schema is not None
+        repl.seed(
             self.build_tools(node),
             agent.config.inputs,
         )
@@ -143,8 +163,9 @@ class LocalRuntime(Runtime):
         *,
         repl_timeout: float = 120.0,
         execution_timeout: float | None = None,
+        preimports: Sequence[str] | None = None,
     ) -> None:
-        super().__init__(working_directory=working_directory)
+        super().__init__(working_directory=working_directory, preimports=preimports)
         self.repl_timeout = repl_timeout
         self.execution_timeout = execution_timeout
 
@@ -160,7 +181,7 @@ class LocalRuntime(Runtime):
                 raise RuntimeError("reuse_repl requires a live parent worker")
             return WorkerRepl(parent_repl.session, tenant_id=agent.id)
         connection = PopenConnection(
-            [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
+            self.worker_command(),
             cwd=working_dir,
             label="Local REPL worker",
         )
@@ -181,8 +202,9 @@ class SubprocessRuntime(Runtime):
         env: dict[str, str] | None = None,
         repl_timeout: float | None = DEFAULT_REPL_TIMEOUT,
         execution_timeout: float | None = None,
+        preimports: Sequence[str] | None = None,
     ) -> None:
-        super().__init__(working_directory=working_directory)
+        super().__init__(working_directory=working_directory, preimports=preimports)
         self.python = str(python or sys.executable)
         self.env = env
         self.repl_timeout = repl_timeout
@@ -201,7 +223,7 @@ class SubprocessRuntime(Runtime):
             return WorkerRepl(parent_repl.session, tenant_id=agent.id)
         env = None if self.env is None else {**os.environ, **self.env}
         connection = PopenConnection(
-            [self.python, "-u", "-m", "rlmflow.runtime.repl_server"],
+            self.worker_command(self.python),
             cwd=working_dir,
             env=env,
             label="Subprocess REPL worker",

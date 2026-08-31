@@ -5,6 +5,13 @@ from helpers import StubLLM
 from rlmflow import Flow
 
 
+def test_llm_query_routes_one_prompt_to_a_named_client():
+    fast = StubLLM(lambda messages: messages[-1]["content"].upper())
+    flow = Flow(StubLLM(lambda _messages: "unused"), llm_clients={"fast": fast})
+
+    assert asyncio.run(flow.llm_query("answer this", model="fast")) == "ANSWER THIS"
+
+
 def test_llm_query_batched_routes_to_a_named_client():
     fast = StubLLM(lambda messages: messages[-1]["content"].upper())
     flow = Flow(StubLLM(lambda _messages: "unused"), llm_clients={"fast": fast})

@@ -1,0 +1,695 @@
+{
+  "labels": [
+    "rlmflow",
+    "official"
+  ],
+  "paired_tasks": 20,
+  "summary": {
+    "official": {
+      "accuracy": 0.3,
+      "count": 20,
+      "delegated_tasks": 0,
+      "errors": 0,
+      "input_tokens": 422397,
+      "mean_score": 0.33484848484848484,
+      "output_tokens": 122331,
+      "subcall_tasks": 1,
+      "subcalls": 1,
+      "time_seconds": 1784.8234741687775
+    },
+    "rlmflow": {
+      "accuracy": 0.1,
+      "count": 20,
+      "delegated_tasks": 0,
+      "errors": 0,
+      "input_tokens": 216400,
+      "mean_score": 0.10833333333333332,
+      "output_tokens": 61393,
+      "subcall_tasks": 0,
+      "subcalls": 0,
+      "time_seconds": 1040.9446496650344
+    }
+  },
+  "tasks": [
+    {
+      "dataset": "delegation_arc_agi",
+      "example_id": "delegation_arc_agi_19_1ae2feb7",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 149941,
+          "max_depth": 0,
+          "output_tokens": 31441,
+          "runner": "official-rlm",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 508.13563799858093
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 8586,
+          "max_depth": 0,
+          "output_tokens": 2225,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 30.447952582966536
+        }
+      },
+      "score_delta": 0.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_arc_agi",
+      "example_id": "delegation_arc_agi_20_2ba387bc",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": true,
+          "error": null,
+          "input_tokens": 51159,
+          "max_depth": 0,
+          "output_tokens": 10235,
+          "runner": "official-rlm",
+          "score": 1.0,
+          "subcalls": 0,
+          "time_seconds": 129.65061783790588
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 25773,
+          "max_depth": 0,
+          "output_tokens": 7291,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 105.17149925010744
+        }
+      },
+      "score_delta": 1.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_codeqa",
+      "example_id": "delegation_codeqa_17_official_codeqa_00072",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 43018,
+          "max_depth": 0,
+          "output_tokens": 6283,
+          "runner": "official-rlm",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 103.03758597373962
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 17021,
+          "max_depth": 0,
+          "output_tokens": 2115,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 35.97937612503301
+        }
+      },
+      "score_delta": 0.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_dabstep",
+      "example_id": "delegation_dabstep_11_2536",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 4776,
+          "max_depth": 0,
+          "output_tokens": 1335,
+          "runner": "official-rlm",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 19.22546672821045
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 41749,
+          "max_depth": 0,
+          "output_tokens": 7336,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 135.68213174992707
+        }
+      },
+      "score_delta": 0.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_dabstep",
+      "example_id": "delegation_dabstep_12_2769",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 8699,
+          "max_depth": 0,
+          "output_tokens": 3070,
+          "runner": "official-rlm",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 51.29996609687805
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 19058,
+          "max_depth": 0,
+          "output_tokens": 5743,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 99.79979404201731
+        }
+      },
+      "score_delta": 0.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_entailmentbank",
+      "example_id": "delegation_entailmentbank_10_Mercury_SC_416126",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 4961,
+          "max_depth": 0,
+          "output_tokens": 3275,
+          "runner": "official-rlm",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 53.46359205245972
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 9078,
+          "max_depth": 0,
+          "output_tokens": 1621,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 27.542645458015613
+        }
+      },
+      "score_delta": 0.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_grsqa",
+      "example_id": "delegation_grsqa_09_sample-comparison-1",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 3159,
+          "max_depth": 0,
+          "output_tokens": 1406,
+          "runner": "official-rlm",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 20.33217716217041
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 5733,
+          "max_depth": 0,
+          "output_tokens": 1414,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 24.17639279202558
+        }
+      },
+      "score_delta": 0.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_musique",
+      "example_id": "delegation_musique_05_4hop1__38130_8966_31714_79432",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 15088,
+          "max_depth": 0,
+          "output_tokens": 4718,
+          "runner": "official-rlm",
+          "score": 0.3636363636363636,
+          "subcalls": 0,
+          "time_seconds": 66.44455909729004
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 11244,
+          "max_depth": 0,
+          "output_tokens": 2150,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 33.71042833302636
+        }
+      },
+      "score_delta": 0.3636363636363636,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_musique",
+      "example_id": "delegation_musique_06_4hop1__38130_8966_31714_79432",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 5545,
+          "max_depth": 0,
+          "output_tokens": 3487,
+          "runner": "official-rlm",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 48.7524139881134
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 6555,
+          "max_depth": 0,
+          "output_tokens": 2293,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 36.15329000004567
+        }
+      },
+      "score_delta": 0.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_natural_plan",
+      "example_id": "delegation_natural_plan_13_trip_planning_example_593",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 10972,
+          "max_depth": 0,
+          "output_tokens": 6768,
+          "runner": "official-rlm",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 97.97012305259705
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 2161,
+          "max_depth": 0,
+          "output_tokens": 3026,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 49.41039562493097
+        }
+      },
+      "score_delta": 0.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_natural_plan",
+      "example_id": "delegation_natural_plan_14_meeting_planning_example_594",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 12169,
+          "max_depth": 0,
+          "output_tokens": 6235,
+          "runner": "official-rlm",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 84.99395799636841
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 2680,
+          "max_depth": 0,
+          "output_tokens": 2767,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 45.57856133300811
+        }
+      },
+      "score_delta": 0.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_natural_plan",
+      "example_id": "delegation_natural_plan_15_calendar_scheduling_example_976",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 13163,
+          "max_depth": 0,
+          "output_tokens": 4537,
+          "runner": "official-rlm",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 59.928656816482544
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 2422,
+          "max_depth": 0,
+          "output_tokens": 1961,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 34.47651137504727
+        }
+      },
+      "score_delta": 0.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_parallelqa",
+      "example_id": "delegation_parallelqa_11",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 5160,
+          "max_depth": 0,
+          "output_tokens": 2100,
+          "runner": "official-rlm",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 30.31103014945984
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 2032,
+          "max_depth": 0,
+          "output_tokens": 781,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 14.912066040909849
+        }
+      },
+      "score_delta": 0.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_parallelqa",
+      "example_id": "delegation_parallelqa_22",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": true,
+          "error": null,
+          "input_tokens": 3143,
+          "max_depth": 0,
+          "output_tokens": 1889,
+          "runner": "official-rlm",
+          "score": 1.0,
+          "subcalls": 0,
+          "time_seconds": 27.303823947906494
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": true,
+          "error": null,
+          "input_tokens": 2042,
+          "max_depth": 0,
+          "output_tokens": 853,
+          "runner": "rlmflow-local",
+          "score": 1.0,
+          "subcalls": 0,
+          "time_seconds": 15.791125374962576
+        }
+      },
+      "score_delta": 0.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_parallelqa",
+      "example_id": "delegation_parallelqa_63",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": true,
+          "error": null,
+          "input_tokens": 5166,
+          "max_depth": 0,
+          "output_tokens": 2517,
+          "runner": "official-rlm",
+          "score": 1.0,
+          "subcalls": 0,
+          "time_seconds": 35.81914401054382
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 6572,
+          "max_depth": 0,
+          "output_tokens": 2078,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 34.585603125044145
+        }
+      },
+      "score_delta": 1.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_parallelqa",
+      "example_id": "delegation_parallelqa_94",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": true,
+          "error": null,
+          "input_tokens": 7980,
+          "max_depth": 0,
+          "output_tokens": 3179,
+          "runner": "official-rlm",
+          "score": 1.0,
+          "subcalls": 0,
+          "time_seconds": 46.84201979637146
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 6368,
+          "max_depth": 0,
+          "output_tokens": 2705,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 44.77907749998849
+        }
+      },
+      "score_delta": 1.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_planbench",
+      "example_id": "delegation_planbench_16_logistics_instance_20",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": true,
+          "error": null,
+          "input_tokens": 21670,
+          "max_depth": 0,
+          "output_tokens": 8835,
+          "runner": "official-rlm",
+          "score": 1.0,
+          "subcalls": 1,
+          "time_seconds": 133.9926950931549
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": true,
+          "error": null,
+          "input_tokens": 10657,
+          "max_depth": 0,
+          "output_tokens": 2521,
+          "runner": "rlmflow-local",
+          "score": 1.0,
+          "subcalls": 0,
+          "time_seconds": 44.42734133300837
+        }
+      },
+      "score_delta": 0.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_sudoku",
+      "example_id": "delegation_sudoku_18_cross-product",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": true,
+          "error": null,
+          "input_tokens": 31465,
+          "max_depth": 0,
+          "output_tokens": 10799,
+          "runner": "official-rlm",
+          "score": 1.0,
+          "subcalls": 0,
+          "time_seconds": 128.9490282535553
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 14799,
+          "max_depth": 0,
+          "output_tokens": 6968,
+          "runner": "rlmflow-local",
+          "score": 0.16666666666666666,
+          "subcalls": 0,
+          "time_seconds": 134.2276435419917
+        }
+      },
+      "score_delta": 0.8333333333333334,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_twowiki",
+      "example_id": "delegation_twowiki_07_948c33ea0baf11ebab90acde48001122",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 11571,
+          "max_depth": 0,
+          "output_tokens": 4327,
+          "runner": "official-rlm",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 59.814395904541016
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 12181,
+          "max_depth": 0,
+          "output_tokens": 2780,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 46.84206225001253
+        }
+      },
+      "score_delta": 0.0,
+      "seed": 0
+    },
+    {
+      "dataset": "delegation_twowiki",
+      "example_id": "delegation_twowiki_08_d594f50208c111ebbd8bac1f6bf848b6",
+      "model": "gpt-5-mini",
+      "runs": {
+        "official": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 13592,
+          "max_depth": 0,
+          "output_tokens": 5895,
+          "runner": "official-rlm",
+          "score": 0.33333333333333337,
+          "subcalls": 0,
+          "time_seconds": 78.55658221244812
+        },
+        "rlmflow": {
+          "agents": 1,
+          "correct": false,
+          "error": null,
+          "input_tokens": 9689,
+          "max_depth": 0,
+          "output_tokens": 2765,
+          "runner": "rlmflow-local",
+          "score": 0.0,
+          "subcalls": 0,
+          "time_seconds": 47.25075183296576
+        }
+      },
+      "score_delta": 0.33333333333333337,
+      "seed": 0
+    }
+  ]
+}

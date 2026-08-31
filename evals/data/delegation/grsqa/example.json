@@ -1,0 +1,45 @@
+{
+        "question": "Are both Andropogon and Dracula native to Asia?",
+        "evidence": "The orchid genus Dracula, abbreviated as Drac in horticultural trade, consists of 118 species native to Mexico, Central America, Colombia, Ecuador and Peru. The name \"Dracula\" literally means \"little dragon\", an allusion to the mythical Count Dracula, a lead character in numerous vampire novels and films. The name was applied to the orchid because of the blood-red color of several of the species, the strange aspect of the long spurs of the sepals. Andropogon (common names: beard grass, bluestem grass, broomsedge) is a widespread genus of plants in the grass family, native to much of Asia, Africa, and the Americas as well as southern Europe and various oceanic islands.",
+        "answer": [
+            "no"
+        ],
+        "pos_graph": {
+            "nodes": [
+                {
+                    "node_id": 1,
+                    "evidence": "The orchid genus Dracula, abbreviated as Drac in horticultural trade, consists of 118 species native to Mexico, Central America, Colombia, Ecuador and Peru. The name \"Dracula\" literally means \"little dragon\", an allusion to the mythical Count Dracula, a lead character in numerous vampire novels and films. The name was applied to the orchid because of the blood-red color of several of the species, the strange aspect of the long spurs of the sepals.",
+                    "type": "Comparison-2-1"
+                },
+                {
+                    "node_id": 2,
+                    "evidence": "Andropogon (common names: beard grass, bluestem grass, broomsedge) is a widespread genus of plants in the grass family, native to much of Asia, Africa, and the Americas as well as southern Europe and various oceanic islands.",
+                    "type": "Comparison-2-1"
+                }
+            ],
+            "edges": []
+        },
+        "neg_graph": [
+            {
+                "hard_neg_id": 1,
+                "nodes": [
+                    {
+                        "node_id": 1,
+                        "evidence": "The orchid genus Dracula, abbreviated as Drac in horticultural trade, consists of 118 species native to Mexico, Central America, Colombia, Ecuador and Peru. The name \"Dracula\" literally means \"little dragon\", an allusion to the mythical Count Dracula, a lead character in numerous vampire novels and films. The name was applied to the orchid because of the blood-red color of several of the species, the strange aspect of the long spurs of the sepals.",
+                        "type": "Comparison-2-1"
+                    },
+                    {
+                        "node_id": 2,
+                        "evidence": "Andropogon (common names: beard grass, bluestem grass, broomsedge) is a widespread genus of plants in the grass family, native to much of Asia, Africa, and the Americas as well as southern Europe and various oceanic islands.",
+                        "type": "Comparison-2-1"
+                    },
+                    {
+                        "node_id": 3,
+                        "evidence": "Chrysopogon aciculatus (syn. \"Andropogon aciculatus\") is a species of grass native to the tropics of Asia, Polynesia, and Australia at low elevations. Common names include amorseco (Spanish, \"dry love\") (not to be confused with the \"amor seco\" tree, \"Alchornea glandulosa\"), lesser spear grass, Mackie's pest, pilipiliula, and grama-amorosa (Brazilian Portuguese).",
+                        "type": "neg_para"
+                    }
+                ]
+            }
+        ]
+}
+        

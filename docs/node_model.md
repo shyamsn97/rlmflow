@@ -13,7 +13,6 @@ Every action is followed by exactly one observation. This makes each transition 
 Node
 ├── AgentStart      (an agent's opening query; also the root of a run)
 ├── UserQuery
-│   ├── InspectQuery
 │   ├── PlanQuery
 │   ├── FinalQuery
 │   ├── ContinueQuery
@@ -26,7 +25,7 @@ Node
 └── DoneOutput
 ```
 
-Every node is a dataclass carrying `content`; there is no separate observation/action base. The model "turn" is the `LLMOutput` observation itself — there is no `LLMAction` node; `ExecAction` records the code the engine then ran. Inspect, plan, final-answer, continue, and truncation are `UserQuery` subclasses the engine commits; a dead REPL is a `ReplDead`.
+Every node is a dataclass carrying `content`; there is no separate observation/action base. The model "turn" is the `LLMOutput` observation itself — there is no `LLMAction` node; `ExecAction` records the code the engine then ran. Plan, final-answer, continue, and truncation are `UserQuery` subclasses the engine commits; a dead REPL is a `ReplDead`.
 
 An `AgentStart` is both a node in its parent's tree and the handle for a whole agent: it owns that agent's `frontier`, `config`, `sub_agents`, and system prompt table. The root of a run is just the `AgentStart` nobody launched.
 
@@ -49,8 +48,7 @@ The concrete payloads are:
 | ------------------- | -------------------- | --------------------------------------------------------- |
 | `AgentStart`        | `agent_start`        | `content` (the agent's query), `config`, `system_prompts` |
 | `UserQuery`         | `user_query`         | `content`                                                 |
-| `InspectQuery`      | `inspect_query`      | inspect prompt (default)                                  |
-| `PlanQuery`         | `plan_query`         | size-up prompt (default)                                  |
+| `PlanQuery`         | `plan_query`         | investigation and planning prompt (default)               |
 | `FinalQuery`        | `final_query`        | last-iter prompt (default)                                |
 | `ContinueQuery`     | `continue_query`     | continue nudge (default)                                  |
 | `TruncationSummary` | `truncation_summary` | keep_n notice (default)                                   |
@@ -104,10 +102,14 @@ AgentStart
   -> LLMOutput(code="x = compute()")
   -> ExecAction
   -> ExecOutput(content="...")
-  -> LLMOutput(code="finish(x)")
+  -> LLMOutput(code="finish({'answer': x})")
   -> ExecAction
-  -> DoneOutput(result="...")
+  -> DoneOutput(result={"answer": ...})
 ```
+
+Without `output_schema`, `DoneOutput.result`, `Flow.run()`, and child result
+handles contain plain text. With an explicit schema, they contain the validated
+typed value.
 
 Errors are observations too. The next LLM turn sees the traceback and can recover:
 
@@ -120,21 +122,29 @@ LLMOutput(code="1 / 0")
 
 An `ErrorOutput` means the agent's own code raised. A `ReplDead` means the REPL itself died and took the namespace with it; the agent is told that its variables are gone before the next model request.
 
-A turn can also land a typed `UserQuery` before its `LLMOutput`: `InspectQuery` / `PlanQuery` once per task, `FinalQuery` on the last allowed iteration, `ContinueQuery` when the previous node did not end on a user turn, `TruncationSummary` when `keep_n` overflows, or a generic `UserQuery` explicitly appended by application code.
+A turn can also land a typed `UserQuery` before its `LLMOutput`: `PlanQuery` once per task, `FinalQuery` on the last allowed iteration, `ContinueQuery` when the previous node did not end on a user turn, `TruncationSummary` when `keep_n` overflows, or a generic `UserQuery` explicitly appended by application code. `PlanQuery` combines iterative investigation and decomposition guidance; subsequent REPL observations continue through the ordinary loop without another planning phase.
 
 ## Delegation
 
 Agents delegate with:
 
 ```python
+finding_schema = {
+    "type": "object",
+    "properties": {"conclusion": {"type": "string"}},
+    "required": ["conclusion"],
+    "additionalProperties": False,
+}
 search = await launch_subagent(
     "Find the evidence",
     model="default",
     name="search",
     inputs={"chunk": chunk},
+    output_schema=finding_schema,
 )
 # Later, when the answer is needed:
 result = await search.wait_for_result()
+assert set(result) == {"conclusion"}
 ```
 
 Launching returns a handle without waiting for the child. Children hang off the `ExecAction` that launched them, and the step lands one `ExecOutput` when the parent's block finishes:

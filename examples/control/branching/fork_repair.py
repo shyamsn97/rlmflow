@@ -110,7 +110,7 @@ def run_branch(root: Path, name: str, implementation: str, label: str):
     setup_project(workdir)
     # File tools run inside this branch's own working directory.
     runtime = LocalRuntime(working_directory=workdir)
-    flow = Flow(RepairLLM(implementation, label), tools=FILE_TOOLS, runtime=runtime)
+    flow = Flow(RepairLLM(implementation, label), tools=[FILE_TOOLS], runtime=runtime)
     graph = flow.start(TASK, max_depth=0, max_iters=3)
 
     async def drive() -> None:

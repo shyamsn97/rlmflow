@@ -141,7 +141,7 @@ workdir = Path("examples/_runs/quickstart")
 flow = Flow(
     OpenAIClient(model="gpt-5"),
     runtime=LocalRuntime(working_directory=workdir),
-    tools=FILE_TOOLS,
+    tools=[FILE_TOOLS],
     root_config=AgentConfig(max_depth=2, max_iters=20),
     llm_clients={"fast": OpenAIClient(model="gpt-5-mini")},
 )
@@ -187,7 +187,7 @@ def build() -> Flow:
     return Flow(
         client_for("gpt-5", reasoning_effort="low"),
         runtime=LocalRuntime(working_directory="."),
-        tools=FILE_TOOLS,
+        tools=[FILE_TOOLS],
     root_config=AgentConfig(max_depth=2, max_iters=40),
     )
 ```

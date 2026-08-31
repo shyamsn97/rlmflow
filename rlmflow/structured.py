@@ -37,10 +37,10 @@ def parse_structured_output(content: str, schema: Schema) -> Any:
     """Validate JSON content against a Pydantic or JSON schema."""
     if isinstance(schema, Mapping | str):
         try:
-            value = json.loads(content)
+            value = json.loads(content, parse_constant=_reject_json_constant)
             jsonschema.validate(instance=value, schema=_load_json_schema(schema))
             return value
-        except (json.JSONDecodeError, jsonschema.ValidationError) as exc:
+        except (json.JSONDecodeError, jsonschema.ValidationError, ValueError) as exc:
             raise StructuredOutputError(
                 content=content,
                 schema=schema,
@@ -55,7 +55,11 @@ def parse_structured_output(content: str, schema: Schema) -> Any:
 def parse_structured_answer(answer: object, schema: Schema) -> Any:
     """Validate an answer given as a Python value or as pre-encoded JSON text."""
     if not isinstance(answer, str):
-        return parse_structured_output(json.dumps(answer), schema)
+        try:
+            content = json.dumps(answer, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise StructuredOutputError(content=repr(answer), schema=schema, cause=exc) from exc
+        return parse_structured_output(content, schema)
     try:
         return parse_structured_output(answer, schema)
     except StructuredOutputError:
@@ -89,11 +93,15 @@ def _json_schema_for_pydantic(
 
 def _load_json_schema(schema: Mapping[str, Any] | str) -> Mapping[str, Any]:
     if isinstance(schema, str):
-        loaded = json.loads(schema)
+        loaded = json.loads(schema, parse_constant=_reject_json_constant)
         if not isinstance(loaded, Mapping):
             raise TypeError("JSON schema string must decode to an object")
         return loaded
     return schema
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"{value} is not valid JSON")
 
 
 def _format_error_message(content: str, schema: Schema, cause: Exception) -> str:

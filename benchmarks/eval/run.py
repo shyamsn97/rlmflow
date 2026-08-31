@@ -9,6 +9,8 @@ import json
 import multiprocessing as mp
 import os
 import queue
+import signal
+import threading
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, replace
@@ -18,7 +20,7 @@ from typing import Any
 
 from benchmarks.eval import DATASETS, LOGGERS, MODELS, RUNNERS
 from benchmarks.eval.loggers import MultiLogger
-from benchmarks.eval.loggers.jsonl import load_rows
+from benchmarks.eval.loggers.jsonl import load_rows, write_json
 from benchmarks.eval.metrics import summarize
 from benchmarks.eval.types import (
     ComponentSpec,
@@ -49,6 +51,15 @@ def run_suite(config: SuiteConfig) -> list[Row]:
     jobs = _build_jobs(config, seen=seen)
 
     logger.start(config.to_dict())
+    _write_run_status(config, state="running", completed_rows=len(rows))
+    previous_sigterm = None
+    if threading.current_thread() is threading.main_thread():
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+        def interrupt_run(signum, _frame):
+            raise KeyboardInterrupt(f"benchmark interrupted by signal {signum}")
+
+        signal.signal(signal.SIGTERM, interrupt_run)
     try:
         for job in jobs:
             logger.example_start(
@@ -60,9 +71,21 @@ def run_suite(config: SuiteConfig) -> list[Row]:
             rows.append(row)
             seen.add((row.dataset, row.example_id, row.runner, row.model, row.seed))
             logger.row(row)
+            _write_run_status(config, state="running", completed_rows=len(rows))
         logger.summary(rows)
+        _write_run_status(config, state="completed", completed_rows=len(rows))
         return rows
+    except BaseException as exc:
+        _write_run_status(
+            config,
+            state="aborted",
+            completed_rows=len(rows),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise
     finally:
+        if previous_sigterm is not None:
+            signal.signal(signal.SIGTERM, previous_sigterm)
         logger.finish()
 
 
@@ -125,21 +148,36 @@ def _run_jobs(config: SuiteConfig, jobs: list[dict[str, Any]]) -> Iterable[Row]:
     if config.executor != "local":
         raise ValueError("executor must be 'local' or 'modal'")
     if config.parallelism <= 1:
-        return _best_rows_from_results(
+        return _stream_best_rows_from_results(
             jobs,
-            [_run_job_payload(payload) for payload in payloads],
+            (_run_job_payload(payload) for payload in payloads),
         )
-    results_by_index: dict[int, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=config.parallelism) as pool:
-        futures = {
-            pool.submit(_run_job_payload, payload): index for index, payload in enumerate(payloads)
-        }
-        for future in as_completed(futures):
-            results_by_index[futures[future]] = future.result()
-    return _best_rows_from_results(
-        jobs,
-        [results_by_index[index] for index in range(len(payloads))],
-    )
+
+    def completed_results() -> Iterable[dict[str, Any]]:
+        with ThreadPoolExecutor(max_workers=config.parallelism) as pool:
+            futures = [pool.submit(_run_job_payload, payload) for payload in payloads]
+            for future in as_completed(futures):
+                yield future.result()
+
+    return _stream_best_rows_from_results(jobs, completed_results())
+
+
+def _write_run_status(
+    config: SuiteConfig,
+    *,
+    state: str,
+    completed_rows: int,
+    error: str | None = None,
+) -> None:
+    status = {
+        "run_id": config.run_id,
+        "state": state,
+        "completed_rows": completed_rows,
+        "updated_at": datetime.now().astimezone().isoformat(),
+    }
+    if error is not None:
+        status["error"] = error
+    write_json(config.root / "status.json", status)
 
 
 def _run_job_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -202,15 +240,27 @@ def _run_job_payload_inner(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         runner = RUNNERS.make(runner_spec.name, **runner_spec.params)
         model = MODELS.make(model_spec.provider, name=model_spec.name, **model_spec.params)
-        artifact_dir = Path(payload["root"]) / "artifacts" / dataset_name / example.id / runner.name
-        if best_of_n > 1:
-            artifact_dir = artifact_dir / f"attempt_{attempt:02d}"
-        ctx = RunContext(
-            run_id=payload["run_id"],
-            root=Path(payload["root"]),
-            artifact_dir=artifact_dir,
-        )
-        prediction = runner.run(example, model, ctx)
+        try:
+            artifact_dir = (
+                Path(payload["root"]) / "artifacts" / dataset_name / example.id / runner.name
+            )
+            if best_of_n > 1:
+                artifact_dir = artifact_dir / f"attempt_{attempt:02d}"
+            ctx = RunContext(
+                run_id=payload["run_id"],
+                root=Path(payload["root"]),
+                artifact_dir=artifact_dir,
+                params={
+                    "dataset": dataset_name,
+                    "runner": runner_name,
+                    "seed": seed,
+                    "attempt": attempt,
+                    "best_of_n": best_of_n,
+                },
+            )
+            prediction = runner.run(example, model, ctx)
+        finally:
+            model.close()
         return {
             "run_id": payload["run_id"],
             "dataset": dataset_name,

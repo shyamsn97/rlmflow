@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from rlmflow.graph.nodes import AgentStart
@@ -23,6 +24,7 @@ def build_docker_argv(
     workdir: str | None = None,
     extra_args: list[str] | None = None,
     docker_bin: str = "docker",
+    preimports: Sequence[str] | None = None,
 ) -> list[str]:
     """Build a bounded, stdio-attached, automatically removed worker container."""
     argv = [docker_bin, "run", "-i", "--rm"]
@@ -54,6 +56,8 @@ def build_docker_argv(
         ]
     argv += extra_args
     argv += [image, "python", "-u", "-m", "rlmflow.runtime.repl_server"]
+    if preimports is not None:
+        argv += ["--preimport", ",".join(preimports)]
     return argv
 
 
@@ -76,9 +80,10 @@ class DockerRuntime(Runtime):
         docker_bin: str = "docker",
         repl_timeout: float | None = DEFAULT_REPL_TIMEOUT,
         execution_timeout: float | None = None,
+        preimports: Sequence[str] | None = None,
         **options: object,
     ) -> None:
-        super().__init__(working_directory=working_directory)
+        super().__init__(working_directory=working_directory, preimports=preimports)
         self.image = image
         if self.working_directory is not None:
             host = str(self.working_directory.resolve())
@@ -107,7 +112,7 @@ class DockerRuntime(Runtime):
                 raise RuntimeError("reuse_repl requires a live parent worker")
             return WorkerRepl(parent_repl.session, tenant_id=agent.id)
         connection = PopenConnection(
-            build_docker_argv(self.image, **self.options),
+            build_docker_argv(self.image, preimports=self.preimports, **self.options),
             cwd=self.working_directory or Path.cwd(),
             label="Docker REPL worker",
         )

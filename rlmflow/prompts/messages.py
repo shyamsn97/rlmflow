@@ -1,9 +1,8 @@
 """Current-node rendering and input manifests.
 
-Keeps message shaping out of ``flow.py``. Inspect, plan, final, continue,
-truncation, and a dead REPL are node types; this module re-exports their
-default strings and holds dynamic manifests. Canonical history projection
-lives on ``Node``.
+Keeps message shaping out of ``flow.py``. Plan, final, continue, truncation, and
+a dead REPL are node types; this module re-exports their default strings and
+holds dynamic manifests. Canonical history projection lives on ``Node``.
 """
 
 from __future__ import annotations
@@ -15,8 +14,7 @@ from rlmflow.graph.nodes import (
     COLD_REPL_NOTE,
     CONTINUE_NUDGE,
     FINAL_ANSWER_ACTION,
-    INSPECTION_ACTION,
-    ORCHESTRATION_ACTION,
+    PLANNING_ACTION,
     TRUNCATION_SUMMARY,
     AgentStart,
     Node,
@@ -89,8 +87,7 @@ __all__ = [
     "COLD_REPL_NOTE",
     "CONTINUE_NUDGE",
     "FINAL_ANSWER_ACTION",
-    "INSPECTION_ACTION",
-    "ORCHESTRATION_ACTION",
+    "PLANNING_ACTION",
     "TRUNCATION_SUMMARY",
     "PromptBuilder",
     "RenderFn",

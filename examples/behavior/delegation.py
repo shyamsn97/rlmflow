@@ -524,7 +524,7 @@ def run_scenario(
             {additional_key: additional_client} if additional_client is not None else None
         ),
         runtime=LocalRuntime(working_directory=workdir) if scenario.with_files else None,
-        tools=FILE_TOOLS if scenario.with_files else None,
+        tools=[FILE_TOOLS] if scenario.with_files else None,
         workers=workers,
     )
     root = flow.start(

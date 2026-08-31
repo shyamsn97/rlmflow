@@ -1,4 +1,4 @@
-.PHONY: clean clean-build clean-pyc clean-test coverage dist docs help install lint lint/flake8 format-md lint-md test test-all test-live test-live-boids examples examples-list examples-optional examples-live examples-sandbox examples-all eval-help eval-smoke eval-test eval-run eval-wandb eval-benchmark eval-benchmark-full eval-benchmark-oolong eval-clean animation animation-preview animation-mp4 animation-gif animation-gif-small animation-clean bump-version release-check release-tag release-push release
+.PHONY: clean clean-build clean-pyc clean-test coverage dist docs help install lint lint/flake8 format-md lint-md test test-all test-live test-live-boids examples examples-list examples-optional examples-live examples-sandbox examples-all eval-help eval-smoke eval-test eval-run eval-wandb eval-benchmark eval-benchmark-full eval-benchmark-oolong eval-delegation eval-delegation-five eval-delegation-five-compare eval-delegation-five-matrix eval-delegation-ten-compare eval-delegation-regression eval-delegation-canary eval-delegation-phase1 eval-delegation-official eval-delegation-report eval-clean animation animation-preview animation-mp4 animation-gif animation-gif-small animation-clean bump-version release-check release-tag release-push release
 	{%- if cookiecutter.use_black == 'y' %} lint/black{% endif %}
 .DEFAULT_GOAL := help
 
@@ -184,7 +184,7 @@ build-docker-image:
 # ── Eval harness ─────────────────────────────────────────────────────
 # Eval/benchmark targets now live in benchmarks/Makefile. Run them with
 # `make -C benchmarks <target>` (or `cd benchmarks && make <target>`).
-eval-help eval-smoke eval-test eval-run eval-wandb eval-benchmark eval-benchmark-full eval-benchmark-oolong eval-clean:
+eval-help eval-smoke eval-test eval-run eval-wandb eval-benchmark eval-benchmark-full eval-benchmark-oolong eval-delegation eval-delegation-five eval-delegation-five-compare eval-delegation-five-matrix eval-delegation-ten-compare eval-delegation-regression eval-delegation-canary eval-delegation-phase1 eval-delegation-official eval-delegation-report eval-clean:
 	$(MAKE) -C benchmarks $@
 
 # ── Animation (manim) ────────────────────────────────────────────────

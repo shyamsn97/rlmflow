@@ -1,3 +1,4 @@
+import json
 from collections import Counter
 from dataclasses import dataclass
 
@@ -130,8 +131,8 @@ def test_v3_is_flat_strict_and_rejects_v2():
         persistence.from_document(broken)
 
     unknown = {**document, "nodes": [dict(record) for record in document["nodes"]]}
-    unknown["nodes"][1]["type"] = "not_registered"
-    with pytest.raises(ValueError, match="unknown node type"):
+    unknown["nodes"][1]["type"] = "inspect_query"
+    with pytest.raises(ValueError, match="unknown node type 'inspect_query'"):
         persistence.from_document(unknown)
 
 
@@ -152,6 +153,40 @@ def test_graph_file_is_the_atomic_save_commit_point(tmp_path, monkeypatch):
         persistence.save(root, run)
 
     assert [node.id for node in persistence.load(run).walk()] == committed_ids
+
+
+def test_large_inputs_are_content_addressed_once_across_graph_views(tmp_path):
+    large = "payment,row\n" + ("merchant,100.00\n" * 8_000)
+    root = start("root", inputs={"data": large})
+    action = root.append(ExecAction(code="delegate"))
+    child = action.append(
+        AgentStart(
+            content="child",
+            config=root.config.child("child", inputs={"data": large}),
+        )
+    )
+
+    run = persistence.save(root, tmp_path / "run")
+    graph_text = (run / "graph.json").read_text(encoding="utf-8")
+    graph = json.loads(graph_text)
+    refs = [
+        record["payload"]["inputs"]["data"]
+        for record in graph["nodes"]
+        if record["type"] == "agent_start"
+    ]
+    blobs = list((run / "input_blobs").iterdir())
+
+    assert len(blobs) == 1
+    assert len({ref[persistence.INPUT_BLOB_REF_KEY] for ref in refs}) == 1
+    assert large not in graph_text
+    assert large not in (run / "agents" / "root" / "agent.json").read_text()
+    assert large not in (run / "agents" / "root" / "session.jsonl").read_text()
+    assert large not in (run / "agents" / "root" / "child" / "agent.json").read_text()
+
+    loaded = persistence.load(run)
+
+    assert loaded.config.inputs["data"] == large
+    assert loaded.find_agent(child.id).config.inputs["data"] == large
 
 
 def test_removed_graph_apis_have_no_compatibility_aliases():

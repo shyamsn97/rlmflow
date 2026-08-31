@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from rlmflow.graph.nodes import (
     COLD_REPL_NOTE,
+    LOCAL_PLANNING_ACTION,
+    PLANNING_ACTION,
     AgentStart,
     ContinueQuery,
     DoneOutput,
@@ -11,7 +13,6 @@ from rlmflow.graph.nodes import (
     ExecAction,
     ExecOutput,
     FinalQuery,
-    InspectQuery,
     LLMOutput,
     Node,
     PlanQuery,
@@ -25,7 +26,6 @@ from rlmflow.runtime.runtime import WrappedRuntime
 from rlmflow.utils.helpers import code_block, truncate_output
 
 CONTROL_QUERIES = (
-    InspectQuery,
     PlanQuery,
     FinalQuery,
     ContinueQuery,
@@ -34,37 +34,29 @@ CONTROL_QUERIES = (
 MAX_ITERS_EXCEEDED = "[max_iters exceeded]"
 
 
-def last_query(node: Node) -> Node | None:
-    """Walk backward to the latest user query or agent start."""
-    current: Node | None = node
-    while current is not None:
-        if isinstance(current, (UserQuery, AgentStart)):
-            return current
-        current = current.prev
-    return None
-
-
-def should_inspect(agent: AgentStart) -> bool:
-    return (
-        bool(agent.config.inputs)
-        and agent.config.max_depth > 0
-        and agent.config.depth < agent.config.max_depth
-    )
-
-
-def should_inspect_frontier(node: Node) -> bool:
-    eligible = isinstance(node, AgentStart) or (
-        type(node) is UserQuery and isinstance(node.prev, DoneOutput)
-    )
-    if not eligible:
-        return False
-    agent = node if isinstance(node, AgentStart) else node.parent_agent
-    return agent is not None and should_inspect(agent)
-
-
 def at_final(agent: AgentStart) -> bool:
     limit = agent.config.max_iters
     return limit is not None and agent.llm_turns() == limit - 1
+
+
+def budget_nearly_spent(node: Node) -> bool:
+    """Whether one more turn of the size seen so far would exhaust the token budget.
+
+    The iteration limit warns at ``max_iters - 1``, leaving a turn to answer in. The
+    token budget had no such warning: it ended the run mid-flight with no answer,
+    which is how a task that burned 97k of its 100k tokens scored zero while holding
+    13 unused iterations. Averaging turns so far avoids a fixed reserve, which is
+    either too small for a long history or wasted on a short one.
+    """
+    limit = node.parent_agent.config.max_budget
+    root = node.root
+    if limit is None or root is None:
+        return False
+    turns = root.stats.node_counts.get(LLMOutput.type, 0)
+    if turns == 0:
+        return False
+    spent = root.usage.total
+    return spent + spent / turns >= limit
 
 
 def needs_truncation(node: Node) -> bool:
@@ -105,22 +97,25 @@ class StepFunction:
 class LLMRequestStep(StepFunction):
     """Order all control nodes before the next model call."""
 
+    def plan_query(self, node: Node) -> PlanQuery:
+        agent = node.parent_agent
+        can_spawn = agent.config.max_depth > 0 and agent.config.depth < agent.config.max_depth
+        content = PLANNING_ACTION if can_spawn else LOCAL_PLANNING_ACTION
+        return PlanQuery(content=content)
+
     async def __call__(self, node: Node) -> Node:
         if isinstance(node, CONTROL_QUERIES):
             return await self.chat(node)
 
+        if isinstance(node, AgentStart):
+            return node.append(self.plan_query(node))
+
         agent = node.parent_agent
-        if at_final(agent):
+        if at_final(agent) or budget_nearly_spent(node):
             return node.append(FinalQuery())
 
-        if should_inspect_frontier(node):
-            return node.append(InspectQuery())
-
-        if isinstance(node, ExecOutput):
-            query = last_query(node)
-            after = getattr(query, "after", None)
-            if after is not None:
-                return node.append(after())
+        if type(node) is UserQuery and isinstance(node.prev, DoneOutput):
+            return node.append(self.plan_query(node))
 
         if needs_truncation(node):
             return node.append(TruncationSummary())
@@ -207,8 +202,6 @@ __all__ = [
     "LLMRequestStep",
     "append_run_result",
     "at_final",
-    "last_query",
+    "budget_nearly_spent",
     "needs_truncation",
-    "should_inspect",
-    "should_inspect_frontier",
 ]

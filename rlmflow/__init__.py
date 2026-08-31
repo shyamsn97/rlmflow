@@ -38,7 +38,6 @@ from rlmflow.graph.nodes import (
     ExecAction,
     ExecOutput,
     FinalQuery,
-    InspectQuery,
     LLMOutput,
     Node,
     PlanQuery,
@@ -99,10 +98,13 @@ from rlmflow.tools import (
     AgentHandle,
     AgentInfo,
     AgentStatus,
+    FileTools,
+    PromptExample,
     ToolMetadata,
     format_tool_line,
     get_tool_metadata,
     tool,
+    toolset,
 )
 from rlmflow.utils import find_code_blocks
 
@@ -147,6 +149,8 @@ __all__ = [
     "DEFAULT_MAX_QUERY_CHARS",
     "DEFAULT_QUERY",
     "FILE_TOOLS",
+    "FileTools",
+    "PromptExample",
     "SYSTEM_PROMPT",
     "AgentConfig",
     "AgentDirectory",
@@ -173,7 +177,6 @@ __all__ = [
     "FlowLLM",
     "FlowTUI",
     "GraphCheckpointer",
-    "InspectQuery",
     "LLMChunk",
     "LLMClient",
     "LLMOutput",
@@ -252,5 +255,6 @@ __all__ = [
     "system_prompt_hint",
     "timeline",
     "tool",
+    "toolset",
     "view",
 ]

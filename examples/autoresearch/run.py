@@ -656,7 +656,7 @@ def run(args: argparse.Namespace) -> None:
     flow = Flow(
         client_for(args.model),
         runtime=runtime,
-        tools=[*FILE_TOOLS, *build_autoresearch_tools(state)],
+        tools=[FILE_TOOLS, *build_autoresearch_tools(state)],
         workers=args.parallel,
         system_prompt=build_prompt_builder(),
     )

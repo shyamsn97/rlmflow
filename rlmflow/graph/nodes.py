@@ -18,10 +18,8 @@ from uuid import uuid4
 
 from rlmflow.llm import LLMUsage
 
-DEFAULT_QUERY = (
-    "Please read through the provided INPUTS if present and answer any queries or respond to any "
-    "instructions contained within it."
-)
+DEFAULT_QUERY = """Please read through the provided INPUTS if present and answer any
+queries or respond to any instructions contained within it."""
 DEFAULT_MAX_QUERY_CHARS = 4_000
 
 
@@ -446,6 +444,15 @@ class AgentStart(Node):
         """This agent's own nodes, start to frontier; sub-agent branches are skipped."""
         return list(self.frontier.iter_backwards())[::-1]
 
+    def retrieved_agent_ids(self) -> set[str]:
+        """Agent results explicitly retrieved by this agent across all actions."""
+        return {
+            agent_id
+            for node in self.transcript()
+            if isinstance(node, ExecAction)
+            for agent_id in node.retrieved_agent_ids
+        }
+
     def _require_run_root(self) -> None:
         if self.root is not self:
             raise RuntimeError("run aggregates belong to agent.root")
@@ -523,42 +530,72 @@ class AgentStart(Node):
         return persistence.load(path)
 
 
-FINAL_ANSWER_ACTION = (
-    "You have used the full iteration budget without calling finish(). Based on the "
-    "work above, call finish(answer) now with only the final answer, in the exact "
-    "form the query requested. Do not investigate further."
-)
+FINAL_ANSWER_ACTION = """This is your last turn: the run is out of budget to keep working.
+Based on the work above, call finish(answer) now with only the final answer, in the
+exact form the query requested. Do not investigate further, and do not hold the answer
+back for verification — no turn follows this one to read a print, so submit your best
+inference rather than ending the run with nothing."""
 
-CONTINUE_NUDGE = (
-    "Continue. Reply with exactly one ```repl``` block: the next step, or "
-    "finish(...) if you have the verified final answer."
-)
+CONTINUE_NUDGE = """Continue using the REPL environment and determine your answer.
+Execute the next step of your plan in exactly one ```repl``` block, or call
+finish(...) if you have already printed and verified the final answer."""
 
-TRUNCATION_SUMMARY = (
-    "[earlier turns omitted to fit the context window; the most recent turns follow. "
-    "The REPL kept running, so variables, imports, and helpers defined in those turns "
-    "are still bound — reuse them instead of redefining them.]"
-)
+TRUNCATION_SUMMARY = """[earlier turns omitted to fit the context window; the most recent
+turns follow. The REPL kept running, so variables, imports, and helpers defined in those
+turns are still bound — reuse them instead of redefining them.]"""
 
-COLD_REPL_NOTE = (
-    "[this agent's REPL was restarted, so variables and imports from earlier turns "
-    "are gone. Re-derive whatever you need before using it.]"
-)
+COLD_REPL_NOTE = """[this agent's REPL was restarted, so variables and imports from
+earlier turns are gone. Re-derive whatever you need before using it.]"""
 
-INSPECTION_ACTION = (
-    "Inspect the complete relevant content of `INPUTS` now. Preserve explicit "
-    "requirements in REPL state and print only a bounded summary. Do not produce "
-    "deliverables or finish on this turn."
-)
+PLANNING_ACTION = """This turn plans and probes; later turns do the work. Act as an
+orchestrator: reserve your own turns for deciding what to ask, combining small
+results, checking the candidate, and finalizing.
 
-ORCHESTRATION_ACTION = (
-    "Now size up the observed work and choose local execution or delegation. For "
-    "several substantial components with explicit interfaces, launch multiple "
-    "coherent workstreams before local implementation; components in one final "
-    "product still qualify. Keep work local only when there is no such decomposition "
-    "or each scope is trivial. Choose `model=` explicitly for each child and keep "
-    "final synthesis with the parent."
-)
+Before the block, write a short prose plan:
+- **Deliverable:** what the final answer must contain.
+- **Steps:** the concrete sequence of later REPL and delegated operations.
+- **Verification:** a check that can fail, and what result would make you revise.
+- **Delegation:** what you will delegate through the available APIs, and what you
+  will do directly.
+
+Use direct Python when a search, parse, or one visible passage can determine the
+answer. Delegate long-context or independent work that should not enter your own
+history; use a recursive agent when a subproblem needs its own iterative REPL.
+Ask delegates for terse results that you can check and combine in the REPL.
+On each later turn, execute one step, print a small sample of its result, and
+verify it before continuing.
+
+Then give exactly one ```repl``` block that probes the evidence needed by the task:
+- Inspect relevant `INPUTS` keys, paths, sizes, counts, headers, or short excerpts.
+- Inspect the available task tools. If the query depends on data exposed by a tool,
+  call that tool now; never substitute remembered or outside values.
+- Report missing or malformed data.
+- Do not infer whole-data conclusions from an unjustified prefix.
+
+Keep the plan in prose; do not store it in a dict, list, or report object.
+Do not solve the task or call `finish(...)` yet."""
+
+LOCAL_PLANNING_ACTION = """This turn plans and probes; later turns do the work.
+Recursive delegation is unavailable at this depth, so plan only direct REPL work
+and calls to the task tools listed in the system prompt.
+
+Before the block, write a short prose plan:
+- **Deliverable:** what the final answer must contain.
+- **Steps:** the concrete sequence of later REPL operations.
+- **Verification:** a check that can fail, and what result would make you revise.
+
+On each later turn, execute one step, print a small sample of its result, and
+verify it before continuing.
+
+Then give exactly one ```repl``` block that probes the evidence needed by the task:
+- Inspect relevant `INPUTS` keys, paths, sizes, counts, headers, or short excerpts.
+- Inspect the available task tools. If the query depends on data exposed by a tool,
+  call that tool now; never substitute remembered or outside values.
+- Report missing or malformed data.
+- Do not infer whole-data conclusions from an unjustified prefix.
+
+Keep the plan in prose; do not store it in a dict, list, or report object.
+Do not solve the task or call `finish(...)` yet."""
 
 
 @dataclass
@@ -575,19 +612,9 @@ class UserQuery(Node):
 
 
 @dataclass
-class InspectQuery(UserQuery):
-    type: ClassVar[str] = "inspect_query"
-    content: str = INSPECTION_ACTION
-    after: ClassVar[type[Node] | None] = None
-
-
-@dataclass
 class PlanQuery(UserQuery):
     type: ClassVar[str] = "plan_query"
-    content: str = ORCHESTRATION_ACTION
-
-
-InspectQuery.after = PlanQuery
+    content: str = PLANNING_ACTION
 
 
 @dataclass
@@ -641,12 +668,20 @@ class ExecAction(Node):
     code: str = ""
     #: Submission order within the action's worker session, used for shared replay.
     repl_execution_order: int | None = None
+    #: Agent results explicitly read during this action, in first-read order.
+    retrieved_agent_ids: list[str] = field(default_factory=list)
+
+    def mark_agent_retrieved(self, agent_id: str) -> None:
+        """Record one result access idempotently."""
+        if agent_id not in self.retrieved_agent_ids:
+            self.retrieved_agent_ids.append(agent_id)
 
     def to_record(self) -> dict[str, Any]:
         data = super().to_record()
         data["payload"] = {
             "code": self.code,
             "repl_execution_order": self.repl_execution_order,
+            "retrieved_agent_ids": list(self.retrieved_agent_ids),
         }
         return data
 
@@ -840,8 +875,8 @@ __all__ = [
     "COLD_REPL_NOTE",
     "CONTINUE_NUDGE",
     "FINAL_ANSWER_ACTION",
-    "INSPECTION_ACTION",
-    "ORCHESTRATION_ACTION",
+    "LOCAL_PLANNING_ACTION",
+    "PLANNING_ACTION",
     "TRUNCATION_SUMMARY",
     "AgentConfig",
     "AgentStart",
@@ -852,7 +887,6 @@ __all__ = [
     "ExecAction",
     "ExecOutput",
     "FinalQuery",
-    "InspectQuery",
     "LLMOutput",
     "LLMUsage",
     "Node",

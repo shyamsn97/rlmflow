@@ -76,7 +76,7 @@ def main():
         client_for(args.model),
         llm_clients={"fast": client_for(args.fast_model)},
         runtime=runtime,
-        tools=FILE_TOOLS,
+        tools=[FILE_TOOLS],
         workers=args.max_concurrency,
     )
 

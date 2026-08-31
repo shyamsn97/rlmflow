@@ -106,7 +106,7 @@ python examples/needle/filesystem.py          --docker-image rlmflow:local
 python examples/coding/agent.py --workdir ./proj --docker-image rlmflow:local
 ```
 
-Examples that use file tools pass them to the flow (`Flow(tools=FILE_TOOLS)`) and
+Examples that use file tools pass them to the flow (`Flow(tools=[FILE_TOOLS])`) and
 set `working_directory` on the runtime, so relative paths resolve into that
 directory the same way in local and Docker modes.
 

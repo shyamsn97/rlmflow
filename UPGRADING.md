@@ -6,6 +6,10 @@ Version 0.5 is a deliberate breaking beta release. It does not include compatibi
 
 Agent code must call `finish(value)`. The old `done(value)` name is not present in the REPL.
 
+Without `output_schema`, `finish(value)` returns `str(value)`. With an explicit
+`output_schema`, `Flow.run()`, `agent.result()`, and `wait_for_result()` return
+the validated typed value.
+
 ## Graph traversal and identity
 
 - Use `node.walk()` for iterative parent-before-child traversal.
@@ -33,6 +37,10 @@ Initialize `FlowTUI` with `ui.init(flow)` and then call `ui.run()`. The old `ui.
 
 - Call `AgentInfo.result()`; `get_result()` is removed.
 - Import `client_for` from `rlmflow.llm`; `examples.common.build_client` is removed.
+
+## Planning control query
+
+`PlanQuery` now combines iterative input investigation and decomposition guidance, then enters the ordinary REPL loop. `InspectQuery`, `INSPECTION_ACTION`, and the automatic `InspectQuery -> PlanQuery` transition are removed. Custom step registrations and persisted development runs must use `PlanQuery`.
 
 ## Runtime trust boundary
 

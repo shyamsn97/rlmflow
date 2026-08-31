@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import threading
+from collections.abc import Sequence
 from concurrent.futures import Future
 from pathlib import Path
 from typing import TextIO
@@ -33,9 +35,10 @@ from rlmflow.runtime.repl import (
     DoneSignal,
     LocalRepl,
     ReplStatus,
+    base_namespace,
     current_binding,
 )
-from rlmflow.tools.agents import AGENT_WAIT_TOOL
+from rlmflow.tools.agents import AGENT_OBSERVE_TOOL, AGENT_WAIT_TOOL
 from rlmflow.utils.serial import decode_host_value
 
 
@@ -48,11 +51,13 @@ class ReplServer:
         workdir: str | Path | None = None,
         protocol_in: TextIO | None = None,
         protocol_out: TextIO | None = None,
+        preimports: Sequence[str] | None = None,
     ) -> None:
         self._in = protocol_in or sys.stdin
         self._out = protocol_out or sys.stdout
         self._workdir = workdir
-        self._namespace: dict[str, object] = {"__builtins__": __builtins__}
+        # Tenants share this namespace, so preimports are paid for once per worker.
+        self._namespace: dict[str, object] = base_namespace(preimports)
         self._tenants: dict[str, LocalRepl] = {}
         self._pending: dict[str, Future[ProxyResponse]] = {}
         self._send_lock = threading.Lock()
@@ -80,6 +85,18 @@ class ReplServer:
     def make_proxy(self, name: str, *, is_async: bool):
         def begin(args: tuple[object, ...], kwargs: dict[str, object]):
             binding = current_binding()
+            if name == "finish":
+                answer = None
+                if len(args) == 1 and not kwargs:
+                    answer = args[0]
+                elif not args and set(kwargs) == {"answer"}:
+                    answer = kwargs["answer"]
+                if binding["structured_output"]:
+                    json.dumps(answer, allow_nan=False)
+                elif len(args) == 1 and not kwargs:
+                    args = (str(args[0]),)
+                elif not args and set(kwargs) == {"answer"}:
+                    kwargs = {"answer": str(kwargs["answer"])}
             counts = binding.setdefault("_rpc_counts", {})
             call_id = counts.get(name, 0)
             counts[name] = call_id + 1
@@ -189,6 +206,9 @@ class ReplServer:
         wait_agent = self._namespace.get(AGENT_WAIT_TOOL)
         if wait_agent is not None:
             binding["wait_agent"] = wait_agent
+        observe_agent = self._namespace.get(AGENT_OBSERVE_TOOL)
+        if observe_agent is not None:
+            binding["observe_agent"] = observe_agent
         if binding.get("expose_agents"):
             self._namespace.setdefault("AGENTS", CurrentObject("agents"))
         try:
@@ -237,7 +257,15 @@ class ReplServer:
 def main() -> None:
     parser = argparse.ArgumentParser(description="rlmflow Python worker")
     parser.add_argument("--workdir")
+    parser.add_argument(
+        "--preimport",
+        help=(
+            "comma-separated modules to bind in the REPL namespace, overriding the "
+            "defaults; pass an empty value to bind none"
+        ),
+    )
     args = parser.parse_args()
+    preimports = None if args.preimport is None else [n for n in args.preimport.split(",") if n]
 
     # Claim private protocol descriptors before user code can inherit stdio.
     wire_in_fd = os.dup(0)
@@ -258,6 +286,7 @@ def main() -> None:
         workdir=args.workdir,
         protocol_in=wire_in,
         protocol_out=wire_out,
+        preimports=preimports,
     ).serve_stdio()
 
 

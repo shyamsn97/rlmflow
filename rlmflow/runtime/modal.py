@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import threading
 from collections import deque
+from collections.abc import Sequence
 from contextlib import suppress
 from typing import Any
 
@@ -31,12 +32,14 @@ class _ModalConnection:
         image: object,
         timeout: int,
         container_kwargs: dict[str, object],
+        command: Sequence[str],
     ) -> None:
         self.app_name = app_name
         self.remote_workdir = remote_workdir
         self.image = image
         self.timeout = timeout
         self.container_kwargs = container_kwargs
+        self.command = tuple(command)
         self.container: Any = None
         self._stdout: Any = None
         self._stderr_tail: deque[str] = deque(maxlen=STDERR_LINES)
@@ -58,10 +61,7 @@ class _ModalConnection:
                 "rlmflow"
             )
             self.container = modal.Sandbox.create(
-                "python",
-                "-u",
-                "-m",
-                "rlmflow.runtime.repl_server",
+                *self.command,
                 app=app,
                 image=image,
                 timeout=self.timeout,
@@ -137,9 +137,10 @@ class ModalRuntime(Runtime):
         timeout: int = 3600,
         repl_timeout: float = 30,
         execution_timeout: float | None = None,
+        preimports: Sequence[str] | None = None,
         **container_kwargs: object,
     ) -> None:
-        super().__init__()
+        super().__init__(preimports=preimports)
         self.app_name = app_name
         self.remote_workdir = remote_workdir
         self.image = image
@@ -161,6 +162,7 @@ class ModalRuntime(Runtime):
             image=self.image,
             timeout=self.timeout,
             container_kwargs=self.container_kwargs,
+            command=self.worker_command("python"),
         )
         session = WorkerSession(
             connection,
