@@ -87,7 +87,7 @@ def test_llm_request_step_runs_with_plain_fake_primitives():
     assert isinstance(plan, PlanQuery)
     assert isinstance(landed, LLMOutput)
     assert landed.usage == LLMUsage(1, 2)
-    assert seen[0][-1]["content"] == plan.content
+    assert seen[0][-1]["content"] == plan.instruction()
 
 
 def test_exec_action_step_runs_with_the_same_primitive_abi():

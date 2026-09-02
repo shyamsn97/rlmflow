@@ -25,7 +25,14 @@ from rlmflow.runtime.protocol import (
     RunRequest,
     WireModel,
 )
-from rlmflow.runtime.repl import MISSING_REPL_NOTE, DoneSignal, Repl, ReplRun, ReplStatus
+from rlmflow.runtime.repl import (
+    MISSING_REPL_NOTE,
+    DoneSignal,
+    Repl,
+    ReplRun,
+    ReplStatus,
+    TransitionSignal,
+)
 from rlmflow.tools import get_tool_metadata
 from rlmflow.tools.agents import AGENTS_BINDING
 from rlmflow.utils.serial import encode_host_value
@@ -62,6 +69,7 @@ class _RunState:
     step: Node | None
     proxied: dict[str, Callable[..., object]]
     answer: Any = _NO_ANSWER
+    transition: str | None = None
 
 
 class WorkerSession:
@@ -216,6 +224,9 @@ class WorkerSession:
         except DoneSignal as signal:
             state.answer = signal.answer
             response = ProxyResponse(id=message.id, done=True)
+        except TransitionSignal as signal:
+            state.transition = signal.transition
+            response = ProxyResponse(id=message.id, transition=signal.transition)
         except BaseException as exc:  # noqa: BLE001 - host tool failures cross the wire
             response = ProxyResponse(
                 id=message.id,
@@ -274,6 +285,13 @@ class WorkerSession:
                     output=response.output,
                     status=ReplStatus.DONE,
                     answer=state.answer,
+                )
+            transition = response.transition or state.transition
+            if transition is not None:
+                return ReplRun(
+                    output=response.output,
+                    status=ReplStatus.TRANSITION,
+                    transition=transition,
                 )
             status = ReplStatus.ERROR if response.errored else ReplStatus.OK
             return ReplRun(output=response.output, status=status)

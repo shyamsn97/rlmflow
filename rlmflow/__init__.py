@@ -25,6 +25,13 @@ from rlmflow.engine.steps import (
     StepFunction,
     append_run_result,
 )
+from rlmflow.engine.transitions import (
+    InvalidTransitionError,
+    MissingTransitionError,
+    TransitionPolicyError,
+    TransitionProtocolError,
+    Transitions,
+)
 from rlmflow.graph import persistence
 from rlmflow.graph.nodes import (
     DEFAULT_MAX_QUERY_CHARS,
@@ -38,12 +45,14 @@ from rlmflow.graph.nodes import (
     ExecAction,
     ExecOutput,
     FinalQuery,
+    InspectQuery,
     LLMOutput,
     Node,
     PlanQuery,
     ReplDead,
     RunStats,
     TruncationSummary,
+    TurnMode,
     UserQuery,
     start,
 )
@@ -187,6 +196,7 @@ __all__ = [
     "LocalRuntime",
     "MessageBuilder",
     "MissingReplError",
+    "MissingTransitionError",
     "ModalRuntime",
     "Node",
     "OpenAIClient",
@@ -216,8 +226,14 @@ __all__ = [
     "TinkerClient",
     "ToolMetadata",
     "Transition",
+    "TransitionPolicyError",
+    "TransitionProtocolError",
+    "Transitions",
+    "InvalidTransitionError",
+    "InspectQuery",
     "LLMRequestStep",
     "TruncationSummary",
+    "TurnMode",
     "WorkerRepl",
     "WorkerSession",
     "UserQuery",

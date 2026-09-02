@@ -184,13 +184,52 @@ def test_openai_stream_yields_deltas_and_trailing_usage():
     )
     client = _openai(fake)
 
-    text, usage = asyncio.run(
-        join_chunks(client.stream([{"role": "user", "content": "hi"}]))
-    )
+    text, usage = asyncio.run(join_chunks(client.stream([{"role": "user", "content": "hi"}])))
     assert text == "hello"
     assert usage == LLMUsage(4, 2)
     assert fake.calls[0]["stream"] is True
     assert fake.calls[0]["stream_options"] == {"include_usage": True}
+
+
+def test_openai_reports_reasoning_tokens_without_double_counting_them():
+    fake = _FakeCompletions()
+    fake.script.append(
+        _AsyncEvents(
+            [
+                _delta("hi"),
+                _delta(
+                    usage=SimpleNamespace(
+                        prompt_tokens=4,
+                        completion_tokens=100,
+                        completion_tokens_details=SimpleNamespace(reasoning_tokens=90),
+                    )
+                ),
+            ]
+        )
+    )
+
+    _text, usage = asyncio.run(
+        join_chunks(_openai(fake).stream([{"role": "user", "content": "hi"}]))
+    )
+    assert usage == LLMUsage(4, 100, 90)
+    # The provider already counted the 90 inside completion_tokens, so the budget
+    # `total` feeds must not grow.
+    assert usage.total == 104
+    assert (usage + usage).reasoning_tokens == 180
+
+
+def test_openai_usage_without_reasoning_details_reports_zero():
+    fake = _FakeCompletions()
+    fake.script.append(
+        _AsyncEvents(
+            [_delta("hi"), _delta(usage=SimpleNamespace(prompt_tokens=1, completion_tokens=2))]
+        )
+    )
+
+    _text, usage = asyncio.run(
+        join_chunks(_openai(fake).stream([{"role": "user", "content": "hi"}]))
+    )
+    assert usage.reasoning_tokens == 0
 
 
 def test_openai_stream_forwards_sampling_kwargs():
@@ -227,9 +266,7 @@ def test_openai_retries_before_first_content_token():
         ]
     )
     client = _openai(fake)
-    text, usage = asyncio.run(
-        join_chunks(client.stream([{"role": "user", "content": "hi"}]))
-    )
+    text, usage = asyncio.run(join_chunks(client.stream([{"role": "user", "content": "hi"}])))
     assert text == "ok"
     assert usage == LLMUsage(1, 1)
     assert len(fake.calls) == 2
@@ -293,9 +330,7 @@ def test_anthropic_stream_yields_text_then_usage():
         _AnthropicStream(["a", "b"], SimpleNamespace(input_tokens=3, output_tokens=5))
     )
     client = _anthropic(fake)
-    text, got = asyncio.run(
-        join_chunks(client.stream([{"role": "user", "content": "hi"}]))
-    )
+    text, got = asyncio.run(join_chunks(client.stream([{"role": "user", "content": "hi"}])))
     assert text == "ab"
     assert got == LLMUsage(3, 5)
     assert fake.calls[0]["max_tokens"] == 8192
@@ -303,9 +338,7 @@ def test_anthropic_stream_yields_text_then_usage():
 
 def test_anthropic_stream_forwards_sampling_kwargs():
     fake = _FakeMessages()
-    fake.script.append(
-        _AnthropicStream(["ok"], SimpleNamespace(input_tokens=1, output_tokens=1))
-    )
+    fake.script.append(_AnthropicStream(["ok"], SimpleNamespace(input_tokens=1, output_tokens=1)))
     client = _anthropic(fake)
     asyncio.run(
         join_chunks(

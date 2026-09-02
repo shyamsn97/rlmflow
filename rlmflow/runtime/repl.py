@@ -25,6 +25,14 @@ class DoneSignal(BaseException):
         self.answer = answer
 
 
+class TransitionSignal(BaseException):
+    """Internal control flow raised by the host transition tool."""
+
+    def __init__(self, transition: str) -> None:
+        super().__init__(transition)
+        self.transition = transition
+
+
 class MissingReplError(ValueError):
     """Agent response did not contain executable REPL code."""
 
@@ -39,6 +47,7 @@ class ReplStatus(StrEnum):
     OK = "ok"
     ERROR = "error"
     DONE = "done"
+    TRANSITION = "transition"
     DEAD = "dead"
 
 
@@ -49,6 +58,7 @@ class ReplRun:
     output: str = ""
     status: ReplStatus = ReplStatus.OK
     answer: Any = None
+    transition: str | None = None
     error: BaseException | None = None
 
 
@@ -268,6 +278,12 @@ class LocalRepl:
                 status=ReplStatus.DONE,
                 answer=signal.answer,
             )
+        except TransitionSignal as signal:
+            return ReplRun(
+                output=buffer.getvalue().strip(),
+                status=ReplStatus.TRANSITION,
+                transition=signal.transition,
+            )
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise
         except BaseException as exc:  # noqa: BLE001 - agent exceptions are results
@@ -296,6 +312,7 @@ __all__ = [
     "CurrentObject",
     "MISSING_REPL_NOTE",
     "DoneSignal",
+    "TransitionSignal",
     "LocalRepl",
     "MissingReplError",
     "Repl",

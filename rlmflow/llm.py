@@ -65,6 +65,10 @@ class LLMUsage:
 
     input_tokens: int = 0
     output_tokens: int = 0
+    #: Reasoning tokens, reported for attribution only. Providers already count
+    #: these inside ``output_tokens``, so ``total`` must not add them again — the
+    #: token budget in ``budget_nearly_spent`` reads ``total``.
+    reasoning_tokens: int = 0
 
     @property
     def total(self) -> int:
@@ -72,8 +76,9 @@ class LLMUsage:
 
     def __add__(self, other: LLMUsage) -> LLMUsage:
         return LLMUsage(
-            self.input_tokens + other.input_tokens,
-            self.output_tokens + other.output_tokens,
+            input_tokens=self.input_tokens + other.input_tokens,
+            output_tokens=self.output_tokens + other.output_tokens,
+            reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
         )
 
 
@@ -103,6 +108,7 @@ def _usage_from_client(client: Any) -> LLMUsage:
     return LLMUsage(
         input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
         output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+        reasoning_tokens=int(getattr(usage, "reasoning_tokens", 0) or 0),
     )
 
 
@@ -393,9 +399,11 @@ class OpenAIClient(LLMClient):
             usage = None
             raw = getattr(event, "usage", None)
             if raw is not None:
+                details = getattr(raw, "completion_tokens_details", None)
                 usage = LLMUsage(
                     input_tokens=getattr(raw, "prompt_tokens", 0) or 0,
                     output_tokens=getattr(raw, "completion_tokens", 0) or 0,
+                    reasoning_tokens=getattr(details, "reasoning_tokens", 0) or 0,
                 )
                 self.last_usage = usage
             if text or usage is not None:

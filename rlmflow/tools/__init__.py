@@ -40,6 +40,7 @@ from rlmflow.tools.tools import (
 RESERVED_TOOLS = frozenset(
     {
         "finish",
+        "transition",
         "launch_subagent",
         "asyncio",
         "INPUTS",

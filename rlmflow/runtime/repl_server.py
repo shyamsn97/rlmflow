@@ -35,6 +35,7 @@ from rlmflow.runtime.repl import (
     DoneSignal,
     LocalRepl,
     ReplStatus,
+    TransitionSignal,
     base_namespace,
     current_binding,
 )
@@ -125,6 +126,8 @@ class ReplServer:
                     self._pending.pop(request_id, None)
             if response.done:
                 raise DoneSignal()
+            if response.transition is not None:
+                raise TransitionSignal(response.transition)
             if not response.ok or response.error is not None:
                 raise RuntimeError(response.error or f"{name} failed")
             return decode_host_value(response.value) if response.value is not None else None
@@ -140,6 +143,8 @@ class ReplServer:
                         self._pending.pop(request_id, None)
                 if response.done:
                     raise DoneSignal()
+                if response.transition is not None:
+                    raise TransitionSignal(response.transition)
                 if not response.ok or response.error is not None:
                     raise RuntimeError(response.error or f"{name} failed")
                 return decode_host_value(response.value) if response.value is not None else None
@@ -219,6 +224,7 @@ class ReplServer:
                     output=run.output,
                     errored=run.status is ReplStatus.ERROR,
                     env=binding["env"],
+                    transition=run.transition,
                 )
             )
         except BaseException as exc:  # noqa: BLE001 - keep the worker dispatcher alive

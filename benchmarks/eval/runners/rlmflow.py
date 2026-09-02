@@ -127,6 +127,7 @@ class RLMFlowLocalRunner(Runner):
             usage={
                 "input_tokens": spent.input_tokens,
                 "output_tokens": spent.output_tokens,
+                "reasoning_tokens": spent.reasoning_tokens,
             },
             metrics={
                 "time_seconds": time.perf_counter() - started_at,
@@ -159,6 +160,7 @@ class _ModelClient(LLMClient):
         self.last_usage = LLMUsage(
             input_tokens=usage.get("input_tokens", 0),
             output_tokens=usage.get("output_tokens", 0),
+            reasoning_tokens=usage.get("reasoning_tokens", 0),
         )
         return text
 

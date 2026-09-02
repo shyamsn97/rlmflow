@@ -36,6 +36,17 @@ examples_dir = next(path for path in Path(__file__).resolve().parents if path.na
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
+NEEDLE_FILE_TOOLS = [
+    FILE_TOOLS.read_file,
+    FILE_TOOLS.write_file,
+    FILE_TOOLS.append_file,
+    FILE_TOOLS.edit_file,
+    FILE_TOOLS.ls,
+    FILE_TOOLS.read_lines,
+    FILE_TOOLS.line_count,
+]
+
+
 def generate_haystack(directory: Path, num_files: int = 500, lines_per_file: int = 200) -> str:
     words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"]
     answer = "".join(random.choices(string.digits, k=7))
@@ -128,7 +139,7 @@ def main():
             client_for(args.model),
             llm_clients=llm_clients,
             runtime=runtime,
-            tools=[FILE_TOOLS],
+            tools=NEEDLE_FILE_TOOLS,
             root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
         )
 

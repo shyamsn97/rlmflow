@@ -25,7 +25,7 @@ from rlmflow import (
     persistence,
     start,
 )
-from rlmflow.graph.nodes import CONTINUE_NUDGE, PLANNING_ACTION
+from rlmflow.graph.nodes import CONTINUE_NUDGE, ORCHESTRATOR_ADDENDUM, WORKING_ACTION
 from rlmflow.prompts import PromptProfile, default_render
 from rlmflow.runtime import LocalRuntime, Runtime
 from rlmflow.tools import tool
@@ -51,7 +51,11 @@ class ScriptedLLM:
         # makes a needle fire for the wrong one: once the planning turn mentioned
         # delegation, a child answering "boom" matched its parent's "delegate" entry
         # and tried to launch past max_depth. Script against task content only.
-        last = last.replace(PLANNING_ACTION, "").replace(CONTINUE_NUDGE, "")
+        last = (
+            last.replace(WORKING_ACTION, "")
+            .replace(ORCHESTRATOR_ADDENDUM, "")
+            .replace(CONTINUE_NUDGE, "")
+        )
         for needle, reply in self.script:
             if needle in last:
                 if isinstance(reply, Exception):
@@ -60,7 +64,9 @@ class ScriptedLLM:
         raise AssertionError(f"no scripted reply for {last!r}")
 
 
-def block(code):
+def block(code, *, transition="act"):
+    if transition and "finish(" not in code and "transition(" not in code:
+        code = f"{code}\ntransition({transition!r})"
     return f"thinking\n```python\n{code}\n```"
 
 
@@ -117,7 +123,7 @@ def test_execution_guard_rejects_code_before_it_reaches_the_runtime():
     root = start("start")
 
     assert Flow(llm, execution_guard=guard).run(root) == "safe"
-    assert seen == ["forbidden()", "finish('safe')"]
+    assert seen == ["forbidden()\ntransition('act')", "finish('safe')"]
     assert any(
         isinstance(node, ErrorOutput) and node.content == "rejected by execution guard"
         for node in root.walk()
@@ -125,9 +131,14 @@ def test_execution_guard_rejects_code_before_it_reaches_the_runtime():
 
 
 def test_max_iters():
-    llm = ScriptedLLM([("", block("print('again')"))])
+    llm = ScriptedLLM(
+        [
+            ("last turn", block("finish('best effort')")),
+            ("", block("print('again')")),
+        ]
+    )
     root = start("loop", max_iters=3)
-    assert Flow(llm).run(root) == "[max_iters exceeded]"
+    assert Flow(llm).run(root) == "best effort"
     assert sum(isinstance(n, LLMOutput) for n in root.walk()) == 3
 
 
@@ -176,9 +187,14 @@ def test_flow_start_copies_the_defaults_it_hands_out():
 
 
 def test_a_string_root_inherits_the_flow_defaults():
-    llm = ScriptedLLM([("", block("print('again')"))])
+    llm = ScriptedLLM(
+        [
+            ("last turn", block("finish('best effort')")),
+            ("", block("print('again')")),
+        ]
+    )
 
-    assert Flow(llm, root_config=AgentConfig(max_iters=2)).run("loop") == "[max_iters exceeded]"
+    assert Flow(llm, root_config=AgentConfig(max_iters=2)).run("loop") == "best effort"
     assert len(llm.calls) == 2
 
 
@@ -201,17 +217,22 @@ def test_keep_n_messages_keeps_the_tail_without_rendering_the_history():
 
     from rlmflow import TruncationSummary
 
-    llm = ScriptedLLM([("", block("print('again')"))])
+    llm = ScriptedLLM(
+        [
+            ("last turn", block("finish('best effort')")),
+            ("", block("print('again')")),
+        ]
+    )
     root = start("loop", max_iters=6, keep_n_messages=3)
     flow = Flow(llm, render_fn=counting_render)
-    assert flow.run(root) == "[max_iters exceeded]"
+    assert flow.run(root) == "best effort"
     assert any(isinstance(node, TruncationSummary) for node in root.transcript())
 
     renders = 0
     messages = flow.build_messages(root.frontier)
     assert messages[0]["role"] == "system"
     assert any("again" in message["content"] for message in messages)
-    assert TruncationSummary().content in messages[-1]["content"]
+    assert any(TruncationSummary().content in message["content"] for message in messages)
     assert renders == 1
 
 
@@ -278,7 +299,8 @@ def test_plan_query_allows_iterative_investigation_before_delegation():
         "handles = await asyncio.gather("
         "launch_subagent('alpha-workstream', model='default', name='a'), "
         "launch_subagent('beta-workstream', model='default', name='b'))\n"
-        "print([await h.wait_for_result() for h in handles])"
+        "print([await h.wait_for_result() for h in handles])",
+        transition="act",
     )
     llm = ScriptedLLM(
         [
@@ -288,7 +310,10 @@ def test_plan_query_allows_iterative_investigation_before_delegation():
             ),
             (
                 "preview",
-                block("requirements = INPUTS['task'].splitlines()[1:]\nprint(requirements)"),
+                block(
+                    "requirements = INPUTS['task'].splitlines()[1:]\nprint(requirements)",
+                    transition="act",
+                ),
             ),
             ("requirement A", launch),
             ("alpha-workstream", block("finish('A')")),

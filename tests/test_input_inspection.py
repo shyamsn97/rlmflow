@@ -5,7 +5,7 @@ from __future__ import annotations
 from helpers import StubLLM
 
 from rlmflow import Flow, LLMOutput, PlanQuery
-from rlmflow.graph.nodes import PLANNING_ACTION
+from rlmflow.graph.nodes import ORCHESTRATOR_ADDENDUM, WORKING_ACTION
 
 
 def repl(code: str) -> str:
@@ -22,7 +22,9 @@ def test_input_backed_tasks_remain_free_form():
         assert "Inspection turn only" not in system
         assert "Post-inspection orchestration turn" not in system
         assert "## REPL and Delegation" in system
-        assert messages[-1]["content"] == PLANNING_ACTION
+        assert messages[-1]["content"].startswith(WORKING_ACTION)
+        assert "Structural INPUTS profile:" in messages[-1]["content"]
+        assert ORCHESTRATOR_ADDENDUM in messages[-1]["content"]
         return repl("""
 text = INPUTS["context"]
 answer = {"characters": len(text), "contains_requirement": "required" in text}

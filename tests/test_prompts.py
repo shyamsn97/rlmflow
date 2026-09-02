@@ -24,7 +24,7 @@ from rlmflow import (
     UserQuery,
     start,
 )
-from rlmflow.graph.nodes import LOCAL_PLANNING_ACTION, PLANNING_ACTION
+from rlmflow.graph.nodes import ORCHESTRATOR_ADDENDUM, WORKING_ACTION
 from rlmflow.prompts.prompts import MAX_STATIC_PROMPT_CHARS
 
 
@@ -55,7 +55,12 @@ def test_messages_are_a_pure_projection_of_the_transcript():
         "assistant",
         "user",
     ]
-    assert messages[-1]["content"] == "observation"
+    assert messages[-1]["content"].startswith(
+        "observation\n\nEnd the REPL block with one:"
+    )
+    assert messages[-1]["content"].endswith(
+        "- finish(answer) — Submit your final answer."
+    )
 
 
 def test_a_user_query_subclass_projects_without_a_builder_edit():
@@ -108,11 +113,13 @@ def test_custom_renderer_applies_only_to_the_current_frontier():
         render_fn=render_current,
     ).build_messages(frontier)
 
-    assert [message["content"] for message in messages[1:]] == [
+    assert [message["content"] for message in messages[1:3]] == [
         "original",
         "canonical assistant",
-        "custom frontier",
     ]
+    assert messages[-1]["content"].startswith(
+        "custom frontier\n\nEnd the REPL block with one:"
+    )
 
 
 def test_default_renderer_keeps_current_output_with_background_status():
@@ -130,7 +137,9 @@ def test_default_renderer_keeps_current_output_with_background_status():
 
     assert [message["role"] for message in messages[-2:]] == ["user", "user"]
     assert "Background subagents:" in messages[-2]["content"]
-    assert messages[-1]["content"] == "observation"
+    assert messages[-1]["content"].startswith(
+        "observation\n\nEnd the REPL block with one:"
+    )
 
 
 def test_errors_are_projected_as_user_observations():
@@ -139,7 +148,9 @@ def test_errors_are_projected_as_user_observations():
     root.append(ErrorOutput(content="NameError: missing"))
 
     assert flow.build_messages(root.frontier)[-1]["role"] == "user"
-    assert flow.build_messages(root.frontier)[-1]["content"].endswith("NameError: missing")
+    assert flow.build_messages(root.frontier)[-1]["content"].startswith(
+        "NameError: missing\n\nEnd the REPL block with one:"
+    )
 
 
 def test_explicit_output_schema_is_in_system_prompt():
@@ -189,17 +200,21 @@ def test_prompt_documents_the_complete_builtin_repl_api():
     assert "await llm_query_batched(prompts: list[str]" in prompt
     assert "Registered models (`model=` is required)" in prompt
     assert "- `default` — current model" in prompt
-    assert 'inputs={"path": INPUTS["transactions_path"]}' in prompt
+    assert 'inputs={"paths": "\\n".join(batch)}' in prompt
     assert 'assert records and all("value" in record for record in records)' in prompt
     assert "assert reports and all(report.strip() for report in reports)" in prompt
     assert "candidate = \"\\n\".join(reports)" in prompt
     assert "finish(candidate)" in prompt
     assert "output_schema=" not in prompt
     assert "`finish(value: object) -> None`" in compact
-    assert "first compute and bind the candidate without calling `finish(...)`" in compact
-    assert "Print the candidate and its checks" in compact
-    assert "block whose only statement is `finish(candidate)`" in compact
-    assert "terminates immediately when `finish(...)` executes" in compact
+    assert "first compute and bind the candidate" in compact
+    assert "Never submit a value you have not inspected" in compact
+    assert "print it with its checks" in compact
+    assert "After reading that output on the next turn, call `finish(candidate)`" in compact
+    assert (
+        "Both `transition(...)` and `finish(...)` terminate the block immediately"
+        in compact
+    )
     assert "Verification must test the candidate against the original source" in compact
     assert "`INPUTS: dict[str, str]`" in prompt
 
@@ -215,10 +230,9 @@ def test_prompt_documents_the_complete_builtin_repl_api():
     # long-context tasks regressed. State that output truncates, not the number.
     assert "4,000 characters" not in compact
     assert "REPL outputs over ~20K characters are truncated" in compact
-    assert "start by probing `INPUTS`" in compact
-
-    planning = " ".join(PLANNING_ACTION.split())
-    assert "print a small sample of its result" in planning
+    working = " ".join(WORKING_ACTION.split())
+    assert "start by probing the available context" in working
+    assert "plan briefly in prose and execute one ```repl``` block" in working
 
     assert "wait: bool" not in prompt
     assert "done(" not in prompt
@@ -244,14 +258,12 @@ def test_default_prompt_guides_iterative_investigation_and_grounded_delegation()
 
     prompt = flow.build_messages(root.frontier)[0]["content"]
     compact = " ".join(prompt.split())
-    planning = " ".join(PLANNING_ACTION.split())
+    working = " ".join(WORKING_ACTION.split())
 
     assert "Python REPL" in compact
     assert "must launch" not in compact
     assert "Act as an orchestrator" not in compact
-    assert "Act as an orchestrator" in planning
-    assert "Delegate long-context or independent work" in planning
-    assert "recursive agent" in planning
+    assert "Use its output as feedback" in working
     assert "independence and parallelism are not reasons" not in compact
     assert "Read anything smaller yourself" not in compact
     assert "you cannot see a child's reasoning" not in compact
@@ -262,7 +274,7 @@ def test_default_prompt_guides_iterative_investigation_and_grounded_delegation()
     assert "await handle.wait_for_result()" in prompt
 
 
-def test_agent_start_selects_planning_query_by_delegation_depth():
+def test_agent_start_selects_one_depth_aware_working_query():
     flow = Flow(
         StubLLM(lambda _messages: "unused"),
         root_config=AgentConfig(max_depth=1),
@@ -276,53 +288,48 @@ def test_agent_start_selects_planning_query_by_delegation_depth():
     )
     leaf_system = flow.build_messages(leaf.frontier)[0]["content"]
 
-    eligible_turn = take(flow, eligible.frontier)
-    without_inputs_turn = take(flow, without_inputs.frontier)
-    leaf_turn = take(flow, leaf.frontier)
+    eligible_plan = take(flow, eligible.frontier)
+    without_inputs_plan = take(flow, without_inputs.frontier)
+    leaf_plan = take(flow, leaf.frontier)
 
-    assert isinstance(eligible_turn, PlanQuery)
-    eligible_content = flow.build_messages(eligible_turn)[-1]["content"]
-    assert eligible_content == PLANNING_ACTION
-    assert isinstance(without_inputs_turn, PlanQuery)
-    assert without_inputs_turn.content == PLANNING_ACTION
-    assert isinstance(leaf_turn, PlanQuery)
-    assert leaf_turn.content == LOCAL_PLANNING_ACTION
-    assert "Delegation:" not in leaf_turn.content
-    assert "recursive agent" not in leaf_turn.content.casefold()
+    assert isinstance(eligible_plan, PlanQuery)
+    assert "Structural INPUTS profile:" in eligible_plan.instruction()
+    assert ORCHESTRATOR_ADDENDUM in eligible_plan.instruction()
+    assert isinstance(without_inputs_plan, PlanQuery)
+    assert "Structural INPUTS profile:" not in without_inputs_plan.instruction()
+    assert isinstance(leaf_plan, PlanQuery)
+    assert leaf_plan.instruction().startswith(WORKING_ACTION)
+    assert ORCHESTRATOR_ADDENDUM not in leaf_plan.instruction()
+    assert "Delegation:" not in leaf_plan.instruction()
+    assert "recursive agent" not in leaf_plan.instruction().casefold()
     assert "You are a Recursive Language Model" in leaf_system
     assert "This task was assigned by a parent agent" in leaf_system
     assert "launch_subagent" not in leaf_system
 
 
-def test_plan_query_requires_a_grounded_probe():
-    compact = " ".join(PLANNING_ACTION.split())
-    assert "probes the evidence needed by the task" in compact
-    assert "Inspect the available task tools" in compact
-    assert "call that tool now" in compact
-    assert "never substitute remembered or outside values" in compact
-    assert "Do not infer whole-data conclusions from an unjustified prefix" in compact
-    assert len(PLANNING_ACTION) < 2_500, f"planning turn regrew to {len(PLANNING_ACTION)} chars"
-    assert "exactly one ```repl``` block" in compact
+def test_working_query_combines_probe_plan_and_action_guidance():
+    compact = " ".join(WORKING_ACTION.split())
+    assert "start by probing the available context" in compact
+    assert "print a few lines, count them" in compact
+    assert "plan briefly in prose" in compact
+    assert "execute one ```repl``` block" in compact
+    assert "Use its output as feedback" in compact
+    assert len(WORKING_ACTION) < 1_000
+
+    orchestrator = " ".join(ORCHESTRATOR_ADDENDUM.split())
+    assert "act as an orchestrator" in orchestrator
+    assert "Launch independent subagents together" in orchestrator
+    assert "do not spend one model turn per item or batch" in orchestrator
 
 
-def test_plan_query_plans_without_solving_or_finishing():
-    compact = " ".join(PLANNING_ACTION.split())
-    assert "**Deliverable:** what the final answer must contain" in compact
-    assert "**Steps:** the concrete sequence of later REPL and delegated operations" in compact
-    assert "**Verification:** a check that can fail" in compact
-    assert "**Delegation:** what you will delegate" in compact
-    assert "Keep the plan in prose" in compact
-    assert "Do not solve the task or call `finish(...)` yet" in compact
-
-
-def test_agent_start_planning_precedes_the_final_budget_guard():
+def test_final_budget_guard_precedes_agent_start_working_query():
     flow = Flow(StubLLM(lambda _messages: "unused"))
     root = flow.start("query", max_iters=1)
 
-    assert isinstance(take(flow, root), PlanQuery)
+    assert isinstance(take(flow, root), FinalQuery)
 
 
-def test_child_plan_query_is_execution_biased():
+def test_child_planning_query_is_depth_aware():
     flow = Flow(
         StubLLM(lambda _messages: "unused"),
         root_config=AgentConfig(max_depth=2),
@@ -334,11 +341,12 @@ def test_child_plan_query_is_execution_biased():
         inputs={"scope": "focused material"},
     )
 
-    child_turn = take(flow, child.frontier)
-    child_system = flow.build_messages(child_turn)[0]["content"]
+    child_plan = take(flow, child.frontier)
+    child_system = flow.build_messages(child_plan)[0]["content"]
 
-    assert isinstance(child_turn, PlanQuery)
-    assert child_turn.content == PLANNING_ACTION
+    assert isinstance(child_plan, PlanQuery)
+    assert child_plan.instruction().startswith(WORKING_ACTION)
+    assert ORCHESTRATOR_ADDENDUM in child_plan.instruction()
     assert "You are a Recursive Language Model" in child_system
     assert "This task was assigned by a parent agent" in child_system
     assert "**Optional delegation" not in child_system
@@ -354,11 +362,12 @@ def test_plan_query_enters_the_ordinary_repl_loop():
 
     assert isinstance(plan, PlanQuery)
     assert messages[0]["content"] == initial_system
-    assert messages[-1]["content"] == PLANNING_ACTION
+    assert messages[-1]["content"].startswith(WORKING_ACTION)
 
-    observation = plan.append(LLMOutput(content="inspect", code="print('observed')")).append(
-        ExecOutput(content="observed")
-    )
+    output = plan.append(LLMOutput(content="inspect", code="print('observed')"))
+    action = output.append(ExecAction(code="print('observed')"))
+    action.requested_transition = "act"
+    observation = action.append(ExecOutput(content="observed"))
     next_turn = take(flow, observation)
 
     assert isinstance(next_turn, LLMOutput)
@@ -369,9 +378,10 @@ def test_local_path_does_not_repeat_plan_query():
     flow = Flow(StubLLM(lambda _messages: "unused"))
     root = flow.start("query", inputs={"context": "material"}, max_depth=1)
     plan = take(flow, root.frontier)
-    local_observation = plan.append(
-        LLMOutput(content="choose local", code="print('working locally')")
-    ).append(ExecOutput(content="working locally"))
+    output = plan.append(LLMOutput(content="choose local", code="print('working locally')"))
+    action = output.append(ExecAction(code="print('working locally')"))
+    action.requested_transition = "act"
+    local_observation = action.append(ExecOutput(content="working locally"))
     before_plans = [node.id for node in root.transcript() if isinstance(node, PlanQuery)]
 
     turn = take(flow, local_observation)
@@ -502,7 +512,7 @@ def test_root_routes_while_children_execute_until_max_depth():
 
     root_prompt = flow.build_messages(root.frontier)[0]["content"]
     assert "Act as an orchestrator" not in root_prompt
-    assert "Act as an orchestrator" in " ".join(PLANNING_ACTION.split())
+    assert "plan briefly in prose" in " ".join(WORKING_ACTION.lower().split())
     assert "**Local work — probe, print the candidate, then submit it.**" in root_prompt
     assert "**Delegation — a source too large to read here.**" in root_prompt
 

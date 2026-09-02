@@ -4,6 +4,7 @@ from rlmflow.prompts.messages import (
     PromptBuilder,
     RenderFn,
     default_render,
+    format_transition_footer,
 )
 from rlmflow.prompts.prompts import (
     DEFAULT_BUILDER,
@@ -36,6 +37,7 @@ __all__ = [
     "SystemPromptSource",
     "as_system_prompt_fn",
     "default_render",
+    "format_transition_footer",
     "status_section",
     "tools_section",
 ]

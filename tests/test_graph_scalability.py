@@ -131,8 +131,8 @@ def test_v3_is_flat_strict_and_rejects_v2():
         persistence.from_document(broken)
 
     unknown = {**document, "nodes": [dict(record) for record in document["nodes"]]}
-    unknown["nodes"][1]["type"] = "inspect_query"
-    with pytest.raises(ValueError, match="unknown node type 'inspect_query'"):
+    unknown["nodes"][1]["type"] = "unknown_query"
+    with pytest.raises(ValueError, match="unknown node type 'unknown_query'"):
         persistence.from_document(unknown)
 
 

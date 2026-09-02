@@ -270,23 +270,18 @@ The REPL is NOT a Jupyter cell — only `print(...)` output (stdout) is shown ba
 to you between turns; a bare expression on the last line is silently discarded.
 Always wrap inspections in `print(...)`.
 
-As a general strategy, start by probing `INPUTS` to understand it better (e.g.
-print a few keys or lines, count records, etc.). Then use the REPL to build up an
-answer to the query.
-
-Plan in prose, then execute one ```repl``` block every turn, get feedback from the
-output, then continue on the next turn. Do not call `finish(...)` on turn 1 without
-first inspecting `INPUTS` or calling a relevant task tool.
-
 When the prompt depends on data exposed by a custom tool, call that tool for the
 required data; never substitute remembered or outside values. Verification must
 test the candidate against the original source, examples, or constraints rather
 than merely rechecking assumptions produced by the same code.
 
-To submit, first compute and bind the candidate without calling `finish(...)`.
-Print the candidate and its checks, then end the block. After reading that output
-on the next turn, send a new ```repl``` block whose only statement is
-`finish(candidate)`. The run terminates immediately when `finish(...)` executes.
+Follow the current user instruction, then end every successful ```repl``` block
+with exactly one of the exits displayed beneath it. Both `transition(...)` and
+`finish(...)` terminate the block immediately.
+
+To submit, first compute and bind the candidate, print it with its checks, and use
+a displayed transition. After reading that output on the next turn, call
+`finish(candidate)`. Never submit a value you have not inspected.
 """
 
 LOCAL_EXAMPLE_TEXT = """
@@ -300,6 +295,7 @@ print({
     "records": len(records),
     "fields": sorted(set().union(*(r.keys() for r in records))),
 })
+transition("act")
 ```
 
 State persists, so the next turn computes over every record, checks the result,
@@ -311,11 +307,10 @@ values = [float(record["value"]) for record in records]
 assert len(values) == len(records)
 mean = sum(values) / len(values)
 print({"records": len(values), "mean": mean})
+transition("act")
 ```
 
-The mean is on screen now, so the next turn submits a value already read.
-`finish(mean)` is the whole block: appending it to the block above would have
-submitted a number never seen.
+The mean is on screen now, so the next turn submits a value already read:
 
 ```repl
 finish(mean)
@@ -323,19 +318,26 @@ finish(mean)
 """
 
 DELEGATION_EXAMPLE_TEXT = """
-Launch children together, pass paths rather than contents, and keep working
-while they run:
+Split independent work into batches, launch all children before waiting, and pass
+references or paths rather than source contents:
 
 ```repl
+paths = INPUTS["paths"].splitlines()
+batches = [paths[start:start + 50] for start in range(0, len(paths), 50)]
 handles = [
     await launch_subagent(
-        name="totals",
+        name=f"batch-{index}",
         model="{current_model}",
-        goal="Read the CSV at INPUTS['path'] in full. Return one line per category as `category: total`.",
-        inputs={"path": INPUTS["transactions_path"]},
-    ),
+        goal=(
+            "Search every file listed in INPUTS['paths']. "
+            "Return matching paths and lines only."
+        ),
+        inputs={"paths": "\\n".join(batch)},
+    )
+    for index, batch in enumerate(batches)
 ]
 print({"launched": [handle.name for handle in handles]})
+transition("act")
 ```
 
 Collect the reports when integration needs them, build the candidate, and print
@@ -346,6 +348,7 @@ reports = [await handle.wait_for_result() for handle in handles]
 assert reports and all(report.strip() for report in reports)
 candidate = "\\n".join(reports)
 print({"reports": len(reports), "candidate": candidate})
+transition("act")
 ```
 
 Read that output. If it is correct, submit on the next turn with `finish(...)`

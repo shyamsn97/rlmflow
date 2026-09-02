@@ -139,7 +139,11 @@ def test_openai_benchmark_model_uses_one_sync_client(monkeypatch):
             requests.append(kwargs)
             return SimpleNamespace(
                 choices=[SimpleNamespace(message=SimpleNamespace(content="answer"))],
-                usage=SimpleNamespace(prompt_tokens=11, completion_tokens=7),
+                usage=SimpleNamespace(
+                    prompt_tokens=11,
+                    completion_tokens=7,
+                    completion_tokens_details=SimpleNamespace(reasoning_tokens=5),
+                ),
             )
 
         def close(self):
@@ -154,7 +158,7 @@ def test_openai_benchmark_model_uses_one_sync_client(monkeypatch):
 
     assert model.complete([{"role": "user", "content": "first"}]) == "answer"
     assert model.complete([{"role": "user", "content": "second"}]) == "answer"
-    assert model.usage() == {"input_tokens": 11, "output_tokens": 7}
+    assert model.usage() == {"input_tokens": 11, "output_tokens": 7, "reasoning_tokens": 5}
     assert len(requests) == 2
     assert all(request["stream"] is False for request in requests)
     assert all(request["reasoning_effort"] == "medium" for request in requests)

@@ -63,6 +63,7 @@ class ReplResponse(WireModel):
     error: str | None = None
     value: JsonValue = None
     env: dict[str, JsonValue] | None = None
+    transition: str | None = None
 
 
 class ProxyCall(WireModel):
@@ -80,6 +81,7 @@ class ProxyResponse(WireModel):
     ok: bool = True
     value: str | None = None
     done: bool = False
+    transition: str | None = None
     error: str | None = None
 
 

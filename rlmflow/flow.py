@@ -6,12 +6,16 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from contextlib import contextmanager
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from rlmflow import boundaries
 from rlmflow.engine.boundaries import StepUntil
 from rlmflow.engine.execution import Pool, TaskQueue, ThreadPool, Transition
 from rlmflow.engine.steps import DEFAULT_STEPS, MessageBuilder, StepFunction
+from rlmflow.engine.transitions import (
+    DEFAULT_TRANSITIONS,
+    Transitions,
+)
 from rlmflow.graph.nodes import (
     DEFAULT_QUERY,
     AgentConfig,
@@ -21,6 +25,9 @@ from rlmflow.graph.nodes import (
     LLMOutput,
     LLMUsage,
     Node,
+    TruncationSummary,
+    TurnMode,
+    UserQuery,
     start,
     validate_agent_name,
 )
@@ -32,10 +39,11 @@ from rlmflow.prompts import (
     SystemPromptSource,
     as_system_prompt_fn,
     default_render,
+    format_transition_footer,
 )
 from rlmflow.runtime import ExecutionGuard, LocalRuntime, Runtime, WrappedRuntime
 from rlmflow.runtime.env import RLMFLOW_REPLAY
-from rlmflow.runtime.repl import DoneSignal, Repl, ReplRun
+from rlmflow.runtime.repl import DoneSignal, Repl, ReplRun, TransitionSignal
 from rlmflow.runtime.repl_client import current_rpc_call_id
 from rlmflow.structured import json_schema_for, parse_structured_answer
 from rlmflow.tools import RESERVED_TOOLS, tool
@@ -82,6 +90,42 @@ class FlowMessages(MessageBuilder):
         return self.flow.build_messages(node)
 
 
+class _TransitionMethod:
+    """Bind one immutable policy update to a Flow class or instance."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __get__(self, instance: Flow | None, owner: type[Flow]):
+        target = owner if instance is None else instance
+
+        def configure(*args: Any, **kwargs: Any):
+            target.transitions = getattr(target.transitions, self.name)(*args, **kwargs)
+            return target
+
+        return configure
+
+
+class _TransitionGuardMethod:
+    """Register a guarded selectable edge as a decorator."""
+
+    def __get__(self, instance: Flow | None, owner: type[Flow]):
+        target = owner if instance is None else instance
+
+        def when(current: Any, destination: Any):
+            def register(guard: Callable[[Node], bool]):
+                target.transitions = target.transitions.on(
+                    current,
+                    [destination],
+                    when=guard,
+                )
+                return guard
+
+            return register
+
+        return when
+
+
 @contextmanager
 def timed(node: Node) -> Iterator[None]:
     """Stamp whatever a step lands after ``node`` with how long the step ran."""
@@ -96,6 +140,15 @@ def timed(node: Node) -> Iterator[None]:
 
 class Flow:
     """Own the model, tools, prompts, and REPLs. The queue owns running agents."""
+
+    transitions: ClassVar[Transitions] = DEFAULT_TRANSITIONS
+    always = _TransitionMethod("always")
+    on = _TransitionMethod("on")
+    when = _TransitionGuardMethod()
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        cls.transitions = cls.transitions.derive()
 
     def __init__(
         self,
@@ -117,6 +170,7 @@ class Flow:
         use_llm_query: bool = False,
         use_agent_tree: bool = False,
         enable_structured_output: bool = False,
+        transitions: Transitions | None = None,
     ) -> None:
         if restore not in ("replay", "lazy"):
             raise ValueError(f"restore must be 'replay' or 'lazy', not {restore!r}")
@@ -132,6 +186,7 @@ class Flow:
         self.use_agent_tree = use_agent_tree
         self.use_llm_query = use_llm_query
         self.enable_structured_output = enable_structured_output
+        self.transitions = (transitions or type(self).transitions).derive()
         self.runtime = runtime or LocalRuntime()
         self.execution_guard = execution_guard
         self.pool = pool or ThreadPool(workers)
@@ -185,14 +240,68 @@ class Flow:
         keep = agent.config.keep_n_messages
         if keep is not None:
             current_messages = current_messages[-keep:] if keep > 0 else []
+        footer = self.transition_footer(node)
+        if footer:
+            current_messages = list(current_messages)
+            user_index = next(
+                (
+                    index
+                    for index in range(len(current_messages) - 1, -1, -1)
+                    if current_messages[index]["role"] == "user"
+                ),
+                None,
+            )
+            if user_index is None:
+                current_messages.append({"role": "user", "content": footer})
+            else:
+                message = dict(current_messages[user_index])
+                content = message.get("content", "").rstrip()
+                message["content"] = f"{content}\n\n{footer}" if content else footer
+                current_messages[user_index] = message
         previous_keep = None if keep is None else max(keep - len(current_messages), 0)
         previous_messages = [] if node.prev is None else node.prev.project(keep=previous_keep)
+        if keep is not None:
+            summary = next(
+                (item for item in node.iter_backwards() if isinstance(item, TruncationSummary)),
+                None,
+            )
+            if summary is not None:
+                notice = summary.render()
+                visible = [*previous_messages, *current_messages]
+                if any(message not in visible for message in notice):
+                    previous_messages = [*notice, *previous_messages]
         system = as_system_prompt_fn(profile.system or self.system_prompt)(self, node)
         return [
             {"role": "system", "content": system},
             *previous_messages,
             *current_messages,
         ]
+
+    def transition_footer(self, node: Node) -> str:
+        behavior = self.transitions.current_behavior(node)
+        owner = (
+            node
+            if node.turn_mode is TurnMode.FINAL
+            else behavior or (node if isinstance(node, UserQuery) else None)
+        )
+        finish_description = getattr(
+            owner,
+            "finish_description",
+            UserQuery.finish_description,
+        )
+        if node.turn_mode is TurnMode.FINAL:
+            return format_transition_footer(
+                [],
+                finish_description=finish_description,
+                final=True,
+            )
+        if node.turn_mode is not TurnMode.ACTION:
+            return ""
+        options = [(option.name, option.description) for option in self.transitions.available(node)]
+        return format_transition_footer(
+            options,
+            finish_description=finish_description,
+        )
 
     async def call_stream(
         self,
@@ -289,6 +398,7 @@ class Flow:
                         llm=self.llm_for_step(node),
                         messages=self.messages,
                         runtime=self.wrapped_runtime,
+                        transitions=self.transitions,
                     )
                     landed = await step(node)
             except asyncio.CancelledError:
@@ -380,6 +490,7 @@ class Flow:
         namespace = {
             **self.tools,
             "finish": finish,
+            "transition": self.transition_tool(node),
             "launch_subagent": self.launch_tool(node),
             "asyncio": asyncio,
             "INPUTS": node.parent_agent.config.inputs,
@@ -390,6 +501,16 @@ class Flow:
         if self.use_agent_tree:
             namespace["AGENTS"] = agents
         return namespace
+
+    def transition_tool(self, node: Node):
+        @tool(
+            "End this action and select the next displayed behavior.",
+            proxy=True,
+        )
+        def transition(name: str) -> None:
+            raise TransitionSignal(str(name))
+
+        return transition
 
     def wait_agent_tool(self, node: Node):
         @tool("Wait for an existing agent and return its result.", proxy=True)

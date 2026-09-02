@@ -128,7 +128,7 @@ def test_prebuilt_children_are_not_submitted_twice():
         async def chat(self, messages):
             nonlocal calls
             calls += 1
-            assert messages[-1]["content"].endswith("current board")
+            assert messages[-1]["content"].startswith("current board")
             await asyncio.sleep(0.05)
             return block("finish('ok')")
 

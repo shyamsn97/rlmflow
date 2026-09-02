@@ -406,7 +406,8 @@ def delegating(child_goal="chop wood", child_item="wood", root_item="plank"):
             return block(
                 f"handle = await launch_subagent("
                 f"{child_goal!r}, model='default', name='w')\n"
-                "print(await handle.wait_for_result())"
+                "print(await handle.wait_for_result())\n"
+                "transition('act')"
             )
         return block(f"print(await env_step(item={root_item!r}))\nfinish('built')")
 

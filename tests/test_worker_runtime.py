@@ -204,7 +204,7 @@ def test_worker_runtime_integrates_with_flow():
         def chat(self, _messages):
             self.calls += 1
             if self.calls == 1:
-                return "```python\nx = 40\nprint(x + 2)\n```"
+                return '```python\nx = 40\nprint(x + 2)\ntransition("act")\n```'
             return "```python\nfinish(x)\n```"
 
     flow = Flow(ScriptedLLM(), runtime=LocalRuntime())
@@ -233,6 +233,7 @@ def test_runtime_delegates_without_sharing_workers():
                 "'child task', model='default', name='child')\n"
                 "answer = await child.wait_for_result()\n"
                 "print(answer)\n"
+                'transition("act")\n'
                 "```"
             )
 
@@ -296,6 +297,7 @@ def test_reuse_repl_places_child_in_parent_worker(tmp_path):
                 "child = await launch_subagent("
                 "'child task', model='default', name='child', reuse_repl=True)\n"
                 "print(await child.wait_for_result())\n"
+                'transition("act")\n'
                 "```"
             )
 

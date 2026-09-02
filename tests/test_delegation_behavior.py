@@ -224,6 +224,7 @@ handle = await launch_subagent(
     model="default",
 )
 print(await handle.wait_for_result())
+transition("act")
 """.strip()
     )
     replies = iter([parent, CORRECT_STATS, child])
@@ -258,6 +259,7 @@ handles = await asyncio.gather(
     launch_subagent(name="second", goal="Do the second half.", model="default"),
 )
 print(await asyncio.gather(*(handle.wait_for_result() for handle in handles)))
+transition("act")
 """.strip()
     )
     replies = iter([parent, CORRECT_STATS])

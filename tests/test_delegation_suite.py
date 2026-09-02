@@ -67,7 +67,7 @@ from rlmflow import (
     PlanQuery,
     start,
 )
-from rlmflow.graph.nodes import PLANNING_ACTION
+from rlmflow.graph.nodes import ORCHESTRATOR_ADDENDUM, WORKING_ACTION
 
 
 def test_delegation_manifest_has_exactly_twenty_ordered_problems():
@@ -160,7 +160,7 @@ def test_default_prompt_is_depth_aware_and_bounded():
     assert "launch_subagent" not in leaf_prompt
     assert "output_schema=" not in root_prompt
     assert "AgentHandle" in root_prompt
-    assert 'inputs={"path": INPUTS["transactions_path"]}' in root_prompt
+    assert 'inputs={"paths": "\\n".join(batch)}' in root_prompt
 
     # Local leads: print-then-submit is what every row depends on, while delegation
     # fired on 3 of 34 rows, all on the one task that scored 0.000 nine times.
@@ -212,8 +212,10 @@ def test_default_prompt_uses_minimal_opening_action():
 
     root_action = asyncio.run(flow.step(root)).created
     child_action = asyncio.run(flow.step(child)).created
-    assert root_action.content == PLANNING_ACTION
-    assert child_action.content == PLANNING_ACTION
+    assert root_action.instruction().startswith(WORKING_ACTION)
+    assert child_action.instruction().startswith(WORKING_ACTION)
+    assert ORCHESTRATOR_ADDENDUM in root_action.instruction()
+    assert ORCHESTRATOR_ADDENDUM in child_action.instruction()
 
 
 def test_prompt_only_benchmarks_do_not_receive_fabricated_inputs():

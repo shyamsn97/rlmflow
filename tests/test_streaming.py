@@ -41,7 +41,7 @@ def test_idle_heals_an_error_and_stops_at_exec_output():
         StubLLM(
             counting_replies(
                 "no repl",
-                "```repl\nprint('recovered')\n```",
+                    "```repl\nprint('recovered')\ntransition('act')\n```",
                 "```repl\nfinish('ok')\n```",
             )
         )
