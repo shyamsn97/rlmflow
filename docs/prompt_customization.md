@@ -16,7 +16,10 @@ root = flow.start("Summarize this document.", inputs={"document": document})
 print(flow.build_system_prompt(root))
 ```
 
-That is the inherited protocol: tools, INPUTS sizes, depth. To see the system message a working turn actually sends (protocol plus orchestrator policy when the agent can spawn), step to a `PlanQuery` or call `node.build_system_prompt(flow)` on that query. `flow.build_messages(node)` returns the full message list; on a `UserQuery` the first entry is that wrapped system text, and on any other node it is the inherited protocol.
+That is the inherited protocol, capability-gated work policy, tools, INPUTS
+sizes, and depth. `flow.build_messages(node)` returns the full message list; on
+a `UserQuery` the first entry is its system text, and on any other node it is
+the inherited prompt.
 
 ## Default Shape
 
@@ -24,13 +27,22 @@ The default `PromptBuilder` fills one official-style template:
 
 - You are a Recursive Language Model with a Python REPL that persists across turns.
 - `INPUTS` is the long context; inspect it with `print(...)`.
+- A spawn-capable agent gets a compact allocation, graph, and integration
+  policy. A leaf gets a compact assigned-work policy.
 - Live REPL bindings (`finish`, `SHOW_VARS`, `launch_subagent`, `llm_query*` when enabled, plus host tools) fill `{tools}`.
-- REPL stdout over ~20K characters is truncated; only `print(...)` is shown back.
+- Tool guidance contains one local example plus, when spawning is available,
+  one parallel example and one dependency-handle example.
+- REPL stdout over ~20K characters is truncated; only printed stdout is shown back.
 - Do not `finish(...)` on turn 1 without inspecting `INPUTS`.
 
 `Flow.render_tools(node)` is the dynamic “Available in the REPL” list. `Flow.render_inputs(node)` is INPUTS sizes plus per-agent schema and depth.
 
-`PlanQuery.build_system_prompt` appends the orchestrator addendum when the agent can spawn. `FinalQuery.build_system_prompt` appends last-turn submit guidance and drops the “don’t finish on turn 1” line. Skipping `PlanQuery` (capability-only already does this) drops the orchestrator policy without a second prompt flag.
+`PromptBuilder` selects the graph policy when the current agent can spawn and
+the assigned-work policy when it cannot. This is capability gating, not a
+request to delegate. `PlanQuery` adds only a short checklist for the next
+objective, work ownership, known dependencies, and one executable REPL block.
+`FinalQuery.build_system_prompt` appends last-turn submit guidance and drops the
+“don’t finish on turn 1” line.
 
 ## Recommended: Subclass `PromptBuilder`
 
@@ -107,25 +119,17 @@ A string that omits `launch_subagent`, `INPUTS`, or the `finish(...)` rule means
 `Flow.build_system_prompt(node)` picks `profile.system` or `flow.system_prompt` or `PromptBuilder()`. `UserQuery.build_system_prompt(flow)` defaults to that string; query nodes wrap it. `can_spawn(agent)` is `rlmflow.graph.config.can_spawn` (also re-exported from `rlmflow.graph.nodes` and `rlmflow.prompts.prompts`):
 
 ```python
-class UserQuery(Node):
-    def build_system_prompt(self, flow) -> str:
-        return flow.build_system_prompt(self)
-
-
-class PlanQuery(UserQuery):
-    def build_system_prompt(self, flow) -> str:
-        text = flow.build_system_prompt(self)
-        if can_spawn(self.parent_agent):
-            return f"{text}\n\n{ORCHESTRATOR_ADDENDUM}"
-        return text
-
-
-class FinalQuery(UserQuery):
-    def build_system_prompt(self, flow) -> str:
-        return f"{flow.build_system_prompt(self)}\n\n{LAST_TURN_ADDENDUM}"
+class PromptBuilder:
+    def __call__(self, flow=None, node=None) -> str:
+        agent = as_agent(node)
+        policy = EXECUTION_POLICY if can_spawn(agent) else WORKER_ADDENDUM
+        return RLM_SYSTEM_PROMPT.format(
+            execution_policy=policy,
+            tools=flow.render_tools(node),
+        )
 ```
 
-A custom node can replace or wrap the same way:
+A custom node can still replace or wrap its system prompt:
 
 ```python
 class ReviewQuery(UserQuery):
@@ -199,7 +203,13 @@ Everything above shapes the *system* message. The rest of the conversation — t
 
 The default current renderer calls `node.render()` and adds live background-agent status. Recurring plan-and-act, final-answer, and truncation instructions are typed nodes, not injected strings.
 
-`PlanQuery.instruction()` is `Turn {n}/{max}:` from `agent.llm_turns()` and `agent.config.max_iters`. Turn 1 also includes the official first-turn safeguard (“you have not interacted with the REPL… look at INPUTS first”). Last-budget-turn user content stays on `FinalQuery`; the submit instruction lives on `FinalQuery.build_system_prompt`. `format_transition_footer` is engine bookkeeping, not prompt policy.
+`PlanQuery.instruction()` is `Turn {n}/{max}:` plus a short checklist: next
+objective, local or owned work, known dependencies, then one REPL block. Turn 1
+also includes the official first-turn safeguard (“you have not interacted with
+the REPL… look at INPUTS first”). Last-budget-turn user content stays on
+`FinalQuery`; the submit instruction lives on
+`FinalQuery.build_system_prompt`. `format_transition_footer` is engine
+bookkeeping, not prompt policy.
 
 `Flow.build_messages` reserves the current renderer's messages inside `keep_n_messages`, projects the remaining capacity from `node.prev`, prepends `UserQuery.build_system_prompt(self)` when the frontier is a query (otherwise the inherited protocol), and preserves every rendered message in order. Adjacent messages with the same role remain separate.
 

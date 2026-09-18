@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
-from rlmflow.graph.nodes import AgentStart, LLMUsage, start
+from rlmflow.graph.nodes import LLMUsage
 from rlmflow.tools import get_tool_metadata
 from rlmflow.utils.code import find_code_blocks
 
@@ -37,16 +37,6 @@ def tool_name(fn: Any) -> str:
     """Registered name of a tool callable, falling back to ``fn.__name__``."""
     meta = get_tool_metadata(fn)
     return meta.name if meta is not None else fn.__name__
-
-
-def node_from_input(node_or_query: AgentStart | str) -> AgentStart:
-    """Coerce a query string into a fresh root node; pass nodes through.
-
-    Pure coercion for batch entry points (``parallel_run``/``parallel_stream``)
-    that accept either shape. State resolution (inputs, output_schema, new
-    turns) lives in :meth:`Flow.resolve_run`, not here.
-    """
-    return node_or_query if isinstance(node_or_query, AgentStart) else start(node_or_query)
 
 
 def usage_from_client(client: Any) -> LLMUsage:
@@ -94,7 +84,6 @@ def sampling_kwargs(
 __all__ = [
     "accepts_kwarg",
     "code_block",
-    "node_from_input",
     "sampling_kwargs",
     "tool_name",
     "truncate_output",

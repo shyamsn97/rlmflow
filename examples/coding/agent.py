@@ -17,7 +17,9 @@ import sys
 from pathlib import Path
 
 from rlmflow import (
+    CODING_HANDOFF_SCHEMA,
     FILE_TOOLS,
+    AgentConfig,
     AgentStart,
     DockerRuntime,
     Flow,
@@ -48,7 +50,7 @@ def main():
         default=None,
         help="If set, run agent code inside this Docker image (e.g. rlmflow:local).",
     )
-    parser.add_argument("--max-depth", type=int, default=3)
+    parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument("--max-iters", type=int, default=30)
     parser.add_argument(
         "--max-concurrency",
@@ -78,6 +80,7 @@ def main():
         runtime=runtime,
         tools=[FILE_TOOLS],
         workers=args.max_concurrency,
+        root_config=AgentConfig(child_output_schema=CODING_HANDOFF_SCHEMA),
     )
 
     try:

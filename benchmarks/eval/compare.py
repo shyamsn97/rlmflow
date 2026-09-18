@@ -9,6 +9,7 @@ from statistics import fmean
 from typing import Any
 
 from benchmarks.eval.loggers.jsonl import load_rows, write_json
+from benchmarks.eval.telemetry import RowTelemetry
 from benchmarks.eval.types import Row
 
 
@@ -16,10 +17,16 @@ def compare_runs(runs: Mapping[str, list[Row]]) -> dict[str, Any]:
     if len(runs) < 2:
         raise ValueError("comparison requires at least two runs")
 
-    keyed = {
-        label: {(row.dataset, row.example_id, row.model, row.seed): row for row in rows}
-        for label, rows in runs.items()
-    }
+    pair_by_runner = any(
+        len({(row.dataset, row.example_id, row.model, row.seed) for row in rows}) < len(rows)
+        for rows in runs.values()
+    )
+
+    def row_key(row: Row) -> tuple:
+        base = (row.dataset, row.example_id, row.model, row.seed)
+        return (base[0], base[1], row.runner if pair_by_runner else None, base[2], base[3])
+
+    keyed = {label: {row_key(row): row for row in rows} for label, rows in runs.items()}
     keys = sorted(set().union(*(rows.keys() for rows in keyed.values())))
     labels = list(runs)
     tasks = []
@@ -28,8 +35,9 @@ def compare_runs(runs: Mapping[str, list[Row]]) -> dict[str, Any]:
         task = {
             "dataset": key[0],
             "example_id": key[1],
-            "model": key[2],
-            "seed": key[3],
+            "runner": key[2] or sorted({item["runner"] for item in task_runs.values()}),
+            "model": key[3],
+            "seed": key[4],
             "runs": task_runs,
         }
         if len(labels) == 2 and all(label in task_runs for label in labels):
@@ -38,7 +46,9 @@ def compare_runs(runs: Mapping[str, list[Row]]) -> dict[str, Any]:
 
     return {
         "labels": labels,
+        "paired_by_runner_arm": pair_by_runner,
         "summary": {label: _run_summary(rows) for label, rows in runs.items()},
+        "by_route": {label: _route_summary(rows) for label, rows in runs.items()},
         "paired_tasks": sum(len(task["runs"]) == len(labels) for task in tasks),
         "tasks": tasks,
     }
@@ -114,41 +124,75 @@ def write_comparison(
 
 
 def _row_metrics(row: Row) -> dict[str, Any]:
-    graph = row.prediction.metrics.get("graph", {})
-    rlm = row.prediction.metrics.get("rlm", {})
+    telemetry = RowTelemetry.from_row(row)
+    graph = telemetry.graph
+    delegation = telemetry.delegation
+    environment = telemetry.environment
+    candidates = environment.candidate_search
     return {
-        "runner": row.runner,
-        "score": row.score.value,
-        "correct": row.score.correct,
-        "error": row.prediction.error,
-        "input_tokens": row.prediction.usage.get("input_tokens", 0),
-        "output_tokens": row.prediction.usage.get("output_tokens", 0),
-        "time_seconds": row.prediction.metrics.get("time_seconds", 0.0),
+        "runner": telemetry.runner,
+        "score": telemetry.score,
+        "correct": telemetry.correct,
+        "error": telemetry.error,
+        "input_tokens": telemetry.input_tokens,
+        "output_tokens": telemetry.output_tokens,
+        "time_seconds": telemetry.time_seconds,
         "agents": graph.get("agents", 0),
         "max_depth": graph.get("max_depth", 0),
-        "subcalls": rlm.get("subcalls", 0),
+        "subcalls": delegation.get("children", 0),
+        "dependency_edges": delegation.get("dependency_edge_count", 0),
+        "dependency_chain_depth": delegation.get("dependency_chain_depth", 0),
+        "recursive_launches": delegation.get(
+            "recursive_launch_count",
+            0,
+        ),
+        "max_launch_batch": delegation.get("max_launch_batch", 0),
+        "max_ready_launch_batch": delegation.get("max_ready_launch_batch", 0),
+        "retrieval_ratio": delegation.get("retrieval_ratio", 0.0),
+        "retrieved_results": delegation.get("retrieved_child_results", 0),
+        "model_turns": graph.get("llm_turns", 0),
+        "environment_actions": environment.accepted_actions,
+        "primary_actions": environment.primary_actions,
+        "probe_actions": environment.probe_actions,
+        "environment_instances": environment.instances_forked,
+        "candidate_count": candidates.get("evaluations_used", 0),
+        "candidate_oracle_best_score": candidates.get("oracle_best_score"),
+        "selected_candidate_score": candidates.get("selected_score"),
+        "selection_regret": candidates.get("selection_regret"),
+        "artifacts": telemetry.artifacts,
     }
 
 
 def _run_summary(rows: list[Row]) -> dict[str, Any]:
     graded = [row for row in rows if row.score.correct is not None]
+    telemetry = [RowTelemetry.from_row(row) for row in rows]
     return {
         "count": len(rows),
         "accuracy": (
             sum(row.score.correct is True for row in graded) / len(graded) if graded else 0.0
         ),
         "mean_score": fmean(row.score.value for row in rows) if rows else 0.0,
-        "errors": sum(bool(row.prediction.error) for row in rows),
-        "input_tokens": sum(row.prediction.usage.get("input_tokens", 0) for row in rows),
-        "output_tokens": sum(row.prediction.usage.get("output_tokens", 0) for row in rows),
-        "time_seconds": sum(row.prediction.metrics.get("time_seconds", 0.0) for row in rows),
-        "delegated_tasks": sum(
-            row.prediction.metrics.get("graph", {}).get("agents", 0) > 1 for row in rows
-        ),
-        "subcall_tasks": sum(
-            row.prediction.metrics.get("rlm", {}).get("subcalls", 0) > 0 for row in rows
-        ),
-        "subcalls": sum(row.prediction.metrics.get("rlm", {}).get("subcalls", 0) for row in rows),
+        "errors": sum(bool(item.error) for item in telemetry),
+        "input_tokens": sum(item.input_tokens for item in telemetry),
+        "output_tokens": sum(item.output_tokens for item in telemetry),
+        "time_seconds": sum(item.time_seconds for item in telemetry),
+        "delegated_tasks": sum(item.graph.get("agents", 0) > 1 for item in telemetry),
+        "subcall_tasks": sum(item.delegation.get("children", 0) > 0 for item in telemetry),
+        "subcalls": sum(item.delegation.get("children", 0) for item in telemetry),
+    }
+
+
+def _route_summary(rows: list[Row]) -> dict[str, Any]:
+    routes = sorted(
+        {
+            str(row.metadata.get("route_hypothesis"))
+            for row in rows
+            if row.metadata.get("route_hypothesis")
+        }
+    )
+    return {
+        route: _run_summary([row for row in rows if row.metadata.get("route_hypothesis") == route])
+        for route in routes
     }
 
 

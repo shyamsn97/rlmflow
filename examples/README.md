@@ -25,7 +25,7 @@ python examples/summarizer.py --sections 10
 | Folder | What it shows |
 |---|---|
 | [`needle/`](needle/) | Needle-in-haystack (in-memory + filesystem variants) |
-| [`coding/`](coding/) | Interactive file-editing agent |
+| [`coding/`](coding/) | Interactive file-editing agent; launched children finish `CODING_HANDOFF_SCHEMA` |
 | [`autoresearch/`](autoresearch/) | TinyStories autoresearch loop with Modal GPU trials |
 | [`shepherd/`](shepherd/) | Meta-agent recovers a jammed Sokoban worker by forking its graph and replaying recovery branches in parallel, with board panels + a node trace |
 
@@ -85,7 +85,7 @@ Most compute examples (`summarizer.py`, `needle/haystack.py`, `showcase.py`,
 | `--model MODEL` | varies | Main LLM. Prefix decides client (`claude*` → Anthropic, else OpenAI). |
 | `--fast-model MODEL` | varies | Optional cheap secondary model registered as `fast` for delegates. |
 | `--docker-image IMAGE` | unset | If set, run agent code inside this Docker image via a `DockerRuntime`. Must have `rlmflow` installed. Leaving this unset uses `LocalRuntime`, which runs code in a worker subprocess on the host. |
-| `--max-depth N` | `3` | Max delegation depth. |
+| `--max-depth N` | `1` | Max delegation depth. FILE_TOOLS writes bind on agents that cannot spawn, so `1` lets children write. |
 | `--max-iters N` | `15` | Max LLM turns per agent. |
 | `--out-dir PATH` | `_runs/<example-name>/` | Save the final run here. Defaults use flat example names under [`_runs/`](_runs/). |
 

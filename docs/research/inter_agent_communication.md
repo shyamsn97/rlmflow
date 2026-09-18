@@ -2,13 +2,11 @@
 
 > **Status:** Implemented, experimental beta.
 >
-> **Scope:** A read-only `AGENTS` variable for inspecting the agents in one
-> recursive run. This design does not add message passing or control.
+> **Scope:** A read-only `AGENTS` variable for inspecting the agents in one recursive run. This design does not add message passing or control.
 
 ## Summary
 
-When enabled, every agent REPL receives an `AGENTS` variable alongside
-`INPUTS`:
+When enabled, every agent REPL receives an `AGENTS` variable alongside `INPUTS`:
 
 ```python
 flow = Flow(..., use_agent_tree=True)
@@ -73,9 +71,7 @@ AGENTS.get("researcher")
 AGENTS.print_graph()
 ```
 
-The variable communicates that these operations query one coherent tree. It
-also leaves room for additional read-only operations without occupying more
-global REPL names.
+The variable communicates that these operations query one coherent tree. It also leaves room for additional read-only operations without occupying more global REPL names.
 
 `AGENTS` mirrors the existing `INPUTS` convention:
 
@@ -88,8 +84,7 @@ AGENTS   recursive run topology visible to this agent
 
 The first implementation should:
 
-- default to disabled so ordinary runs pay no prompt, snapshot, or serialization
-  cost;
+- default to disabled so ordinary runs pay no prompt, snapshot, or serialization cost;
 - enable with one Flow-level `use_agent_tree=True` option;
 - inject `AGENTS` before each `ExecAction` only when enabled;
 - expose the whole agent tree for the current root;
@@ -134,18 +129,11 @@ use_agent_tree=True
   include concise default-prompt guidance
 ```
 
-Do not inject an empty or disabled sentinel. When the feature is off, `AGENTS`
-should be absent so `"'AGENTS' in globals()"` accurately reports capability.
+Do not inject an empty or disabled sentinel. When the feature is off, `AGENTS` should be absent so `"'AGENTS' in globals()"` accurately reports capability.
 
-Use one option rather than separate `inject_agent_tree` and
-`prompt_agent_tree` flags. Exposing a framework variable without telling the
-default model about it is rarely useful, while prompting for a missing variable
-is incorrect. Callers that replace the system prompt through `PromptProfile`
-already own the decision to document available variables there.
+Use one option rather than separate `inject_agent_tree` and `prompt_agent_tree` flags. Exposing a framework variable without telling the default model about it is rarely useful, while prompting for a missing variable is incorrect. Callers that replace the system prompt through `PromptProfile` already own the decision to document available variables there.
 
-Do not auto-enable based on the current number of children. The namespace
-should remain stable for the lifetime of a Flow, and the root may need to know
-about `AGENTS` before it creates children.
+Do not auto-enable based on the current number of children. The namespace should remain stable for the lifetime of a Flow, and the root may need to know about `AGENTS` before it creates children.
 
 ## Non-Goals
 
@@ -183,13 +171,12 @@ AGENTS.get(selector: str | None = None) -> AgentInfo | None
 Resolution order:
 
 1. no selector: current agent;
-2. exact opaque `AgentStart.id`;
-3. exact `AgentConfig.path`;
-4. direct relative name among parent, siblings, and children;
-5. globally unique name in this root.
+1. exact opaque `AgentStart.id`;
+1. exact `AgentConfig.path`;
+1. direct relative name among parent, siblings, and children;
+1. globally unique name in this root.
 
-If a global name is ambiguous, raise `ValueError` and ask for a path or id. If
-there is no match, return `None`.
+If a global name is ambiguous, raise `ValueError` and ask for a path or id. If there is no match, return `None`.
 
 Examples:
 
@@ -205,8 +192,7 @@ AGENTS.get("agent_7c...")
 AGENTS.get_parent(agent: str | AgentInfo | None = None) -> AgentInfo | None
 ```
 
-With no argument, returns the current agent's direct parent. A root returns
-`None`.
+With no argument, returns the current agent's direct parent. A root returns `None`.
 
 Passing a selector or an `AgentInfo` queries another visible tree node:
 
@@ -232,11 +218,9 @@ AGENTS.get_siblings(
 ) -> list[AgentInfo]
 ```
 
-Returns the parent's direct children excluding the selected agent, in creation
-order. A root returns an empty list.
+Returns the parent's direct children excluding the selected agent, in creation order. A root returns an empty list.
 
-Separate roots passed to `parallel_stream(...)` are not siblings. `AGENTS`
-contains only the viewer's recursive root.
+Separate roots passed to one `run_streaming(root, *roots)` call are not siblings. `AGENTS` contains only the viewer's recursive root.
 
 ### All Agents
 
@@ -268,9 +252,7 @@ AGENTS.print_graph(
 ) -> None
 ```
 
-`render_graph()` returns text for tests or further processing.
-`print_graph()` prints the same text because only stdout is shown to the model
-after a REPL action.
+`render_graph()` returns text for tests or further processing. `print_graph()` prints the same text because only stdout is shown to the model after a REPL action.
 
 Default output:
 
@@ -290,8 +272,7 @@ root [waiting]
 └── writer [running] (you)
 ```
 
-Result previews must be single-line and bounded. The full normalized result
-remains available through `AGENTS.get(...).get_result()`.
+Result previews must be single-line and bounded. The full normalized result remains available through `AGENTS.get(...).get_result()`.
 
 ## Data Model
 
@@ -327,8 +308,7 @@ class AgentDirectory:
     agents: tuple[AgentInfo, ...]
 ```
 
-`AgentDirectory` builds private lookup maps in `__post_init__` or computes them
-from the small tuple. Its public methods are the `AGENTS` API.
+`AgentDirectory` builds private lookup maps in `__post_init__` or computes them from the small tuple. Its public methods are the `AGENTS` API.
 
 The snapshot must contain no:
 
@@ -340,13 +320,11 @@ The snapshot must contain no:
 - asyncio task;
 - host callback.
 
-This makes it safe to copy into a remote REPL. Model code cannot mutate the
-host graph through the snapshot.
+This makes it safe to copy into a remote REPL. Model code cannot mutate the host graph through the snapshot.
 
 ## Building the Tree
 
-`Flow` owns snapshot construction because it can see both durable graph state
-and the live queue:
+`Flow` owns snapshot construction because it can see both durable graph state and the live queue:
 
 ```python
 def agent_directory(self, viewer: AgentStart) -> AgentDirectory:
@@ -371,8 +349,7 @@ def supervisor_of(agent: AgentStart) -> AgentStart | None:
     return agent.parent.parent_agent
 ```
 
-`AgentStart.parent_agent` is the agent itself, so it must not be used as the
-supervisor relationship.
+`AgentStart.parent_agent` is the agent itself, so it must not be used as the supervisor relationship.
 
 Children come from `agent.sub_agents`, which already preserves creation order.
 
@@ -392,11 +369,9 @@ Its normalized `result` is included.
 
 ### `waiting`
 
-The agent has an in-flight `ExecAction` with at least one attached unfinished
-child.
+The agent has an in-flight `ExecAction` with at least one attached unfinished child.
 
-This identifies the common case where a parent is blocked in
-`launch_subagents(...)`.
+This identifies the common case where a parent is blocked in `launch_subagents(...)`.
 
 ### `running`
 
@@ -408,8 +383,7 @@ This includes active LLM and REPL work.
 
 The agent is unfinished and has no in-flight queue task.
 
-Examples include a paused stream, an attached child that has not been
-submitted, or a loaded graph that is not being driven.
+Examples include a paused stream, an attached child that has not been submitted, or a loaded graph that is not being driven.
 
 ### Queue Lookup
 
@@ -429,14 +403,11 @@ def running_node(queue: TaskQueue | None, agent: AgentStart) -> Node | None:
     )
 ```
 
-This is O(active leaves) per agent and O(tree size × active leaves) for one
-snapshot. Agent trees are expected to be small, and one snapshot is built per
-REPL action. Do not add another queue index unless profiling justifies it.
+This is O(active leaves) per agent and O(tree size × active leaves) for one snapshot. Agent trees are expected to be small, and one snapshot is built per REPL action. Do not add another queue index unless profiling justifies it.
 
 ## Snapshot Freshness
 
-When `use_agent_tree=True`, `AGENTS` is refreshed before every `ExecAction`, at
-the same time as `INPUTS` and framework tools:
+When `use_agent_tree=True`, `AGENTS` is refreshed before every `ExecAction`, at the same time as `INPUTS` and framework tools:
 
 ```python
 repl.seed(self.build_tools(action, repl), agent.config.inputs)
@@ -454,9 +425,7 @@ if self.use_agent_tree:
     namespace["AGENTS"] = self.agent_directory(node.parent_agent)
 ```
 
-The object remains fixed for the duration of that REPL action. If a sibling
-finishes while the action is running, repeated calls to
-`AGENTS.get_siblings()` in the same block return the original snapshot.
+The object remains fixed for the duration of that REPL action. If a sibling finishes while the action is running, repeated calls to `AGENTS.get_siblings()` in the same block return the original snapshot.
 
 This is intentional:
 
@@ -466,40 +435,31 @@ This is intentional:
 - no polling loops that bypass model turns;
 - no scheduler changes.
 
-The next agent action receives a fresh snapshot. When the option is disabled,
-the directory builder is never called.
+The next agent action receives a fresh snapshot. When the option is disabled, the directory builder is never called.
 
 ## Local and Remote Runtimes
 
 ### Local
 
-When enabled, `LocalRepl.seed(...)` stores the immutable `AgentDirectory`
-object directly.
+When enabled, `LocalRepl.seed(...)` stores the immutable `AgentDirectory` object directly.
 
 ### Remote
 
-When enabled, `RemoteRepl.seed(...)` ships `AGENTS` by value through the
-existing object injection path. The object contains no live host references.
+When enabled, `RemoteRepl.seed(...)` ships `AGENTS` by value through the existing object injection path. The object contains no live host references.
 
-The current by-value path uses `cloudpickle` for custom class instances. The
-shipped subprocess, Docker, and Modal environments include it through
-`rlmflow`'s core dependencies.
+The current by-value path uses `cloudpickle` for custom class instances. The shipped subprocess, Docker, and Modal environments include it through `rlmflow`'s core dependencies.
 
-If avoiding that dependency becomes a requirement, add a narrow wire encoding
-later:
+If avoiding that dependency becomes a requirement, add a narrow wire encoding later:
 
 ```text
 AgentDirectory -> JSON data -> reconstruct AgentDirectory in sandbox
 ```
 
-Do not turn each method into a host-proxied tool merely to avoid serialization.
-That would make a simple snapshot API live, timing-dependent, and much more
-complex.
+Do not turn each method into a host-proxied tool merely to avoid serialization. That would make a simple snapshot API live, timing-dependent, and much more complex.
 
 ## Result Normalization
 
-Most results are already strings or schema-parsed JSON values. A
-controller-authored `DoneOutput` may contain an arbitrary object.
+Most results are already strings or schema-parsed JSON values. A controller-authored `DoneOutput` may contain an arbitrary object.
 
 Normalize results before placing them in `AGENTS`:
 
@@ -511,20 +471,15 @@ def json_safe(value: object) -> object:
         return str(value)
 ```
 
-This prevents a result from reintroducing live references or requiring custom
-serialization.
+This prevents a result from reintroducing live references or requiring custom serialization.
 
-`render_graph(show_results=True)` converts the normalized value to a compact
-single-line preview and truncates it to `max_result_chars`.
+`render_graph(show_results=True)` converts the normalized value to a compact single-line preview and truncates it to `max_result_chars`.
 
 ## Prompt Guidance
 
-`AGENTS` is not callable, so the dynamic callable-tool section will not list
-it. Do not add it unconditionally to the static REPL documentation.
+`AGENTS` is not callable, so the dynamic callable-tool section will not list it. Do not add it unconditionally to the static REPL documentation.
 
-Add a dynamic prompt section that returns an empty string unless
-`flow.use_agent_tree` is true. When enabled, render a concise section beside
-the `INPUTS` guidance:
+Add a dynamic prompt section that returns an empty string unless `flow.use_agent_tree` is true. When enabled, render a concise section beside the `INPUTS` guidance:
 
 ```text
 `AGENTS` is a read-only snapshot of this run's agent tree. Use
@@ -534,18 +489,14 @@ The snapshot is refreshed before each REPL action and does not wait, message,
 cancel, or steer agents.
 ```
 
-The prompt should discourage status polling. Calling a snapshot method twice
-in one action cannot produce fresher data.
+The prompt should discourage status polling. Calling a snapshot method twice in one action cannot produce fresher data.
 
-The conditional prompt section and namespace injection must use the same flag.
-Tests should prevent either mismatch:
+The conditional prompt section and namespace injection must use the same flag. Tests should prevent either mismatch:
 
 - documented but absent;
 - injected but undocumented by the default prompt.
 
-A caller using a fully custom `PromptProfile.system` is responsible for
-documenting `AGENTS`, just as it is responsible for documenting the rest of its
-custom REPL contract.
+A caller using a fully custom `PromptProfile.system` is responsible for documenting `AGENTS`, just as it is responsible for documenting the rest of its custom REPL contract.
 
 ## Reserved Namespace
 
@@ -560,11 +511,9 @@ RESERVED_TOOLS = frozenset({
 })
 ```
 
-The constant may eventually be renamed to `RESERVED_NAMES`, but that rename is
-not required for this feature.
+The constant may eventually be renamed to `RESERVED_NAMES`, but that rename is not required for this feature.
 
-`flow.inject("AGENTS", ...)` and `flow.remove_tool("AGENTS")` must be rejected,
-matching `INPUTS`.
+`flow.inject("AGENTS", ...)` and `flow.remove_tool("AGENTS")` must be rejected, matching `INPUTS`.
 
 ## Host-Side API
 
@@ -576,8 +525,7 @@ directory.print_graph(show_results=True)
 directory.get_siblings()
 ```
 
-Avoid adding separate `AgentStart.siblings` or `AgentStart.supervisor`
-properties initially. `AgentDirectory` centralizes:
+Avoid adding separate `AgentStart.siblings` or `AgentStart.supervisor` properties initially. `AgentDirectory` centralizes:
 
 - tree relationship derivation;
 - status calculation;
@@ -601,8 +549,7 @@ For an inactive loaded graph:
 - terminal agents are `completed`;
 - unfinished agents are `idle`.
 
-Replay receives snapshots like any normal action. Querying them has no side
-effects and cannot duplicate graph work.
+Replay receives snapshots like any normal action. Querying them has no side effects and cannot duplicate graph work.
 
 ## Complexity
 
@@ -617,9 +564,7 @@ AGENTS.all              O(N)
 render graph            O(N)
 ```
 
-If `N × F` becomes material, build one `running_by_agent_id` dictionary during
-snapshot construction and reduce the build to O(N + F). This is a local
-optimization and does not require changing `TaskQueue`.
+If `N × F` becomes material, build one `running_by_agent_id` dictionary during snapshot construction and reduce the build to O(N + F). This is a local optimization and does not require changing `TaskQueue`.
 
 ## Compatibility
 
@@ -636,8 +581,7 @@ Existing behavior remains unchanged:
 Potential compatibility changes:
 
 - `AGENTS` becomes a reserved injection name;
-- remote runtimes need custom-object serialization unless a JSON reconstruction
-  path is added.
+- remote runtimes need custom-object serialization unless a JSON reconstruction path is added.
 
 ## Implementation Plan
 
@@ -666,14 +610,11 @@ Use the viewer's root tree and the active queue to build one snapshot.
 
 ### 3. Opt-In Configuration and Injection
 
-Add `Flow(use_agent_tree: bool = False)`. When true, add `AGENTS` in
-`build_tools(...)`; otherwise do not build or inject it. Reserve the name in
-either mode and verify that every enabled `ExecActionStep` refreshes it.
+Add `Flow(use_agent_tree: bool = False)`. When true, add `AGENTS` in `build_tools(...)`; otherwise do not build or inject it. Reserve the name in either mode and verify that every enabled `ExecActionStep` refreshes it.
 
 ### 4. Prompt and Exports
 
-Add a conditional default-prompt section controlled by the same
-`use_agent_tree` flag. Export the immutable classes from `rlmflow`.
+Add a conditional default-prompt section controlled by the same `use_agent_tree` flag. Export the immutable classes from `rlmflow`.
 
 ### 5. Documentation and Example
 
@@ -700,31 +641,29 @@ completed = [
 Required tests:
 
 1. The option defaults to false.
-2. Disabled runs have no `AGENTS` variable, prompt text, snapshot build, or
-   serialization.
-3. Enabled runs inject `AGENTS` and include the default prompt guidance.
-4. `AGENTS.get()` and `AGENTS.self` identify the viewer.
-5. Parent, children, and siblings follow the launch tree.
-6. Creation order is preserved.
-7. Lookup works by id, path, direct relative name, and unique global name.
-8. Ambiguous global names raise.
-9. A separate parallel root is absent.
-10. Completed agents include normalized results.
-11. Running, waiting, idle, and completed statuses are classified correctly.
-12. The viewer is marked `(you)` in graph output.
-13. Graph rendering preserves tree structure and bounds result previews.
-14. `AGENTS` contains no live Node, Flow, Runtime, queue, or task.
-15. The snapshot does not change during one REPL action.
-16. A later action receives a refreshed snapshot.
-17. Local and remote REPLs expose the same methods and values.
-18. Injecting or removing `AGENTS` is rejected in either mode.
-19. A custom system prompt is not modified by the default conditional section.
-20. Save/load and replay require no special handling.
+1. Disabled runs have no `AGENTS` variable, prompt text, snapshot build, or serialization.
+1. Enabled runs inject `AGENTS` and include the default prompt guidance.
+1. `AGENTS.get()` and `AGENTS.self` identify the viewer.
+1. Parent, children, and siblings follow the launch tree.
+1. Creation order is preserved.
+1. Lookup works by id, path, direct relative name, and unique global name.
+1. Ambiguous global names raise.
+1. A separate parallel root is absent.
+1. Completed agents include normalized results.
+1. Running, waiting, idle, and completed statuses are classified correctly.
+1. The viewer is marked `(you)` in graph output.
+1. Graph rendering preserves tree structure and bounds result previews.
+1. `AGENTS` contains no live Node, Flow, Runtime, queue, or task.
+1. The snapshot does not change during one REPL action.
+1. A later action receives a refreshed snapshot.
+1. Local and remote REPLs expose the same methods and values.
+1. Injecting or removing `AGENTS` is rejected in either mode.
+1. A custom system prompt is not modified by the default conditional section.
+1. Save/load and replay require no special handling.
 
 ## Recommendation
 
-Implement `AGENTS` as an opt-in, by-value tree snapshot, not as a collection of
-proxy tools.
+Implement `AGENTS` as an opt-in, by-value tree snapshot, not as a collection of proxy tools.
 
 The complete data flow is:
 
@@ -736,5 +675,4 @@ Node tree + active TaskQueue
   -> local get / relationship / render methods
 ```
 
-That gives agents a clean tree-oriented view of parallel work while keeping the
-feature read-only and separate from scheduling, persistence, and communication.
+That gives agents a clean tree-oriented view of parallel work while keeping the feature read-only and separate from scheduling, persistence, and communication.

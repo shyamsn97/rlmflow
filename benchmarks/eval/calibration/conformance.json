@@ -1,0 +1,69 @@
+{
+  "acceptance_policy": {
+    "depth0_range": [
+      0.3,
+      0.7
+    ],
+    "minimum_selection_compliance": 0.8,
+    "required_domains": [
+      "minimaze",
+      "sudoku_search"
+    ],
+    "required_runners": [
+      "official-rlm",
+      "rlmflow-depth-0",
+      "rlmflow-depth-1",
+      "rlmflow-depth-2"
+    ],
+    "required_seeds": [
+      "0",
+      "1",
+      "2"
+    ]
+  },
+  "accepted": true,
+  "checks": [
+    {
+      "accepted": true,
+      "dataset": "minimaze",
+      "full": [
+        "minimaze_upper_loop",
+        "minimaze_lower_loop",
+        "minimaze_double_gate",
+        "minimaze_key_detour",
+        "minimaze_three_gems",
+        "minimaze_split_vault"
+      ],
+      "gates": {
+        "bounded_shared_budgets": true,
+        "explicit_selection": true,
+        "nonempty_splits": true,
+        "pilot_full_ids_disjoint": true
+      },
+      "pilot": [
+        "minimaze_crossroads",
+        "minimaze_two_keys"
+      ]
+    },
+    {
+      "accepted": true,
+      "dataset": "sudoku_search",
+      "full": [
+        "sudoku_search_visual_9x9_branch_02",
+        "sudoku_search_visual_6x6_branch_03"
+      ],
+      "gates": {
+        "bounded_shared_budgets": true,
+        "explicit_selection": true,
+        "nonempty_splits": true,
+        "pilot_full_ids_disjoint": true
+      },
+      "pilot": [
+        "sudoku_search_visual_9x9_branch_01",
+        "sudoku_search_visual_6x6_branch_02"
+      ]
+    }
+  ],
+  "model_calls": 0,
+  "schema_version": 2
+}

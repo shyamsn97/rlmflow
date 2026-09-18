@@ -32,7 +32,7 @@ class RunOptions:
     reasoning_effort: str | None = None
     workdir: str = "."
     docker_image: str | None = None
-    max_depth: int = 3
+    max_depth: int = 1
     max_iters: int = 30
     workers: int = 8
     tools: str = "files"

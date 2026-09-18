@@ -125,7 +125,7 @@ async def gym_loop(flow: Flow, root: AgentStart, out_dir: Path) -> list[float]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--max-depth", type=int, default=2)
+    parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument("--max-iters", type=int, default=8)
     parser.add_argument(
         "--out-dir",

@@ -71,7 +71,6 @@ def main() -> None:
         "Demonstrate explicit shared and isolated child REPLs.",
         max_depth=1,
         max_iters=3,
-        child_max_iters=2,
     )
     try:
         result = flow.run(root)

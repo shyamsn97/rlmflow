@@ -39,7 +39,6 @@ from rlmflow import (
     Flow,
     GraphCheckpointer,
     UserQuery,
-    parallel_stream,
     persistence,
 )
 from rlmflow.llm import client_for
@@ -202,7 +201,7 @@ def main() -> None:
     async def run_variants() -> None:
         checkpoints = {identity: GraphCheckpointer(path) for identity, path in dirs.items()}
         try:
-            async for node in parallel_stream(flow, cols_graph, root_graph):
+            async for node in flow.run_streaming(cols_graph, root_graph):
                 root = node.root
                 checkpoints[id(root)].handle(node)
                 print(f"step: {dirs[id(root)].name} -> {node.type}")

@@ -1,5 +1,6 @@
 """Tool metadata, prompt formatting, and built-in file tools."""
 
+from rlmflow.graph.config import at_leaf, can_spawn
 from rlmflow.tools.agents import (
     AGENT_OBSERVE_TOOL,
     AGENT_WAIT_TOOL,
@@ -10,6 +11,7 @@ from rlmflow.tools.agents import (
     AgentInfo,
     AgentStatus,
 )
+from rlmflow.tools.coding import CODING_HANDOFF_SCHEMA
 from rlmflow.tools.filesystem import (
     FILE_TOOLS,
     FileTools,
@@ -23,7 +25,6 @@ from rlmflow.tools.filesystem import (
     write_file,
 )
 from rlmflow.tools.tools import (
-    PromptExample,
     ToolMetadata,
     ToolsetMetadata,
     format_tool_docs,
@@ -58,13 +59,15 @@ __all__ = [
     "AgentHandle",
     "AgentInfo",
     "AgentStatus",
+    "CODING_HANDOFF_SCHEMA",
     "FILE_TOOLS",
     "FileTools",
-    "PromptExample",
     "RESERVED_TOOLS",
     "ToolMetadata",
     "ToolsetMetadata",
     "append_file",
+    "at_leaf",
+    "can_spawn",
     "edit_file",
     "format_tool_docs",
     "format_tool_line",

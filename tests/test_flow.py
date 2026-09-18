@@ -6,9 +6,11 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from helpers import TestRuntime, first_user
 
 from rlmflow import (
     AgentConfig,
+    AgentHandle,
     AgentStart,
     AppendChild,
     DoneOutput,
@@ -17,7 +19,9 @@ from rlmflow import (
     ExecOutput,
     FinalQuery,
     Flow,
+    LLMChunk,
     LLMOutput,
+    LLMUsage,
     Node,
     PlanQuery,
     ReplDead,
@@ -26,10 +30,11 @@ from rlmflow import (
     persistence,
     start,
 )
+from rlmflow.engine.delegation import resolve_inputs
 from rlmflow.graph.nodes import (
     FIRST_TURN_SAFEGUARD,
     LAST_TURN_ADDENDUM,
-    ORCHESTRATOR_ADDENDUM,
+    PLANNING_ACTION,
 )
 from rlmflow.prompts import PromptProfile, default_render
 from rlmflow.runtime import LocalRuntime, Runtime
@@ -56,7 +61,7 @@ class ScriptedLLM:
         # makes a needle fire for the wrong one: once the planning turn mentioned
         # delegation, a child answering "boom" matched its parent's "delegate" entry
         # and tried to launch past max_depth. Script against task content only.
-        last = last.replace(FIRST_TURN_SAFEGUARD, "").replace(ORCHESTRATOR_ADDENDUM, "")
+        last = last.replace(FIRST_TURN_SAFEGUARD, "").replace(PLANNING_ACTION, "")
         last = last.replace(LAST_TURN_ADDENDUM, "")
         last = re.sub(r"Turn \d+(?:/\d+)?:", "", last)
         for needle, reply in self.script:
@@ -150,6 +155,7 @@ def test_iters_and_budget_are_unbounded_unless_set():
     assert root.config.max_budget is None
     assert root.config.max_output_length == 20_000
     assert root.config.max_query_chars == 20_000
+    assert root.config.resume_on_child_done is True
     bounded = start("bounded", max_iters=30, max_budget=100_000)
     assert bounded.config.max_iters == 30
     assert bounded.config.max_budget == 100_000
@@ -260,7 +266,7 @@ def test_children_run_in_parallel():
         "handles = await asyncio.gather("
         "launch_subagent('do a', model='default', name='a'), "
         "launch_subagent('do b', model='default', name='b'))\n"
-        "results = await asyncio.gather(*[h.wait_for_result() for h in handles])\n"
+        "results = await asyncio.gather(*handles)\n"
         "print(results)"
     )
     llm = ScriptedLLM(
@@ -297,6 +303,211 @@ def test_children_run_in_parallel():
     assert sum(isinstance(n, AgentStart) for n in streamed) == 2
 
 
+def test_handle_valued_inputs_build_a_flat_dependency_graph(tmp_path):
+    parent = block(
+        "parser = await launch_subagent('parse-source', model='default', name='parser')\n"
+        "fixtures = await launch_subagent('inspect-fixtures', model='default', name='fixtures')\n"
+        "reconciler = await launch_subagent(\n"
+        "    'reconcile-inputs', model='default', name='reconciler',\n"
+        "    inputs={'parsed': parser, 'fixtures': fixtures})\n"
+        "critic = await launch_subagent(\n"
+        "    'critique-answer', model='default', name='critic',\n"
+        "    inputs={'reconciler': reconciler})\n"
+        "print(await critic)"
+    )
+    llm = ScriptedLLM(
+        [
+            ("build-dag", parent),
+            ("parse-source", block("finish({'count': 2})")),
+            ("inspect-fixtures", block("finish('F')")),
+            (
+                "reconcile-inputs",
+                block(
+                    "parsed = __import__('json').loads(INPUTS['parsed'])\n"
+                    "finish(f\"{parsed['count']}:{INPUTS['fixtures']}\")"
+                ),
+            ),
+            ("critique-answer", block("finish(INPUTS['reconciler'] + '!')")),
+            ("2:F!", block("finish('done')")),
+        ]
+    )
+    root = start("build-dag", max_depth=1)
+
+    assert Flow(llm).run(root) == "done"
+    assert [child.config.name for child in root.sub_agents] == [
+        "parser",
+        "fixtures",
+        "reconciler",
+        "critic",
+    ]
+    parser, fixtures, reconciler, critic = root.sub_agents
+    assert {agent.config.depth for agent in root.sub_agents} == {1}
+    assert reconciler.input_references == (
+        ("parsed", parser.id),
+        ("fixtures", fixtures.id),
+    )
+    assert critic.input_references == (("reconciler", reconciler.id),)
+    assert reconciler.config.inputs == {
+        "parsed": {"$rlmflow_agent": parser.id},
+        "fixtures": {"$rlmflow_agent": fixtures.id},
+    }
+    assert reconciler.resolved_inputs() == {"parsed": '{"count": 2}', "fixtures": "F"}
+    assert critic.resolved_inputs() == {"reconciler": "2:F"}
+
+    tasks = [first_user(messages) for messages in llm.calls]
+    assert tasks.index("reconcile-inputs") > tasks.index("parse-source")
+    assert tasks.index("reconcile-inputs") > tasks.index("inspect-fixtures")
+    assert tasks.index("critique-answer") > tasks.index("reconcile-inputs")
+
+    loaded = AgentStart.load(root.save(tmp_path / "dependency-run"))
+    loaded_parser, loaded_fixtures, loaded_reconciler, loaded_critic = loaded.sub_agents
+    assert loaded_reconciler.input_references == (
+        ("parsed", loaded_parser.id),
+        ("fixtures", loaded_fixtures.id),
+    )
+    assert loaded_critic.input_references == (("reconciler", loaded_reconciler.id),)
+    assert loaded_reconciler.config.inputs == reconciler.config.inputs
+
+
+def test_shared_source_feeds_multiple_flat_consumers():
+    parent = block(
+        "source = await launch_subagent('shared-source', model='default', name='source')\n"
+        "solver = await launch_subagent(\n"
+        "    'solve-source', model='default', name='solver', inputs={'source': source})\n"
+        "reviewer = await launch_subagent(\n"
+        "    'review-source', model='default', name='reviewer', inputs={'source': source})\n"
+        "print(await asyncio.gather(solver, reviewer))"
+    )
+    llm = ScriptedLLM(
+        [
+            ("fan-out", parent),
+            ("shared-source", block("finish('evidence')")),
+            ("solve-source", block("finish(INPUTS['source'] + ':solved')")),
+            ("review-source", block("finish(INPUTS['source'] + ':reviewed')")),
+            (
+                "['evidence:solved', 'evidence:reviewed']",
+                block("finish('done')"),
+            ),
+        ]
+    )
+    root = start("fan-out", max_depth=2)
+
+    assert Flow(llm).run(root) == "done"
+    assert [agent.config.name for agent in root.sub_agents] == [
+        "source",
+        "solver",
+        "reviewer",
+    ]
+    source, solver, reviewer = root.sub_agents
+    assert solver.input_references == (("source", source.id),)
+    assert reviewer.input_references == (("source", source.id),)
+    action = next(node for node in root.transcript() if isinstance(node, ExecAction))
+    assert set(action.launched_agent_ids.values()) == {
+        source.id,
+        solver.id,
+        reviewer.id,
+    }
+
+
+def test_launch_inputs_accept_mixed_strings_and_top_level_handles():
+    root = start("root", max_depth=1)
+    action = ExecAction(code="launch")
+    root.append(action)
+    source = AgentStart(content="source", config=root.config.child("source"))
+    action.append(source)
+    action.record_agent_launch(0, source)
+    handle = AgentHandle(source.id, "source", "root.source")
+
+    assert resolve_inputs(
+        action,
+        {"prompt": "immediate", "evidence": handle},
+    ) == {
+        "prompt": "immediate",
+        "evidence": {"$rlmflow_agent": source.id},
+    }
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        {"nested": {"handle": "not-an-agent-ref"}},
+        {"nested": ["not", "top-level"]},
+        {"number": 3},
+    ],
+)
+def test_launch_inputs_reject_nested_refs_and_non_string_values(inputs):
+    root = start("root")
+    action = ExecAction(code="launch")
+    root.append(action)
+
+    with pytest.raises(TypeError, match="string or top-level AgentHandle"):
+        resolve_inputs(action, inputs)
+
+
+def test_launch_inputs_reject_unknown_duplicate_and_out_of_scope_handles():
+    root = start("root", max_depth=2)
+    action = ExecAction(code="launch")
+    root.append(action)
+    source = AgentStart(content="source", config=root.config.child("source"))
+    action.append(source)
+    action.record_agent_launch(0, source)
+    source_handle = AgentHandle(source.id, "source", "root.source")
+
+    with pytest.raises(ValueError, match="unknown agent"):
+        resolve_inputs(
+            action,
+            {"missing": AgentHandle("missing", "missing", "root.missing")},
+        )
+    with pytest.raises(ValueError, match="duplicate agent input"):
+        resolve_inputs(action, {"a": source_handle, "b": source_handle})
+
+    nested_action = ExecAction(code="nested launch")
+    source.append(nested_action)
+    with pytest.raises(ValueError, match="outside the current agent"):
+        resolve_inputs(nested_action, {"source": source_handle})
+
+
+def test_dependency_scheduler_resumes_a_saved_blocked_agent(tmp_path):
+    parent = block(
+        "source = await launch_subagent('produce-source', model='default', name='source')\n"
+        "consumer = await launch_subagent(\n"
+        "    'consume-source', model='default', name='consumer', inputs={'source': source})\n"
+        "print(await consumer)"
+    )
+    llm = ScriptedLLM(
+        [
+            ("resume-dag", parent),
+            ("produce-source", block("finish('A')")),
+            ("consume-source", block("finish(INPUTS['source'] + '!')")),
+            ("A!", block("finish('resumed')")),
+        ]
+    )
+    root = start("resume-dag", max_depth=2)
+    flow = Flow(llm)
+
+    stopped = asyncio.run(
+        stream(
+            flow,
+            root,
+            lambda node, _root: (
+                isinstance(node, DoneOutput) and node.parent_agent.config.name == "source"
+            ),
+        )
+    )
+    assert stopped[-1].parent_agent.config.name == "source"
+    assert [child.config.name for child in root.sub_agents] == ["source", "consumer"]
+    source, consumer = root.sub_agents
+    assert consumer.input_references == (("source", source.id),)
+    assert consumer.blocked is False
+    assert consumer.frontier is consumer
+
+    restored = AgentStart.load(root.save(tmp_path / "blocked-run"))
+    assert Flow(llm).run(restored) == "resumed"
+    restored_source, restored_consumer = restored.sub_agents
+    assert restored_consumer.config.inputs == {"source": {"$rlmflow_agent": restored_source.id}}
+    assert restored_consumer.resolved_inputs() == {"source": "A"}
+
+
 def test_plan_query_allows_iterative_investigation_before_delegation():
     launch = block(
         "handles = await asyncio.gather("
@@ -312,7 +523,7 @@ def test_plan_query_allows_iterative_investigation_before_delegation():
             ),
             (
                 "preview",
-                    block("requirements = INPUTS['task'].splitlines()[1:]\nprint(requirements)"),
+                block("requirements = INPUTS['task'].splitlines()[1:]\nprint(requirements)"),
             ),
             ("requirement A", launch),
             ("alpha-workstream", block("finish('A')")),
@@ -348,13 +559,13 @@ def test_save_writes_a_run_directory(tmp_path):
 
     run = root.save(tmp_path / "run")
     graph = json.loads((run / "graph.json").read_text())
-    assert (graph["version"], graph["node_count"], graph["metadata"]) == (3, 14, {})
+    assert (graph["version"], graph["node_count"], graph["metadata"]) == (5, 15, {})
     assert graph["nodes"][0]["payload"]["inputs"] == {"doc": "hi"}
     assert graph["nodes"][0]["parent_id"] is None
 
     summary = json.loads((run / "latest.json").read_text())
     assert summary["agent_ids"] == ["root", "root.a"]
-    assert (summary["root_agent_id"], summary["node_count"]) == ("root", 14)
+    assert (summary["root_agent_id"], summary["node_count"]) == ("root", 15)
     assert (summary["finished"], summary["result"]) == (True, "AB")
 
     action = next(n for n in root.transcript() if isinstance(n, ExecAction))
@@ -447,6 +658,7 @@ def test_structured_output_is_stored_parsed():
         ("None", None),
         ("[1, 'é']", [1, "é"]),
         ("{'n': 41}", {"n": 41}),
+        ("'{\"n\": 41}'", '{"n": 41}'),
     ],
 )
 def test_unstructured_finish_keeps_json_values(expression, expected):
@@ -458,24 +670,38 @@ def test_unstructured_finish_keeps_json_values(expression, expected):
 
 
 @pytest.mark.parametrize(
-    ("expression", "expected"),
+    "expression",
     [
-        ("{1, 2}", "{1, 2}"),
-        ("b'bytes'", "b'bytes'"),
-        ("type('Thing', (), {'__str__': lambda self: 'thing'})()", "thing"),
-        ("float('nan')", "nan"),
-        ("float('inf')", "inf"),
+        "(1, 2)",
+        "{1: 'one'}",
+        "{1, 2}",
+        "{'nested': [(1, 2)]}",
+        "b'bytes'",
+        "type('Thing', (), {})()",
+        "float('nan')",
+        "float('inf')",
     ],
 )
-def test_unstructured_finish_does_not_require_json(expression, expected):
-    llm = ScriptedLLM([("return value", block(f"finish({expression})"))])
+def test_unstructured_finish_rejects_non_json_values(expression):
+    llm = ScriptedLLM(
+        [
+            ("return value", block(f"finish({expression})")),
+            ("requires a JSON value", block("finish('recovered')")),
+        ]
+    )
+    root = start("return value")
 
-    assert Flow(llm).run(start("return value")) == expected
+    assert Flow(llm).run(root) == "recovered"
+    assert any(
+        "requires a JSON value" in node.content
+        for node in root.transcript()
+        if isinstance(node, ErrorOutput)
+    )
 
 
 @pytest.mark.parametrize(
     ("expression", "error"),
-    [("{1, 2}", "JSON serializable"), ("float('nan')", "Out of range float")],
+    [("{1, 2}", "requires a JSON value"), ("float('nan')", "requires a JSON value")],
 )
 def test_explicit_output_schema_requires_json_compatible_values(expression, error):
     llm = ScriptedLLM(
@@ -486,6 +712,32 @@ def test_explicit_output_schema_requires_json_compatible_values(expression, erro
     )
 
     assert Flow(llm).run(start("return value", output_schema={})) == 1
+
+
+def test_json_finish_crosses_worker_and_persistence_boundary(tmp_path):
+    root = start("return value")
+    flow = Flow(
+        ScriptedLLM([("return value", block("finish({'n': [1, True, None]})"))]),
+        runtime=LocalRuntime(repl_timeout=10),
+    )
+
+    assert flow.run(root, close_repls=True) == {"n": [1, True, None]}
+    loaded = AgentStart.load(root.save(tmp_path / "json-finish"))
+    assert loaded.result() == {"n": [1, True, None]}
+
+
+@pytest.mark.parametrize("output_schema", [None, {}])
+def test_worker_finish_rejects_non_json_values_and_recovers(output_schema):
+    llm = ScriptedLLM(
+        [
+            ("return value", block("finish((1, 2))")),
+            ("requires a JSON value", block("finish({'ok': True})")),
+        ]
+    )
+    flow = Flow(llm, runtime=LocalRuntime(repl_timeout=10))
+
+    root = start("return value", output_schema=output_schema)
+    assert flow.run(root, close_repls=True) == {"ok": True}
 
 
 def test_prose_only_reply_is_told_to_send_a_block_and_recovers():
@@ -569,6 +821,78 @@ def test_lazy_restore_waits_until_code_needs_the_repl(tmp_path):
     assert flow.runtime.get(loaded) is None
     assert flow.run(loaded) == 42
     assert flow.runtime.get_var(loaded, "secret") == 41
+
+
+def terminal_parent_with_unfinished_shared_child(tmp_path, name):
+    """Cold graph whose unfinished child still needs its terminal parent's heap."""
+    root = start("parent", max_depth=1, resume_on_child_done=False)
+    parent_action = ExecAction(
+        code="shared = ['parent']",
+        repl_execution_order=1,
+    )
+    root.append(parent_action)
+    child = AgentStart(
+        content="child",
+        config=root.config.child("child", reuse_repl=True),
+    )
+    parent_action.append(child)
+    parent_action.append(DoneOutput(result="parent done"))
+
+    child_action = ExecAction(
+        code="shared.append('child')",
+        repl_execution_order=2,
+    )
+    child.append(child_action)
+    child_action.append(ExecOutput(content="stored"))
+    return AgentStart.load(root.save(tmp_path / name))
+
+
+@pytest.mark.parametrize("restore_mode", ["replay", "lazy"])
+def test_restore_rebuilds_terminal_worker_owner_for_unfinished_shared_child(
+    tmp_path,
+    restore_mode,
+):
+    loaded = terminal_parent_with_unfinished_shared_child(tmp_path, restore_mode)
+    child = loaded.sub_agents[0]
+    flow = Flow(
+        ScriptedLLM([("stored", block("finish(shared)"))]),
+        runtime=LocalRuntime(repl_timeout=10),
+        restore=restore_mode,
+    )
+
+    assert flow.run(loaded, close_repls=True) == "parent done"
+    assert child.result() == ["parent", "child"]
+
+
+def test_replay_keeps_terminal_shared_tenant_mutations_needed_by_live_parent(
+    tmp_path,
+):
+    root = start("parent", max_depth=1)
+    parent_action = ExecAction(
+        code="shared = ['parent']",
+        repl_execution_order=1,
+    )
+    root.append(parent_action)
+    child = AgentStart(
+        content="child",
+        config=root.config.child("child", reuse_repl=True),
+    )
+    parent_action.append(child)
+    parent_action.append(ExecOutput(content="child done"))
+    child_action = ExecAction(
+        code="shared.append('child')",
+        repl_execution_order=2,
+    )
+    child.append(child_action)
+    child_action.append(DoneOutput(result="child done"))
+    loaded = AgentStart.load(root.save(tmp_path / "terminal-shared-child"))
+
+    flow = Flow(
+        ScriptedLLM([("child done", block("finish(shared)"))]),
+        runtime=LocalRuntime(repl_timeout=10),
+    )
+
+    assert flow.run(loaded, close_repls=True) == ["parent", "child"]
 
 
 def test_replay_reads_recorded_child_answers_instead_of_relaunching(tmp_path):
@@ -798,11 +1122,13 @@ def test_max_depth_refusal():
     llm = ScriptedLLM(
         [
             ("deep", block("print(await launch_subagent('x', model='default'))")),
-            ("max depth", block("finish('stopped')")),
+            ("is not defined", block("finish('stopped')")),
         ]
     )
     root = start("go deep", max_depth=0)
-    assert Flow(llm).run(root) == "stopped"
+    flow = Flow(llm)
+    assert "launch_subagent" not in flow.build_tools(root)
+    assert flow.run(root) == "stopped"
     assert root.sub_agents == []
 
 
@@ -908,7 +1234,7 @@ def test_background_child_outlives_root_and_stream_drains_it():
             )
 
     flow = Flow(BackgroundLLM(), workers=2)
-    root = flow.start("launch without joining", max_depth=1)
+    root = flow.start("launch without joining", max_depth=1, resume_on_child_done=False)
 
     async def run():
         observed = []
@@ -952,6 +1278,7 @@ def test_child_handle_waits_on_a_later_turn():
             ),
             ("child task", block("finish('child answer')")),
             ("queued later", wait),
+            ("[handoff root.later]", wait),
         ]
     )
     root = start("start later", max_depth=1)
@@ -1132,6 +1459,85 @@ def test_child_output_schema_comes_back_parsed():
     assert root.sub_agents[0].config.output_schema == schema
 
 
+def test_children_inherit_their_parents_max_iters():
+    root = start("root", max_iters=7)
+    child = root.config.child("child")
+    grandchild = child.child("grandchild")
+
+    assert child.max_iters == grandchild.max_iters == 7
+
+
+def test_child_config_applies_child_output_schema_without_sharing_the_dict():
+    schema = {
+        "type": "object",
+        "properties": {"done": {"type": "boolean"}},
+        "required": ["done"],
+    }
+    child = start("q", child_output_schema=schema).config.child("worker")
+    assert child.output_schema == schema
+    assert child.output_schema is not schema
+    assert child.child_output_schema == schema
+    assert start("q").config.child("worker").output_schema is None
+
+
+def test_child_inherits_child_output_schema_when_launch_omits_it():
+    schema = {
+        "type": "object",
+        "properties": {"n": {"type": "number"}},
+        "required": ["n"],
+    }
+    parent = block(
+        "child = await launch_subagent('count', model='default', name='x')\n"
+        "result = await child.wait_for_result()\n"
+        "print(result['n'] + 1)"
+    )
+    llm = ScriptedLLM(
+        [
+            ("measure", parent),
+            ("count", block("finish({'n': 41})")),
+            ("42", block("finish('42')")),
+        ]
+    )
+    root = start("measure it", max_depth=1, child_output_schema=schema)
+    assert Flow(llm).run(root) == "42"
+    child = root.sub_agents[0]
+    assert root.config.output_schema is None
+    assert child.config.output_schema == schema
+    assert child.config.output_schema is not root.config.child_output_schema
+    assert child.config.child_output_schema == schema
+
+
+def test_launch_output_schema_overrides_child_output_schema():
+    inherited = {
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "required": ["a"],
+    }
+    schema = {
+        "type": "object",
+        "properties": {"n": {"type": "number"}},
+        "required": ["n"],
+    }
+    parent = block(
+        "child = await launch_subagent('count', model='default', name='x', "
+        f"output_schema={schema!r})\n"
+        "result = await child.wait_for_result()\n"
+        "print(result['n'])"
+    )
+    llm = ScriptedLLM(
+        [
+            ("measure", parent),
+            ("count", block("finish({'n': 41})")),
+            ("41", block("finish('ok')")),
+        ]
+    )
+    root = start("measure it", max_depth=1, child_output_schema=inherited)
+    assert Flow(llm).run(root) == "ok"
+    child = root.sub_agents[0]
+    assert child.config.output_schema == schema
+    assert child.config.child_output_schema == inherited
+
+
 def test_prompt_profile_picks_a_child_system_prompt():
     parent = block(
         "child = await launch_subagent("
@@ -1246,11 +1652,17 @@ def test_long_child_query_is_refused():
     assert root.sub_agents == []
 
 
-def test_budget_stops_the_run():
-    llm = ScriptedLLM([("", block("print('spending')"))])
+def test_exhausted_budget_gives_the_agent_one_final_turn():
+    llm = ScriptedLLM(
+        [
+            ("last turn", block("finish('best effort')")),
+            ("", block("print('spending')")),
+        ]
+    )
     llm.last_usage = SimpleNamespace(input_tokens=8, output_tokens=8)
     root = start("spend it all", max_budget=10)
-    assert Flow(llm).run(root) == "[budget exceeded]"
+    assert Flow(llm).run(root) == "best effort"
+    assert sum(isinstance(node, FinalQuery) for node in root.transcript()) == 1
 
 
 def test_a_nearly_spent_budget_asks_for_an_answer_instead_of_dropping_the_run():
@@ -1279,6 +1691,65 @@ def test_the_budget_gate_never_discards_an_answer_already_paid_for():
     root = start("answer immediately", max_budget=10)
 
     assert Flow(llm).run(root) == "landed"
+
+
+def test_exhausted_budget_finalizes_children_before_the_parent():
+    class ConcurrentBudgetLLM:
+        def __init__(self):
+            self.children_ready = asyncio.Barrier(2)
+
+        async def stream(self, messages):
+            query = first_user(messages)
+            final = messages[-1]["content"].startswith("This is your last turn")
+            if final:
+                if query == "parent":
+                    assert any("a-final,b-final" in message["content"] for message in messages)
+                    reply = block("finish('root-final')")
+                else:
+                    reply = block(f"finish({f'{query}-final'!r})")
+                usage = LLMUsage(output_tokens=1)
+            elif query == "parent":
+                reply = block(
+                    "handles = await asyncio.gather(\n"
+                    "    launch_subagent('a', model='default', name='a'),\n"
+                    "    launch_subagent('b', model='default', name='b'),\n"
+                    ")\n"
+                    "answers = await asyncio.gather(\n"
+                    "    *(handle.wait_for_result() for handle in handles)\n"
+                    ")\n"
+                    "print(','.join(answers))"
+                )
+                usage = LLMUsage(output_tokens=1)
+            else:
+                await self.children_ready.wait()
+                reply = block(f"draft = {query!r}\nprint(draft)")
+                usage = LLMUsage(output_tokens=8)
+            yield LLMChunk(text=reply, usage=usage)
+
+    root = start("parent", max_depth=1, max_budget=10)
+    result = Flow(ConcurrentBudgetLLM(), runtime=TestRuntime()).run(root)
+
+    assert result == "root-final"
+    assert root.usage.total > root.config.max_budget
+    assert len(root.sub_agents) == 2
+    for agent in (root, *root.sub_agents):
+        assert sum(isinstance(node, FinalQuery) for node in agent.transcript()) == 1
+
+
+def test_exhausted_budget_rejects_new_children():
+    flow = Flow(ScriptedLLM([]))
+    root = start("parent", max_depth=1, max_budget=1)
+    reply = LLMOutput(usage=LLMUsage(output_tokens=1))
+    root.append(reply)
+    action = ExecAction(code="pass")
+    reply.append(action)
+
+    with pytest.raises(RuntimeError, match="cannot launch.*max_budget"):
+        flow.new_child(
+            action,
+            "late",
+            {"query": "too late", "model": "default"},
+        )
 
 
 def test_child_failure_reaches_the_parent():
@@ -1320,7 +1791,7 @@ def test_aclose_drops_the_work_and_the_repls():
     assert flow.queue is None
 
 
-def test_parallel_roots_use_parallel_stream_not_competing_stream_drivers():
+def test_one_flow_rejects_competing_stream_drivers():
     llm = ScriptedLLM([("one", block("finish('first')")), ("two", block("finish('second')"))])
     flow = Flow(llm)
     first, second = start("one"), start("two")

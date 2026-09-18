@@ -7,9 +7,10 @@ import json
 from dataclasses import dataclass, field
 from typing import Literal
 
+from rlmflow.graph.config import AGENT_REF_KEY
 from rlmflow.graph.nodes import AgentStart, ExecAction, Node
 
-AgentStatus = Literal["running", "waiting", "idle", "completed"]
+AgentStatus = Literal["blocked", "running", "waiting", "idle", "completed"]
 AGENTS_BINDING = "__rlmflow_agents__"
 AGENT_WAIT_TOOL = "__rlmflow_wait_agent__"
 AGENT_OBSERVE_TOOL = "__rlmflow_observe_agent__"
@@ -95,6 +96,21 @@ class AgentHandle:
             raise RuntimeError("agent waiting is unavailable in this execution")
         return await waiter(self.agent_id)
 
+    def __await__(self):
+        """Wait for this agent using Python's ordinary future syntax."""
+        return self.wait_for_result().__await__()
+
+
+def encode_agent_references(value: object) -> object:
+    """Replace handles with data-only markers accepted by the proxy protocol."""
+    if isinstance(value, AgentHandle):
+        return {AGENT_REF_KEY: value.agent_id}
+    if isinstance(value, dict):
+        return {key: encode_agent_references(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [encode_agent_references(item) for item in value]
+    return value
+
 
 @dataclass(frozen=True, slots=True)
 class AgentInfo:
@@ -108,6 +124,9 @@ class AgentInfo:
     child_ids: tuple[str, ...]
     status: AgentStatus
     frontier: AgentFrontier
+    dependency_paths: tuple[str, ...]
+    dependent_paths: tuple[str, ...]
+    blocked_on_paths: tuple[str, ...]
     _result: object | None = field(default=None, repr=False)
 
     def done(self) -> bool:
@@ -227,16 +246,19 @@ class AgentDirectory:
     def render_graph(
         self,
         *,
+        view: Literal["ownership", "dependencies"] = "ownership",
         show_results: bool = False,
         max_result_chars: int = 160,
     ) -> str:
-        """Render the snapshotted tree as compact ASCII text."""
+        """Render the ownership tree or consumer-rooted dependency projection."""
         if max_result_chars < 1:
             raise ValueError("max_result_chars must be >= 1")
+        if view not in ("ownership", "dependencies"):
+            raise ValueError("view must be 'ownership' or 'dependencies'")
 
         lines: list[str] = []
 
-        def visit(agent: AgentInfo, prefix: str, connector: str) -> None:
+        def label(agent: AgentInfo, connector: str) -> str:
             label = f"{connector}{agent.name} [{agent.status}]"
             if agent.agent_id == self.viewer_id:
                 label += " (you)"
@@ -244,7 +266,10 @@ class AgentDirectory:
                 preview = self._result_preview(agent.result(), max_result_chars)
                 if preview:
                     label += f" -> {preview}"
-            lines.append(prefix + label)
+            return label
+
+        def visit(agent: AgentInfo, prefix: str, connector: str) -> None:
+            lines.append(prefix + label(agent, connector))
 
             children = [self._by_id[child_id] for child_id in agent.child_ids]
             child_prefix = prefix + ("    " if connector == "└── " else "│   ")
@@ -254,18 +279,57 @@ class AgentDirectory:
                 last = index == len(children) - 1
                 visit(child, child_prefix, "└── " if last else "├── ")
 
-        visit(self._by_id[self.root_id], "", "")
+        def visit_dependencies(
+            agent: AgentInfo,
+            prefix: str,
+            connector: str,
+            branch: frozenset[str],
+        ) -> None:
+            lines.append(prefix + label(agent, connector))
+            if agent.path in branch:
+                lines[-1] += " (cycle)"
+                return
+            sources = [self._by_path[path] for path in agent.dependency_paths]
+            child_prefix = prefix + ("    " if connector == "└── " else "│   ")
+            if not connector:
+                child_prefix = ""
+            nested = branch | {agent.path}
+            for index, source in enumerate(sources):
+                last = index == len(sources) - 1
+                visit_dependencies(
+                    source,
+                    child_prefix,
+                    "└── " if last else "├── ",
+                    nested,
+                )
+
+        if view == "ownership":
+            visit(self._by_id[self.root_id], "", "")
+        else:
+            sinks = [
+                agent
+                for agent in self.agents
+                if agent.dependency_paths and not agent.dependent_paths
+            ]
+            for index, sink in enumerate(sinks):
+                if index:
+                    lines.append("")
+                visit_dependencies(sink, "", "", frozenset())
+            if not sinks:
+                lines.append("(no dependency edges)")
         return "\n".join(lines)
 
     def print_graph(
         self,
         *,
+        view: Literal["ownership", "dependencies"] = "ownership",
         show_results: bool = False,
         max_result_chars: int = 160,
     ) -> None:
         """Print :meth:`render_graph` for the REPL's stdout-only observation."""
         print(
             self.render_graph(
+                view=view,
                 show_results=show_results,
                 max_result_chars=max_result_chars,
             )
@@ -303,6 +367,10 @@ def build_agent_directory(
     running_by_agent = {
         node.parent_agent.id: node for node in running_nodes if node.parent_agent is not None
     }
+    dependents: dict[str, list[str]] = {}
+    for agent in root.iter_agents():
+        for _input_name, source_id in agent.input_references:
+            dependents.setdefault(source_id, []).append(agent.config.path)
     info: list[AgentInfo] = []
 
     for agent in root.iter_agents():
@@ -310,6 +378,8 @@ def build_agent_directory(
         running = running_by_agent.get(agent.id)
         if agent.terminal:
             status: AgentStatus = "completed"
+        elif agent.blocked:
+            status = "blocked"
         elif running is None:
             status = "idle"
         elif isinstance(running, ExecAction) and any(
@@ -333,6 +403,17 @@ def build_agent_directory(
                     type=agent.frontier.type,
                     seq=agent.frontier.seq,
                 ),
+                dependency_paths=tuple(
+                    source.config.path
+                    for _input_name, source_id in agent.input_references
+                    if (source := root.find_agent(source_id)) is not None
+                ),
+                dependent_paths=tuple(dependents.get(agent.id, ())),
+                blocked_on_paths=tuple(
+                    source.config.path
+                    for _input_name, source_id in agent.input_references
+                    if ((source := root.find_agent(source_id)) is not None and not source.terminal)
+                ),
                 _result=_json_safe(agent.result()) if agent.terminal else None,
             )
         )
@@ -347,6 +428,7 @@ def build_agent_directory(
 __all__ = [
     "AGENTS_BINDING",
     "AGENT_OBSERVE_TOOL",
+    "AGENT_REF_KEY",
     "AGENT_WAIT_TOOL",
     "AgentDirectory",
     "AgentFrontier",
@@ -354,4 +436,5 @@ __all__ = [
     "AgentInfo",
     "AgentStatus",
     "build_agent_directory",
+    "encode_agent_references",
 ]

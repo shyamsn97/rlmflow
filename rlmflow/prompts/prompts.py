@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from rlmflow.graph.config import can_spawn
+from rlmflow.graph.prompts import EXECUTION_POLICY, WORKER_ADDENDUM
 from rlmflow.prompts.messages import RenderFn, build_inputs_manifest
 from rlmflow.structured import system_prompt_hint
 
@@ -19,22 +20,26 @@ RLM_SYSTEM_PROMPT = textwrap.dedent(
     You are a Recursive Language Model (RLM): a language model with a prompt, and a very important context stored in a Python REPL related to that prompt.
     You can iteratively interact with the Python REPL, which has access to LLM calls as a function. You will be queried turn-by-turn until you have an answer to the query.
 
+    {execution_policy}
+
     To use the REPL, write code in ```repl``` blocks; the REPL persists across turns. Available in the REPL:
     - `INPUTS: dict[str, str]`: the important, potentially very long information related to the prompt.
     - Top-level `await` is available; do not start another event loop.
     {tools}
 
-    REPL outputs over ~20K characters are truncated, so do not `print` long payloads; put bulky text in a child `inputs=` or a one-shot query rather than printing them whole. The REPL is NOT a Jupyter cell — only `print(...)` output (stdout) is shown back to you between turns; a bare expression on the last line is silently discarded. Always wrap inspections in `print(...)`.
-
-    As a general strategy, you should start by probing your INPUTS to understand them better (e.g. print a few lines, count them, etc.). Then, use the REPL to build up an answer to the query.
-
-    Plan in prose, then execute one ```repl``` block every turn, get feedback from the output, then continue on the next turn. Do not call `finish(...)` on turn 1 without first inspecting `INPUTS`.
+    Operating rules:
+    - Inspect bounded samples or summaries of `INPUTS` before substantial work.
+    - Execute one ```repl``` block, observe its output, then revise the next step.
+    - Only printed stdout is returned; wrap inspections in `print(...)`.
+    - Outputs over ~20K characters are truncated. Keep bulky values in the REPL or pass them through `inputs=`.
+    - Call `finish(...)` only when the requested answer is supported. Do not finish on turn 1 before inspecting `INPUTS`.
     """
 )
 
 STRUCTURED_OUTPUT_TEXT = """\
 This run requires structured output. When complete, call `finish(value)` with a
-JSON-compatible Python value matching this JSON Schema exactly:
+JSON-compatible Python value matching this JSON Schema exactly — the value
+itself, not a status string:
 
 ```json
 {schema_hint}
@@ -51,9 +56,17 @@ class PromptBuilder:
 
     def __call__(self, flow: Any = None, node: Any = None) -> str:
         if flow is None:
-            return RLM_SYSTEM_PROMPT.format(tools="")
+            return RLM_SYSTEM_PROMPT.format(
+                execution_policy=EXECUTION_POLICY,
+                tools="",
+            )
+        agent = as_agent(node)
+        execution_policy = EXECUTION_POLICY if can_spawn(agent) else WORKER_ADDENDUM
         parts = [
-            RLM_SYSTEM_PROMPT.format(tools=flow.render_tools(node)),
+            RLM_SYSTEM_PROMPT.format(
+                execution_policy=execution_policy,
+                tools=flow.render_tools(node),
+            ),
             flow.render_inputs(node),
         ]
         return "\n\n".join(part for part in parts if part)
@@ -110,7 +123,7 @@ def render_inputs_text(flow: Any, node: Any) -> str:
     if agent is None:
         return ""
     parts: list[str] = []
-    manifest = build_inputs_manifest(dict(agent.config.inputs))
+    manifest = build_inputs_manifest(agent.resolved_inputs())
     if manifest:
         parts.append(manifest)
     schema = agent.config.output_schema

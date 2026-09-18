@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from typing import Any, ClassVar, Literal
 
 from rlmflow import boundaries
-from rlmflow.engine import delegation, restore
+from rlmflow.engine import delegation, handoff, restore
 from rlmflow.engine.boundaries import StepUntil
 from rlmflow.engine.execution import Pool, TaskQueue, ThreadPool, Transition
 from rlmflow.engine.transitions import Transitions
@@ -19,6 +19,7 @@ from rlmflow.graph.nodes import (
     AgentStart,
     DoneOutput,
     ExecAction,
+    FinalQuery,
     LLMOutput,
     LLMUsage,
     Node,
@@ -40,8 +41,6 @@ from rlmflow.runtime.repl import Repl, ReplRun
 from rlmflow.tools import namespace
 from rlmflow.tools.builtins import BuiltIns
 from rlmflow.tools.llm_query import llm_query, llm_query_batched
-
-BUDGET_EXCEEDED = "[budget exceeded]"
 
 
 @contextmanager
@@ -253,11 +252,14 @@ class Flow:
     async def _drive(self, node: Node) -> Transition:
         """Queue entry: one step, with infrastructure failure as a terminal node."""
         error: BaseException | None = None
+        finalizing = self.budget_exceeded(node)
+        if finalizing:
+            await self._wait_for_budget_descendants(node.parent_agent)
 
         with timed(node):
             try:
-                if self.budget_exceeded(node):
-                    landed = DoneOutput(result=BUDGET_EXCEEDED)
+                if finalizing:
+                    landed = FinalQuery()
                 else:
                     produced = self.transitions.resolve(node)(self, node)
                     landed = await produced if inspect.isawaitable(produced) else produced
@@ -277,18 +279,39 @@ class Flow:
 
         return Transition(submitted=node, created=landed, error=error)
 
-    def budget_exceeded(self, node: Node) -> bool:
-        limit = node.parent_agent.config.max_budget
+    def budget_exhausted(self, node: Node) -> bool:
+        """Whether this run has reached its configured soft token threshold."""
+        agent = node.parent_agent
+        limit = agent.config.max_budget
         if limit is None:
-            return False
-        # Never discard a reply already paid for. The answer arrives in an LLMOutput
-        # and only lands once its ExecAction runs finish(), so stopping at either one
-        # spends the tokens and throws the result away. The gate belongs in front of
-        # the next model call, which is where `budget_nearly_spent` asks for an answer.
-        if isinstance(node, (LLMOutput, ExecAction)):
             return False
         root = node.root
         return root is not None and root.usage.total >= limit
+
+    def budget_exceeded(self, node: Node) -> bool:
+        """Whether this node must enter its agent's one final turn."""
+        # Never discard a reply already paid for. The answer arrives in an LLMOutput
+        # and only lands once its ExecAction runs finish(), so stopping at either one
+        # spends the tokens and throws the result away. FinalQuery itself must also
+        # run even though the threshold has already been crossed.
+        if isinstance(node, (FinalQuery, LLMOutput, ExecAction)):
+            return False
+        return self.budget_exhausted(node)
+
+    async def _wait_for_budget_descendants(self, agent: AgentStart) -> None:
+        """Let unfinished descendants finalize before their parent synthesizes."""
+        queue = self.queue
+        if queue is None:
+            return
+        descendants: list[AgentStart] = []
+        stack = list(agent.sub_agents)
+        while stack:
+            child = stack.pop()
+            if not child.terminal:
+                descendants.append(child)
+            stack.extend(child.sub_agents)
+        if descendants:
+            await asyncio.gather(*(queue.join(child) for child in descendants))
 
     async def execute_action(self, node: ExecAction) -> ReplRun:
         return await self.wrapped_runtime.execute(node)
@@ -335,7 +358,7 @@ class Flow:
         spec: dict[str, Any],
         call_id: int,
     ) -> AgentStart:
-        """Resolve one launch call to a direct child or refusal."""
+        """Resolve one previously unseen launch call to a child or refusal."""
         return delegation.resolve_child(self, action, spec, call_id)
 
     def submit_child(self, child: AgentStart) -> None:
@@ -347,11 +370,9 @@ class Flow:
         node: Node,
         name: str,
         spec: dict[str, Any],
-        *,
-        call_id: int,
     ) -> AgentStart:
         """Open a child agent of ``node``'s agent, attached to ``node``."""
-        return delegation.new_child(self, node, name, spec, call_id=call_id)
+        return delegation.new_child(self, node, name, spec)
 
     # -- Running ----------------------------------------------------------
 
@@ -393,6 +414,12 @@ class Flow:
                         if self.restore == "replay":
                             await self.replay(node)
 
+        for agent in agents:
+            for node in agent.walk():
+                if isinstance(node, AgentStart):
+                    node.dependency_scheduled = False
+            handoff.restore(agent)
+
         queue = TaskQueue()
         self.queue = queue
         driving = {id(agent) for agent in agents}
@@ -404,7 +431,7 @@ class Flow:
                     if owner is not None and not owner.terminal:
                         if self.restore == "lazy" and isinstance(leaf, ExecAction):
                             await self.ensure_replayed(owner)
-                        queue.submit(leaf, self._drive)
+                        delegation.submit_leaf(self, leaf)
 
             while driving and queue:
                 transition = await queue.next()
@@ -428,10 +455,19 @@ class Flow:
                 if stop:
                     driving.discard(id(root))
                     await queue.cancel(root.walk())
-                elif not transition.is_agent_start and not node.parent_agent.terminal:
-                    if self.restore == "lazy" and isinstance(node, ExecAction):
-                        await self.ensure_replayed(node.parent_agent)
-                    queue.submit(node, self._drive)
+                else:
+                    extra = handoff.apply(node)
+                    for dependent in delegation.ready_dependents(node):
+                        self.submit_child(dependent)
+                    if not transition.is_agent_start and not node.parent_agent.terminal:
+                        if node.parent_agent.frontier is node:
+                            if self.restore == "lazy" and isinstance(node, ExecAction):
+                                await self.ensure_replayed(node.parent_agent)
+                            queue.submit(node, self._drive)
+                    for leaf in extra:
+                        owner = leaf.parent_agent
+                        if owner is not None and not owner.terminal:
+                            delegation.submit_leaf(self, leaf)
 
                 if root_error is not None:
                     raise root_error

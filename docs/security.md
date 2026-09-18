@@ -33,13 +33,13 @@ Independent of the runtime:
 
 - `max_depth=1` — recursion limit.
 - `max_iters=None` — LLM calls per agent (set a number to cap).
-- `max_budget=None` — total tokens across the run (set a number to cap).
+- `max_budget=None` — soft whole-run token threshold; exhaustion allows in-flight calls and one bottom-up final turn per unfinished agent.
 - `max_output_length=20_000` — truncate oversized stdout (official RLM's per-block cap).
 - `workers` — cap concurrent blocking LLM calls on the flow's thread pool.
 
 ## Proxied tools
 
-`Flow(tools=[...])` and `flow.add_tool(fn)` expose callables to the agent worker. Tools marked `@tool(proxy=True)` execute on the host through the worker's private protocol stream; local tools are copied into the worker when possible. Working-directory-aware tools run relative to `runtime.working_directory`.
+`Flow(tools=[...])` and `flow.add_tool(fn)` expose callables to the agent worker. Tools marked `@tool(proxy=True)` execute on the host through the worker's private protocol stream; local tools are copied into the worker when possible. Working-directory-aware tools run relative to `runtime.working_directory`. `@tool(..., when=...)` hides a name from that agent's prompt and namespace; it is not a sandbox. The worker can still write files with ordinary Python.
 
 Tools you register are part of the trust boundary. The container can be sealed off, but any injected tool runs on the host with host privileges. Worker-to-host arguments are restricted to JSON data; the host never deserializes worker-controlled Python objects. Keep the tool surface small and still validate the meaning and bounds of every argument.
 

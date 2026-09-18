@@ -1,29 +1,19 @@
 # Recursive Agent Optimization: Implementation Plan
 
-> **Status:** The `rlmflow.rao` utilities are implemented but experimental. This
-> is their original design record, not evidence of a validated RAO reproduction
-> or training improvement.
+> **Status:** The `rlmflow.rao` utilities are implemented but experimental. This is their original design record, not evidence of a validated RAO reproduction or training improvement.
 >
-> **Current API:** `Flow` drives a recursive Node tree. Active task settings live
-> on `AgentConfig`, supplied via `flow.start(...)` or `Flow(root_config=...)`.
-> Agent code reads its inputs through `INPUTS` (`AgentConfig.inputs`). Cold spawn
-> uses `launch_subagent`; prepared host branches use `node.fork()` plus
-> `append_child`. See `docs/control.md` and `docs/internals.md`.
+> **Current API:** `Flow` drives a recursive Node tree. Active task settings live on `AgentConfig`, supplied via `flow.start(...)` or `Flow(root_config=...)`. Agent code reads its inputs through `INPUTS` (`AgentConfig.inputs`). Cold spawn uses `launch_subagent`; prepared host branches use `node.fork()` plus `append_child`. See `docs/control.md` and `docs/internals.md`.
 
-This note sketches how to implement Recursive Agent Optimization (RAO) on top of
-`rlmflow`.
+This note sketches how to implement Recursive Agent Optimization (RAO) on top of `rlmflow`.
 
 Sources:
 
 - RAO project page: <https://apga.github.io/RAO/>
-- Local `rlmflow` architecture docs: `README.md`, `docs/control.md`,
-  `docs/internals.md`, `docs/node_model.md`, and `docs/observability.md`.
+- Local `rlmflow` architecture docs: `README.md`, `docs/control.md`, `docs/internals.md`, `docs/node_model.md`, and `docs/observability.md`.
 
 ## Short Answer
 
-RAO is a natural fit for this repo, but it should be implemented as a
-first-class `rlmflow.rao` library module around `Flow`, not as a rewrite
-of the runtime.
+RAO is a natural fit for this repo, but it should be implemented as a first-class `rlmflow.rao` library module around `Flow`, not as a rewrite of the runtime.
 
 `rlmflow` already has most of the inference substrate RAO assumes:
 
@@ -32,10 +22,8 @@ of the runtime.
 - `launch_subagent(...)` and `AgentHandle` for background recursive delegation;
 - a durable tree of per-agent trajectories via recursive `Node.children`;
 - per-agent task payloads through `AgentConfig.inputs` / `INPUTS`;
-- depth and iteration controls on `AgentConfig`, via `flow.start(...)` or
-  `Flow(root_config=...)`;
-- the Node tree plus `AgentStart.save` / `AgentStart.load` and `Flow(restore=...)`
-  for replay, inspection, forking, and dataset export.
+- depth and iteration controls on `AgentConfig`, via `flow.start(...)` or `Flow(root_config=...)`;
+- the Node tree plus `AgentStart.save` / `AgentStart.load` and `Flow(restore=...)` for replay, inspection, forking, and dataset export.
 
 The missing RAO pieces are training-specific:
 
@@ -67,31 +55,19 @@ RAO research layer
 
 ## What RAO Needs
 
-RAO trains a single shared policy to use recursive delegation as an
-inference-time primitive. The policy runs at the root and at every child node.
-During a rollout, each agent instance can solve locally, spawn background child
-agents, continue independent work, explicitly wait for child results when needed,
-and synthesize an answer. Launch-time blocking is not part of RAO's objective;
-complete terminal trajectories are.
+RAO trains a single shared policy to use recursive delegation as an inference-time primitive. The policy runs at the root and at every child node. During a rollout, each agent instance can solve locally, spawn background child agents, continue independent work, explicitly wait for child results when needed, and synthesize an answer. Launch-time blocking is not part of RAO's objective; complete terminal trajectories are.
 
 The RAO project page describes three important ideas:
 
-- **recursive agent inference**: agents can launch recursive copies of the same
-  policy on sub-tasks;
-- **local node reward with delegation bonus**: each node receives reward for its
-  own task success plus a bonus for successful immediate children;
-- **depth-weighted multi-task optimization**: trajectories from all tree depths
-  train the same policy, but deeper nodes are reweighted so they do not dominate
-  updates just because they are more numerous.
+- **recursive agent inference**: agents can launch recursive copies of the same policy on sub-tasks;
+- **local node reward with delegation bonus**: each node receives reward for its own task success plus a bonus for successful immediate children;
+- **depth-weighted multi-task optimization**: trajectories from all tree depths train the same policy, but deeper nodes are reweighted so they do not dominate updates just because they are more numerous.
 
-That maps cleanly onto the Node tree: each `agent_id` identifies one agent
-trajectory, and child-agent roots are attached beneath the supervising Node.
+That maps cleanly onto the Node tree: each `agent_id` identifies one agent trajectory, and child-agent roots are attached beneath the supervising Node.
 
 ## Core Data Model
 
-Do not add RAO fields directly to `Node` unless they are durable run state
-needed for normal inference. Rewards, advantages, and trainer metadata are
-research annotations over a tree, not core Node state.
+Do not add RAO fields directly to `Node` unless they are durable run state needed for normal inference. Rewards, advantages, and trainer metadata are research annotations over a tree, not core Node state.
 
 Use separate dataclasses:
 
@@ -133,14 +109,11 @@ class TrajectoryExample:
     metadata: dict[str, Any] = field(default_factory=dict)
 ```
 
-`TaskSpec` is benchmark input. `NodeScore` is reward output. `TrajectoryExample`
-is what gets exported to a trainer.
+`TaskSpec` is benchmark input. `NodeScore` is reward output. `TrajectoryExample` is what gets exported to a trainer.
 
 ## Reward Interface
 
-RAO needs local task reward at every node. That means the reward function must be
-able to score not only the root task, but also child tasks generated by the
-policy.
+RAO needs local task reward at every node. That means the reward function must be able to score not only the root task, but also child tasks generated by the policy.
 
 The smallest useful interface:
 
@@ -157,32 +130,21 @@ For benchmark tasks where child tasks have no gold label, use proxy reward:
 
 - exact evaluator if the child context includes a verifiable target;
 - LLM judge for decomposition quality or evidence quality;
-- parent-consistency score if the child output can be checked against the
-  parent's final result;
-- zero local child score at first, then only train root success until a better
-  evaluator exists.
+- parent-consistency score if the child output can be checked against the parent's final result;
+- zero local child score at first, then only train root success until a better evaluator exists.
 
-The important constraint: reward code should be benchmark-owned. The engine
-should not know what "success" means.
+The important constraint: reward code should be benchmark-owned. The engine should not know what "success" means.
 
 ## How Rewarding And Credit Assignment Actually Work
 
 RAO has four separate stages. Keeping them separate matters:
 
-1. **Finish the rollout trees.** Every root and descendant must have a terminal
-   success, failure, cancellation, or truncation status.
-2. **Score each agent locally.** The benchmark evaluates how well that agent
-   solved the task it was given.
-3. **Turn scores into advantages.** Compare each trajectory's reward against a
-   leave-one-out baseline formed from other root rollouts of the same task.
-4. **Train the shared policy.** Apply each trajectory's weighted advantage to the
-   model actions/tokens in that trajectory.
+1. **Finish the rollout trees.** Every root and descendant must have a terminal success, failure, cancellation, or truncation status.
+1. **Score each agent locally.** The benchmark evaluates how well that agent solved the task it was given.
+1. **Turn scores into advantages.** Compare each trajectory's reward against a leave-one-out baseline formed from other root rollouts of the same task.
+1. **Train the shared policy.** Apply each trajectory's weighted advantage to the model actions/tokens in that trajectory.
 
-The graph supplies tree structure, depth, delegated tasks, and terminal results.
-The per-agent transcript supplies the actual prompts, model actions, tool
-observations, token masks, and any trainer-specific log probabilities. The graph
-alone is therefore enough to compute reward relationships, but not enough to
-perform a policy update.
+The graph supplies tree structure, depth, delegated tasks, and terminal results. The per-agent transcript supplies the actual prompts, model actions, tool observations, token masks, and any trainer-specific log probabilities. The graph alone is therefore enough to compute reward relationships, but not enough to perform a policy update.
 
 ### 1. Local success
 
@@ -192,14 +154,9 @@ For every agent `X`, the benchmark-specific evaluator produces:
 local_score(X) = success of X on the task assigned to X
 ```
 
-This is not automatically the root's score. A child is scored against its own
-delegated task when that task is verifiable. If child tasks have no reliable
-verifier, the configured proxy may use an LLM judge, parent consistency, or root
-success. That choice controls how informative the credit signal really is.
+This is not automatically the root's score. A child is scored against its own delegated task when that task is verifiable. If child tasks have no reliable verifier, the configured proxy may use an LLM judge, parent consistency, or root success. That choice controls how informative the credit signal really is.
 
-Runtime errors, exhausted budgets, and invalid outputs must be mapped to an
-explicit score by the benchmark, usually zero. An incomplete tree must not be
-scored as an ordinary RAO rollout.
+Runtime errors, exhausted budgets, and invalid outputs must be mapped to an explicit score by the benchmark, usually zero. An incomplete tree must not be scored as an ordinary RAO rollout.
 
 ### 2. Delegation reward
 
@@ -211,16 +168,9 @@ reward(X) =
     + lambda * mean(local_score(child) for child in immediate_children(X))
 ```
 
-The second term is zero for a leaf. It uses each immediate child's **local
-score**, not the child's recursively augmented reward. Consequently, successful
-grandchildren affect their own parent but are not repeatedly propagated through
-every ancestor.
+The second term is zero for a leaf. It uses each immediate child's **local score**, not the child's recursively augmented reward. Consequently, successful grandchildren affect their own parent but are not repeatedly propagated through every ancestor.
 
-The mean rewards delegation quality rather than raw child count. It does not, by
-itself, prove that a child was relevant or that the parent used its answer; the
-child-task evaluator and root local score provide that pressure. For domains
-where fire-and-forget delegation could be exploited, the benchmark reward must
-measure task relevance rather than merely whether an easy child finished.
+The mean rewards delegation quality rather than raw child count. It does not, by itself, prove that a child was relevant or that the parent used its answer; the child-task evaluator and root local score provide that pressure. For domains where fire-and-forget delegation could be exploited, the benchmark reward must measure task relevance rather than merely whether an easy child finished.
 
 Implementation sketch using the actual graph shape:
 
@@ -261,15 +211,11 @@ def score_tree(
     return scores
 ```
 
-The missing input is `task_for_agent`. Each `UserQuery` contains much of it, but
-the collector should persist a normalized `TaskSpec` at launch so a child can be
-scored against exactly what its parent requested.
+The missing input is `task_for_agent`. Each `UserQuery` contains much of it, but the collector should persist a normalized `TaskSpec` at launch so a child can be scored against exactly what its parent requested.
 
 ### 3. Leave-one-out advantages
 
-For one benchmark task, RAO samples `G` independent recursive rollout trees.
-For tree `g`, the common baseline is the mean **root reward** of the other
-`G - 1` trees:
+For one benchmark task, RAO samples `G` independent recursive rollout trees. For tree `g`, the common baseline is the mean **root reward** of the other `G - 1` trees:
 
 ```text
 baseline(g) =
@@ -282,43 +228,27 @@ Every trajectory `X` in tree `g` then receives its own advantage:
 advantage(X in tree g) = reward(X) - baseline(g)
 ```
 
-The baseline is shared within the tree; the reward is not. A child with a weak
-local reward can therefore receive a negative advantage even when its root
-succeeds, while a useful child can receive a positive advantage. This is the
-paper's actual credit assignment rule. It does **not** copy one root advantage
-onto every child.
+The baseline is shared within the tree; the reward is not. A child with a weak local reward can therefore receive a negative advantage even when its root succeeds, while a useful child can receive a positive advantage. This is the paper's actual credit assignment rule. It does **not** copy one root advantage onto every child.
 
-At least two root rollouts are needed for a leave-one-out baseline. Returning
-zero advantages for `G=1` is safe for plumbing tests but provides no RAO policy
-gradient.
+At least two root rollouts are needed for a leave-one-out baseline. Returning zero advantages for `G=1` is safe for plumbing tests but provides no RAO policy gradient.
 
 ### 4. Policy credit
 
-Each agent trajectory is a separate training example. The trainer multiplies
-that trajectory's policy-gradient term by its advantage and depth weight. In
-plain terms:
+Each agent trajectory is a separate training example. The trainer multiplies that trajectory's policy-gradient term by its advantage and depth weight. In plain terms:
 
 ```text
 positive advantage -> make that trajectory's sampled model actions more likely
 negative advantage -> make those sampled model actions less likely
 ```
 
-The parent and every child use the same policy parameters, so updates from all
-tree nodes train one shared model. Credit is trajectory-level, not a causal
-attribution to one specific token:
+The parent and every child use the same policy parameters, so updates from all tree nodes train one shared model. Credit is trajectory-level, not a causal attribution to one specific token:
 
-- the parent's reward trains its complete trajectory, including decomposition,
-  launches, waits, synthesis, and final answer;
+- the parent's reward trains its complete trajectory, including decomposition, launches, waits, synthesis, and final answer;
 - each child's reward trains that child's own complete trajectory;
-- the parent's delegation bonus gives additional parent-side pressure for
-  launching children that solve their assigned tasks;
-- the root's local success rewards parent behavior that successfully uses child
-  results, but the algorithm does not separately identify exactly which child
-  sentence caused the final answer.
+- the parent's delegation bonus gives additional parent-side pressure for launching children that solve their assigned tasks;
+- the root's local success rewards parent behavior that successfully uses child results, but the algorithm does not separately identify exactly which child sentence caused the final answer.
 
-A launch and a later `wait_for_result()` may occur in different REPL blocks and
-LLM turns. They still belong to the same parent trajectory, so background
-execution does not change the credit rule.
+A launch and a later `wait_for_result()` may occur in different REPL blocks and LLM turns. They still belong to the same parent trajectory, so background execution does not change the credit rule.
 
 ### Numerical example
 
@@ -337,8 +267,7 @@ The root reward is:
 0.8 + 0.4 * mean(1.0, 0.5) = 1.1
 ```
 
-If the other root rollouts for that task have rewards `0.4`, `0.7`, and `1.0`,
-this tree's baseline is `0.7`. The resulting advantages are:
+If the other root rollouts for that task have rewards `0.4`, `0.7`, and `1.0`, this tree's baseline is `0.7`. The resulting advantages are:
 
 ```text
 root:    1.1 - 0.7 =  0.4
@@ -346,15 +275,11 @@ child A: 1.0 - 0.7 =  0.3   # assuming A has no children
 child B: 0.5 - 0.7 = -0.2   # assuming B has no children
 ```
 
-The optimizer reinforces the sampled root and child-A trajectories and
-discourages the sampled child-B trajectory. Because all three came from one
-shared policy, all three updates affect the same model.
+The optimizer reinforces the sampled root and child-A trajectories and discourages the sampled child-B trajectory. Because all three came from one shared policy, all three updates affect the same model.
 
 ### Depth weighting
 
-Recursive trees often contain many more deep trajectories than root
-trajectories. Let `N_d` be the number of trajectories at depth `d` in the
-optimization batch. RAO weights each depth by:
+Recursive trees often contain many more deep trajectories than root trajectories. Let `N_d` be the number of trajectories at depth `d` in the optimization batch. RAO weights each depth by:
 
 ```text
 weight(d) = mean(number of trajectories across non-empty depths) / N_d
@@ -376,8 +301,7 @@ def depth_weights(roots: list[rlmflow.AgentStart]) -> dict[int, float]:
     return {depth: mean_count / count for depth, count in counts.items()}
 ```
 
-This keeps each represented depth's aggregate influence comparable. It does not
-change which trajectories have positive or negative advantage.
+This keeps each represented depth's aggregate influence comparable. It does not change which trajectories have positive or negative advantage.
 
 ### Background subagents and the scoring barrier
 
@@ -396,12 +320,7 @@ a_result = await a.wait_for_result()
 b_result = await b.wait_for_result()
 ```
 
-Those sequential waits do not serialize child execution because both children
-were already running. If the parent finishes without collecting the results,
-that is still a recordable trajectory: its local result is scored as produced,
-and its children retain their own trajectories. The collector must nevertheless
-continue until every descendant is terminal before computing rewards,
-advantages, depth counts, or training exports.
+Those sequential waits do not serialize child execution because both children were already running. If the parent finishes without collecting the results, that is still a recordable trajectory: its local result is scored as produced, and its children retain their own trajectories. The collector must nevertheless continue until every descendant is terminal before computing rewards, advantages, depth counts, or training exports.
 
 This terminal-tree barrier is the important RAO invariant:
 
@@ -412,9 +331,7 @@ rollout tree complete = every included agent terminal
 
 ## Rollout Collection
 
-Add RAO as a first-class library module. It should be separate from the core
-runtime loop, but still live under `rlmflow/` because rollout collection, reward
-aggregation, and training export are reusable library features:
+Add RAO as a first-class library module. It should be separate from the core runtime loop, but still live under `rlmflow/` because rollout collection, reward aggregation, and training export are reusable library features:
 
 ```text
 rlmflow/rao/
@@ -427,10 +344,7 @@ rlmflow/rao/
   trainers.py       # adapter interfaces
 ```
 
-Keep RAO out of `Flow.step(...)` and the Node data model; do not keep
-it out of the package. The clean boundary is a sibling package: `rlmflow/rao`
-consumes `Flow`, `Node`, persisted transcripts, and input payloads.
-Example scripts should be thin entrypoints that import from `rlmflow.rao`.
+Keep RAO out of `Flow.step(...)` and the Node data model; do not keep it out of the package. The clean boundary is a sibling package: `rlmflow/rao` consumes `Flow`, `Node`, persisted transcripts, and input payloads. Example scripts should be thin entrypoints that import from `rlmflow.rao`.
 
 Collector shape:
 
@@ -454,29 +368,20 @@ class RAORolloutCollector:
 For each task:
 
 1. Create `G` isolated root Nodes with `rlmflow.start(...)`.
-2. Drive them on one `Flow` with the shared policy (e.g. via `parallel_run`).
-3. Run each with `flow.run(task.query, inputs=task.inputs)`, or stream a prepared
-   root with `flow.run_streaming(root, until=...)`.
-4. Drain each tree until every included agent is terminal; root completion alone
-   is not sufficient.
-5. Score each agent and compute delegation rewards over the completed tree.
-6. Compute each node's advantage using the other trees' root rewards as its
-   leave-one-out baseline.
-7. Export one training example per agent trajectory.
+1. Drive them on one `Flow` with the shared policy via one `flow.run_streaming(root, *roots)` call.
+1. Run each with `flow.run(task.query, inputs=task.inputs)`, or stream a prepared root with `flow.run_streaming(root, until=...)`.
+1. Drain each tree until every included agent is terminal; root completion alone is not sufficient.
+1. Score each agent and compute delegation rewards over the completed tree.
+1. Compute each node's advantage using the other trees' root rewards as its leave-one-out baseline.
+1. Export one training example per agent trajectory.
 
-This can run sequentially first. Parallel collection can come later using the
-same scheduler pool or an external job runner.
+This can run sequentially first. Parallel collection can come later using the same scheduler pool or an external job runner.
 
 ## Exporting Training Examples
 
 Training should use the actual LLM transcript, not just typed graph nodes.
 
-The Node tree is the durable source for observability and reward analysis. For policy
-updates, the trainer needs the prompt/messages and chosen action text. The
-saved graph plus `Flow.build_messages(node)` already preserve the message-level
-view. The exporter should therefore prefer `agent.transcript()` and rebuild
-prompts with `flow.build_messages(frontier)` rather than a Workspace session
-file.
+The Node tree is the durable source for observability and reward analysis. For policy updates, the trainer needs the prompt/messages and chosen action text. The saved graph plus `Flow.build_messages(node)` already preserve the message-level view. The exporter should therefore prefer `agent.transcript()` and rebuild prompts with `flow.build_messages(frontier)` rather than a Workspace session file.
 
 A minimal export record:
 
@@ -499,14 +404,11 @@ A minimal export record:
 }
 ```
 
-The trainer adapter can decide how to convert this into GRPO, PPO, DPO-style
-preference pairs, or an external provider's expected format.
+The trainer adapter can decide how to convert this into GRPO, PPO, DPO-style preference pairs, or an external provider's expected format.
 
 ## Trainer Boundary
 
-Do not make `rlmflow` own model training at first. Different users will
-train through different systems: TRL, OpenRLHF, verl, Tinker, internal APIs, or
-provider-specific fine-tuning.
+Do not make `rlmflow` own model training at first. Different users will train through different systems: TRL, OpenRLHF, verl, Tinker, internal APIs, or provider-specific fine-tuning.
 
 Define a narrow adapter:
 
@@ -516,23 +418,20 @@ class TrainerAdapter(Protocol):
         """Run one policy update and return metrics."""
 ```
 
-For a first research prototype, implement `JsonlTrainerAdapter` that only writes
-examples:
+For a first research prototype, implement `JsonlTrainerAdapter` that only writes examples:
 
 ```text
 runs/rao/textcraft/updates/000001/examples.jsonl
 runs/rao/textcraft/updates/000001/metrics.json
 ```
 
-That lets us validate rollout collection, rewards, advantages, and depth
-weighting before coupling to a specific training stack.
+That lets us validate rollout collection, rewards, advantages, and depth weighting before coupling to a specific training stack.
 
 ## Benchmarks To Start With
 
 ### 1. Synthetic Crafting
 
-This should be the first RAO benchmark because it matches the recursive shape
-cleanly:
+This should be the first RAO benchmark because it matches the recursive shape cleanly:
 
 - tasks are generated from a hidden recipe DAG/tree;
 - root query asks for a target item;
@@ -565,13 +464,11 @@ This maps to the repo's existing needle/haystack examples:
 - child nodes answer evidence-local questions;
 - root aggregates.
 
-Reward is root exact answer first. Child local reward can be added later by
-checking whether child outputs contain the needed evidence.
+Reward is root exact answer first. Child local reward can be added later by checking whether child outputs contain the needed evidence.
 
 ### 3. Deep Research
 
-This should wait until the collection/export stack is stable. Rewards are harder
-and likely require LLM judging or a task-specific verifier.
+This should wait until the collection/export stack is stable. Rewards are harder and likely require LLM judging or a task-specific verifier.
 
 ## Required Engine Additions
 
@@ -591,10 +488,9 @@ Keep these small:
    spawn node id
    ```
 
-   Much of this is already in the Node tree; the main question is whether the exact
-   launch spec should be stored as node metadata for cleaner reward analysis.
+   Much of this is already in the Node tree; the main question is whether the exact launch spec should be stored as node metadata for cleaner reward analysis.
 
-2. **Rollout terminal status**
+1. **Rollout terminal status**
 
    The collector needs to distinguish:
 
@@ -609,7 +505,7 @@ Keep these small:
 
    This can be research-layer metadata derived from the final node at first.
 
-3. **Budget controls**
+1. **Budget controls**
 
    RAO exploration can explode. The collector should enforce:
 
@@ -621,10 +517,9 @@ Keep these small:
    max_wall_time
    ```
 
-   Some already exist; `max_children_per_agent` and `max_total_agents` may need
-   explicit scheduler checks.
+   Some already exist; `max_children_per_agent` and `max_total_agents` may need explicit scheduler checks.
 
-4. **Transcript export API**
+1. **Transcript export API**
 
    Add a stable helper instead of making RAO code know persistence internals:
 
@@ -632,8 +527,7 @@ Keep these small:
    agent.transcript()
    ```
 
-   Walk the agent's own chain; RAO export should use that, not a Workspace
-   session object.
+   Walk the agent's own chain; RAO export should use that, not a Workspace session object.
 
 ## What Not To Do
 
@@ -646,8 +540,7 @@ Do not:
 - require a specific model trainer before the rollout data pipeline works;
 - reward raw delegation count.
 
-The engine should stay an execution substrate. RAO should be a consumer of
-graphs, transcripts, contexts, and saved runs.
+The engine should stay an execution substrate. RAO should be a consumer of graphs, transcripts, contexts, and saved runs.
 
 ## Implementation TODOs
 
@@ -656,42 +549,31 @@ Use this as the working checklist for turning the plan into code.
 ### RAO Package Skeleton
 
 - [ ] Add `rlmflow/rao/__init__.py`.
-- [ ] Add `rlmflow/rao/tasks.py` with `TaskSpec` and a small
-  `TaskSampler` protocol.
-- [ ] Add `rlmflow/rao/rewards.py` with `RewardFn`, `NodeScore`, and
-  `score_tree(...)`.
-- [ ] Add `rlmflow/rao/advantages.py` with leave-one-out advantage and
-  depth-weight helpers.
+- [ ] Add `rlmflow/rao/tasks.py` with `TaskSpec` and a small `TaskSampler` protocol.
+- [ ] Add `rlmflow/rao/rewards.py` with `RewardFn`, `NodeScore`, and `score_tree(...)`.
+- [ ] Add `rlmflow/rao/advantages.py` with leave-one-out advantage and depth-weight helpers.
 - [ ] Add `rlmflow/rao/export.py` with `TrajectoryExample` and JSONL export.
 - [ ] Add `rlmflow/rao/collect.py` with `RAORolloutCollector`.
-- [ ] Add `rlmflow/rao/trainers.py` with `TrainerAdapter` and
-  `JsonlTrainerAdapter`.
-- [ ] Keep examples as thin runnable wrappers over `rlmflow.rao`, not as the
-  implementation home.
+- [ ] Add `rlmflow/rao/trainers.py` with `TrainerAdapter` and `JsonlTrainerAdapter`.
+- [ ] Keep examples as thin runnable wrappers over `rlmflow.rao`, not as the implementation home.
 
 ### Rollout And Scoring
 
-- [ ] Build a collector that runs `rollouts_per_task` isolated trees per
-  `TaskSpec`.
-- [ ] Require every descendant to be terminal before scoring or export; reject
-  incomplete trees.
-- [ ] Export one scored `TrajectoryExample` per agent trajectory, not just per root
-  rollout.
+- [ ] Build a collector that runs `rollouts_per_task` isolated trees per `TaskSpec`.
+- [ ] Require every descendant to be terminal before scoring or export; reject incomplete trees.
+- [ ] Export one scored `TrajectoryExample` per agent trajectory, not just per root rollout.
 - [ ] Read transcripts through `agent.transcript()`.
 - [ ] Derive child `TaskSpec`s from `AgentConfig` and parent spawn metadata.
-- [ ] Store rollout terminal status: success, wrong answer, max-iteration stop,
-  runtime error, validation error, or incomplete tree.
+- [ ] Store rollout terminal status: success, wrong answer, max-iteration stop, runtime error, validation error, or incomplete tree.
 - [ ] Add tests on hand-built recursive Node trees for reward aggregation.
-- [ ] Add tests for leave-one-out advantages and depth inverse-frequency
-  weighting.
+- [ ] Add tests for leave-one-out advantages and depth inverse-frequency weighting.
 
 ### Synthetic Crafting Benchmark
 
 - [ ] Add a tiny crafting DAG/tree task generator.
 - [ ] Add exact plan validity reward.
 - [ ] Add `examples/research/rao_collect_crafting.py`.
-- [ ] Compare `max_depth=0` single-agent rollouts against `max_depth>0`
-  recursive rollouts.
+- [ ] Compare `max_depth=0` single-agent rollouts against `max_depth>0` recursive rollouts.
 - [ ] Save rollout examples and metrics under a run artifact path.
 
 ### Trainer Boundary
@@ -704,8 +586,7 @@ Use this as the working checklist for turning the plan into code.
 ### Engine Gaps To Revisit
 
 - [ ] Decide whether child launch specs need explicit typed node metadata.
-- [ ] Add `max_children_per_agent` if rollout explosion becomes a practical
-  issue.
+- [ ] Add `max_children_per_agent` if rollout explosion becomes a practical issue.
 - [ ] Add `max_total_agents` if depth/breadth caps are not enough.
 - [ ] Decide how failed runtime executions should affect training examples.
 
@@ -713,8 +594,7 @@ Use this as the working checklist for turning the plan into code.
 
 ### Milestone 1: Offline RAO Dataset Export
 
-Goal: collect recursive rollouts and export scored trajectory examples, without
-training.
+Goal: collect recursive rollouts and export scored trajectory examples, without training.
 
 Deliverables:
 
@@ -732,13 +612,11 @@ Success criterion:
 python examples/research/rao_collect_crafting.py
 ```
 
-writes a JSONL file where every agent trajectory has reward, advantage, and
-depth weight.
+writes a JSONL file where every agent trajectory has reward, advantage, and depth weight.
 
 ### Milestone 2: Policy-Update Adapter
 
-Goal: connect exported examples to one trainer without making the repo depend on
-that trainer.
+Goal: connect exported examples to one trainer without making the repo depend on that trainer.
 
 Deliverables:
 
@@ -749,8 +627,7 @@ Deliverables:
 
 Success criterion:
 
-One update step can consume examples and produce metrics, even if the default
-adapter only writes JSONL.
+One update step can consume examples and produce metrics, even if the default adapter only writes JSONL.
 
 ### Milestone 3: End-To-End Synthetic RAO
 
@@ -766,13 +643,11 @@ Deliverables:
 
 Success criterion:
 
-The recursive treatment learns to delegate on deeper tasks and outperforms the
-single-agent baseline on held-out deeper tasks.
+The recursive treatment learns to delegate on deeper tasks and outperforms the single-agent baseline on held-out deeper tasks.
 
 ### Milestone 4: Long-Context RAO
 
-Goal: adapt the needle/haystack or transcript QA examples into a benchmark where
-recursion extends effective context.
+Goal: adapt the needle/haystack or transcript QA examples into a benchmark where recursion extends effective context.
 
 Deliverables:
 
@@ -783,19 +658,15 @@ Deliverables:
 
 Success criterion:
 
-The recursive policy maintains reward as context grows beyond the comfortable
-single-agent setting.
+The recursive policy maintains reward as context grows beyond the comfortable single-agent setting.
 
 ## Open Questions
 
-- Should child launch specs be stored as explicit typed nodes, or are
-  `AgentStart.content` / `AgentConfig.inputs` enough?
+- Should child launch specs be stored as explicit typed nodes, or are `AgentStart.content` / `AgentConfig.inputs` enough?
 - Do we want `max_children_per_agent` and `max_total_agents` on `AgentConfig`?
 - Which trainer stack should be the first real adapter?
-- Should rollout collection use one tree per rollout or one tree per task with
-  child run directories?
-- How should failed runtime executions be represented in the training example:
-  negative reward, zero reward, or filtered?
+- Should rollout collection use one tree per rollout or one tree per task with child run directories?
+- How should failed runtime executions be represented in the training example: negative reward, zero reward, or filtered?
 - For child nodes without gold labels, what proxy reward is least misleading?
 
 ## Recommendation
@@ -809,4 +680,3 @@ rlmflow already gives us recursive inference trees.
 RAO first needs reliable rollout scoring and export.
 Only after that should we wire in policy updates.
 ```
-

@@ -16,7 +16,6 @@ from rlmflow.consumers import (
 )
 from rlmflow.engine import boundaries
 from rlmflow.engine.execution import Pool, SequentialPool, TaskQueue, ThreadPool, Transition
-from rlmflow.engine.parallel import parallel_run, parallel_stream
 from rlmflow.engine.transitions import (
     InvalidTransitionError,
     TransitionPolicyError,
@@ -24,6 +23,7 @@ from rlmflow.engine.transitions import (
     Transitions,
 )
 from rlmflow.graph import persistence
+from rlmflow.graph.config import at_leaf, can_spawn
 from rlmflow.graph.nodes import (
     DEFAULT_MAX_QUERY_CHARS,
     DEFAULT_QUERY,
@@ -90,6 +90,7 @@ from rlmflow.structured import (
     system_prompt_hint,
 )
 from rlmflow.tools import (
+    CODING_HANDOFF_SCHEMA,
     FILE_TOOLS,
     AgentDirectory,
     AgentFrontier,
@@ -97,7 +98,6 @@ from rlmflow.tools import (
     AgentInfo,
     AgentStatus,
     FileTools,
-    PromptExample,
     ToolMetadata,
     format_tool_line,
     get_tool_metadata,
@@ -147,7 +147,6 @@ __all__ = [
     "DEFAULT_QUERY",
     "FILE_TOOLS",
     "FileTools",
-    "PromptExample",
     "SYSTEM_PROMPT",
     "AgentConfig",
     "AgentDirectory",
@@ -157,6 +156,9 @@ __all__ = [
     "ActionNode",
     "AgentStart",
     "AgentStatus",
+    "at_leaf",
+    "can_spawn",
+    "CODING_HANDOFF_SCHEMA",
     "AnthropicClient",
     "AppendChild",
     "ConsumerGroup",
@@ -231,8 +233,6 @@ __all__ = [
     "json_schema_for",
     "messages_to_query",
     "open_viewer",
-    "parallel_run",
-    "parallel_stream",
     "parse_structured_output",
     "persistence",
     "render_forest",

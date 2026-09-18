@@ -36,7 +36,6 @@ _BARE_PAIR_PATTERN = re.compile(r"(?<!\d)(\d+)\s*,\s*(\d+)(?!\d)")
 _THINK_PATTERN = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 
 
-@dataset("oolong_pairs", tags=["rlm-comparison", "long-context", "delegation"])
 class OolongPairsDataset(Dataset):
     """The 20 official pair-aggregation queries at one context length.
 
@@ -90,11 +89,7 @@ class OolongPairsDataset(Dataset):
         true_positives = len(expected & predicted)
         precision = true_positives / len(predicted) if predicted else float(not expected)
         recall = true_positives / len(expected) if expected else float(not predicted)
-        f1 = (
-            2 * precision * recall / (precision + recall)
-            if precision + recall
-            else 0.0
-        )
+        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
         return Score(
             value=f1,
             correct=f1 == 1.0,
@@ -180,12 +175,11 @@ class OolongPairsDataset(Dataset):
         return context
 
 
-@dataset("oolong-pairs", tags=["rlm-comparison", "long-context"])
+@dataset("oolong-pairs-32k", tags=["core", "paper-aligned", "long-context"])
 class OolongPairsPaperDataset(OolongPairsDataset):
     """The paper's 20 OOLONG-Pairs queries at 32K, official order.
 
-    Not ``oolong_pairs`` (any length / shuffled subset) and not
-    ``delegation-routing`` (four 8K queries mixed with hop and local controls).
+    This is the single frozen 32K registration, not the configurable loader.
     """
 
     def __init__(self, data_dir: str = "evals/data", **_ignored: Any) -> None:
@@ -198,13 +192,10 @@ class OolongPairsPaperDataset(OolongPairsDataset):
 
 
 def _context_at_length(rows: Any, context_len: int) -> str:
-    matches = [
-        row for row in rows if int(row.get("context_len") or 0) == context_len
-    ]
+    matches = [row for row in rows if int(row.get("context_len") or 0) == context_len]
     if len(matches) != 1:
         raise ValueError(
-            f"Expected one OOLONG-Pairs context at length {context_len}, "
-            f"found {len(matches)}."
+            f"Expected one OOLONG-Pairs context at length {context_len}, found {len(matches)}."
         )
     context = str(matches[0].get("context_window_text") or "")
     if not context:

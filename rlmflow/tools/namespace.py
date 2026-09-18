@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from rlmflow.engine.delegation import launch_tool
+from rlmflow.graph.config import can_spawn
 from rlmflow.graph.nodes import ExecAction, Node
 from rlmflow.runtime.repl import DoneSignal, TransitionSignal
 from rlmflow.structured import as_finish_value, parse_structured_answer
@@ -17,7 +18,7 @@ from rlmflow.tools.agents import (
     AGENTS_BINDING,
     build_agent_directory,
 )
-from rlmflow.tools.tools import is_toolset, tool, toolset_members
+from rlmflow.tools.tools import host_tools_for, is_toolset, tool, toolset_members
 from rlmflow.utils.helpers import tool_name
 
 
@@ -86,7 +87,10 @@ def remove_tool(flow: Any, name: str) -> Any:
 def finish_tool(flow: Any, node: Node):
     schema = node.parent_agent.config.output_schema
 
-    @tool("Submit this agent's final answer and end its run.", proxy=True)
+    @tool(
+        "Submit this agent's final answer as a string or strict JSON value and end its run.",
+        proxy=True,
+    )
     def finish(answer: object) -> None:
         value = (
             parse_structured_answer(answer, schema)
@@ -156,16 +160,17 @@ def build_namespace(flow: Any, node: Node) -> dict[str, Any]:
     )
     agents = build_agent_directory(node.parent_agent, running_nodes=running)
     namespace = {
-        **flow.tools,
+        **host_tools_for(flow, node),
         "finish": finish_tool(flow, node),
         "transition": transition_tool(flow, node),
-        "launch_subagent": launch_tool(flow, node),
         "asyncio": asyncio,
-        "INPUTS": node.parent_agent.config.inputs,
+        "INPUTS": node.parent_agent.resolved_inputs(),
         AGENTS_BINDING: agents,
         AGENT_OBSERVE_TOOL: observe_agent_tool(flow, node),
         AGENT_WAIT_TOOL: wait_agent_tool(flow, node),
     }
+    if can_spawn(node.parent_agent):
+        namespace["launch_subagent"] = launch_tool(flow, node)
     if flow.use_agent_tree:
         namespace["AGENTS"] = agents
     return namespace

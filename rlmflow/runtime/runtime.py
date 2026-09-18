@@ -64,16 +64,24 @@ class Runtime:
         repl = self.repls.get(agent.id)
         if repl is None:
             repl = self.open(agent)
-            repl.update_env(
-                agent_process_env(
-                    agent_id=agent.config.path,
-                    depth=agent.config.depth,
-                    parent_agent_id=agent.config.path.rpartition(".")[0] or None,
-                    max_depth=agent.config.max_depth,
-                )
-            )
             self.repls[agent.id] = repl
+            self.refresh_env(agent)
         return repl
+
+    def refresh_env(self, value: AgentStart | Node) -> None:
+        """Refresh public metadata for an agent's live REPL."""
+        agent = _agent(value)
+        repl = self.repls.get(agent.id)
+        if repl is None:
+            return
+        repl.update_env(
+            agent_process_env(
+                agent_id=agent.config.path,
+                depth=agent.config.depth,
+                parent_agent_id=agent.config.path.rpartition(".")[0] or None,
+                max_depth=agent.config.max_depth,
+            )
+        )
 
     async def execute(self, value: AgentStart | Node, code: str) -> ReplRun:
         """Run code in this agent's REPL; a REPL that dies is an outcome, not a raise.
@@ -151,7 +159,7 @@ class WrappedRuntime:
         repl.structured_output = agent.config.output_schema is not None
         repl.seed(
             self.build_tools(node),
-            agent.config.inputs,
+            agent.resolved_inputs(),
         )
         return await self.runtime.execute(node, node.code)
 

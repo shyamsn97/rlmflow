@@ -6,7 +6,7 @@ Registration order is the policy. First matching row wins. Own rows, then ``_bas
 AgentStart|UserQuery|ErrorOutput|ExecOutput + out_of_room      → to_final          → FinalQuery
 AgentStart|UserQuery|ErrorOutput|ExecOutput + needs_truncation → to_summary        → TruncationSummary
 AgentStart|ErrorOutput|ExecOutput                              → to_plan           → PlanQuery
-UserQuery + child_returned                                     → to_plan           → PlanQuery
+UserQuery + child_returned (after DoneOutput or ExecOutput)    → to_plan           → PlanQuery
 UserQuery                                                      → complete         → LLMOutput | DoneOutput
 LLMOutput                                                      → to_action         → ExecAction
 ExecAction                                                     → run_repl         → output or chosen UserQuery
@@ -68,7 +68,8 @@ def out_of_room(node: Node) -> bool:
 
 
 def child_returned(node: Node) -> bool:
-    return type(node) is UserQuery and isinstance(node.prev, DoneOutput)
+    """A host or child-handoff ``UserQuery`` after an observation, not a chat turn."""
+    return type(node) is UserQuery and isinstance(node.prev, (DoneOutput, ExecOutput))
 
 
 def needs_truncation(node: Node) -> bool:

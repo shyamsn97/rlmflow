@@ -12,7 +12,6 @@ from benchmarks.eval import dataset
 from benchmarks.eval.types import Dataset, Example, Prediction, Score
 
 
-@dataset("oolong", tags=["long-context"])
 class OolongDataset(Dataset):
     """Load OOLONG examples from Hugging Face or a local `evals/data/oolong` copy."""
 
@@ -152,6 +151,44 @@ class OolongDataset(Dataset):
         )
 
 
+@dataset("oolong-yahoo-128k", tags=["core", "paper-aligned", "long-context"])
+class OolongYahoo128KDataset(OolongDataset):
+    """Deterministic Yahoo aggregation rows at the paper's 128K setting."""
+
+    context_len = 131_072
+    pilot_size = 2
+
+    def __init__(self, data_dir: str = "evals/data") -> None:
+        super().__init__(data_dir=data_dir, max_samples=None)
+
+    def examples(self, *, split: str, limit: int | None, seed: int) -> list[Example]:
+        del seed
+        if split not in {"test", "pilot", "full"}:
+            raise ValueError("OOLONG Yahoo exposes only pilot and full suite splits")
+        ds = self._load("test")
+        indices = self._eligible_indices(ds)
+        if not indices:
+            raise ValueError("No Yahoo OOLONG rows exist at context_len=131072")
+        selected = indices[: self.pilot_size] if split in {"test", "pilot"} else indices
+        if limit is not None:
+            selected = selected[:limit]
+        return [self._example(dict(ds[index]), index=index) for index in selected]
+
+    def _eligible_indices(self, ds) -> list[int]:
+        if self._eligible is not None:
+            return self._eligible
+        datasets = ds["dataset"]
+        context_lengths = ds["context_len"]
+        self._eligible = [
+            index
+            for index, (source, context_len) in enumerate(
+                zip(datasets, context_lengths, strict=True)
+            )
+            if "yahoo" in str(source).casefold() and int(context_len or 0) == self.context_len
+        ]
+        return self._eligible
+
+
 def _normalize_answers(raw: Any) -> list[str]:
     if raw is None:
         return []
@@ -193,4 +230,4 @@ def _extract_number(value: str) -> float | None:
     return float(match.group(0)) if match else None
 
 
-__all__ = ["OolongDataset"]
+__all__ = ["OolongDataset", "OolongYahoo128KDataset"]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from rlmflow import Flow, LocalRuntime
+from rlmflow import CODING_HANDOFF_SCHEMA, Flow, LocalRuntime
 from rlmflow.cli import main
 from rlmflow.cli.options import CliError, RunOptions, resolve
 from rlmflow.cli.run import build_flow, load_factory, load_root, require_api_key, run_agent
@@ -58,7 +58,7 @@ def test_resolve_prefers_a_flag_over_env_over_project_over_user(tmp_path):
     assert (options.model, origins["model"]) == ("flag", "flag")
     assert (options.fast_model, origins["fast_model"]) == ("project-fast", "project config")
     assert (options.workdir, origins["workdir"]) == ("user-dir", "user config")
-    assert (options.max_depth, origins["max_depth"]) == (3, "default")
+    assert (options.max_depth, origins["max_depth"]) == (1, "default")
 
 
 def test_resolve_reads_env_when_no_flag_and_coerces_numbers(tmp_path):
@@ -91,6 +91,7 @@ def test_build_flow_wires_the_options_into_the_flow(tmp_path, monkeypatch):
 
     flow = build_flow(options, workdir=tmp_path)
 
+    assert flow.root_config.child_output_schema == CODING_HANDOFF_SCHEMA
     assert (flow.root_config.max_depth, flow.root_config.max_iters) == (1, 5)
     assert flow.runtime.working_directory == tmp_path
     assert "fast" in flow._llm_clients
@@ -103,6 +104,7 @@ def test_build_flow_without_file_tools(tmp_path, monkeypatch):
     flow = build_flow(RunOptions(tools="none"), workdir=tmp_path)
 
     assert flow.tools == {}
+    assert flow.root_config.child_output_schema is None
 
 
 def test_require_api_key_names_the_one_that_is_missing():

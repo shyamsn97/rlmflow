@@ -157,8 +157,9 @@ Editing train.py (do it the robust way):
   it still fails, re-read `INPUTS["trial_dir"]/train.py` from scratch and rewrite
   cleanly. Do not retry more than twice; if still broken, return the failure row.
 - If it returns any other failure row, return it to the parent.
-- All `launch_subagent(..., inputs=...)` values must be strings. Use `str(...)`
-  for counts and JSON strings for structured values.
+- `launch_subagent(..., inputs=...)` values may be strings or top-level child
+  handles. Use `str(...)` for immediate counts and JSON strings for immediate
+  structured values.
 
 Root sketch (root is the planner: plan a wave, fan out implementers, repeat):
 ```repl

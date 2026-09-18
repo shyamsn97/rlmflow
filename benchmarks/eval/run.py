@@ -22,7 +22,7 @@ from benchmarks.eval import DATASETS, LOGGERS, MODELS, RUNNERS
 from benchmarks.eval.loggers import MultiLogger
 from benchmarks.eval.loggers.jsonl import load_rows, write_json
 from benchmarks.eval.metrics import summarize
-from benchmarks.eval.sets import SETS, format_sets_help, runners_for
+from benchmarks.eval.suite import SUITES, format_suites_help, runners_for
 from benchmarks.eval.types import (
     ComponentSpec,
     Example,
@@ -109,6 +109,9 @@ def _build_jobs(config: SuiteConfig, *, seen: set[tuple]) -> list[dict[str, Any]
                     if key in seen:
                         continue
                     job_index = len(jobs)
+                    runner_best_of_n = int(runner_spec.params.get("best_of_n", config.best_of_n))
+                    if runner_best_of_n < 1:
+                        raise ValueError("runner best_of_n must be at least 1")
                     jobs.append(
                         {
                             "dataset": dataset,
@@ -124,10 +127,10 @@ def _build_jobs(config: SuiteConfig, *, seen: set[tuple]) -> list[dict[str, Any]
                                     "example": asdict(example),
                                     "job_index": job_index,
                                     "attempt": attempt,
-                                    "best_of_n": config.best_of_n,
+                                    "best_of_n": runner_best_of_n,
                                     "attempt_timeout": config.attempt_timeout,
                                 }
-                                for attempt in range(config.best_of_n)
+                                for attempt in range(runner_best_of_n)
                             ],
                         }
                     )
@@ -257,6 +260,7 @@ def _run_job_payload_inner(payload: dict[str, Any]) -> dict[str, Any]:
                     "seed": seed,
                     "attempt": attempt,
                     "best_of_n": best_of_n,
+                    "attempt_timeout": int(payload.get("attempt_timeout") or 0),
                 },
             )
             prediction = runner.run(example, model, ctx)
@@ -406,6 +410,20 @@ def _select_best_attempt(rows: list[Row]) -> Row:
         "attempt_scores": [row.score.value for row in rows],
         "attempt_correct": [row.score.correct for row in rows],
         "attempt_errors": sum(1 for row in rows if row.prediction.error),
+        "aggregate_input_tokens": sum(row.prediction.usage.get("input_tokens", 0) for row in rows),
+        "aggregate_output_tokens": sum(
+            row.prediction.usage.get("output_tokens", 0) for row in rows
+        ),
+        "aggregate_reasoning_tokens": sum(
+            row.prediction.usage.get("reasoning_tokens", 0) for row in rows
+        ),
+        "aggregate_compute_seconds": sum(
+            row.prediction.metrics.get("time_seconds", 0.0) for row in rows
+        ),
+        "oracle_wall_time_seconds": max(
+            (row.prediction.metrics.get("time_seconds", 0.0) for row in rows),
+            default=0.0,
+        ),
     }
     return replace(best, metadata=metadata)
 
@@ -501,32 +519,29 @@ def build_logger(config: SuiteConfig) -> MultiLogger:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    set_names = ", ".join(SETS)
+    suite_names = ", ".join(SUITES)
     parser = argparse.ArgumentParser(
         description="Run rlmflow benchmarks.",
-        epilog=f"Named sets: {set_names}. Pass --list-sets for the table.",
+        epilog=f"Suites: {suite_names}. Pass --list-suites for the table.",
     )
     parser.add_argument(
-        "--list-sets",
+        "--list-suites",
         action="store_true",
-        help="Print named eval sets (smoke, reasoning, long-context, ...) and exit.",
+        help="Print the four evaluation suites and exit.",
     )
     parser.add_argument(
         "--dataset",
         "--datasets",
         nargs="+",
-        default=["reasoning"],
-        help=(
-            "Dataset or named set. Repeatable. Named sets: "
-            f"{set_names}. Default: reasoning."
-        ),
+        default=["smoke"],
+        help=(f"Suite name. Repeatable. Suites: {suite_names}. Default: smoke."),
     )
     parser.add_argument(
         "--runner",
         "--runners",
         nargs="+",
         default=None,
-        help="Execution strategy. Defaults to the named set's runners, else rlmflow-local.",
+        help="Execution strategy. Defaults to the suite's canonical runner matrix.",
     )
     parser.add_argument("--model", default="openai:gpt-5-mini")
     parser.add_argument("--logger", "--loggers", nargs="+", default=["jsonl", "console", "report"])
@@ -536,7 +551,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Single dataset sampling seed. Use with --limit for one shared sample set.",
     )
-    parser.add_argument("--split", default="test")
+    parser.add_argument("--split", choices=["pilot", "full"], default="pilot")
     sample_size = parser.add_mutually_exclusive_group()
     sample_size.add_argument(
         "--limit",
@@ -691,8 +706,8 @@ def make_run_id(*, datasets: list[str], runners: list[str], model: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.list_sets:
-        print(format_sets_help(), end="")
+    if args.list_suites:
+        print(format_suites_help(), end="")
         return 0
     config = config_from_args(args)
     rows = run_suite(config)

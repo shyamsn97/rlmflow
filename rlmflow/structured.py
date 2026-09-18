@@ -7,9 +7,10 @@ from collections.abc import Mapping
 from typing import Any
 
 import jsonschema
-from pydantic import BaseModel, TypeAdapter, ValidationError
+from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 
 Schema = type[BaseModel] | TypeAdapter[Any] | Mapping[str, Any] | str
+_JSON_VALUE = TypeAdapter(JsonValue)
 
 
 def json_schema_for(schema: Schema) -> dict[str, Any]:
@@ -52,22 +53,24 @@ def parse_structured_output(content: str, schema: Schema) -> Any:
         raise StructuredOutputError(content=content, schema=schema, cause=exc) from exc
 
 
-def as_finish_value(answer: object) -> object:
-    """Keep JSON-compatible Python values; stringify only what JSON cannot round-trip."""
-    if isinstance(answer, str):
-        return answer
+def as_finish_value(answer: object) -> JsonValue:
+    """Return a strict JSON value or reject the completion."""
     try:
-        json.dumps(answer, allow_nan=False)
-    except (TypeError, ValueError):
-        return str(answer)
-    return answer
+        value = _JSON_VALUE.validate_python(answer)
+        json.dumps(value, allow_nan=False)
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise TypeError(
+            "finish(answer) requires a JSON value: strings, finite numbers, "
+            "booleans, None, lists, or dictionaries with string keys"
+        ) from exc
+    return value
 
 
 def parse_structured_answer(answer: object, schema: Schema) -> Any:
     """Validate an answer given as a Python value or as pre-encoded JSON text."""
     if not isinstance(answer, str):
         try:
-            content = json.dumps(answer, allow_nan=False)
+            content = json.dumps(as_finish_value(answer), allow_nan=False)
         except (TypeError, ValueError) as exc:
             raise StructuredOutputError(content=repr(answer), schema=schema, cause=exc) from exc
         return parse_structured_output(content, schema)

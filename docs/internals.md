@@ -9,9 +9,9 @@ Runtime    live REPL sessions
 TaskQueue  calls in flight, and when one lands
 ```
 
-There is no `Graph`, `Run`, `Driver`, Event hierarchy, detached worker queue, or merge subsystem, and no `Agent` class either — an agent is the `AgentStart` node that opened it. `Flow` is the public facade. Restore, builtin factories, child launch, and prompt assembly are `(flow, ...)` functions in `engine/restore.py`, `engine/delegation.py`, `tools/namespace.py`, and `prompts/messages.py`.
+There is no `Graph`, `Run`, `Driver`, Event hierarchy, detached worker queue, or merge subsystem, and no `Agent` class either — an agent is the `AgentStart` node that opened it. `Flow` is the public facade. Restore, builtin factories, child launch, child-completion handoff, and prompt assembly are `(flow, ...)` functions in `engine/restore.py`, `engine/delegation.py`, `engine/handoff.py`, `tools/namespace.py`, and `prompts/messages.py`.
 
-The layout follows that. `rlmflow.graph` is the run itself — the node types and the format they are written to disk in. `rlmflow.flow` is the entry point, and `rlmflow.engine` is what it is built out of: `execution.py` (driver-scoped `TaskQueue`s plus `Pool`, `ThreadPool`, and `SequentialPool`), `boundaries.py` for the `until` vocabulary, `parallel.py` for driving several roots through one flow, plus `steps`, `restore`, and `delegation`. Everything public is re-exported from `rlmflow` itself, so which file a name lives in is an implementation detail rather than something a caller imports through.
+The layout follows that. `rlmflow.graph` is the run itself — the node types and the format they are written to disk in. `rlmflow.flow` is the entry point, and `rlmflow.engine` is what it is built out of: `execution.py` (driver-scoped `TaskQueue`s plus `Pool`, `ThreadPool`, and `SequentialPool`), `boundaries.py` for the `until` vocabulary, `parallel.py` for driving several roots through one flow, plus `steps`, `restore`, `delegation`, and `handoff`. Everything public is re-exported from `rlmflow` itself, so which file a name lives in is an implementation detail rather than something a caller imports through.
 
 ## Node tree
 
@@ -59,13 +59,15 @@ stream driver(roots)
 
 ```text
 AgentStart   -> to_plan (PlanQuery)
-UserQuery    -> complete (LLMOutput), or to_plan after DoneOutput
+UserQuery    -> complete (LLMOutput), or to_plan after DoneOutput or ExecOutput
 ExecOutput   -> to_plan (PlanQuery)
 ErrorOutput  -> to_plan (PlanQuery)
 LLMOutput    -> to_action (ExecAction)
 ExecAction   -> run_repl (output node, or a UserQuery selected by transition("name"))
 DoneOutput   -> terminal, never stepped
 ```
+
+After a child `DoneOutput`, `engine/handoff.py` enqueues the result on the launching parent. If that parent just landed `ExecOutput` (or `DoneOutput` with `resume_on_child_done`), the driver appends a `UserQuery` and submits that frontier instead of the observation it just yielded. Restore rebuilds the mailbox before seeding leaves.
 
 Guards can preempt those rows: `out_of_room` → `FinalQuery`, `needs_truncation` → `TruncationSummary`.
 
@@ -75,7 +77,7 @@ Guards can preempt those rows: `out_of_room` → `FinalQuery`, `needs_truncation
 
 ## Concurrency
 
-Each driver invocation owns one `TaskQueue`. `run_streaming` drives one root; `parallel_stream` drives several roots through the same queue and the same consumer loop. The created node identifies which root gets the boundary check and successor feed.
+Each `run_streaming(root, *roots)` invocation owns one `TaskQueue` and drives all of its roots through the same consumer loop. The created node identifies which root gets the boundary check and successor feed.
 
 Delegation submits each new child to the same queue. A driver-scoped condition wakes parents when a child becomes terminal; its answer remains `child.result()` on the graph. The child `AgentStart` is published when submitted, so child openings stream without a tree diff.
 
@@ -98,15 +100,15 @@ Synchronous streams run through the shared pool; async streams run directly on t
 
 ## Delegation and replay
 
-`launch_subagent` validates the child name, refuses a call past `max_depth` or over `max_query_chars` by returning a refusal string, opens one `AgentStart` under the running `ExecAction`, submits it, and awaits its answer. Independent calls can run concurrently through `asyncio.gather`, which preserves call order in its result sequence. The parent's frontier stays on the action for the whole block, so the step lands a single output when the block returns.
+`launch_subagent` validates the child name and inputs, refuses a call past `max_depth` or over `max_query_chars`, opens one `AgentStart` under the running `ExecAction`, records `call_id -> agent.id` on that action, and submits it. Independent calls can run concurrently through `asyncio.gather`, which preserves call order in its result sequence. A handle-valued input is persisted as an agent-reference marker; the consumer remains blocked until every source is terminal, then receives resolved strings in REPL `INPUTS`. Launch ownership never changes. The parent's frontier stays on the action for the whole block, so the step lands a single output when the block returns.
 
 A child failure is a value, not an exception: the crash is recorded as that child's `DoneOutput` so siblings settle and the parent reads an explicit failure string.
 
-Loading a saved tree opens no REPL. A graph handed to a `Flow` that has none for it — loaded, forked, or from another process — reconstructs each unfinished agent's namespace by re-running recorded `ExecAction`s in execution order. `Flow(restore="replay")` performs that reconstruction before streaming starts; `Flow(restore="lazy")` waits until immediately before an agent's first new `ExecAction`. Agents that already answered are skipped. `RLMFLOW_REPLAY` is `"1"` during reconstruction, so `launch_subagent` hands back an answer already recorded in the graph and agent code can avoid repeating external effects. Replay appends nothing and discards output.
+Loading a saved tree opens no REPL. A graph handed to a `Flow` that has none for it — loaded, forked, or from another process — reconstructs required worker sessions by re-running recorded `ExecAction`s in execution order. `Flow(restore="replay")` performs that reconstruction before streaming starts; `Flow(restore="lazy")` waits until immediately before an agent's first new `ExecAction`. Sessions containing only terminal agents are skipped. If any shared tenant is unfinished, its worker owner and terminal shared tenants are replayed too, because their session and heap mutations remain dependencies of unfinished work. `RLMFLOW_REPLAY` is `"1"` during reconstruction. A replayed launch first reads its action's launch receipt and returns the existing agent without revalidating inputs or submitting work. Replay appends nothing and discards output.
 
 ## Runtime identity
 
-Runtime keys live REPLs by `agent.id`, and hands each one the agent's process env (`RLMFLOW_AGENT_ID`, depth, parent id, max depth) when it opens.
+Runtime keys live REPLs by `agent.id`, and hands each one the agent's process env (`RLMFLOW_AGENT_ID`, depth, parent id, max depth) when it opens. Paths and depths follow immutable launch ownership; dependency edges do not alter runtime identity.
 
 `Runtime.execute` is where a dead REPL becomes an observation: it drops the dead entry so the next step opens a fresh one, and returns a `ReplRun` with status `DEAD` rather than raising at whoever asked for the step.
 
@@ -122,7 +124,7 @@ Merge is intentionally unsupported. Callers select a branch to continue and disc
 
 ## Persistence
 
-`rlmflow.graph.persistence` writes the strict v3 flat JSON shape: one shallow record per Node with `parent_id`, in parent-before-child order. Loading validates the format version, node count, identities, ordering, parent links, agent ownership, and registered node types, then rebuilds the tree through normal appends. Older formats are rejected rather than guessed.
+`rlmflow.graph.persistence` writes the strict v5 flat JSON shape: one shallow record per Node with `parent_id`, in parent-before-child order. Dependencies use stable agent IDs, handle-valued input references are durable, and each `ExecAction` persists its launch receipts. Loading validates the format version, node count, identities, ordering, parent links, receipt targets, dependency cycles, agent ownership, and registered node types, then rebuilds the tree through normal appends. Older formats are rejected rather than guessed.
 
 The format records each agent's complete effective `AgentConfig`, including depth, iteration, budget, truncation, output, and query limits. A resumed run therefore keeps its recorded continuation contract. `Flow(root_config=...)` supplies defaults only to roots the flow creates itself; changing a loaded config is an explicit caller override.
 

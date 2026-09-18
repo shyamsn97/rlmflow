@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextvars
 import hashlib
+import json
 import time
 from collections import Counter
 from collections.abc import Iterator, Mapping
@@ -21,18 +22,23 @@ from rlmflow.graph.config import (
     DEFAULT_MAX_QUERY_CHARS,
     DEFAULT_QUERY,
     AgentConfig,
+    agent_ref_id,
     can_spawn,
+    input_references,
     validate_agent_name,
 )
 from rlmflow.graph.prompts import (
     COLD_REPL_NOTE,
+    EXECUTION_POLICY,
     FINAL_ANSWER_ACTION,
     FIRST_TURN_SAFEGUARD,
     LAST_TURN_ADDENDUM,
     ORCHESTRATOR_ADDENDUM,
+    PLANNING_ACTION,
     TRUNCATION_SUMMARY,
     TURN_ONE_FINISH_SENTENCE,
     USER_PROMPT,
+    WORKER_ADDENDUM,
     orchestrator_addendum,
 )
 from rlmflow.llm import LLMUsage
@@ -107,15 +113,15 @@ def agent_payload(agent: AgentStart | None) -> dict[str, Any]:
         "model": config.model,
         "prompt_profile": config.prompt_profile,
         "output_schema": config.output_schema,
+        "child_output_schema": config.child_output_schema,
         "reuse_repl": config.reuse_repl,
-        "launch_call_id": config.launch_call_id,
         "max_depth": config.max_depth,
         "max_iters": config.max_iters,
-        "child_max_iters": config.child_max_iters,
         "max_budget": config.max_budget,
         "keep_n_messages": config.keep_n_messages,
         "max_output_length": config.max_output_length,
         "max_query_chars": config.max_query_chars,
+        "resume_on_child_done": config.resume_on_child_done,
     }
 
 
@@ -148,6 +154,8 @@ class RunIndex:
     node_counts: Counter[str] = field(default_factory=Counter)
     usage: LLMUsage = field(default_factory=LLMUsage)
     agents_by_id: dict[str, AgentStart] = field(default_factory=dict)
+    agents_by_path: dict[str, AgentStart] = field(default_factory=dict)
+    launch_actions_by_agent_id: dict[str, ExecAction] = field(default_factory=dict)
     errors: list[ErrorOutput] = field(default_factory=list)
 
     def register(self, node: Node) -> None:
@@ -156,11 +164,20 @@ class RunIndex:
         if isinstance(node, AgentStart):
             if node.id in self.agents_by_id:
                 raise ValueError(f"duplicate agent id {node.id!r}")
+            if node.config.path in self.agents_by_path:
+                raise ValueError(f"duplicate agent path {node.config.path!r}")
             self.agents_by_id[node.id] = node
+            self.agents_by_path[node.config.path] = node
         if isinstance(node, LLMOutput):
             self.usage = self.usage + node.usage
         if isinstance(node, ErrorOutput):
             self.errors.append(node)
+        if isinstance(node, ExecAction):
+            for agent_id in node.launched_agent_ids.values():
+                existing = self.launch_actions_by_agent_id.get(agent_id)
+                if existing is not None and existing is not node:
+                    raise ValueError(f"agent {agent_id!r} has multiple launch receipts")
+                self.launch_actions_by_agent_id[agent_id] = node
 
     def snapshot(self) -> RunStats:
         return RunStats(
@@ -413,12 +430,18 @@ class AgentStart(Node):
     #: The node whose step is currently running for this agent, if any. Engine
     #: bookkeeping, not transcript state: never saved, never compared.
     in_flight: Node | None = field(default=None, init=False, repr=False, compare=False)
+    #: Live child-result mailbox. Engine bookkeeping: never saved, never compared.
+    pending_handoffs: list = field(default_factory=list, init=False, repr=False, compare=False)
+    #: Whether a dependency-blocked agent has been submitted in this process.
+    dependency_scheduled: bool = field(default=False, init=False, repr=False, compare=False)
     _index: RunIndex = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self.root = self
         self.parent_agent = self
         self.frontier = self
+        self.pending_handoffs = []
+        self.dependency_scheduled = False
         self._index = RunIndex()
         self._index.register(self)
 
@@ -432,6 +455,54 @@ class AgentStart(Node):
     def result(self) -> Any:
         node = self.frontier
         return node.result if isinstance(node, DoneOutput) else None
+
+    @property
+    def blocked(self) -> bool:
+        """Whether at least one handle-valued input is not terminal."""
+        root = self.root
+        references = self.input_references
+        if not references or root is None:
+            return False
+        return any(
+            (source := root.find_agent(source_id)) is None or not source.terminal
+            for _input_name, source_id in references
+        )
+
+    @property
+    def input_references(self) -> tuple[tuple[str, str], ...]:
+        """Return persistent ``(input_name, source_id)`` dependency bindings."""
+        return input_references(self.config.inputs)
+
+    def resolved_inputs(self) -> dict[str, str]:
+        """Materialize handle-valued launch inputs for this agent's REPL."""
+        root = self.root
+        if root is None:
+            raise RuntimeError("cannot resolve inputs for a detached agent")
+        resolved: dict[str, str] = {}
+        for name, value in self.config.inputs.items():
+            if isinstance(value, str):
+                resolved[name] = value
+                continue
+            source_id = agent_ref_id(value)
+            if source_id is None:
+                raise TypeError(f"input {name!r} must be a string or agent handle")
+            source = root.find_agent(source_id)
+            if source is None:
+                raise ValueError(f"input {name!r} references missing agent {source_id!r}")
+            if not source.terminal:
+                raise RuntimeError(f"input {name!r} source {source.config.path!r} is not complete")
+            result = source.result()
+            resolved[name] = (
+                result
+                if isinstance(result, str)
+                else json.dumps(
+                    result,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                )
+            )
+        return resolved
 
     def leaves(self) -> list[Node]:
         out: list[Node] = []
@@ -487,6 +558,11 @@ class AgentStart(Node):
         """Find an agent by exact runtime ID without scanning transcript nodes."""
         self._require_run_root()
         return self._index.agents_by_id.get(agent_id)
+
+    def find_agent_by_path(self, path: str) -> AgentStart | None:
+        """Find an agent by its stable dotted path without scanning the tree."""
+        self._require_run_root()
+        return self._index.agents_by_path.get(path)
 
     def errors(self) -> tuple[ErrorOutput, ...]:
         """Errors in append order without scanning the graph."""
@@ -545,7 +621,6 @@ class AgentStart(Node):
 
 @dataclass
 class UserQuery(Node):
-
     type: ClassVar[str] = "user_query"
     turn_mode: ClassVar[TurnMode] = TurnMode.ACTION
     finish_description: ClassVar[str] = "Submit your final answer."
@@ -571,8 +646,6 @@ class PlanQuery(UserQuery):
     type: ClassVar[str] = "plan_query"
 
     def instruction(self) -> str:
-        if self.content:
-            return self.content
         agent = self.parent_agent
         if agent is None:
             turns = 0
@@ -582,19 +655,16 @@ class PlanQuery(UserQuery):
                 isinstance(node, LLMOutput) and node.seq < self.seq for node in agent.transcript()
             )
             max_iters = agent.config.max_iters
-        if max_iters is None:
-            body = f"Turn {turns + 1}:"
+        if self.content:
+            body = self.content
         else:
-            body = USER_PROMPT.format(iter_1=turns + 1, max_iter=max_iters)
-        if turns == 0:
-            return FIRST_TURN_SAFEGUARD + body
-        return body
-
-    def build_system_prompt(self, flow: Any) -> str:
-        text = flow.build_system_prompt(self)
-        if not can_spawn(self.parent_agent):
-            return text
-        return f"{text}\n\n{orchestrator_addendum(flow)}"
+            if max_iters is None:
+                body = f"Turn {turns + 1}:"
+            else:
+                body = USER_PROMPT.format(iter_1=turns + 1, max_iter=max_iters)
+            if turns == 0:
+                body = FIRST_TURN_SAFEGUARD + body
+        return f"{body}\n\n{PLANNING_ACTION}"
 
 
 @dataclass
@@ -630,11 +700,38 @@ class ExecAction(ActionNode):
     repl_execution_order: int | None = None
     #: Agent results explicitly read during this action, in first-read order.
     retrieved_agent_ids: list[str] = field(default_factory=list)
+    #: Stable proxy-call receipt: launch call ordinal -> created agent id.
+    launched_agent_ids: dict[int, str] = field(default_factory=dict)
 
     def mark_agent_retrieved(self, agent_id: str) -> None:
         """Record one result access idempotently."""
         if agent_id not in self.retrieved_agent_ids:
             self.retrieved_agent_ids.append(agent_id)
+
+    def record_agent_launch(self, call_id: int, agent: AgentStart) -> None:
+        """Bind one launch call to its child without changing ownership."""
+        existing_id = self.launched_agent_ids.get(call_id)
+        if existing_id is not None and existing_id != agent.id:
+            raise ValueError(f"launch call {call_id} already points to agent {existing_id!r}")
+        root = self.root
+        if root is None:
+            raise RuntimeError("cannot record a launch on a detached action")
+        existing_action = root._index.launch_actions_by_agent_id.get(agent.id)
+        if existing_action is not None and existing_action is not self:
+            raise ValueError(f"agent {agent.id!r} already has a launch receipt")
+        self.launched_agent_ids[call_id] = agent.id
+        root._index.launch_actions_by_agent_id[agent.id] = self
+
+    def launch_call_id_for(self, agent_id: str) -> int | None:
+        """Return the first call on this action that produced ``agent_id``."""
+        return min(
+            (
+                call_id
+                for call_id, launched_id in self.launched_agent_ids.items()
+                if launched_id == agent_id
+            ),
+            default=None,
+        )
 
     def to_record(self) -> dict[str, Any]:
         data = super().to_record()
@@ -642,6 +739,9 @@ class ExecAction(ActionNode):
             "code": self.code,
             "repl_execution_order": self.repl_execution_order,
             "retrieved_agent_ids": list(self.retrieved_agent_ids),
+            "launched_agent_ids": {
+                str(call_id): agent_id for call_id, agent_id in self.launched_agent_ids.items()
+            },
         }
         return data
 
@@ -711,6 +811,8 @@ class AppendChild(ExecAction):
             (f"launch_subagent('', model={child.config.model!r}, name={child.config.name!r})")
             for child in self.child_agents
         ]
+        for call_id, child in enumerate(self.child_agents):
+            self.record_agent_launch(call_id, child)
         if len(calls) == 1:
             self.code = f"_handle = await {calls[0]}\nprint(await _handle.wait_for_result())"
             return
@@ -829,13 +931,16 @@ __all__ = [
     "running_step",
     "DEFAULT_QUERY",
     "COLD_REPL_NOTE",
+    "EXECUTION_POLICY",
     "FINAL_ANSWER_ACTION",
     "FIRST_TURN_SAFEGUARD",
     "LAST_TURN_ADDENDUM",
     "ORCHESTRATOR_ADDENDUM",
+    "PLANNING_ACTION",
     "TRUNCATION_SUMMARY",
     "TURN_ONE_FINISH_SENTENCE",
     "USER_PROMPT",
+    "WORKER_ADDENDUM",
     "orchestrator_addendum",
     "AgentConfig",
     "ActionNode",

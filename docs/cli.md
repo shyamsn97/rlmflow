@@ -15,7 +15,7 @@ rlmflow version                               # version, Python, installed extra
 
 ## `rlmflow tui` and `rlmflow run`
 
-Both drive a coding agent with `FILE_TOOLS` over `--workdir` (the current directory by default), checkpointing the graph to `<workdir>/graph`. The dashboard needs `pip install "rlmflow[tui]"`.
+Both drive a coding agent with `FILE_TOOLS` over `--workdir` (the current directory by default), checkpointing the graph to `<workdir>/graph`. Launched children finish against `CODING_HANDOFF_SCHEMA` (`done`, `diff_summary`, `concerns`, `followups`) so the parent sees a memo rather than `"done"`; the root itself stays untyped. The dashboard needs `pip install "rlmflow[tui]"`.
 
 ```bash
 rlmflow tui                                     # dashboard, waiting for a query
@@ -47,7 +47,7 @@ Anything the flags cannot say stays in Python: write a factory that returns the 
 
 ```python
 # mypkg/agents.py
-from rlmflow import FILE_TOOLS, AgentConfig, Flow, LocalRuntime
+from rlmflow import FILE_TOOLS, AgentConfig, CODING_HANDOFF_SCHEMA, Flow, LocalRuntime
 from rlmflow.llm import client_for
 
 def build() -> Flow:
@@ -55,7 +55,11 @@ def build() -> Flow:
         client_for("gpt-5", reasoning_effort="low"),
         runtime=LocalRuntime(working_directory="."),
         tools=[FILE_TOOLS, my_tool],
-    root_config=AgentConfig(max_depth=2, max_iters=40),
+        root_config=AgentConfig(
+            max_depth=1,
+            max_iters=40,
+            child_output_schema=CODING_HANDOFF_SCHEMA,
+        ),
     )
 ```
 

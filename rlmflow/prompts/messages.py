@@ -21,7 +21,6 @@ from rlmflow.graph.nodes import (
     TurnMode,
     UserQuery,
 )
-from rlmflow.tools.builtins import BuiltIns
 from rlmflow.tools.tools import format_tool_docs
 
 if TYPE_CHECKING:
@@ -87,9 +86,7 @@ def format_transition_footer(
         return f"End with finish(answer) — {finish_description}"
     lines = ["End the REPL block normally to continue."]
     if options:
-        lines.append(
-            "Or transition immediately (stdout from that block is not observed):"
-        )
+        lines.append("Or transition immediately (stdout from that block is not observed):")
         lines.extend(f'- transition("{name}") — {description}' for name, description in options)
     lines.append(f"- finish(answer) — {finish_description}")
     return "\n".join(lines)
@@ -127,14 +124,6 @@ def render_tools(flow: Any, node: Node) -> str:
     from rlmflow.prompts.prompts import as_agent
 
     parts: list[str] = []
-    builtins = next(
-        (item for item in flow.toolsets if isinstance(item, BuiltIns)),
-        None,
-    )
-    if builtins is not None:
-        text = builtins.description(flow, node).strip()
-        if text:
-            parts.append(text)
     docs = format_tool_docs(
         flow.toolsets,
         flow.tools,
@@ -145,7 +134,11 @@ def render_tools(flow: Any, node: Node) -> str:
         parts.append(docs)
     agent = as_agent(node)
     clients = getattr(flow, "_llm_clients", {})
-    if clients and (can_spawn(agent) or flow.use_llm_query):
+    if (
+        node.turn_mode is not TurnMode.FINAL
+        and clients
+        and (can_spawn(agent) or flow.use_llm_query)
+    ):
         lines = ["`model=` on `launch_subagent` / `llm_query` is required:"]
         for key in sorted(clients):
             tags: list[str] = []
@@ -157,16 +150,17 @@ def render_tools(flow: Any, node: Node) -> str:
             lines.append(f"- `{key}`{suffix}")
         parts.append("\n".join(lines))
     profiles = flow.prompt_profiles
-    if profiles and flow.prompt_router is None and can_spawn(agent):
+    if (
+        node.turn_mode is not TurnMode.FINAL
+        and profiles
+        and flow.prompt_router is None
+        and can_spawn(agent)
+    ):
         lines = ["Available prompt profiles (pass `prompt_profile` to `launch_subagent`):"]
         for name in sorted(profiles):
             desc = getattr(profiles[name], "description", "")
             lines.append(f"- `{name}`" + (f" — {desc}" if desc else ""))
         parts.append("\n".join(lines))
-    if builtins is not None:
-        note = builtins.child_schema_note(flow, node).strip()
-        if note:
-            parts.append(note)
     return "\n\n".join(part for part in parts if part)
 
 

@@ -75,6 +75,8 @@ A timeout terminates the entire worker because Python cannot safely kill an arbi
 
 Saved graphs remain the durable state. `restore="replay"` reconstructs unfinished namespaces before scheduling the run. `restore="lazy"` waits until an agent is about to execute code, then replays the recorded executions needed by that worker. `reuse_repl=True` is live sharing, not namespace cloning.
 
+Restore operates on physical worker sessions. If any tenant in a shared session is unfinished, the worker owner and every tenant whose recorded actions contributed to that heap are replayed parent-first—even when some are terminal. A terminal session with no unfinished tenant is skipped.
+
 ## Docker
 
 ```bash

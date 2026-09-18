@@ -5,7 +5,7 @@ from __future__ import annotations
 from helpers import StubLLM
 
 from rlmflow import Flow, LLMOutput, PlanQuery
-from rlmflow.graph.nodes import FIRST_TURN_SAFEGUARD, ORCHESTRATOR_ADDENDUM
+from rlmflow.graph.nodes import EXECUTION_POLICY, FIRST_TURN_SAFEGUARD, PLANNING_ACTION
 
 
 def repl(code: str) -> str:
@@ -22,7 +22,8 @@ def test_input_backed_tasks_plan_inspect_and_act_iteratively():
         assert "Inspection turn only" not in system
         assert "Post-inspection orchestration turn" not in system
         assert "Recursive Language Model" in system
-        assert ORCHESTRATOR_ADDENDUM in system
+        assert EXECUTION_POLICY in system
+        assert PLANNING_ACTION in messages[-1]["content"]
         if len(calls) == 1:
             assert messages[-1]["content"].startswith(FIRST_TURN_SAFEGUARD)
             assert "Turn 1/" in messages[-1]["content"]
@@ -32,11 +33,13 @@ def test_input_backed_tasks_plan_inspect_and_act_iteratively():
         if len(calls) == 1:
             return repl('print({"characters": len(INPUTS["context"]), "kind": "text"})')
         if len(calls) == 2:
-            return repl("""
+            return repl(
+                """
 text = INPUTS["context"]
 answer = {"characters": len(text), "contains_requirement": "required" in text}
 print(answer)
-""".strip())
+""".strip()
+            )
         return repl("finish(answer)")
 
     flow = Flow(StubLLM(reply))

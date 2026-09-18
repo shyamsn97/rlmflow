@@ -19,7 +19,7 @@ asyncio.run(drive())
 print(root.result())
 ```
 
-`flow.run("query")` and `await flow.arun("query")` return the root agent's final result — a string, or the parsed value if the agent has an `output_schema`.
+`flow.run("query")` and `await flow.arun("query")` return the root agent's final strict JSON value. With an `output_schema`, that value has also been parsed and validated against the schema.
 
 Pass `until="next"` for one appended Node, `until="idle"` for a clean `ExecOutput`/`DoneOutput`, or a `(node, root) -> bool` callable. See [`streaming.md`](streaming.md).
 
@@ -30,12 +30,15 @@ Limits belong to the agent, not the flow. Set them on the root with `flow.start(
 The authoritative `AgentConfig` defaults are:
 
 - `max_depth=1`;
-- `max_iters=None` and `max_budget=None` (unbounded turns and tokens; set a number to cap);
-- `child_max_iters=None`, meaning children inherit `max_iters`;
+- `max_iters=None` and `max_budget=None` (unbounded turns and tokens);
+- `child_output_schema=None`, meaning launched children are untyped unless the launch passes `output_schema`;
 - `keep_n_messages=None`, meaning prompts retain the full transcript;
-- `max_output_length=20_000` and `max_query_chars=20_000` (official RLM's per-block REPL cap).
+- `max_output_length=20_000` and `max_query_chars=20_000` (official RLM's per-block REPL cap);
+- `resume_on_child_done=True`, so a parent that has already `finish()`ed still observes later child results; pass `False` on scored evals that must stay terminal.
 
 Passing `None` explicitly opts out of the iteration or token limit.
+
+`max_budget` is a soft threshold over recorded model usage for the complete root tree. Once crossed, new child creation stops and every unfinished agent gets one final turn. Descendants finalize first, then their parents synthesize the returned results. Calls already in flight plus one final turn per unfinished agent can exceed the threshold; use `workers` and per-provider output limits when a tighter billing bound matters.
 
 ```python
 root = flow.start(
@@ -83,7 +86,7 @@ loaded = AgentStart.load("runs/audit")
 loaded.config.max_iters = 40
 ```
 
-Children inherit the parent's config through `config.child(name)`, with `child_max_iters` as the per-child iteration default and the launch spec's `inputs`, required `model`, `prompt_profile`, and `output_schema` layered on top.
+Children inherit the parent's `max_iters` through `config.child(name)`. `child_output_schema` becomes the child's `output_schema` unless the launch spec passes one. The launch spec's `inputs`, required `model`, `prompt_profile`, and `output_schema` layer on top.
 
 ## Multi-turn runs
 
@@ -152,7 +155,7 @@ async def launch_subagent(
     *,
     model: str,
     name: str | None = None,
-    inputs: dict[str, str] | None = None,
+    inputs: dict[str, str | AgentHandle] | None = None,
     output_schema=None,
     prompt_profile: str | None = None,
     reuse_repl: bool = False,
@@ -174,7 +177,29 @@ results = [
 ]
 ```
 
-`launch_subagent` always starts background work and returns immediately after the child is attached and queued. Awaiting handles sequentially does not serialize the children: both are already running. Child `name` is one ASCII identifier segment containing only letters, digits, `_`, or `-`, and is unique among its siblings. Every call must pass `model`; `prompt_profile`, `output_schema`, and `reuse_repl` are optional. Invalid model, depth, or goal length raises an execution error without spawning a child.
+`launch_subagent` attaches the child and returns its handle immediately. A child whose inputs are all strings is queued at once; a child with unfinished handle-valued inputs is queued when its final source completes. Awaiting independently launched handles sequentially does not serialize the children because they are already running. Child `name` is one ASCII identifier segment containing only letters, digits, `_`, or `-`, and is unique among its siblings. Every call must pass `model`; `prompt_profile`, `output_schema`, and `reuse_repl` are optional. Invalid model, input, depth, or goal length raises an execution error without spawning a child.
+
+Pass handles as named inputs when a downstream child has substantial work that requires upstream results:
+
+```python
+requirements = await launch_subagent(
+    "Determine the requirements.", model="fast", name="requirements"
+)
+constraints = await launch_subagent(
+    "Investigate the constraints.", model="fast", name="constraints"
+)
+implementation = await launch_subagent(
+    "Implement and test using INPUTS.",
+    model="default",
+    name="implementation",
+    inputs={"requirements": requirements, "constraints": constraints},
+)
+result = await implementation
+```
+
+The downstream child waits until every handle-valued input completes. String inputs are available immediately. Handle results are exposed to the child as strings under the mapping's explicit keys; non-string structured results are JSON-encoded. Only top-level values may be handles.
+
+Passing a handle does not move either agent. All three agents above remain siblings beneath the action that launched them. Their dependency edges are derived from the handle-valued inputs and are visible with `AGENTS.print_graph(view="dependencies")`. `max_depth` controls recursive spawning only, not dependency-chain length, so a root at `max_depth=1` can build an arbitrary sibling dependency DAG.
 
 The handle exposes identity and current status:
 
@@ -193,7 +218,13 @@ result = await child.wait_for_result()
 
 If the root becomes terminal first, the stream still drains queued descendants before returning. This is not a detached daemon job.
 
-Children hang off the `ExecAction` that launched them, so the parent's transcript stays a single chain: `root.sub_agents` is where the children are, and the launching step lands one `ExecOutput` when the block finishes.
+Children stay beneath the `ExecAction` that launched them, so ownership records who created each agent and the parent's transcript remains one chain. Input references record dataflow independently. The launching step still lands one `ExecOutput` when the block finishes.
+
+When a child `finish()`es, the launching parent also gets a durable `UserQuery` carrying that result (`[handoff {path}]` plus the child's `finish()` value), unless the result is already routed to another agent through a handle-valued input. A mapping is listed as fields; a scalar stays labeled JSON. The payload is capped. The engine does not splice it into an in-flight LLM or REPL step: it waits until that parent lands `ExecOutput`, then appends one batched query for every child that finished in the meantime and follows it with a `PlanQuery`. `ErrorOutput` and `ReplDead` do not flush; the mailbox waits for the next `ExecOutput`. `await wait_for_result()` in the launch block still works — the handoff appears after that block's `ExecOutput`.
+
+The coding CLI and [`examples/coding/agent.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/coding/agent.py) set `AgentConfig.child_output_schema` to `CODING_HANDOFF_SCHEMA`, so a launched child must `finish` `{done, diff_summary, concerns, followups}` and the parent reads those fields on the next `PlanQuery`. The root itself is not given that schema. Other `Flow`s (evals, needle) stay untyped unless they set the field.
+
+If the parent has already `finish()`ed, the default is to append the same `UserQuery` onto that `DoneOutput` and keep driving (`resume_on_child_done=True`). Pass `False` (on `AgentConfig`, `flow.start(...)`, or `Flow(root_config=...)`) to leave the parent terminal while descendants drain. Children inherit the flag through `config.child(name)`. The mailbox is live-only; a resumed stream rebuilds it from terminal children whose marker is not yet in the parent's transcript.
 
 ## Agent tree inspection
 
@@ -216,7 +247,7 @@ await AGENTS.get("researcher").wait_for_result()
 AGENTS.print_graph(show_results=True)
 ```
 
-Each `AgentInfo` includes identity, parent/children, frontier metadata, status, and a completed result. Status is one of `running`, `waiting`, `idle`, or `completed`.
+Each `AgentInfo` includes identity, parent/children, dependency metadata, frontier metadata, status, and a completed result. Status is one of `blocked`, `running`, `waiting`, `idle`, or `completed`.
 
 `AGENTS` is an immutable snapshot refreshed before each REPL action. Local queries do not become fresher within one action; `wait_for_result()` is the one operation that waits on live graph state. The option defaults off, so disabled flows add no prompt text, snapshot work, or remote serialization. Process-isolated runtimes require the core `cloudpickle` dependency to inject the custom snapshot object by value; it is installed automatically with `rlmflow`.
 
@@ -234,8 +265,10 @@ async for _ in flow.run_streaming(loaded):
 
 Loading is a cold boundary: the tree is restored, but no REPL is. A tree handed to a `Flow` that has not run it — loaded, forked, or from another process — gets its namespaces back one of two ways:
 
-- `Flow(restore="replay")`, the default, re-runs each unfinished agent's recorded code once before the run loop starts. Nothing is appended and no child is relaunched; `ENV["RLMFLOW_REPLAY"]` is `"1"` while it happens, so agent code can skip work it should not repeat.
+- `Flow(restore="replay")`, the default, re-runs each unfinished agent's recorded code once before the run loop starts. Each recorded launch call uses its `ExecAction` launch receipt to return the existing agent immediately, without revalidating inputs or submitting work. Nothing is appended and no child is relaunched; `ENV["RLMFLOW_REPLAY"]` is `"1"` while it happens, so agent code can skip work it should not repeat.
 - `Flow(restore="lazy")` defers the same replay until immediately before each unfinished agent's first new `ExecAction`.
+
+Replay follows physical worker ownership. An unfinished `reuse_repl=True` child requires its parent's worker even when that parent has already finished, so restore rebuilds required shared sessions parent-first. It also replays terminal tenants in such a session because their mutations may remain in the shared heap. Finished sessions unrelated to unfinished work stay closed.
 
 To checkpoint as a run goes, use the periodic consumer instead of serializing the whole graph after every Node:
 
@@ -250,13 +283,47 @@ checkpoint.close()
 
 ## Tools
 
-Pass fixed tools to the flow, which describes them in the system prompt and seeds them into every REPL:
+Pass tools to the flow, which describes them in the system prompt and seeds them into each REPL. Visibility can depend on the agent: `@tool(..., when=at_leaf)` (or a toolset `visible_tools(flow, node)`) omits the tool from both the prompt and the namespace. `FILE_TOOLS` writes are leaf-only — spawners keep reads.
 
 ```python
-from rlmflow import FILE_TOOLS, Flow, LocalRuntime
+from rlmflow import FILE_TOOLS, Flow, LocalRuntime, at_leaf, tool
 
-flow = Flow(client, tools=[FILE_TOOLS], runtime=LocalRuntime(working_directory="."))
+
+@tool("Run a migration.", when=at_leaf)
+def migrate(sql: str) -> str: ...
+
+
+flow = Flow(
+    client,
+    tools=[FILE_TOOLS, migrate],
+    runtime=LocalRuntime(working_directory="."),
+)
 ```
+
+`at_leaf` is true when `can_spawn` is false (`depth >= max_depth`). A `max_depth=1` root can launch; its children can write. Agents that still have remaining depth keep spawn and lose writes.
+
+Decorate a standalone callable with `@tool`; standalone tools share a `### Tools` prompt subsection. Use `@toolset("Title")` when several related callables need their own subsection and shared guidance:
+
+```python
+from rlmflow import tool, toolset
+
+
+@toolset("Database")
+class DatabaseTools:
+    @tool("List available database tables.")
+    def list_tables(self) -> list[str]: ...
+
+    @tool("Execute read-only SQL and return rows.")
+    def query(self, sql: str) -> list[dict]: ...
+
+    def guidance(self, flow, node) -> str:
+        return "Inspect table names before writing SQL. Queries are read-only."
+
+
+flow = Flow(client, tools=[DatabaseTools()])
+```
+
+Toolset methods remain flat REPL globals—the model calls `query(...)`, not `DatabaseTools.query(...)`. A toolset subsection contains each active member's signature and `@tool` description followed by optional `guidance(flow, node)`. Removing its last active member removes the whole subsection and its guidance.
 
 Add or remove them later; both reach REPLs that are already open:
 

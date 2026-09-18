@@ -67,13 +67,18 @@ def test_fork_and_persistence_preserve_full_config_without_sharing_values(tmp_pa
         "configured",
         inputs={"doc": "value"},
         output_schema={"type": "string"},
+        child_output_schema={
+            "type": "object",
+            "properties": {"done": {"type": "boolean"}},
+            "required": ["done"],
+        },
         max_depth=4,
         max_iters=7,
-        child_max_iters=3,
         max_budget=123,
         keep_n_messages=5,
         max_output_length=999,
         max_query_chars=888,
+        resume_on_child_done=True,
     )
 
     fork = root.fork()
@@ -84,6 +89,7 @@ def test_fork_and_persistence_preserve_full_config_without_sharing_values(tmp_pa
     assert fork.config is not root.config
     assert fork.config.inputs is not root.config.inputs
     assert fork.config.output_schema is not root.config.output_schema
+    assert fork.config.child_output_schema is not root.config.child_output_schema
 
 
 def test_run_index_tracks_counts_usage_agents_and_errors():
@@ -116,17 +122,17 @@ def test_run_index_tracks_counts_usage_agents_and_errors():
         root.stats.node_counts["node"] = 1  # type: ignore[index]
 
 
-def test_v3_is_flat_strict_and_rejects_v2():
+def test_v5_is_flat_strict_and_rejects_v4():
     root, _ = chain(4)
     document = persistence.to_document(root)
 
-    assert document["version"] == 3
+    assert document["version"] == 5
     assert "root" not in document
     assert all("children" not in record for record in document["nodes"])
     assert persistence.to_document(persistence.from_document(document)) == document
 
-    with pytest.raises(persistence.UnsupportedGraphVersion, match="requires v3"):
-        persistence.from_document({"version": 2, "root": {}})
+    with pytest.raises(persistence.UnsupportedGraphVersion, match="requires v5"):
+        persistence.from_document({"version": 4, "root": {}})
 
     broken = {**document, "nodes": [dict(record) for record in document["nodes"]]}
     broken["nodes"][1]["parent_id"] = "later"
@@ -137,6 +143,63 @@ def test_v3_is_flat_strict_and_rejects_v2():
     unknown["nodes"][1]["type"] = "unknown_query"
     with pytest.raises(ValueError, match="unknown node type 'unknown_query'"):
         persistence.from_document(unknown)
+
+
+def test_persistence_rejects_invalid_input_references_and_cycles():
+    root = start("root")
+    action = ExecAction(code="launch")
+    root.append(action)
+    left = AgentStart(content="left", config=root.config.child("left"))
+    right = AgentStart(content="right", config=root.config.child("right"))
+    action.append(left)
+    action.record_agent_launch(0, left)
+    action.append(right)
+    action.record_agent_launch(1, right)
+
+    left.config.inputs["right"] = {"$rlmflow_agent": right.id}
+    right.config.inputs["left"] = {"$rlmflow_agent": left.id}
+    with pytest.raises(ValueError, match="dependency cycle"):
+        persistence.to_document(root)
+
+    right.config.inputs.clear()
+    left.config.inputs["right"] = {"$rlmflow_agent": "missing"}
+    with pytest.raises(ValueError, match="references missing agent"):
+        persistence.to_document(root)
+
+    left.config.inputs["right"] = {"$rlmflow_agent": left.id}
+    with pytest.raises(ValueError, match="cannot depend on itself"):
+        persistence.to_document(root)
+
+    left.config.inputs["right"] = {"$rlmflow_agent": right.id, "extra": "bad"}
+    with pytest.raises(TypeError, match="exact agent reference"):
+        persistence.to_document(root)
+
+
+def test_persistence_rejects_out_of_scope_input_reference():
+    root = start("root", max_depth=2)
+    root_action = ExecAction(code="launch siblings")
+    root.append(root_action)
+    owner = AgentStart(content="owner", config=root.config.child("owner"))
+    source = AgentStart(content="source", config=root.config.child("source"))
+    root_action.append(owner)
+    root_action.record_agent_launch(0, owner)
+    root_action.append(source)
+    root_action.record_agent_launch(1, source)
+
+    owner_action = ExecAction(code="launch consumer")
+    owner.append(owner_action)
+    consumer = AgentStart(
+        content="consumer",
+        config=owner.config.child(
+            "consumer",
+            inputs={"source": {"$rlmflow_agent": source.id}},
+        ),
+    )
+    owner_action.append(consumer)
+    owner_action.record_agent_launch(0, consumer)
+
+    with pytest.raises(ValueError, match="outside its launch scope"):
+        persistence.to_document(root)
 
 
 def test_graph_file_is_the_atomic_save_commit_point(tmp_path, monkeypatch):

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from benchmarks.eval import logger
 from benchmarks.eval.metrics import summarize
+from benchmarks.eval.telemetry import expected_from_row
 from benchmarks.eval.types import Logger, Row
 
 MAX_ANSWER_CHARS = 300
@@ -23,13 +24,24 @@ class ReportLogger(Logger):
         self._write(self._rows)
 
     def summary(self, rows: list[Row]) -> None:
+        from benchmarks.eval.visual_report import write_visual_report
+
         self._write(rows)
+        write_visual_report(
+            rows,
+            self.root / "report.html",
+            artifact_root=self.root,
+            title="rlmflow benchmark report",
+        )
 
     def _write(self, rows: list[Row]) -> None:
         summary = summarize(rows)
         lines = ["# Benchmark Report", ""]
         overall = summary.get("overall", {})
         if overall:
+            domains = {
+                str(row.metadata.get("domain")) for row in rows if row.metadata.get("domain")
+            }
             lines.extend(
                 [
                     "## Overall",
@@ -37,7 +49,14 @@ class ReportLogger(Logger):
                     f"- Count: {overall.get('count', 0)}",
                     f"- Correct: {overall.get('correct', 0)} / {overall.get('graded_count', 0)}",
                     f"- Accuracy: {_format_pct(overall.get('accuracy_pct'))}",
-                    f"- Score: {_format_float(overall.get('score'))}",
+                    *(
+                        [f"- Score: {_format_float(overall.get('score'))}"]
+                        if len(domains) <= 1
+                        else [
+                            "- Score: reported by domain below; native scores are "
+                            "not averaged across incompatible domains"
+                        ]
+                    ),
                     f"- Errors: {overall.get('errors', 0)}",
                     "",
                 ]
@@ -49,6 +68,10 @@ class ReportLogger(Logger):
         lines.extend(
             _summary_table("By Runner And Benchmark", summary.get("by_runner_dataset", {}))
         )
+        lines.extend([""])
+        lines.extend(_summary_table("By Route Hypothesis", summary.get("by_route", {})))
+        lines.extend([""])
+        lines.extend(_summary_table("By Domain", summary.get("by_domain", {})))
         lines.extend(["", *_examples_section(rows)])
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -61,8 +84,8 @@ def _summary_table(title: str, values: dict[str, dict]) -> list[str]:
         return lines
     lines.extend(
         [
-            "| name | rows | correct | pct correct | score | errors | avg time | avg tokens | avg nodes | avg agents | max depth | subdelegated |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| name | rows | correct | pct correct | score | errors | avg time | avg tokens | avg nodes | avg agents | max depth | avg deps | recursive launches | primary actions | probe actions | candidates | selection regret | subdelegated |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for name, item in values.items():
@@ -78,6 +101,12 @@ def _summary_table(title: str, values: dict[str, dict]) -> list[str]:
             f"{_format_float(item.get('graph_nodes'))} | "
             f"{_format_float(item.get('graph_agents'))} | "
             f"{_format_float(item.get('graph_max_depth'))} | "
+            f"{_format_float(item.get('delegation_dependency_edges'))} | "
+            f"{_format_float(item.get('delegation_recursive_launches'))} | "
+            f"{_format_float(item.get('environment_primary_actions'))} | "
+            f"{_format_float(item.get('environment_probe_actions'))} | "
+            f"{_format_float(item.get('candidate_count'))} | "
+            f"{_format_float(item.get('candidate_selection_regret'))} | "
             f"{item.get('subdelegated', 0)}/{item.get('graph_count', 0)} |"
         )
     return lines
@@ -98,15 +127,22 @@ def _examples_section(rows: list[Row]) -> list[str]:
         lines.append("")
         lines.append(f"- Expected: {_format_cell(_expected(group))}")
         lines.append("")
-        lines.append("| runner | correct | input tokens | output tokens | answer |")
-        lines.append("| --- | --- | ---: | ---: | --- |")
+        lines.append("| runner | correct | input tokens | output tokens | artifacts | answer |")
+        lines.append("| --- | --- | ---: | ---: | --- | --- |")
         for row in group:
             answer = row.prediction.error or row.prediction.answer
             mark = "x" if row.prediction.error else _mark(row.score.correct, row.score.value)
-            input_tokens = row.prediction.usage.get("input_tokens", 0)
-            output_tokens = row.prediction.usage.get("output_tokens", 0)
+            input_tokens = row.metadata.get(
+                "aggregate_input_tokens",
+                row.prediction.usage.get("input_tokens", 0),
+            )
+            output_tokens = row.metadata.get(
+                "aggregate_output_tokens",
+                row.prediction.usage.get("output_tokens", 0),
+            )
             lines.append(
                 f"| `{row.runner}` | {mark} | {input_tokens} | {output_tokens} | "
+                f"{_artifact_links(row)} | "
                 f"{_format_cell(answer)} |"
             )
         lines.append("")
@@ -115,7 +151,7 @@ def _examples_section(rows: list[Row]) -> list[str]:
 
 def _expected(group: list[Row]):
     for row in group:
-        expected = row.score.details.get("expected")
+        expected = expected_from_row(row)
         if expected not in (None, [], ""):
             return expected
     return None
@@ -127,6 +163,14 @@ def _mark(correct: bool | None, value: float) -> str:
     if correct is False:
         return "FAIL"
     return f"{value:.2f}"
+
+
+def _artifact_links(row: Row) -> str:
+    links = []
+    for name, value in sorted(row.prediction.artifacts.items()):
+        path = Path(value)
+        links.append(f"[{name}]({path.as_posix()})")
+    return " ".join(links) or "—"
 
 
 def _format_cell(value: object) -> str:

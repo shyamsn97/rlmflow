@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 
 from rlmflow.consumers.base import StreamConsumer
 from rlmflow.consumers.ui import _status
+from rlmflow.graph.config import agent_ref_id
 from rlmflow.graph.nodes import (
     AgentStart,
     DoneOutput,
@@ -570,7 +571,14 @@ def node_panel(node: Node):
         body = node.content
         inputs = node.config.inputs
         if inputs:
-            listed = ", ".join(f"{name} ({len(value)} chars)" for name, value in inputs.items())
+            listed = ", ".join(
+                (
+                    f"{name} ({len(value)} chars)"
+                    if isinstance(value, str)
+                    else f"{name} (agent {agent_ref_id(value) or 'invalid ref'})"
+                )
+                for name, value in inputs.items()
+            )
             body = f"{body}\n\n[INPUTS: {listed}]"
         kind = "query"
     elif isinstance(node, UserQuery):

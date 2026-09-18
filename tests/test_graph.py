@@ -53,6 +53,55 @@ def test_duplicate_child_names_are_rejected():
         root.append(AgentStart(config=root.config.child("worker")))
 
 
+def test_fork_remaps_and_prunes_launch_receipts():
+    root = start("parent")
+    action = ExecAction(code="launch")
+    root.append(action)
+    child = AgentStart(content="child", config=root.config.child("child"))
+    action.append(child)
+    action.record_agent_launch(0, child)
+    action.mark_agent_retrieved(child.id)
+    child.append(DoneOutput(result="done"))
+
+    complete = child.frontier.fork()
+    copied_action = next(node for node in complete.walk() if isinstance(node, ExecAction))
+    copied_child = complete.sub_agents[0]
+    assert copied_action.launched_agent_ids == {0: copied_child.id}
+    assert copied_action.retrieved_agent_ids == [copied_child.id]
+    assert copied_child.id != child.id
+
+    pruned = action.fork()
+    pruned_action = next(node for node in pruned.walk() if isinstance(node, ExecAction))
+    assert pruned.sub_agents == []
+    assert pruned_action.launched_agent_ids == {}
+    assert pruned_action.retrieved_agent_ids == []
+
+
+def test_fork_remaps_dependency_agent_ids():
+    root = start("parent")
+    action = ExecAction(code="launch")
+    root.append(action)
+    source = AgentStart(content="source", config=root.config.child("source"))
+    action.append(source)
+    action.record_agent_launch(0, source)
+    source.append(DoneOutput(result="source"))
+    consumer = AgentStart(
+        content="consumer",
+        config=root.config.child(
+            "consumer",
+            inputs={"source": {"$rlmflow_agent": source.id}},
+        ),
+    )
+    action.append(consumer)
+    action.record_agent_launch(1, consumer)
+
+    copied = consumer.fork()
+    copied_source, copied_consumer = copied.sub_agents
+
+    assert copied_consumer.config.inputs == {"source": {"$rlmflow_agent": copied_source.id}}
+    assert copied_consumer.input_references == (("source", copied_source.id),)
+
+
 def test_append_child_rehomes_a_complete_subtree():
     subtree = start("copied worker")
     nested_action = ExecAction(code="launch")

@@ -8,6 +8,34 @@ from rlmflow.graph.nodes import AgentStart, ExecAction
 from rlmflow.runtime.env import RLMFLOW_REPLAY
 
 
+def _replay_root(flow: Any, agent: AgentStart) -> AgentStart:
+    """Return the highest missing worker owner required by ``agent``."""
+    root = agent
+    while root.config.reuse_repl and root.parent is not None:
+        parent = root.parent.parent_agent
+        if parent is None or flow.runtime.get(parent) is not None:
+            break
+        root = parent
+    return root
+
+
+def _required_agents(root: AgentStart) -> tuple[list[AgentStart], set[int]]:
+    """Agents in worker sessions that contain at least one unfinished tenant."""
+    agents = [node for node in root.walk() if isinstance(node, AgentStart)]
+
+    def owner(agent: AgentStart) -> AgentStart:
+        while agent.config.reuse_repl and agent.parent is not None:
+            parent = agent.parent.parent_agent
+            if parent is None:
+                break
+            agent = parent
+        return agent
+
+    required_owners = {id(owner(agent)) for agent in agents if not agent.terminal}
+    required = {id(agent) for agent in agents if id(owner(agent)) in required_owners}
+    return agents, required
+
+
 async def replay(flow: Any, root: AgentStart) -> None:
     """Rebuild the namespaces of a graph this flow did not run.
 
@@ -15,11 +43,24 @@ async def replay(flow: Any, root: AgentStart) -> None:
     to each action and reads finished results from their terminal nodes. A block
     that failed the first time fails the same way here, leaving the same partial
     bindings, which is why output and errors are discarded.
+
+    Terminal agents are normally skipped, but a terminal worker owner is replayed
+    when an unfinished ``reuse_repl`` descendant still needs its session and heap.
     """
+    root = _replay_root(flow, root)
+    agents, required = _required_agents(root)
+    for agent in sorted(agents, key=lambda item: item.config.depth):
+        if id(agent) in required:
+            flow.runtime.repl_for(agent)
+
     actions = [
         node
         for node in root.walk()
-        if isinstance(node, ExecAction) and node is not node.parent_agent.frontier
+        if (
+            isinstance(node, ExecAction)
+            and node is not node.parent_agent.frontier
+            and id(node.parent_agent) in required
+        )
     ]
     actions.sort(
         key=lambda node: (
@@ -30,11 +71,9 @@ async def replay(flow: Any, root: AgentStart) -> None:
     )
     for node in actions:
         agent = node.parent_agent
-        if agent.terminal and not agent.config.reuse_repl:
-            continue  # it answered; nothing will run in this namespace again
         repl = flow.runtime.repl_for(agent)
         repl.structured_output = agent.config.output_schema is not None
-        repl.seed(flow.build_tools(node), agent.config.inputs)
+        repl.seed(flow.build_tools(node), agent.resolved_inputs())
         repl.update_env({RLMFLOW_REPLAY: "1"})
         try:
             await flow.runtime.execute(node, node.code)
@@ -53,12 +92,7 @@ async def ensure_replayed(flow: Any, agent: AgentStart) -> None:
             flow._restored_agents.add(id(agent))
             return
 
-        root = agent
-        while root.config.reuse_repl and root.parent is not None:
-            parent = root.parent.parent_agent
-            if parent is None or flow.runtime.get(parent) is not None:
-                break
-            root = parent
+        root = _replay_root(flow, agent)
         await flow.replay(root)
         flow._restored_agents.update(
             id(node) for node in root.walk() if isinstance(node, AgentStart)

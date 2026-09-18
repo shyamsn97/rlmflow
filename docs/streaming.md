@@ -34,14 +34,12 @@ The implementation is deliberately split by responsibility:
   - `Flow.run_streaming`: the driver loop;
   - `Flow.step`: one complete Node transition;
   - `Flow.launch_tool`: child creation, submission, and joining;
-  - `rlmflow.engine.steps`: `@Flow.transitions.on` producers.
+  - `rlmflow.engine.steps`: `@Flow.transitions.on` producers;
+  - `rlmflow.engine.handoff`: child `DoneOutput` → parent `UserQuery`.
 - [`rlmflow/engine/execution.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/engine/execution.py)
   - `Transition`: submitted Node, created Node, and infrastructure error;
   - `TaskQueue`: active tasks, completed transitions, child-terminal wake-ups;
   - `Pool`, `ThreadPool`, `SequentialPool`: compute placement and capacity.
-- [`rlmflow/engine/parallel.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/engine/parallel.py)
-  - `parallel_stream`: public multi-root wrapper;
-  - `parallel_run`: drive several roots and return them in argument order.
 - [`rlmflow/engine/boundaries.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/engine/boundaries.py)
   - built-in and custom `until` boundary resolution.
 - [`rlmflow/graph/nodes.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/graph/nodes.py)
@@ -245,7 +243,7 @@ Selective cancellation is what lets one parallel root hit a boundary without sto
 
 ## The driver loop
 
-`Flow.run_streaming(root, *roots)` is both the single-root and multi-root driver. `parallel_stream` is a public convenience wrapper around this function.
+`Flow.run_streaming(root, *roots)` is both the single-root and multi-root driver.
 
 The driver performs six phases.
 
@@ -263,7 +261,7 @@ if self.queue is not None:
     raise RuntimeError("this Flow is already driving a stream")
 ```
 
-Use `parallel_stream(flow, *roots)` instead of opening competing `run_streaming` generators on one Flow.
+Pass every root to one `run_streaming` call instead of opening competing generators on one Flow.
 
 ### 2. Restore cold graphs
 
@@ -327,8 +325,13 @@ stop = boundary is not None and boundary(node, root)
 if stop:
     driving.discard(id(root))
     await queue.cancel(root.walk())
-elif not transition.is_agent_start and not node.parent_agent.terminal:
-    queue.submit(node, self.step)
+else:
+    extra = handoff.apply(node)
+    if not transition.is_agent_start and not node.parent_agent.terminal:
+        if node.parent_agent.frontier is node:
+            queue.submit(node, self.step)
+    for leaf in extra:
+        queue.submit(leaf, self._drive)
 ```
 
 The cases are:
@@ -336,6 +339,7 @@ The cases are:
 - **boundary matched**: stop this root and cancel only its active work;
 - **root terminal**: do not submit another root step, but keep draining any non-blocking descendants;
 - **child start publication**: its first step is already running, so do nothing;
+- **child finished**: enqueue the result on the launching parent; if that parent is sitting on `ExecOutput` (or `DoneOutput` with `resume_on_child_done`), append a `UserQuery` and submit that instead;
 - **ordinary nonterminal transition**: submit the created Node as the next leaf.
 
 This is the self-feeding loop:
@@ -350,8 +354,8 @@ Flow.step
 Transition.created
     │
     ├── boundary ───────────> stop this root
-    ├── terminal agent ─────> no successor
-    └── unfinished agent ───> submit created Node
+    ├── terminal agent ─────> no successor (unless a child-handoff wakes it)
+    └── unfinished agent ───> submit created Node, or the handoff UserQuery
 ```
 
 ### 6. Clean up
@@ -469,18 +473,6 @@ async for node in flow.run_streaming(root_a, root_b, root_c):
     print(node.root.content, node.type)
 ```
 
-The public convenience APIs are:
-
-```python
-from rlmflow import parallel_run, parallel_stream
-
-async for node in parallel_stream(flow, root_a, root_b):
-    ...
-
-roots = await parallel_run(flow, "query A", "query B")
-print([root.result() for root in roots])
-```
-
 All roots share:
 
 - one `TaskQueue`;
@@ -502,7 +494,7 @@ yielded:   B1.created, A1.created
 
 Within one agent, `Node.append` preserves a single transcript chain and `seq` preserves that agent's local order. Across agents and roots, completion order is intentionally nondeterministic.
 
-`parallel_run` returns roots in input order. `asyncio.gather` returns child answers in call order. Neither promise changes stream completion order.
+`asyncio.gather` returns child answers in call order. That promise does not change stream completion order.
 
 ## Failure behavior
 

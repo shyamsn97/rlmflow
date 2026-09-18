@@ -24,11 +24,13 @@ from rlmflow import (
     start,
 )
 from rlmflow.graph.nodes import (
+    EXECUTION_POLICY,
     FIRST_TURN_SAFEGUARD,
     LAST_TURN_ADDENDUM,
-    ORCHESTRATOR_ADDENDUM,
+    PLANNING_ACTION,
     TURN_ONE_FINISH_SENTENCE,
     USER_PROMPT,
+    WORKER_ADDENDUM,
 )
 from rlmflow.prompts.prompts import MAX_STATIC_PROMPT_CHARS
 
@@ -45,8 +47,8 @@ def plan_instruction(agent):
     else:
         body = USER_PROMPT.format(iter_1=turns + 1, max_iter=max_iters)
     if turns == 0:
-        return FIRST_TURN_SAFEGUARD + body
-    return body
+        body = FIRST_TURN_SAFEGUARD + body
+    return f"{body}\n\n{PLANNING_ACTION}"
 
 
 def test_the_default_prompt_stays_under_its_size_ceiling():
@@ -54,7 +56,7 @@ def test_the_default_prompt_stays_under_its_size_ceiling():
         f"static prompt is {len(SYSTEM_PROMPT)} chars against a {MAX_STATIC_PROMPT_CHARS} ceiling"
     )
     assert "Recursive Language Model" in SYSTEM_PROMPT
-    assert ORCHESTRATOR_ADDENDUM not in SYSTEM_PROMPT
+    assert EXECUTION_POLICY in SYSTEM_PROMPT
 
 
 def test_messages_are_a_pure_projection_of_the_transcript():
@@ -77,9 +79,7 @@ def test_messages_are_a_pure_projection_of_the_transcript():
     assert messages[-1]["content"].startswith(
         "observation\n\nEnd the REPL block normally to continue."
     )
-    assert messages[-1]["content"].endswith(
-        "- finish(answer) — Submit your final answer."
-    )
+    assert messages[-1]["content"].endswith("- finish(answer) — Submit your final answer.")
 
 
 def test_a_user_query_subclass_projects_without_a_builder_edit():
@@ -191,6 +191,20 @@ def test_explicit_output_schema_is_in_system_prompt():
     assert '"value"' in flow.build_messages(root.frontier)[0]["content"]
 
 
+def test_child_output_schema_is_in_the_child_prompt_not_the_root():
+    from rlmflow import CODING_HANDOFF_SCHEMA
+
+    root = start("query", max_depth=1, child_output_schema=CODING_HANDOFF_SCHEMA)
+    leaf = start("leaf", config=root.config.child("leaf"))
+    flow = Flow(StubLLM(lambda _messages: "unused"))
+
+    root_prompt = flow.build_messages(root.frontier)[0]["content"]
+    leaf_prompt = flow.build_messages(leaf.frontier)[0]["content"]
+    assert "diff_summary" not in root_prompt
+    assert "diff_summary" in leaf_prompt
+    assert "followups" in leaf_prompt
+
+
 def test_structured_child_output_guidance_is_on_by_default():
     root = start("query", max_depth=1)
     default_prompt = Flow(StubLLM(lambda _messages: "unused")).build_messages(root.frontier)[0][
@@ -203,15 +217,23 @@ def test_structured_child_output_guidance_is_on_by_default():
 
     assert "Child results are JSON-compatible Python values by default" in default_prompt
     assert "Child results are JSON-compatible Python values by default" not in disabled_prompt
-    assert 'output_schema={' in default_prompt
-    assert 'output_schema={' not in disabled_prompt
+    assert "object is listed as fields" in default_prompt
+    assert "object is listed as fields" not in disabled_prompt
+    assert default_prompt.count("Example —") == 3
+    assert disabled_prompt.count("Example —") == 3
     assert "## Examples" not in default_prompt
 
 
 def test_in_category_snippets_follow_the_matching_capability():
     root = start("query", max_depth=1)
     leaf = start("leaf", config=root.config.child("leaf"))
+    baseline = Flow(StubLLM(lambda _messages: "unused")).build_messages(
+        start("baseline", max_depth=0).frontier
+    )[0]["content"]
     plain = Flow(StubLLM(lambda _messages: "unused")).build_messages(root.frontier)[0]["content"]
+    deeper = Flow(StubLLM(lambda _messages: "unused")).build_messages(
+        start("deeper", max_depth=2).frontier
+    )[0]["content"]
     queried = Flow(
         StubLLM(lambda _messages: "unused"),
         use_llm_query=True,
@@ -225,26 +247,27 @@ def test_in_category_snippets_follow_the_matching_capability():
     ]
 
     inspect = 'print({name: value[:500] for name, value in INPUTS.items()} or "(empty INPUTS)")'
-    query = "print(await llm_query("
-    launch_wait = "print(await handle.wait_for_result())"
-    agents = "AGENTS.print_graph(show_results=True)"
+    query = "Use `llm_query` for a one-shot transform"
+    launch_wait = "print(await asyncio.gather(first, second))"
+    agents = "`AGENTS` is a read-only snapshot"
 
     assert inspect in plain
     assert inspect in leaf_prompt
+    assert baseline.count("Example —") == leaf_prompt.count("Example —") == 1
+    assert plain.count("Example —") == deeper.count("Example —") == 3
+    assert all(
+        len(prompt) <= MAX_STATIC_PROMPT_CHARS for prompt in (baseline, plain, deeper, leaf_prompt)
+    )
     assert query not in plain
     assert query in queried
     assert launch_wait in plain
+    assert launch_wait not in baseline
     assert launch_wait not in leaf_prompt
-    assert "Search this dossier, compute the answer, return only that value." in plain
-    assert "Needs its own REPL (search, compute, iterate). Not the same extract over many chunks:" in plain
-    assert "Summarize this slice" not in plain
+    assert "Produce deliverable A." in plain
     assert 'model="default"' in plain
-    assert "One-shot extract or classify over a chunk — no REPL:" in queried
-    assert "Same one-shot over many independent chunks — batch, don't spawn:" in queried
-    assert "print(await llm_query_batched(prompts))" in queried
+    assert "Use `llm_query_batched` for many independent one-shot transforms." in queried
     assert agents not in plain
     assert agents in tree
-    assert "`AGENTS` is a read-only snapshot" in tree
     assert "## Examples" not in queried
     assert "## Examples" not in tree
 
@@ -271,16 +294,17 @@ def test_this_agent_schema_section_includes_a_finish_example():
 
 def test_prompt_documents_the_complete_builtin_repl_api():
     flow = Flow(StubLLM(lambda _messages: "unused"), use_llm_query=True)
-    root = start("query", max_depth=1)
+    root = flow.start("query", max_depth=1)
+    plan = take(flow, root.frontier)
 
-    prompt = flow.build_messages(root.frontier)[0]["content"]
+    prompt = flow.build_messages(plan)[0]["content"]
     compact = " ".join(prompt.split())
 
     assert "You are a Recursive Language Model" in prompt
     for field in (
         "goal: str",
         "name: str | None",
-        "inputs: dict[str, str] | None",
+        "inputs: dict[str, str | AgentHandle] | None",
         "model: str",
         "output_schema: object | None",
         "prompt_profile: str | None",
@@ -292,13 +316,21 @@ def test_prompt_documents_the_complete_builtin_repl_api():
     assert "await llm_query_batched(prompts: list[str]" in prompt
     assert "`model=` on `launch_subagent` / `llm_query` is required:" in prompt
     assert "- `default` — current model" in prompt
-    assert "`finish(value: object) -> None`" in compact
+    assert "`finish(answer: object) -> None`" in compact
+    assert "`await launch_subagent(goal: str, *, model: str," in compact
     assert "`INPUTS: dict[str, str]`" in prompt
     assert "the REPL persists across turns" in compact
-    assert "only `print(...)` output (stdout) is shown back to you" in compact
-    assert "a bare expression on the last line is silently discarded" in compact
+    assert "Only printed stdout is returned" in compact
     assert "4,000 characters" not in compact
-    assert "REPL outputs over ~20K characters are truncated" in compact
+    assert "Outputs over ~20K characters are truncated" in compact
+    assert "Launch ready independent work together" in compact
+    assert "known work product depends on another" in compact
+    assert "Consume and validate child results" in compact
+    assert "print(await asyncio.gather(first, second))" in prompt
+    assert "declare a known dependency without waiting first" in prompt
+    assert 'inputs={"artifact": source}' in prompt
+    assert "print(await review)" in prompt
+    assert "after:" not in prompt
     assert "wait: bool" not in prompt
     assert "done(" not in prompt
     assert "`PLAN`" not in prompt
@@ -334,7 +366,7 @@ def test_delegation_model_is_marked_in_the_model_manifest():
     assert "- `default` — current model" in prompt
     assert "- `worker` — default for delegated work" in prompt
     assert 'model="worker"' in prompt
-    spawn_example = prompt[prompt.index("Needs its own REPL") : prompt.index("One-shot extract")]
+    spawn_example = prompt[prompt.index("Example — launch ready") : prompt.index("Use `llm_query`")]
     assert 'model="worker"' in spawn_example
     assert 'model="default"' not in spawn_example
 
@@ -349,14 +381,16 @@ def test_default_prompt_guides_iterative_investigation_and_grounded_delegation()
 
     assert "Python REPL" in compact
     assert "must launch" not in compact
-    assert "act as an orchestrator, not a solver" in compact
-    assert ORCHESTRATOR_ADDENDUM in prompt
+    assert "Work allocation and graph policy" in compact
+    assert "Launch ready independent work together" in compact
+    assert "prerequisite `AgentHandle` as a named `inputs` value" in compact
+    assert EXECUTION_POLICY in prompt
     assert "## Examples" not in prompt
-    assert "print(await handle.wait_for_result())" in prompt
-    assert "await handle.wait_for_result()" not in ORCHESTRATOR_ADDENDUM
+    assert "print(await asyncio.gather(first, second))" in prompt
+    assert "await asyncio.gather(" not in EXECUTION_POLICY
 
 
-def test_every_agent_starts_with_a_plan_and_only_capable_agents_get_orchestration():
+def test_every_agent_starts_with_a_plan_and_gets_the_shared_execution_policy():
     flow = Flow(
         StubLLM(lambda _messages: "unused"),
         root_config=AgentConfig(max_depth=1),
@@ -379,10 +413,11 @@ def test_every_agent_starts_with_a_plan_and_only_capable_agents_get_orchestratio
     assert without_inputs_plan.instruction() == plan_instruction(without_inputs)
     assert isinstance(leaf_plan, PlanQuery)
     assert leaf_plan.instruction() == plan_instruction(leaf)
-    assert ORCHESTRATOR_ADDENDUM in flow.build_messages(eligible_plan)[0]["content"]
-    assert ORCHESTRATOR_ADDENDUM not in flow.build_messages(leaf_plan)[0]["content"]
+    assert EXECUTION_POLICY in flow.build_messages(eligible_plan)[0]["content"]
+    assert WORKER_ADDENDUM in flow.build_messages(leaf_plan)[0]["content"]
+    assert EXECUTION_POLICY not in flow.build_messages(leaf_plan)[0]["content"]
     assert "You are a Recursive Language Model" in flow.build_messages(leaf_plan)[0]["content"]
-    assert "launch_subagent" not in flow.build_messages(leaf_plan)[0]["content"]
+    assert "`await launch_subagent(goal: str" not in flow.build_messages(leaf_plan)[0]["content"]
 
 
 def test_plan_query_user_turn_is_turn_n_of_max_with_a_first_turn_safeguard():
@@ -393,20 +428,45 @@ def test_plan_query_user_turn_is_turn_n_of_max_with_a_first_turn_safeguard():
     assert isinstance(first, PlanQuery)
     assert first.instruction().startswith(FIRST_TURN_SAFEGUARD)
     assert "Turn 1/8:" in first.instruction()
+    assert first.instruction().endswith(PLANNING_ACTION)
     assert len(FIRST_TURN_SAFEGUARD) < 300
 
 
-def test_orchestration_policy_uses_official_addendum_wording():
-    orchestrator = " ".join(ORCHESTRATOR_ADDENDUM.split())
-    assert "act as an orchestrator, not a solver" in orchestrator
-    assert "pause and plan" in orchestrator
-    assert "only call `finish(...)` once you have actually printed the candidate answer" in orchestrator
-    assert "Reserve your own tokens for high-level decisions" in orchestrator
-    assert "A child costs tokens in its own window, not yours" in orchestrator
-    assert "`launch_subagent(..., inputs={...})`" in orchestrator
-    assert "llm_query_batched" not in orchestrator
-    assert "one-shot extract or classify" not in orchestrator
-    assert 'transition("act")' not in orchestrator
+def test_shared_execution_policy_plans_the_known_subgraph_in_one_prompt():
+    policy = " ".join(EXECUTION_POLICY.split())
+    assert "Keep one coherent, tightly coupled deliverable local" in policy
+    assert "distinct multi-step investigation" in policy
+    assert "bounded, non-overlapping deliverable" in policy
+    assert "Launch ready independent work together" in policy
+    assert "prerequisite `AgentHandle` as a named `inputs` value" in policy
+    assert "Do not duplicate delegated work locally" in policy
+    assert "Consume and validate child results" in policy
+    assert "Stop launching when the answer is supported" in policy
+    assert len(EXECUTION_POLICY) < 1_200
+
+
+def test_plan_query_makes_dependency_graph_construction_the_default():
+    compact = " ".join(PLANNING_ACTION.split())
+
+    assert "the next objective" in compact
+    assert "what stays local" in compact
+    assert "what, if anything, gets its own owner" in compact
+    assert "which known work products depend on which others" in compact
+    assert "one REPL block" in compact
+    assert len(PLANNING_ACTION) < 400
+
+
+def test_leaf_plan_query_gets_the_shared_policy_without_the_launch_api():
+    flow = Flow(StubLLM(lambda _messages: "unused"))
+    root = flow.start("query", max_depth=0)
+    plan = take(flow, root.frontier)
+    prompt = flow.build_messages(plan)[0]["content"]
+
+    assert WORKER_ADDENDUM in prompt
+    assert EXECUTION_POLICY not in prompt
+    assert "`await launch_subagent(goal: str" not in prompt
+    assert "Baseline mode: no sub-agents available" in prompt
+    assert "Do not leave TODOs" in " ".join(prompt.split())
 
 
 def test_final_budget_guard_precedes_agent_start_working_query():
@@ -433,9 +493,9 @@ def test_child_plan_query_is_depth_aware():
 
     assert isinstance(child_plan, PlanQuery)
     assert child_plan.instruction() == plan_instruction(child)
-    assert ORCHESTRATOR_ADDENDUM in child_system
+    assert EXECUTION_POLICY in child_system
     assert "You are a Recursive Language Model" in child_system
-    assert "launch_subagent" in child_system
+    assert "`await launch_subagent(goal: str" in child_system
 
 
 def test_every_repl_observation_automatically_enters_a_new_plan_action():
@@ -455,12 +515,13 @@ def test_every_repl_observation_automatically_enters_a_new_plan_action():
     messages = flow.build_messages(next_plan)
 
     assert isinstance(next_plan, PlanQuery)
-    assert ORCHESTRATOR_ADDENDUM not in initial_system
-    assert ORCHESTRATOR_ADDENDUM in plan_system
+    assert EXECUTION_POLICY in initial_system
+    assert EXECUTION_POLICY in plan_system
     assert messages[0]["content"] == plan_system
     assert messages[-1]["content"].startswith(plan_instruction(root))
     assert FIRST_TURN_SAFEGUARD not in messages[-1]["content"]
     assert "Turn 2:" in messages[-1]["content"]
+    assert messages[-1]["content"].count(PLANNING_ACTION) == 1
 
     output = LLMOutput(content="work", code="print('done')")
     next_plan.append(output)
@@ -514,7 +575,6 @@ def test_background_status_has_no_repeated_action_guidance():
     assert "`research` (root.research): running" in content
     assert "Gather the child results" not in content
     assert "Retrieve needed results" not in content
-    assert "before finishing" not in content
 
 
 def test_final_budget_action_replaces_ordinary_free_form_continuation():
@@ -539,7 +599,11 @@ def test_final_budget_action_replaces_ordinary_free_form_continuation():
     assert "This is your last turn" in user
     assert LAST_TURN_ADDENDUM in system
     assert TURN_ONE_FINISH_SENTENCE not in system
-    assert ORCHESTRATOR_ADDENDUM not in system
+    assert EXECUTION_POLICY in system
+    assert "`await launch_subagent(goal: str" not in system
+    assert "`await llm_query(prompt: str" not in system
+    assert "Inspect this turn" not in system
+    assert "`finish(answer: object) -> None`" in " ".join(system.split())
     assert "submit your best inference rather than ending the run with nothing" in " ".join(
         user.split()
     )
@@ -566,8 +630,8 @@ def test_one_shot_query_guidance_matches_enabled_builtins():
     assert "await llm_query(" in within
     assert "await llm_query_batched(" in within
 
-    isolation = "A child costs tokens in its own window, not yours"
-    oneshot = "one-shot extract or classify over a chunk — those calls have no REPL"
+    isolation = "Keep bulky values in the REPL or pass them through `inputs=`"
+    oneshot = "Use `llm_query` for a one-shot transform"
     plain_plan = take(plain, start("solve", max_depth=2))
     single_plan = take(single, start("solve", max_depth=2))
     equipped_plan = take(equipped, start("solve", max_depth=2))
@@ -581,14 +645,13 @@ def test_one_shot_query_guidance_matches_enabled_builtins():
     assert oneshot in single_prompt
     assert oneshot in equipped_prompt
     assert "Slice long text through `llm_query`" not in equipped_prompt
-    assert "Same one-shot over many independent chunks — batch, don't spawn:" in equipped_prompt
-    assert "Same one-shot over many independent chunks — batch, don't spawn:" not in single_prompt
-    assert equipped_prompt.index("await launch_subagent(") < equipped_prompt.index(
-        "print(await llm_query("
-    )
+    batched = "Use `llm_query_batched` for many independent one-shot transforms."
+    assert batched in equipped_prompt
+    assert batched not in single_prompt
+    assert equipped_prompt.index("Example — launch ready") < equipped_prompt.index(oneshot)
 
 
-def test_leaf_prompt_omits_delegation_guidance():
+def test_leaf_prompt_keeps_shared_policy_but_omits_the_launch_api():
     flow = Flow(
         StubLLM(lambda _messages: "unused"),
         root_config=AgentConfig(max_depth=1),
@@ -600,11 +663,13 @@ def test_leaf_prompt_omits_delegation_guidance():
     prompt = flow.build_messages(leaf_plan)[0]["content"]
     compact = " ".join(prompt.split())
 
-    assert "launch_subagent" not in prompt
+    assert "`await launch_subagent(goal: str" not in prompt
     assert "AgentHandle" not in prompt
+    assert "Think in dataflow" not in prompt
     assert "You are a Recursive Language Model" in compact
-    assert ORCHESTRATOR_ADDENDUM not in prompt
-    assert "`finish(value: object) -> None`" in prompt
+    assert WORKER_ADDENDUM in prompt
+    assert EXECUTION_POLICY not in prompt
+    assert "`finish(answer: object) -> None`" in prompt
 
 
 def test_repl_contract_is_available_to_root_and_leaf():
@@ -620,7 +685,7 @@ def test_repl_contract_is_available_to_root_and_leaf():
         compact = " ".join(prompt.split())
         assert "Recursive Language Model" in compact
         assert "the REPL persists across turns" in compact
-        assert "only `print(...)` output (stdout) is shown back to you" in compact
+        assert "Only printed stdout is returned" in compact
 
 
 def test_inputs_manifest_never_inlines_values():
@@ -631,6 +696,29 @@ def test_inputs_manifest_never_inlines_values():
 
     assert "- context: str, 35 chars" in prompt
     assert "Requirement: use a dark background." not in prompt
+
+
+def test_inputs_manifest_resolves_agent_markers_without_leaking_them():
+    flow = Flow(StubLLM(lambda _messages: "unused"))
+    root = start("root")
+    action = ExecAction(code="launch")
+    root.append(action)
+    source = AgentStart(content="source", config=root.config.child("source"))
+    action.append(source)
+    source.append(DoneOutput(result={"fact": 1}))
+    consumer = AgentStart(
+        content="consumer",
+        config=root.config.child(
+            "consumer",
+            inputs={"evidence": {"$rlmflow_agent": source.id}},
+        ),
+    )
+    action.append(consumer)
+
+    prompt = flow.build_messages(consumer.frontier)[0]["content"]
+
+    assert "- evidence: str, 11 chars" in prompt
+    assert "$rlmflow_agent" not in prompt
 
 
 def test_root_routes_while_children_execute_until_max_depth():
@@ -645,7 +733,7 @@ def test_root_routes_while_children_execute_until_max_depth():
 
     root_plan = take(flow, root.frontier)
     root_prompt = flow.build_messages(root_plan)[0]["content"]
-    assert ORCHESTRATOR_ADDENDUM in root_prompt
+    assert EXECUTION_POLICY in root_prompt
     assert "await launch_subagent(" in root_prompt
 
     for agent in (child, grandchild):
@@ -654,13 +742,14 @@ def test_root_routes_while_children_execute_until_max_depth():
         compact = " ".join(prompt.split())
         assert "You are a Recursive Language Model" in compact
         assert "launch_subagent" in prompt
-        assert ORCHESTRATOR_ADDENDUM in prompt
+        assert EXECUTION_POLICY in prompt
 
     leaf_plan = take(flow, leaf.frontier)
     leaf_prompt = flow.build_messages(leaf_plan)[0]["content"]
-    assert "launch_subagent" not in leaf_prompt
+    assert "`await launch_subagent(goal: str" not in leaf_prompt
     assert "You are a Recursive Language Model" in leaf_prompt
-    assert ORCHESTRATOR_ADDENDUM not in leaf_prompt
+    assert WORKER_ADDENDUM in leaf_prompt
+    assert EXECUTION_POLICY not in leaf_prompt
 
 
 def test_prompt_uses_the_active_agents_max_depth_override():
@@ -675,10 +764,10 @@ def test_prompt_uses_the_active_agents_max_depth_override():
     leaf_prompt = flow.build_messages(leaf.frontier)[0]["content"]
 
     assert "depth **0** of max **1**" in root_prompt
-    assert "launch_subagent" in root_prompt
+    assert "`await launch_subagent(goal: str" in root_prompt
     assert "depth **1** of max **1**" in leaf_prompt
     assert "You cannot spawn sub-agents" in leaf_prompt
-    assert "launch_subagent" not in leaf_prompt
+    assert "`await launch_subagent(goal: str" not in leaf_prompt
 
 
 def test_default_prompt_leaves_file_guidance_to_tool_descriptions():
@@ -696,13 +785,18 @@ def test_file_tool_descriptions_carry_shared_write_rules():
 
     flow = Flow(StubLLM(lambda _messages: "unused"), tools=[FILE_TOOLS])
     root = flow.start("query", max_depth=1)
+    leaf = start("leaf", config=root.config.child("worker"))
 
-    prompt = flow.build_messages(root.frontier)[0]["content"]
+    planner = flow.build_messages(root.frontier)[0]["content"]
+    worker = flow.build_messages(leaf.frontier)[0]["content"]
 
-    assert "Replaces the whole file with no warning" in prompt
-    assert "Agents in one flow may share this working directory" in prompt
-    assert "write only paths assigned to your scope" in prompt
-    assert "If another agent wrote a file, inspect it in place" in prompt
+    assert "Agents in one flow may share this working directory" in planner
+    assert "write only paths assigned to your scope" in planner
+    assert "If another agent wrote a file, inspect it in place" in planner
+    assert "bind only on agents that cannot spawn" in planner
+    assert "`write_file(" not in planner
+    assert "Replaces the whole file with no warning" in worker
+    assert "`write_file(" in worker
 
 
 def test_prompt_builder_subclass_appears_on_plan_query_turns():
@@ -716,8 +810,8 @@ def test_prompt_builder_subclass_appears_on_plan_query_turns():
     prompt = flow.build_messages(plan)[0]["content"]
 
     assert "MARKER_SKILL_TEXT" in prompt
-    assert ORCHESTRATOR_ADDENDUM in prompt
-    assert prompt.index("MARKER_SKILL_TEXT") < prompt.index(ORCHESTRATOR_ADDENDUM)
+    assert EXECUTION_POLICY in prompt
+    assert prompt.index(EXECUTION_POLICY) < prompt.index("MARKER_SKILL_TEXT")
 
 
 def test_custom_node_can_replace_or_wrap_the_system_prompt():
@@ -766,8 +860,8 @@ def test_query_action_output_bases_keep_prompt_hook_on_queries():
     assert not hasattr(output, "build_system_prompt")
     assert not hasattr(reply, "build_system_prompt")
     assert "You are a Recursive Language Model" in flow.build_messages(root)[0]["content"]
-    assert ORCHESTRATOR_ADDENDUM in flow.build_messages(query)[0]["content"]
-    assert ORCHESTRATOR_ADDENDUM not in flow.build_messages(output)[0]["content"]
+    assert EXECUTION_POLICY in flow.build_messages(query)[0]["content"]
+    assert EXECUTION_POLICY in flow.build_messages(output)[0]["content"]
 
 
 def test_subclass_on_userquery_covers_plan():

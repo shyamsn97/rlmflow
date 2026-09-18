@@ -19,7 +19,8 @@ Pick the doc that matches what you're trying to do.
 - [Node model](node_model.md) — the typed node hierarchy, its transitions, and how delegation is recorded.
 - [Runtimes](runtimes.md) — `Runtime` protocol, shipped runtimes (Local / subprocess / Docker / Modal), writing your own.
 - [Prompt customization](prompt_customization.md) — `PromptBuilder`, `Flow.build_system_prompt` / `UserQuery.build_system_prompt`, `PromptProfile` / `prompt_profile` / `prompt_router`.
-- [Benchmarks](benchmarks.md) — named sets (`smoke`, `reasoning`, `long-context`, `delegation`, `task-graph`, `research`, `code`) and how to run them.
+- [Benchmarks](benchmarks.md) — benchmark harness and runnable sets.
+- [Prime Agent benchmark strategy](prime_agent_benchmark_strategy.md) — paper-derived task selection, comparison arms, accounting, and run order.
 - [Delegation problem set](delegation_problems.md) — 16 items to A/B `max_depth=0` vs `1`: local and query controls, foreground/background spawn, fresh-context verify. Not wired yet; spec only.
 - [Security](security.md) — trust model, Docker isolation knobs, engine-level caps, proxied tools, approval gates.
 - [Example smoke runner](https://github.com/shyamsn97/rlmflow/blob/main/examples/run_examples.py) — run the offline examples and opt into optional, live, sandbox, or manual checks.
@@ -45,4 +46,6 @@ These records explain experiments and design lineage. They are not API reference
 - [Speculative programmatic tool calling](research/spec_ptc.md) — implement Zhang's sPTC algorithm in `rlmflow.speculate` (shadow REPL, claim-or-run futures) without depending on the spec-ptc package.
 - [Shepherd run analysis](research/shepherd_run_analysis.md) — a concrete rewind/replay/fan-out walkthrough from a saved eight-branch Sokoban run, including outcomes, parallelism, process boundaries, persistence, and the terminal-worker lifecycle bug exposed by the artifacts.
 - [DeLM vs. rlmflow](research/delm_vs_rlmflow.md) — how DeLM-style coordination could sit on top of recursive execution graphs.
+- [Cursor self-driving codebases](research/cursor_self_driving_codebases.md) — Wilson Lin's multi-agent coding harness vs rlmflow: same recursive tree, different join.
+- [Procedural Graphs](research/procedural_graphs.md) — Lu et al. 2026: a reusable *what-to-do* prior vs rlmflow's *what-happened* tree. Localized guidance + gated topology evolution; not a second Node type.
 - [Runtime harness optimization](research/runtime_harness.md) — ACE / Continual Harness / GEPA / RHO mapped onto the live Node tree, with copy-paste sketches against `Flow` (not weight training).

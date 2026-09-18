@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import sys
 import threading
 from collections.abc import Sequence
 from concurrent.futures import Future
 from pathlib import Path
-from typing import TextIO
+from typing import TextIO, cast
 
 from pydantic import ValidationError
 
@@ -40,7 +39,7 @@ from rlmflow.runtime.repl import (
     current_binding,
 )
 from rlmflow.structured import as_finish_value
-from rlmflow.tools.agents import AGENT_OBSERVE_TOOL, AGENT_WAIT_TOOL
+from rlmflow.tools.agents import AGENT_OBSERVE_TOOL, AGENT_WAIT_TOOL, encode_agent_references
 from rlmflow.utils.serial import decode_host_value
 
 
@@ -88,14 +87,7 @@ class ReplServer:
         def begin(args: tuple[object, ...], kwargs: dict[str, object]):
             binding = current_binding()
             if name == "finish":
-                answer = None
                 if len(args) == 1 and not kwargs:
-                    answer = args[0]
-                elif not args and set(kwargs) == {"answer"}:
-                    answer = kwargs["answer"]
-                if binding["structured_output"]:
-                    json.dumps(answer, allow_nan=False)
-                elif len(args) == 1 and not kwargs:
                     args = (as_finish_value(args[0]),)
                 elif not args and set(kwargs) == {"answer"}:
                     kwargs = {"answer": as_finish_value(kwargs["answer"])}
@@ -113,8 +105,11 @@ class ReplServer:
                     tenant_id=binding["tenant_id"],
                     proxy=name,
                     call_id=call_id,
-                    args=list(args),
-                    kwargs=kwargs,
+                    args=cast(list[object], encode_agent_references(list(args))),
+                    kwargs=cast(
+                        dict[str, object],
+                        encode_agent_references(kwargs),
+                    ),
                 )
             )
             return request_id, future

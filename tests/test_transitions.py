@@ -6,6 +6,7 @@ import pytest
 from helpers import StubLLM, TestRuntime, counting_replies
 
 from rlmflow import (
+    DoneOutput,
     ErrorOutput,
     ExecAction,
     ExecOutput,
@@ -274,6 +275,13 @@ def test_observations_enter_a_fresh_planning_action_without_self_looping():
         observation = observation_type(content=content)
         prior.append(observation)
         assert Flow.transitions.resolve(observation) is to_plan
+
+    for prior in (ExecOutput(content="observed"), DoneOutput(result="child")):
+        root = start("query")
+        root.append(prior)
+        query = UserQuery(content="[handoff root.child]\nresult: 1")
+        prior.append(query)
+        assert Flow.transitions.resolve(query) is to_plan
 
 
 def test_specialized_queries_still_run_automatic_guards_before_chat():

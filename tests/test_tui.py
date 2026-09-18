@@ -212,6 +212,24 @@ def test_chat_shows_the_root_query_and_attached_inputs():
     assert "INPUTS: context (27 chars)" in rendered
 
 
+def test_agent_panel_summarizes_input_references_without_sizing_the_marker():
+    root = start("root")
+    action = ExecAction(code="launch")
+    root.append(action)
+    source = AgentStart(content="source", config=root.config.child("source"))
+    action.append(source)
+    consumer = AgentStart(
+        content="consumer",
+        config=root.config.child(
+            "consumer",
+            inputs={"evidence": {"$rlmflow_agent": source.id}},
+        ),
+    )
+    action.append(consumer)
+
+    assert f"INPUTS: evidence (agent {source.id})" in _text(node_panel(consumer))
+
+
 def test_node_panel_falls_back_to_the_node_type_when_empty():
     root = start("query")
     node = LLMOutput(content="")

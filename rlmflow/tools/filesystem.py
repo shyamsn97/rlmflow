@@ -3,6 +3,7 @@
 import re
 from pathlib import Path
 
+from rlmflow.graph.config import at_leaf
 from rlmflow.tools.tools import tool, toolset
 
 
@@ -24,7 +25,8 @@ class FileTools:
     @tool(
         "Write content to a file, creating directories if needed. Replaces the whole "
         "file with no warning, so `ls` the directory and `read_file` the path first "
-        "when it may already exist; use `edit_file` to change part of a file."
+        "when it may already exist; use `edit_file` to change part of a file.",
+        when=at_leaf,
     )
     def write_file(self, path: str, content: str) -> str:
         p = Path(path)
@@ -32,7 +34,7 @@ class FileTools:
         p.write_text(content)
         return f"Wrote {len(content)} bytes to {path}"
 
-    @tool("Append content to a file.")
+    @tool("Append content to a file.", when=at_leaf)
     def append_file(self, path: str, content: str) -> str:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -43,7 +45,8 @@ class FileTools:
     @tool(
         "Find-and-replace edits. Each edit is (old, new). Each `old` must match "
         "exactly once (add surrounding lines to disambiguate) unless replace_all=True. "
-        "Edits apply atomically: if any anchor is missing or ambiguous, nothing is written."
+        "Edits apply atomically: if any anchor is missing or ambiguous, nothing is written.",
+        when=at_leaf,
     )
     def edit_file(self, path: str, *edits: tuple[str, str], replace_all: bool = False) -> str:
         p = Path(path)
@@ -100,14 +103,15 @@ class FileTools:
                 continue
         return "\n".join(matches)
 
-    def description(self, flow, node) -> str:
+    def guidance(self, flow, node) -> str:
         return (
             "Paths resolve relative to the working directory. `write_file` replaces "
             "the whole file — `ls` and `read_file` first when the path may already "
-            "exist. Agents in one flow may share this working directory: write only "
-            "paths assigned to your scope. If another agent wrote a file, inspect it "
-            "in place; never replace it with that agent's status, manifest, filename, "
-            "or placeholder."
+            "exist. Writes (`write_file`, `edit_file`, `append_file`) bind only on "
+            "agents that cannot spawn. Agents in one flow may share this working "
+            "directory: write only paths assigned to your scope. If another agent "
+            "wrote a file, inspect it in place; never replace it with that agent's "
+            "status, manifest, filename, or placeholder."
         )
 
 

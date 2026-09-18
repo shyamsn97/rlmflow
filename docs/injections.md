@@ -61,7 +61,7 @@ flow.add_tool(escalate)
 flow.remove_tool("escalate")
 ```
 
-`inject` takes any object, not just callables; `add_tool` is the same thing with the name read off the function. Both write into every open REPL as well as the flow's namespace, so a tool added mid-run is visible on the next step.
+`inject` takes any object, not just callables; `add_tool` is the same thing with the name read off the function. Both write into every open REPL as well as the flow's namespace, so a tool added mid-run is visible on the next step. Tools gated with `when=` are still filtered when that step builds its namespace.
 
 `finish`, `launch_subagent`, and `INPUTS` are reserved and cannot be injected over.
 
@@ -96,7 +96,9 @@ async for _ in flow.run_streaming(root):
 
 The stream settles its pass before returning, so the edit cannot race a step that is landing, and the next prompt projection reads the changed tree.
 
-The caveat is delegation. A boundary that fires on a child's node stops the stream while the parent's block is still running, and closing the stream cancels that step — so resuming re-runs the block and relaunches children the parent already has. The relaunch is refused by name and the parent reads that as an observation, so the run survives it, at the cost of a wasted turn. To edit between calls in a run that delegates, stop on the parent's own output:
+A `UserQuery` appended after `ExecOutput` or `DoneOutput` is a planning observation, not a chat turn: the next step is `PlanQuery`, then the model acts. The engine uses that path when a child finishes (see [`control.md`](control.md)); a controller injecting after idle `ExecOutput` gets the same plan turn.
+
+The caveat is delegation. A boundary that fires on a child's node stops the stream while the parent's block is still running, and closing the stream cancels that step — so resuming re-runs the block. Each launch call is tied to its existing child by a receipt on the recorded `ExecAction`, so replay returns the same handle without relaunching, revalidating handle-valued inputs, or resubmitting the child. To edit between calls in a run that delegates, stop on the parent's own output:
 
 ```python
 from rlmflow import DoneOutput, ExecOutput

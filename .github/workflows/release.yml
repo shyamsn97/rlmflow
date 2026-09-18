@@ -100,9 +100,39 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: pytest -q
 
+  benchmark-contract:
+    name: benchmark contract
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: astral-sh/setup-uv@v6
+      - run: uv lock --check
+      - run: pip install -e ".[dev,eval,eval-environments,official-rlm]"
+      - name: Verify pinned upstream packages
+        run: |
+          python - <<'PY'
+          from importlib.metadata import version
+          from rlm import RLM
+
+          assert RLM
+          assert version("rlms") == "0.1.3"
+          assert version("mazebench") == "0.2.19"
+          assert version("arc-agi") == "0.9.9"
+          assert version("arcengine") == "0.9.3"
+          PY
+      - run: python -m benchmarks.eval.calibrate_search
+
   artifacts:
     name: build and validate Python artifacts
-    needs: [preflight, test]
+    needs: [preflight, test, benchmark-contract]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -125,23 +155,6 @@ jobs:
           "${RUNNER_TEMP}/wheel-smoke/bin/pip" install dist/*.whl
           "${RUNNER_TEMP}/wheel-smoke/bin/pip" check
           "${RUNNER_TEMP}/wheel-smoke/bin/rlmflow" version
-      - name: Smoke-test examples and benchmark against the wheel
-        run: |
-          mkdir -p "${RUNNER_TEMP}/artifact-smoke"
-          cp -R examples benchmarks "${RUNNER_TEMP}/artifact-smoke/"
-          cd "${RUNNER_TEMP}/artifact-smoke"
-          "${RUNNER_TEMP}/wheel-smoke/bin/python" examples/run_examples.py --installed-package --report "${RUNNER_TEMP}/examples-report.md"
-          "${RUNNER_TEMP}/wheel-smoke/bin/python" -m benchmarks.eval \
-            --model fake \
-            --dataset synthetic_needle \
-            --runner fake vanilla rlmflow-local \
-            --seeds 0 \
-            --dataset-param synthetic_needle.records=8 \
-            --dataset-param synthetic_needle.filler_words=2 \
-            --runner-param rlmflow-local.max_iters=3 \
-            --runner-param rlmflow-local.max_depth=1 \
-            --runner-param rlmflow-local.live_save=false \
-            --out-dir "${RUNNER_TEMP}/eval-smoke"
       - uses: actions/upload-artifact@v4
         with:
           name: release-dist

@@ -12,11 +12,11 @@ import time
 from pathlib import Path
 
 from benchmarks.eval import runner
+from benchmarks.eval.delegation.parity import comparison_contract
 from benchmarks.eval.runners.shared import (
     FACT_LOOKUP_DESCRIPTION,
-    example_inputs,
-    fact_lookup_data,
-    materialize_fixtures,
+    canonical_delegation_metrics,
+    prepare_run,
 )
 from benchmarks.eval.types import Example, Model, Prediction, RunContext, Runner
 
@@ -47,13 +47,13 @@ class OfficialRLMRunner(Runner):
 
     def run(self, example: Example, model: Model, ctx: RunContext) -> Prediction:
         start = time.perf_counter()
-        log_dir = ctx.artifact_dir / "official_rlm_logs"
+        artifact_dir = ctx.artifact_dir.expanduser().resolve()
+        log_dir = artifact_dir / "official_rlm_logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        work_dir = ctx.artifact_dir / "workdir"
-        work_dir.mkdir(parents=True, exist_ok=True)
-        materialize_fixtures(example, work_dir)
-        context_file = _write_temp(json.dumps(_render_context(example), ensure_ascii=False))
+        prepared = prepare_run(example, ctx, runtime="official-rlm")
+        context_file = _write_temp(json.dumps(prepared.inputs, ensure_ascii=False))
         task_file = _write_temp(example.prompt)
+        environment = prepared.environment
         try:
             proc = subprocess.run(
                 [
@@ -68,13 +68,16 @@ class OfficialRLMRunner(Runner):
                         max_iters=self.max_iters,
                         max_depth=self.max_depth,
                         max_budget=self.max_budget,
-                        facts=fact_lookup_data(example),
+                        facts=prepared.facts,
+                        environment=environment,
+                        environment_artifact_dir=artifact_dir / "environment",
+                        episode_id=prepared.episode_id,
                     ),
                 ],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_seconds,
-                cwd=work_dir,
+                cwd=prepared.work_dir,
                 env={**os.environ, "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", "")},
             )
             if proc.returncode != 0:
@@ -88,23 +91,45 @@ class OfficialRLMRunner(Runner):
                     error=_short_error(proc.stderr or proc.stdout),
                 )
             data = _parse_result(proc.stdout)
+            graph = data.get("graph") or {}
+            rlm_metrics = data.get("rlm") or {}
+            metrics = {
+                "time_seconds": float(data.get("time_seconds") or (time.perf_counter() - start)),
+                "iterations": int(data.get("iterations") or 1),
+                "comparison_contract": comparison_contract(
+                    runtime="official-rlm",
+                    prompt=example.prompt,
+                    inputs=prepared.inputs,
+                    root_model=model.name,
+                    worker_model=self.worker_model,
+                    recursive_levels=max(0, self.max_depth - 1),
+                    max_iterations=self.max_iters,
+                    max_tokens=self.max_budget,
+                    attempt_timeout_seconds=int(ctx.params.get("attempt_timeout", 0)),
+                    environment=environment,
+                ),
+                "graph": graph,
+                "delegation": canonical_delegation_metrics(
+                    graph=graph,
+                    runtime_metrics=rlm_metrics,
+                ),
+            }
+            if data.get("environment"):
+                metrics["environment"] = data["environment"]
             return Prediction(
                 answer=str(data.get("response") or ""),
                 usage={
                     "input_tokens": int(data.get("input_tokens") or 0),
                     "output_tokens": int(data.get("output_tokens") or 0),
                 },
-                metrics={
-                    "time_seconds": float(
-                        data.get("time_seconds") or (time.perf_counter() - start)
-                    ),
-                    "iterations": int(data.get("iterations") or 1),
-                    "graph": data.get("graph") or {},
-                    "rlm": data.get("rlm") or {},
-                },
+                metrics=metrics,
                 artifacts={
                     "log_dir": str(log_dir),
                     "log_file_path": str(data.get("log_file_path") or ""),
+                    **{
+                        str(key): str(value)
+                        for key, value in (data.get("environment_artifacts") or {}).items()
+                    },
                 },
             )
         except Exception as exc:  # noqa: BLE001 - benchmark rows should record failures
@@ -119,11 +144,6 @@ class OfficialRLMRunner(Runner):
             _unlink(task_file)
 
 
-def _render_context(example: Example) -> dict[str, str]:
-    """Return the same key/value input mapping used by rlmflow."""
-    return example_inputs(example)
-
-
 def _official_script(
     *,
     context_file: str,
@@ -135,18 +155,22 @@ def _official_script(
     max_depth: int,
     max_budget: int | None,
     facts: dict[str, object] | None,
+    environment: dict[str, object] | None,
+    environment_artifact_dir: Path,
+    episode_id: str,
 ) -> str:
     other_backends = ["openai"] if worker_model is not None else None
-    other_backend_kwargs = (
-        [{"model_name": worker_model}] if worker_model is not None else None
-    )
+    other_backend_kwargs = [{"model_name": worker_model}] if worker_model is not None else None
     return textwrap.dedent(
         f"""
         import json
         import time
+        from types import SimpleNamespace
 
         from rlm import RLM
         from rlm.logger import RLMLogger
+        from rlm.utils.exceptions import TokenLimitExceededError
+        from benchmarks.eval.environments.official import open_official_environment
 
         with open({json.dumps(context_file)}, encoding="utf-8") as handle:
             context = json.load(handle)
@@ -154,7 +178,7 @@ def _official_script(
             task = handle.read()
 
         raw_facts = {facts!r}
-        custom_tools = None
+        custom_tools = {{}}
         if raw_facts is not None:
             facts = {{str(key).casefold(): value for key, value in raw_facts.items()}}
 
@@ -167,30 +191,69 @@ def _official_script(
                         f"unknown entity {{entity!r}}; available: {{choices}}"
                     ) from exc
 
-            custom_tools = {{
-                "fact_lookup": {{
-                    "tool": fact_lookup,
-                    "description": {json.dumps(FACT_LOOKUP_DESCRIPTION)},
-                }}
+            custom_tools["fact_lookup"] = {{
+                "tool": fact_lookup,
+                "description": {json.dumps(FACT_LOOKUP_DESCRIPTION)},
             }}
+
+        environment_episode = None
+        raw_environment = {environment!r}
+        if raw_environment is not None:
+            environment_episode = open_official_environment(
+                raw_environment,
+                artifact_dir={json.dumps(str(environment_artifact_dir))},
+                episode_id={json.dumps(episode_id)},
+            )
+            context["environment_observation"] = json.dumps(
+                environment_episode.initial_observation,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            custom_tools.update(environment_episode.tools())
+        if not custom_tools:
+            custom_tools = None
 
         logger = RLMLogger(log_dir={json.dumps(str(log_dir))})
         start = time.time()
-        rlm = RLM(
-            backend="openai",
-            backend_kwargs={{"model_name": {json.dumps(model)}}},
-            other_backends={other_backends!r},
-            other_backend_kwargs={other_backend_kwargs!r},
-            environment="local",
-            max_iterations={max_iters},
-            max_depth={max_depth},
-            max_tokens={max_budget!r},
-            custom_tools=custom_tools,
-            custom_sub_tools=custom_tools,
-            verbose=False,
-            logger=logger,
-        )
-        result = rlm.completion(prompt=context, root_prompt=task)
+        def run_completion():
+            rlm = RLM(
+                backend="openai",
+                backend_kwargs={{"model_name": {json.dumps(model)}}},
+                other_backends={other_backends!r},
+                other_backend_kwargs={other_backend_kwargs!r},
+                environment="local",
+                max_iterations={max_iters},
+                max_depth={max_depth},
+                max_tokens={max_budget!r},
+                custom_tools=custom_tools,
+                custom_sub_tools=custom_tools,
+                verbose=False,
+                logger=logger,
+            )
+            return rlm.completion(prompt=context, root_prompt=task)
+
+        token_limit_stop = None
+        try:
+            if environment_episode is None:
+                result = run_completion()
+            else:
+                with environment_episode.instrument(RLM):
+                    with environment_episode.activate(environment_episode.ROOT_OWNER):
+                        result = run_completion()
+        except TokenLimitExceededError as exc:
+            token_limit_stop = {{
+                "tokens_used": exc.tokens_used,
+                "token_limit": exc.token_limit,
+            }}
+            result = SimpleNamespace(
+                response=exc.partial_answer or "",
+                usage_summary=None,
+                num_iterations={max_iters},
+                metadata=None,
+            )
+        finally:
+            if environment_episode is not None:
+                environment_episode.close()
         elapsed = time.time() - start
 
         usage = getattr(result, "usage_summary", None)
@@ -201,6 +264,8 @@ def _official_script(
             for item in model_summaries.values():
                 input_tokens += getattr(item, "total_input_tokens", 0)
                 output_tokens += getattr(item, "total_output_tokens", 0)
+        elif token_limit_stop is not None:
+            input_tokens = token_limit_stop["tokens_used"]
 
         def summarize_trajectory(trajectory, depth=0):
             if not isinstance(trajectory, dict):
@@ -266,6 +331,8 @@ def _official_script(
 
         trajectory = getattr(result, "metadata", None) or logger.get_trajectory()
         rlm_metrics = summarize_trajectory(trajectory)
+        if token_limit_stop is not None:
+            rlm_metrics["token_limit_stop"] = token_limit_stop
         graph_metrics = {{
             "agents": rlm_metrics["agents"],
             "nodes": rlm_metrics["nodes"],
@@ -273,6 +340,15 @@ def _official_script(
             "max_depth": rlm_metrics["max_depth"],
             "max_branching": rlm_metrics["max_branching"],
         }}
+        environment_artifacts = (
+            environment_episode.artifacts() if environment_episode is not None else {{}}
+        )
+        if environment_episode is not None:
+            discovery_tree = environment_episode.write_discovery_tree(
+                {json.dumps(str(environment_artifact_dir / "discovery_tree.json"))}
+            )
+            if discovery_tree is not None:
+                environment_artifacts["discovery_tree"] = str(discovery_tree)
 
         print("<<<RESULT>>>")
         print(json.dumps({{
@@ -284,6 +360,10 @@ def _official_script(
             "log_file_path": getattr(logger, "log_file_path", None),
             "graph": graph_metrics,
             "rlm": rlm_metrics,
+            "environment": (
+                environment_episode.metrics() if environment_episode is not None else None
+            ),
+            "environment_artifacts": environment_artifacts,
         }}))
         """
     )

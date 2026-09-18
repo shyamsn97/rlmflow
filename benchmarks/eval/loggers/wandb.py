@@ -32,6 +32,9 @@ class WandbLogger(Logger):
         if self._wandb is None:
             return
         graph = row.prediction.metrics.get("graph") or {}
+        delegation = row.prediction.metrics.get("delegation") or {}
+        environment = row.prediction.metrics.get("environment") or {}
+        candidates = environment.get("candidate_search") or {}
         self._wandb.log(
             {
                 "dataset": row.dataset,
@@ -47,6 +50,22 @@ class WandbLogger(Logger):
                 "graph/llm_turns": graph.get("llm_turns"),
                 "graph/max_depth": graph.get("max_depth"),
                 "graph/max_branching": graph.get("max_branching"),
+                "delegation/children": delegation.get("children"),
+                "delegation/dependency_edges": delegation.get("dependency_edge_count"),
+                "delegation/dependency_chain_depth": delegation.get("dependency_chain_depth"),
+                "delegation/recursive_launches": delegation.get("recursive_launch_count"),
+                "delegation/max_launch_batch": delegation.get("max_launch_batch"),
+                "delegation/max_ready_launch_batch": delegation.get("max_ready_launch_batch"),
+                "delegation/retrieval_ratio": delegation.get("retrieval_ratio"),
+                "environment/primary_actions": environment.get("primary_actions"),
+                "environment/probe_actions": environment.get("probe_actions"),
+                "environment/instances": environment.get("instances_forked"),
+                "candidates/evaluated": candidates.get("evaluations_used"),
+                "candidates/selected_score": candidates.get("selected_score"),
+                "candidates/oracle_best_score": candidates.get("oracle_best_score"),
+                "candidates/selection_regret": candidates.get("selection_regret"),
+                "candidates/diversity": candidates.get("candidate_diversity"),
+                "candidates/outcome_diversity": candidates.get("outcome_diversity"),
             }
         )
 
@@ -102,6 +121,23 @@ def _flatten_summary(prefix: str, values: dict) -> dict[str, object]:
         f"{prefix}/graph_max_depth": values.get("graph_max_depth"),
         f"{prefix}/graph_max_branching": values.get("graph_max_branching"),
         f"{prefix}/subdelegated": values.get("subdelegated"),
+        f"{prefix}/delegation_recursive_launches": values.get("delegation_recursive_launches"),
+        f"{prefix}/delegation_dependency_chain_depth": values.get(
+            "delegation_dependency_chain_depth"
+        ),
+        f"{prefix}/delegation_max_ready_launch_batch": values.get(
+            "delegation_max_ready_launch_batch"
+        ),
+        f"{prefix}/environment_primary_actions": values.get("environment_primary_actions"),
+        f"{prefix}/environment_probe_actions": values.get("environment_probe_actions"),
+        f"{prefix}/candidate_count": values.get("candidate_count"),
+        f"{prefix}/candidate_oracle_best_score": values.get("candidate_oracle_best_score"),
+        f"{prefix}/candidate_selection_regret": values.get("candidate_selection_regret"),
+        f"{prefix}/candidate_branch_utilization": values.get("candidate_branch_utilization"),
+        f"{prefix}/candidate_selected_depth": values.get("candidate_selected_depth"),
+        f"{prefix}/candidate_diversity": values.get("candidate_diversity"),
+        f"{prefix}/candidate_outcome_diversity": values.get("candidate_outcome_diversity"),
+        f"{prefix}/score_per_candidate_evaluation": values.get("score_per_candidate_evaluation"),
     }
 
 

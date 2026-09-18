@@ -167,6 +167,7 @@ def build_datums(items: Sequence[Trajectory], types: Any) -> list[Any]:
 @dataclass
 class TinkerConfig:
     base_model: str = "Qwen/Qwen3-8B"
+    state_path: str | None = None
     renderer: str = "qwen3"
     lora_rank: int = 32
     learning_rate: float = 1e-5
@@ -183,10 +184,16 @@ class TinkerTrainer:
 
         self.config = config or TinkerConfig()
         self.service = service_client or tinker.ServiceClient()
-        self.training = self.service.create_lora_training_client(
-            base_model=self.config.base_model,
-            rank=self.config.lora_rank,
-        )
+        if self.config.state_path:
+            self.training = self.service.create_training_client_from_state_with_optimizer(
+                path=self.config.state_path,
+                base_model=self.config.base_model,
+            )
+        else:
+            self.training = self.service.create_lora_training_client(
+                base_model=self.config.base_model,
+                rank=self.config.lora_rank,
+            )
         self.steps = 0
         self._sampler: TinkerSampler | None = None
 
@@ -224,6 +231,12 @@ class TinkerTrainer:
         # batch drifts anyway.
         self._sampler = self.build_sampler(self.training.save_weights_and_get_sampling_client)
         return {"datums": len(datums), "step": self.steps}
+
+    def save_checkpoint(self, name: str) -> dict[str, str]:
+        """Persist inference weights and optimizer state under one logical name."""
+        sampler = self.training.save_weights_for_sampler(f"{name}-sampler").result()
+        state = self.training.save_state(f"{name}-state").result()
+        return {"sampler": sampler.path, "state": state.path}
 
 
 @dataclass

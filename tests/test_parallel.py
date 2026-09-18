@@ -2,26 +2,26 @@ import asyncio
 
 from helpers import StubLLM, first_user
 
-from rlmflow import Flow, parallel_run, parallel_stream, start
+from rlmflow import Flow, start
 
 
 def block(code):
     return f"```python\n{code}\n```"
 
 
-def test_parallel_stream_merges_the_nodes_of_every_run():
+def test_multi_root_stream_merges_the_nodes_of_every_run():
     flow = Flow(StubLLM(lambda _messages: block("finish('ok')")))
     left, right = start("left"), start("right")
 
     async def collect():
-        return [node async for node in parallel_stream(flow, left, right)]
+        return [node async for node in flow.run_streaming(left, right)]
 
     nodes = asyncio.run(collect())
     assert {id(node.root) for node in nodes} == {id(left), id(right)}
     assert left.result() == right.result() == "ok"
 
 
-def test_parallel_stream_overlaps_the_runs_it_drives():
+def test_multi_root_stream_overlaps_the_runs_it_drives():
     class BarrierLLM:
         """Blocks each caller until every run has asked for a reply."""
 
@@ -36,7 +36,7 @@ def test_parallel_stream_overlaps_the_runs_it_drives():
     flow = Flow(BarrierLLM(len(roots)))
 
     async def drain():
-        async for _node in parallel_stream(flow, *roots):
+        async for _node in flow.run_streaming(*roots):
             pass
 
     # Runs driven one after another would never clear the barrier, so this would hang.
@@ -44,7 +44,7 @@ def test_parallel_stream_overlaps_the_runs_it_drives():
     assert [root.result() for root in roots] == ["ok"] * 3
 
 
-def test_parallel_stream_uses_one_task_queue():
+def test_multi_root_stream_uses_one_task_queue():
     class ProbeFlow(Flow):
         def __init__(self):
             super().__init__(StubLLM(lambda _messages: block("finish('ok')")))
@@ -55,7 +55,13 @@ def test_parallel_stream_uses_one_task_queue():
             return await super()._drive(node)
 
     flow = ProbeFlow()
-    asyncio.run(parallel_run(flow, "a", "b", "c"))
+    roots = [flow.start(query) for query in ("a", "b", "c")]
+
+    async def drain():
+        async for _node in flow.run_streaming(*roots):
+            pass
+
+    asyncio.run(drain())
     assert len(flow.queues) == 1
 
 
@@ -69,8 +75,7 @@ def test_one_parallel_root_can_stop_without_cancelling_another():
     async def drain():
         return [
             node
-            async for node in parallel_stream(
-                flow,
+            async for node in flow.run_streaming(
                 short,
                 long,
                 until=lambda _node, root: root is short,
@@ -80,11 +85,3 @@ def test_one_parallel_root_can_stop_without_cancelling_another():
     asyncio.run(drain())
     assert not short.terminal
     assert long.result() == "long"
-
-
-def test_parallel_run_returns_the_roots_in_argument_order():
-    def reply(messages):
-        return block(f"finish({first_user(messages)!r})")
-
-    roots = asyncio.run(parallel_run(Flow(StubLLM(reply)), "a", "b", "c"))
-    assert [root.result() for root in roots] == ["a", "b", "c"]

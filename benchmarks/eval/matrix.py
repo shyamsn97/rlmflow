@@ -3,27 +3,28 @@
 from __future__ import annotations
 
 import argparse
+import random
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from statistics import fmean
 from typing import Any
 
+from benchmarks.eval.acceptance import DEFAULT_ACCEPTANCE_POLICY
 from benchmarks.eval.loggers.jsonl import load_rows, write_json
+from benchmarks.eval.telemetry import (
+    INFRA_ERROR_MARKERS,
+    RowTelemetry,
+    expected_from_row,
+)
 from benchmarks.eval.types import Row
+
+DEPTH_BASELINE_RUNNER = DEFAULT_ACCEPTANCE_POLICY.baseline_runner
+DEPTH_TREATMENT_RUNNER = DEFAULT_ACCEPTANCE_POLICY.treatment_runner
 
 ERROR = "ERR"
 MISSING = "—"
-# An attempt that never produced a gradeable answer is missing data, not a zero.
-# Anything else in `score.details["error"]` is the grader rejecting a real answer
-# ("goal not reached", "malformed action"), which is a legitimate score of zero.
-INFRA_ERRORS = (
-    "APIConnectionError",
-    "ConnectionError",
-    "RateLimit",
-    "Timeout",
-    "Traceback",
-    "budget exceeded",
-)
+INFRA_ERRORS = INFRA_ERROR_MARKERS
 
 
 def build_matrix(rows: Sequence[Row]) -> dict[str, Any]:
@@ -48,18 +49,24 @@ def build_matrix(rows: Sequence[Row]) -> dict[str, Any]:
             {
                 "example_id": example_id,
                 "dataset": task_rows[0].dataset,
-                "role": task_rows[0].metadata.get("iteration_role", ""),
-                "expected": _expected(task_rows[0]),
+                "role": task_rows[0].metadata.get(
+                    "route_hypothesis",
+                    task_rows[0].metadata.get("iteration_role", ""),
+                ),
+                "domain": task_rows[0].metadata.get("domain", ""),
+                "expected": expected_from_row(task_rows[0]),
                 "cells": {
                     runner: {str(seed): cells.get((example_id, runner, seed)) for seed in seeds}
                     for runner in runners
                 },
                 "runners": per_runner,
                 "delta": _delta(per_runner, runners),
+                "deltas_from_depth_0": _baseline_deltas(per_runner),
                 "flaky": [runner for runner, item in per_runner.items() if item["spread"] > 0],
             }
         )
 
+    paired = _paired_deltas_by_domain(tasks, runners)
     return {
         "runners": runners,
         "seeds": [str(seed) for seed in seeds],
@@ -67,6 +74,10 @@ def build_matrix(rows: Sequence[Row]) -> dict[str, Any]:
             runner: _runner_summary([metrics for key, metrics in cells.items() if key[1] == runner])
             for runner in runners
         },
+        "by_route": _route_summaries(rows, cells, runners),
+        "by_domain": _domain_summaries(rows, cells, runners),
+        "paired_deltas_by_domain": paired,
+        "acceptance_gates": _acceptance_gates(tasks, runners),
         "tasks": tasks,
     }
 
@@ -76,6 +87,46 @@ def render_markdown(matrix: Mapping[str, Any], *, title: str = "Benchmark matrix
     seeds = list(matrix["seeds"])
     lines = [f"# {title}", "", "## Summary", ""]
     lines.extend(_summary_table(matrix, runners))
+    if matrix.get("by_domain"):
+        lines.extend(
+            [
+                "",
+                "Native scores are comparable only within a domain; the mixed summary "
+                "above is operational telemetry, not a headline score.",
+                "",
+                "## Domain-native comparisons",
+                "",
+            ]
+        )
+        for domain, per_runner in matrix["by_domain"].items():
+            lines.append(f"### {domain}")
+            lines.append("")
+            for runner in runners:
+                item = per_runner[runner]
+                detail = (
+                    f"`{runner}`: score {_mean(item['mean_score'], 3)}, "
+                    f"seed spread {item['spread']:.3f}, "
+                    f"{item['unscored']} infra-unscored, "
+                    f"{item['environment_actions']} environment actions, "
+                    f"{item['tokens']:.0f} mean tokens"
+                )
+                paired = matrix.get("paired_deltas_by_domain", {}).get(domain, {}).get(runner)
+                if paired:
+                    detail += (
+                        f"; paired Δ {paired['mean_delta']:.3f}, 95% CI "
+                        f"[{paired['ci95'][0]:.3f}, {paired['ci95'][1]:.3f}]"
+                    )
+                oracle_paired = (
+                    matrix.get("paired_deltas_vs_oracle_by_domain", {}).get(domain, {}).get(runner)
+                )
+                if oracle_paired:
+                    detail += (
+                        f"; vs equal-budget oracle Δ {oracle_paired['mean_delta']:.3f}, "
+                        f"95% CI [{oracle_paired['ci95'][0]:.3f}, "
+                        f"{oracle_paired['ci95'][1]:.3f}]"
+                    )
+                lines.append(f"- {detail}")
+            lines.append("")
     lines.extend(["", "## Per-question matrix", ""])
     lines.extend(_score_table(matrix, runners, seeds))
     lines.extend(["", "## Per-question rundown", ""])
@@ -101,24 +152,92 @@ def write_matrix(
 
 
 def _cell_metrics(row: Row) -> dict[str, Any]:
+    telemetry = RowTelemetry.from_row(row)
     metrics = row.prediction.metrics
-    graph = metrics.get("graph", {})
-    delegation = metrics.get("delegation", {})
-    rlm = metrics.get("rlm", {})
-    usage = row.prediction.usage
-    error = row.prediction.error or row.score.details.get("error")
+    graph = telemetry.graph
+    delegation = telemetry.delegation
+    gold_alignment = delegation.get("gold_graph_alignment", {})
+    candidate_search = telemetry.environment.candidate_search
+    error = telemetry.error
     return {
-        "score": row.score.value,
-        "correct": bool(row.score.correct),
+        "score": telemetry.score,
+        "correct": bool(telemetry.correct),
         "error": error,
-        "infra_error": _is_infra_error(error) or _is_infra_error(row.prediction.answer),
+        "infra_error": telemetry.infra_error,
         "answer": row.prediction.answer,
-        "llm_turns": graph.get("llm_turns", rlm.get("model_calls", 0)),
+        "llm_turns": graph.get("llm_turns", 0),
         "agents": graph.get("agents", 1),
-        "children": delegation.get("children", rlm.get("subcalls", 0)),
+        "children": delegation.get("children", 0),
         "max_depth": graph.get("max_depth", 0),
-        "tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
-        "time_seconds": metrics.get("time_seconds", 0.0),
+        "delegation_topology": telemetry.topology,
+        "dependency_edges": delegation.get("dependency_edge_count", 0),
+        "dependency_chain_depth": delegation.get("dependency_chain_depth", 0),
+        "recursive_launches": delegation.get(
+            "recursive_launch_count",
+            0,
+        ),
+        "max_launch_batch": delegation.get("max_launch_batch", 0),
+        "max_ready_launch_batch": delegation.get("max_ready_launch_batch", 0),
+        "concurrent_launch_batches": delegation.get("concurrent_launch_batches", 0),
+        "retrieved_results": delegation.get(
+            "retrieved_child_results",
+            0,
+        ),
+        "retrieval_ratio": delegation.get(
+            "retrieval_ratio",
+            0.0,
+        ),
+        "gold_edge_precision": gold_alignment.get("edge_precision"),
+        "gold_edge_recall": gold_alignment.get("edge_recall"),
+        "query_calls": delegation.get("query_calls", 0),
+        "environment_actions": telemetry.environment.accepted_actions,
+        "primary_actions": telemetry.environment.primary_actions,
+        "probe_actions": telemetry.environment.probe_actions,
+        "environment_instances": telemetry.environment.instances_forked,
+        "candidate_count": candidate_search.get("evaluations_used", 0),
+        "selection_compliance": metrics.get("environment", {}).get("selection_compliance"),
+        "candidate_oracle_best_score": candidate_search.get("oracle_best_score"),
+        "selected_candidate_score": candidate_search.get("selected_score"),
+        "selection_regret": candidate_search.get("selection_regret"),
+        "candidate_diversity": candidate_search.get("candidate_diversity"),
+        "candidate_outcome_diversity": candidate_search.get("outcome_diversity"),
+        "selected_candidate_depth": next(
+            (
+                candidate.get("owner_depth")
+                for candidate in candidate_search.get("candidates", [])
+                if candidate.get("id") == candidate_search.get("selected_candidate_id")
+            ),
+            None,
+        ),
+        "candidate_owner_count": len(
+            {
+                candidate.get("owner_id")
+                for candidate in candidate_search.get("candidates", [])
+                if candidate.get("owner_id")
+            }
+        ),
+        "candidate_branch_utilization": (
+            len(
+                {
+                    candidate.get("owner_id")
+                    for candidate in candidate_search.get("candidates", [])
+                    if candidate.get("owner_id")
+                }
+            )
+            / max(
+                1,
+                telemetry.environment.instances_forked + 1,
+            )
+            if candidate_search.get("candidates")
+            else None
+        ),
+        "tokens": telemetry.input_tokens + telemetry.output_tokens,
+        "time_seconds": telemetry.time_seconds,
+        "compute_seconds": row.metadata.get(
+            "aggregate_compute_seconds",
+            metrics.get("time_seconds", 0.0),
+        ),
+        "artifacts": dict(row.prediction.artifacts),
     }
 
 
@@ -133,13 +252,48 @@ def _runner_summary(metrics: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             "errors": 0,
             "llm_turns": 0.0,
             "children": 0,
+            "dependency_edges": 0,
+            "recursive_launches": 0,
+            "max_launch_batch": 0.0,
+            "max_ready_launch_batch": 0.0,
+            "concurrent_launch_batches": 0,
+            "retrieved_results": 0,
+            "gold_edge_precision": None,
+            "gold_edge_recall": None,
+            "query_calls": 0,
+            "environment_actions": 0,
+            "candidate_count": 0.0,
+            "selection_compliance": None,
+            "selection_regret": None,
+            "candidate_diversity": None,
+            "candidate_outcome_diversity": None,
+            "candidate_oracle_best_score": None,
+            "selected_candidate_depth": None,
+            "candidate_owner_count": 0.0,
+            "candidate_branch_utilization": None,
+            "score_per_1k_tokens": None,
+            "score_per_environment_action": None,
+            "score_per_candidate_evaluation": None,
+            "score_per_second": None,
             "delegating_runs": 0,
+            "delegation_topologies": {},
             "tokens": 0.0,
             "time_seconds": 0.0,
+            "compute_seconds": 0.0,
         }
+
+    def optional_mean(key: str) -> float | None:
+        values = [float(item[key]) for item in items if isinstance(item.get(key), (int, float))]
+        return fmean(values) if values else None
+
     # Attempts that crashed carry no score, so averaging them as zero would grade the
     # infrastructure rather than the agent.
     scores = [item["score"] for item in items if not item["infra_error"]]
+    token_total = sum(item["tokens"] for item in items)
+    environment_total = sum(item["environment_actions"] for item in items)
+    candidate_total = sum(item["candidate_count"] for item in items)
+    time_total = sum(item["time_seconds"] for item in items)
+    score_total = sum(scores)
     return {
         "count": len(items),
         "unscored": sum(item["infra_error"] for item in items),
@@ -148,9 +302,40 @@ def _runner_summary(metrics: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         "errors": sum(bool(item["error"]) for item in items),
         "llm_turns": fmean(item["llm_turns"] for item in items),
         "children": sum(item["children"] for item in items),
+        "dependency_edges": sum(item["dependency_edges"] for item in items),
+        "recursive_launches": sum(item["recursive_launches"] for item in items),
+        "max_launch_batch": fmean(item["max_launch_batch"] for item in items),
+        "max_ready_launch_batch": fmean(item["max_ready_launch_batch"] for item in items),
+        "concurrent_launch_batches": sum(item["concurrent_launch_batches"] for item in items),
+        "retrieved_results": sum(item["retrieved_results"] for item in items),
+        "gold_edge_precision": optional_mean("gold_edge_precision"),
+        "gold_edge_recall": optional_mean("gold_edge_recall"),
+        "query_calls": sum(item["query_calls"] for item in items),
+        "environment_actions": sum(item["environment_actions"] for item in items),
+        "candidate_count": fmean(item["candidate_count"] for item in items),
+        "selection_compliance": optional_mean("selection_compliance"),
+        "selection_regret": optional_mean("selection_regret"),
+        "candidate_diversity": optional_mean("candidate_diversity"),
+        "candidate_outcome_diversity": optional_mean("candidate_outcome_diversity"),
+        "candidate_oracle_best_score": optional_mean("candidate_oracle_best_score"),
+        "selected_candidate_depth": optional_mean("selected_candidate_depth"),
+        "candidate_owner_count": fmean(item["candidate_owner_count"] for item in items),
+        "candidate_branch_utilization": optional_mean("candidate_branch_utilization"),
+        "score_per_1k_tokens": (score_total * 1_000 / token_total if token_total else None),
+        "score_per_environment_action": (
+            score_total / environment_total if environment_total else None
+        ),
+        "score_per_candidate_evaluation": (
+            score_total / candidate_total if candidate_total else None
+        ),
+        "score_per_second": score_total / time_total if time_total else None,
         "delegating_runs": sum(item["children"] > 0 for item in items),
+        "delegation_topologies": dict(
+            sorted(Counter(item["delegation_topology"] for item in items).items())
+        ),
         "tokens": fmean(item["tokens"] for item in items),
         "time_seconds": fmean(item["time_seconds"] for item in items),
+        "compute_seconds": fmean(item["compute_seconds"] for item in items),
     }
 
 
@@ -163,11 +348,173 @@ def _delta(per_runner: Mapping[str, Mapping[str, Any]], runners: Sequence[str]) 
     return first - second
 
 
-def _expected(row: Row) -> str:
-    for key in ("expected", "expected_answer"):
-        if key in row.score.details:
-            return _flat(row.score.details[key])
-    return _flat(row.metadata.get("expected", ""))
+def _baseline_deltas(per_runner: Mapping[str, Mapping[str, Any]]) -> dict[str, float | None]:
+    baseline = per_runner.get(DEPTH_BASELINE_RUNNER, {}).get("mean_score")
+    return {
+        runner: (
+            None
+            if baseline is None or metrics.get("mean_score") is None
+            else metrics["mean_score"] - baseline
+        )
+        for runner, metrics in per_runner.items()
+        if runner != DEPTH_BASELINE_RUNNER
+    }
+
+
+def _route_summaries(
+    rows: Sequence[Row],
+    cells: Mapping[tuple, Mapping[str, Any]],
+    runners: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    routes = sorted(
+        {
+            str(row.metadata.get("route_hypothesis"))
+            for row in rows
+            if row.metadata.get("route_hypothesis")
+        }
+    )
+    return {
+        route: {
+            runner: _runner_summary(
+                [
+                    cells[(row.example_id, row.runner, row.seed)]
+                    for row in rows
+                    if row.runner == runner and row.metadata.get("route_hypothesis") == route
+                ]
+            )
+            for runner in runners
+        }
+        for route in routes
+    }
+
+
+def _domain_summaries(
+    rows: Sequence[Row],
+    cells: Mapping[tuple, Mapping[str, Any]],
+    runners: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    domains = sorted(
+        {str(row.metadata.get("domain")) for row in rows if row.metadata.get("domain")}
+    )
+    return {
+        domain: {
+            runner: _runner_summary(
+                [
+                    cells[(row.example_id, row.runner, row.seed)]
+                    for row in rows
+                    if row.runner == runner and row.metadata.get("domain") == domain
+                ]
+            )
+            for runner in runners
+        }
+        for domain in domains
+    }
+
+
+def _paired_deltas_by_domain(
+    tasks: Sequence[Mapping[str, Any]],
+    runners: Sequence[str],
+    *,
+    baseline: str = DEPTH_BASELINE_RUNNER,
+) -> dict[str, dict[str, Any]]:
+    if baseline not in runners:
+        return {}
+    domains = sorted({str(task.get("domain", "")) for task in tasks if task.get("domain")})
+    result: dict[str, dict[str, Any]] = {}
+    for domain in domains:
+        domain_tasks = [task for task in tasks if task.get("domain") == domain]
+        comparisons: dict[str, Any] = {}
+        for runner in runners:
+            if runner == baseline:
+                continue
+            deltas: list[float] = []
+            example_deltas: list[float] = []
+            for task in domain_tasks:
+                baseline_cells = task["cells"].get(baseline, {})
+                runner_cells = task["cells"].get(runner, {})
+                task_deltas: list[float] = []
+                for seed in set(baseline_cells) & set(runner_cells):
+                    base = baseline_cells[seed]
+                    candidate = runner_cells[seed]
+                    if (
+                        base is None
+                        or candidate is None
+                        or base["infra_error"]
+                        or candidate["infra_error"]
+                    ):
+                        continue
+                    delta = float(candidate["score"]) - float(base["score"])
+                    deltas.append(delta)
+                    task_deltas.append(delta)
+                if task_deltas:
+                    example_deltas.append(fmean(task_deltas))
+            if deltas:
+                lower, upper = _bootstrap_mean_ci(example_deltas)
+                comparisons[runner] = {
+                    "paired_rows": len(deltas),
+                    "paired_examples": len(example_deltas),
+                    "mean_delta": fmean(example_deltas),
+                    "ci95": [lower, upper],
+                    "wins": sum(delta > 0 for delta in deltas),
+                    "ties": sum(delta == 0 for delta in deltas),
+                    "losses": sum(delta < 0 for delta in deltas),
+                }
+        if comparisons:
+            result[domain] = comparisons
+    return result
+
+
+def _acceptance_gates(
+    tasks: Sequence[Mapping[str, Any]],
+    runners: Sequence[str],
+) -> dict[str, dict[str, Any]]:
+    domains = sorted({str(task.get("domain", "")) for task in tasks if task.get("domain")})
+    result: dict[str, dict[str, Any]] = {}
+    for domain in domains:
+        domain_tasks = [task for task in tasks if task.get("domain") == domain]
+
+        def scores(runner: str) -> list[float]:
+            return [
+                float(cell["score"])
+                for task in domain_tasks
+                for cell in task["cells"].get(runner, {}).values()
+                if cell is not None and not cell["infra_error"]
+            ]
+
+        baseline = scores(DEFAULT_ACCEPTANCE_POLICY.baseline_runner)
+        treatment = scores(DEFAULT_ACCEPTANCE_POLICY.treatment_runner)
+        candidate_variation = any(
+            cell is not None
+            and cell.get("candidate_count", 0) > 1
+            and (
+                cell.get("selection_regret") not in (None, 0)
+                or cell.get("candidate_owner_count", 0) > 1
+            )
+            for task in domain_tasks
+            for runner_cells in task["cells"].values()
+            for cell in runner_cells.values()
+        )
+        result[domain] = DEFAULT_ACCEPTANCE_POLICY.assess_scores(
+            baseline,
+            treatment,
+            candidate_variation=candidate_variation,
+        )
+    return result
+
+
+def _bootstrap_mean_ci(
+    values: Sequence[float],
+    *,
+    samples: int = 2_000,
+    seed: int = 0,
+) -> tuple[float, float]:
+    if len(values) == 1:
+        return float(values[0]), float(values[0])
+    rng = random.Random(seed)
+    estimates = sorted(fmean(rng.choice(values) for _ in values) for _ in range(samples))
+    lower = estimates[int(0.025 * (samples - 1))]
+    upper = estimates[int(0.975 * (samples - 1))]
+    return lower, upper
 
 
 def _summary_table(matrix: Mapping[str, Any], runners: Sequence[str]) -> list[str]:
@@ -220,11 +567,6 @@ def _score_cell(metrics: Mapping[str, Any] | None) -> str:
     if metrics["infra_error"]:
         return ERROR
     return f"{metrics['score']:.2f}".rstrip("0").rstrip(".") or "0"
-
-
-def _is_infra_error(text: object) -> bool:
-    value = str(text or "")
-    return any(marker in value for marker in INFRA_ERRORS)
 
 
 def _task_rundown(

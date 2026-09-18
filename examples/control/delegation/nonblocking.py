@@ -47,7 +47,6 @@ def main() -> None:
         "Queue two children, then collect them on a later turn.",
         max_depth=1,
         max_iters=3,
-        child_max_iters=2,
     )
     try:
         result = flow.run(root)

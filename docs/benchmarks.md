@@ -1,65 +1,67 @@
-# Benchmarks
+# Evaluation suites
 
-Eval is organized around **sets**. A set is a question, not a pile of adapters.
+The benchmark package has one pipeline:
 
-```bash
-python -m benchmarks.eval --list-sets
-make eval-reasoning EVAL_MODEL=gpt-5-mini
-```
+`SuiteSpec → Dataset → Example → Runner → Prediction → Score → Row`
 
-Pass a set name to `--dataset`. Runners default to that set’s table. Membership is [`benchmarks/eval/sets.py`](https://github.com/shyamsn97/rlmflow/blob/main/benchmarks/eval/sets.py).
+`benchmarks/eval/suite.py` is the complete public suite registry. There are no compatibility aliases or hidden legacy sets.
 
-## Pick a set
+## Public suites
 
-| Set            | Question                                              | Members                                              | Runners                                  |
-| -------------- | ----------------------------------------------------- | ---------------------------------------------------- | ---------------------------------------- |
-| `smoke`        | Does the harness run?                                 | `synthetic_needle`                                   | `fake` `vanilla` `rlmflow-local`         |
-| `reasoning`    | Hard problems, short context                          | AIME 2025, Sudoku Extreme                            | `vanilla` `rlmflow-local` `official-rlm` |
-| `long-context` | Recursive loop vs vanilla on long documents           | S-NIAH, OOLONG, OOLONG-Pairs (32K paper set), CodeQA | `vanilla` `rlmflow-local` `official-rlm` |
-| `delegation`   | Cheapest correct route: local / batched query / spawn | `delegation-routing` (8 pinned cases)                | `rlmflow-local` `official-rlm`           |
-| `task-graph`   | Frozen 20-problem telemetry                           | the `delegation_*` adapters                          | `rlmflow-local`                          |
-| `research`     | Deep-research QA over a fixed collection              | BrowseComp-Plus                                      | `vanilla` `rlmflow-local` `official-rlm` |
-| `code`         | Code that passes hidden tests                         | LiveCodeBench                                        | `vanilla` `rlmflow-local` `official-rlm` |
+- `smoke` runs `synthetic_needle` with the fake runner and makes no network calls.
+- `conformance` runs MiniMaze and Sudoku Search. These fast offline environments test private forks, shared budgets, candidate submission, and root selection.
+- `core` runs the paper-aligned OOLONG-Pairs 32K and OOLONG Yahoo 128K tasks. This is the primary long-context evidence.
+- `interactive` runs ARC-AGI-3 and MazeBench. These are the persistent visual environments used for replay-oriented evidence.
 
-Vanilla should stay close to rlmflow on `reasoning`. `long-context` is where a recursive REPL should pull away. `delegation` grades the factoid; a child on a local or batched-query item is a miss even if the answer is right. Do not mix these questions in one run — that was the `rlm-core` problem.
+Use `--split pilot` for bring-up and `--split full` for the frozen evidence split. Split selection is part of each dataset; pilot/full are not separate suite names.
 
-## Run
+## Comparison contract
 
-```bash
-make eval-smoke
-make eval-reasoning EVAL_MODEL=gpt-5-mini
-make eval-long-context EVAL_MODEL=gpt-5-mini
-make eval-delegation EVAL_MODEL=gpt-5-mini
-```
+Every suite except `smoke` runs exactly:
+
+1. `official-rlm`
+1. `rlmflow-depth-0`
+1. `rlmflow-depth-1`
+1. `rlmflow-depth-2`
+
+The three rlmflow arms instantiate the same runner class. `max_depth` is the only treatment variable. Official RLM is a separate upstream reference and is reported as such.
+
+The runtime bindings share task bytes, filesystem fixtures, environment operation specifications, episode state, action/candidate budgets, scoring, and normalized telemetry. The only intentional environment asymmetry is that rlmflow can represent handle-valued dependency edges while upstream RLM exposes recursive subcalls.
+
+## Commands
 
 ```bash
-python -m benchmarks.eval \
-  --model openai:gpt-5-mini \
-  --dataset reasoning \
-  --seed 0 \
-  --limit 5
+make -f benchmarks/Makefile eval-list-suites
+make -f benchmarks/Makefile eval-smoke
+make -f benchmarks/Makefile eval-conformance
+make -f benchmarks/Makefile eval-core
+make -f benchmarks/Makefile eval-interactive
 ```
 
-`--limit N` selects fewer **examples**. It never truncates an example’s prompt or context. `--full` uses every example the adapter exposes. `--runner` overrides the set default.
+Set `EVAL_SPLIT=full` for full manifests. The non-smoke commands use paid model APIs; the refactor and CI checks do not launch them.
 
-Every run writes `benchmarks/eval/runs/<run_id>/` (`config.json`, `rows.jsonl`, `summary.json`, `report.md`, `artifacts/`). Re-score without tokens: `python -m benchmarks.eval.regrade RUN`. Per-question grid: `python -m benchmarks.eval.matrix RUN`. Pair two runs: `make eval-compare EVAL_RLMFLOW_RUN=... EVAL_OFFICIAL_RUN=...`.
-
-Modal fans out **rows** `(example, runner, seed)`, not graph steps:
+Direct CLI use follows the same registry:
 
 ```bash
-python -m benchmarks.eval --dataset reasoning --limit 5 --executor modal --parallel 10 --wandb
+python -m benchmarks.eval --dataset conformance --split pilot --full
 ```
 
-## Notes
+A direct dataset name requires an explicit `--runner`, preventing accidental departures from the canonical matrix.
 
-- **`oolong-pairs`** is the paper’s 20 queries at 32K. It is not `oolong_pairs` (any length) and not the four 8K queries inside `delegation`.
-- **`delegation`** is routing, not spawn-lift. The lift A/B is [Delegation problem set](delegation_problems.md) (`delegation-lift`, not wired yet).
-- **`task-graph`** is the frozen 20 (manifest in `benchmarks/eval/delegation/manifest.py`). Use it for launch/wait/join traces.
-- **`research`**: download BrowseComp-Plus once to `evals/data/browsecomp_plus`.
-- **`code`**: LiveCodeBench scores generated code in a hardened Docker container, never on the host.
+## Results
 
-Working packs `delegation-iteration-five`, `-ten`, and `delegation-regression-five` still exist as dataset names. They are not sets. `rlm-core`, `needle`, and `delegation-suite` still expand.
+The stable serialized units remain `Row` and `Prediction.metrics`, so old JSONL artifacts remain readable. New runners emit one canonical telemetry vocabulary at the runner boundary. Matrix, comparison, Markdown, release-gate, and visual report commands are read-only consumers of that vocabulary.
 
-## Harness
+Environment runs include:
 
-Dataset / Model / Runner / Logger. `rlmflow-local` does `start(query=example.prompt, inputs=...)` then `flow.run_streaming(root)`. Register with `@dataset` / `@runner` and import from the package `__init__.py`. Put a dataset on a named set by adding it to `SETS` in `sets.py`.
+- accepted, primary, and probe action counts;
+- private instance and replay events;
+- candidate count, selected candidate, and selection regret;
+- selection compliance; and
+- domain-native score details.
+
+Do not average native scores across domains. Compare runners within each dataset/domain and seed.
+
+## Acceptance
+
+`python -m benchmarks.eval.calibrate_search` performs structural conformance checks without model calls. `benchmarks/eval/acceptance.py` is the single source for required runners, domains, seeds, runtime limits, selection compliance, and difficulty thresholds. A release does not require positive depth lift. Any delegation-benefit claim requires the measured depth-2 arm to beat depth 0 under the shared contract.

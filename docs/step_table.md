@@ -23,6 +23,9 @@ async def to_plan(flow: Flow, node: Node) -> PlanQuery:
     return PlanQuery()
 
 
+# child_returned: type(node) is UserQuery and prev is DoneOutput or ExecOutput
+
+
 @Flow.transitions.on(UserQuery)
 async def complete(flow: Flow, node: UserQuery) -> Node:
     agent = node.parent_agent

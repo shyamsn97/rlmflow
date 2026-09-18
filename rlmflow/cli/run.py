@@ -183,7 +183,14 @@ def run_agent(
 
 def build_flow(options: RunOptions, *, workdir: Path, agent: str | None = None) -> Any:
     """The coding agent by default; ``module:factory`` when the caller has their own."""
-    from rlmflow import FILE_TOOLS, AgentConfig, DockerRuntime, Flow, LocalRuntime
+    from rlmflow import (
+        CODING_HANDOFF_SCHEMA,
+        FILE_TOOLS,
+        AgentConfig,
+        DockerRuntime,
+        Flow,
+        LocalRuntime,
+    )
     from rlmflow.llm import client_for
 
     if agent is not None:
@@ -202,7 +209,11 @@ def build_flow(options: RunOptions, *, workdir: Path, agent: str | None = None) 
         runtime=runtime,
         tools=[FILE_TOOLS] if options.tools == "files" else None,
         workers=options.workers,
-        root_config=AgentConfig(max_depth=options.max_depth, max_iters=options.max_iters),
+        root_config=AgentConfig(
+            max_depth=options.max_depth,
+            max_iters=options.max_iters,
+            child_output_schema=CODING_HANDOFF_SCHEMA if options.tools == "files" else None,
+        ),
     )
 
 

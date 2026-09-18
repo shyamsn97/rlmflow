@@ -3,7 +3,14 @@ import asyncio
 import pytest
 from helpers import StubLLM
 
-from rlmflow import AgentDirectory, AgentStart, DoneOutput, ExecAction, Flow, start
+from rlmflow import (
+    AgentDirectory,
+    AgentStart,
+    DoneOutput,
+    ExecAction,
+    Flow,
+    start,
+)
 from rlmflow.tools.agents import build_agent_directory
 
 
@@ -77,6 +84,35 @@ def test_directory_reports_statuses_and_completed_results():
     assert agents.get(checker.id).status == "idle"
 
 
+def test_directory_exposes_dependency_edges_and_blocked_status():
+    root = start("root")
+    action = ExecAction(code="launch")
+    root.append(action)
+    source = AgentStart(content="source", config=root.config.child("source"))
+    action.append(source)
+    consumer = AgentStart(
+        content="consumer",
+        config=root.config.child(
+            "consumer",
+            inputs={"evidence": {"$rlmflow_agent": source.id}},
+        ),
+    )
+    action.append(consumer)
+
+    blocked = build_agent_directory(root)
+    assert blocked.get("consumer").status == "blocked"
+    assert blocked.get("consumer").dependency_paths == ("root.source",)
+    assert blocked.get("consumer").blocked_on_paths == ("root.source",)
+    assert blocked.get("source").dependent_paths == ("root.consumer",)
+    assert "consumer [blocked]" in blocked.render_graph()
+    assert blocked.render_graph(view="dependencies") == ("consumer [blocked]\n└── source [idle]")
+
+    source.append(DoneOutput(result="ready"))
+    ready = build_agent_directory(root)
+    assert ready.get("consumer").status == "idle"
+    assert ready.get("consumer").blocked_on_paths == ()
+
+
 def test_directory_is_a_snapshot_and_normalizes_results():
     class Answer:
         def __str__(self):
@@ -137,6 +173,8 @@ def test_directory_rejects_invalid_queries():
         agents.get(123)
     with pytest.raises(ValueError, match="max_result_chars"):
         agents.render_graph(max_result_chars=0)
+    with pytest.raises(ValueError, match="view"):
+        agents.render_graph(view="invalid")
     with pytest.raises(ValueError, match="viewer"):
         AgentDirectory(viewer_id="missing", root_id=root.id, agents=agents.agents)
 

@@ -96,9 +96,7 @@ class Transitions:
                 f"duplicate transition names from {current.__name__}: {names!r}"
             )
         existing = {
-            target.name
-            for choices in self._own_choices(current)
-            for target in choices.targets
+            target.name for choices in self._own_choices(current) for target in choices.targets
         }
         repeated = existing.intersection(names)
         if repeated:

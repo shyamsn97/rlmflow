@@ -81,6 +81,7 @@ class Budget:
             max_depth=self.max_depth,
             max_iters=self.max_iters,
             max_budget=self.max_budget,
+            resume_on_child_done=False,
         )
 
 
@@ -197,14 +198,16 @@ class RolloutFlow(Flow):
 
 def attached(action: ExecAction, spec: dict[str, Any], call_id: int) -> bool:
     """Whether this launch call already has its child, as ``Flow`` decides."""
+    if call_id in action.launched_agent_ids:
+        return True
     name = spec.get("name")
+    root = action.root
+    if name is None or root is None:
+        return False
     return any(
-        isinstance(child, AgentStart)
-        and (
-            child.config.launch_call_id == call_id
-            or (name is not None and child.config.name == name)
-        )
-        for child in action.children
+        (child := root.find_agent(agent_id)) is not None
+        and child.config.name == name
+        for agent_id in action.launched_agent_ids.values()
     )
 
 
