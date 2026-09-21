@@ -11,7 +11,7 @@ The benchmark package has one pipeline:
 - `smoke` runs `synthetic_needle` with the fake runner and makes no network calls.
 - `conformance` runs MiniMaze and Sudoku Search. These fast offline environments test private forks, shared budgets, candidate submission, and root selection.
 - `core` runs the paper-aligned OOLONG-Pairs 32K and OOLONG Yahoo 128K tasks. This is the primary long-context evidence.
-- `interactive` runs ARC-AGI-3 and MazeBench. These are the persistent visual environments used for replay-oriented evidence.
+- `interactive` runs the official MazeBench world. It provides persistent visual interaction and replay-oriented evidence.
 
 Use `--split pilot` for bring-up and `--split full` for the frozen evidence split. Split selection is part of each dataset; pilot/full are not separate suite names.
 
@@ -47,6 +47,12 @@ python -m benchmarks.eval --dataset conformance --split pilot --full
 ```
 
 A direct dataset name requires an explicit `--runner`, preventing accidental departures from the canonical matrix.
+
+## Evidence roles
+
+The `core` suite is the primary scientific comparison. OOLONG-Pairs uses the paper's fixed 32K pair-aggregation setting, while OOLONG Yahoo tests information scaling at 128K. Compare paired rows by dataset, model, runner, and seed.
+
+MazeBench is supporting interactive evidence. It uses the official fixed H×I, top-diagonal, yaw-0 start and a shared action budget. The root explores a persistent ASCII world and is scored on gems collected, with 100 gems as the native win condition. Child trajectories remain private probes. Generated visual reports synchronize execution topology, actions, candidate state, and environment replay.
 
 ## Results
 

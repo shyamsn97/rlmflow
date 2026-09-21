@@ -28,6 +28,7 @@ REPORT_VERSION = 1
 _JSON_ARTIFACT_LIMIT = 8 * 1024 * 1024
 _DISCOVERY_CANDIDATE_LIMIT = 2_048
 _DISCOVERY_VALUE_LIMIT = 32 * 1024
+_GRAPH_VALUE_LIMIT = 1024
 
 
 def build_visual_payload(
@@ -295,8 +296,6 @@ def _score_label(row: Row) -> str:
         return f"coverage {coverage}" if coverage is not None else f"{row.score.value:g}"
     if domain == "planbench":
         return "goal reached" if row.score.correct else "goal not reached"
-    if domain in {"arc", "arc_agi", "arc_agi_2"}:
-        return "exact grid" if row.score.correct else "grid mismatch"
     if domain in {"pencil_puzzle", "maze", "mazebench", "mazebench-derived"}:
         reward = row.prediction.metrics.get("environment", {}).get("reward")
         if reward is not None:
@@ -430,7 +429,7 @@ def _node_text(node: Mapping[str, Any]) -> Any:
         return ""
     for key in ("code", "output", "content", "result"):
         if key in payload:
-            return payload[key]
+            return _bounded_json(payload[key], limit=_GRAPH_VALUE_LIMIT)
     return ""
 
 
@@ -574,31 +573,6 @@ def _replay_payload(
                 environment.get("initial_state", row.metadata.get("initial_state")),
             ),
             "frames": steps if isinstance(steps, list) else [],
-        }
-    if domain in {"arc", "arc_agi", "arc_agi_2"}:
-        task = _jsonish(
-            row.metadata.get(
-                "arc_task",
-                row.metadata.get("task", row.score.details.get("task")),
-            )
-        )
-        prediction = _jsonish(row.prediction.answer)
-        expected = row.score.details.get("expected", row.metadata.get("expected"))
-        if task is not None or prediction is not None or expected is not None:
-            return {
-                "kind": "arc",
-                "task": task,
-                "prediction": prediction,
-                "expected": expected,
-            }
-    if domain == "arc_agi_3" and isinstance(environment, Mapping):
-        events = environment.get("events", environment.get("steps", []))
-        instances = environment.get("instances", [])
-        return {
-            "kind": "arc",
-            "primary_instance_id": environment.get("primary_instance_id"),
-            "instances": instances if isinstance(instances, (list, Mapping)) else [],
-            "events": events if isinstance(events, list) else [],
         }
     if domain == "sudoku" and isinstance(environment, Mapping):
         steps = environment.get("events", environment.get("steps", []))
@@ -781,8 +755,6 @@ def _replay_kind(row: Row) -> str:
     domain = str(row.metadata.get("domain", "")).casefold()
     if "maze" in domain:
         return "maze"
-    if domain.startswith("arc"):
-        return "arc"
     if domain == "sudoku":
         return "sudoku"
     return domain or "generic"
@@ -806,7 +778,7 @@ def _jsonish(value: Any) -> Any:
         return None
 
 
-def _bounded_json(value: Any) -> Any:
+def _bounded_json(value: Any, *, limit: int = _DISCOVERY_VALUE_LIMIT) -> Any:
     try:
         encoded = json.dumps(
             value,
@@ -817,11 +789,11 @@ def _bounded_json(value: Any) -> Any:
         )
     except (TypeError, ValueError):
         encoded = json.dumps(str(value), ensure_ascii=False)
-    if len(encoded) <= _DISCOVERY_VALUE_LIMIT:
+    if len(encoded) <= limit:
         return json.loads(encoded)
     return {
         "truncated": True,
-        "preview": encoded[:_DISCOVERY_VALUE_LIMIT],
+        "preview": encoded[:limit],
     }
 
 
@@ -886,8 +858,7 @@ pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:280px; overflow:a
   background:var(--panel); border-radius:5px; padding:8px; color:var(--ink) }
 .links { display:flex; flex-wrap:wrap; gap:8px }.links a { color:var(--blue) }
 .missing,.blocked { color:var(--muted) }.hidden { display:none!important }
-.replay-grid { display:inline-grid; gap:1px; margin:4px; vertical-align:top }
-.cell { width:13px; height:13px; background:#222 }.empty { padding:20px; color:var(--muted) }
+.empty { padding:20px; color:var(--muted) }
 .overview-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
   gap:10px; margin-bottom:18px }.domain-summary { border:1px solid var(--line);
   border-radius:8px; padding:10px; background:var(--panel) }.domain-summary h2 {
@@ -943,20 +914,6 @@ function metric(name, value) {
 function details(label, value) {
   const box = $("details"); box.append($("summary", "", label), $("pre", "", dump(value)));
   return box;
-}
-function arcGrid(grid) {
-  const wrap = $("span", "replay-grid");
-  if (!Array.isArray(grid) || !grid.length || !Array.isArray(grid[0])) return wrap;
-  const rows=grid.slice(0,MAX_GRID_SIDE), width=Math.min(MAX_GRID_SIDE,grid[0].length);
-  if (!width) return wrap;
-  wrap.style.gridTemplateColumns = `repeat(${width},13px)`;
-  const colors=["#000","#0074d9","#ff4136","#2ecc40","#ffdc00","#aaa",
-    "#f012be","#ff851b","#7fdbff","#870c25"];
-  rows.forEach(row => row.slice(0,width).forEach(value => {
-    const cell=$("i","cell"); cell.style.background=colors[+value]||"#fff";
-    cell.title=String(value); wrap.append(cell);
-  }));
-  return wrap;
 }
 function discoveryState(discovery, instanceId) {
   const item=(discovery?.candidates||[]).find(candidate=>candidate.instance_id===instanceId);
@@ -1129,43 +1086,6 @@ function gridFrom(value, depth=0) {
   }
   return null;
 }
-function arcView(replay, discovery) {
-  const box=$("div","viewer"), tabs=$("div","tabs"), stage=$("div");
-  const instances=replayInstances(replay);
-  const select=instance => {
-    [...tabs.children].forEach(button=>button.classList.toggle("active",button.dataset.id===instance.id));
-    stage.replaceChildren();
-    let frames=instance.frames.filter(event=>gridFrom(event?.frame??event?.observation??event));
-    if (!frames.length && replay.task) {
-      frames=[
-        ...(replay.task.train||[]).flatMap((pair,index)=>[
-          {action:`train ${index} input`,frame:pair.input},
-          {action:`train ${index} output`,frame:pair.output},
-        ]),
-        ...(replay.task.test||[]).flatMap((pair,index)=>[
-          {action:`test ${index} input`,frame:pair.input},
-          ...(gridFrom(replay.prediction?.[index]??replay.prediction)
-            ? [{action:`test ${index} prediction`,frame:replay.prediction?.[index]??replay.prediction}]
-            : []),
-        ]),
-      ].slice(0,MAX_FRAMES);
-    }
-    scrubber(stage,frames,(event,index)=>{
-      const old=stage.querySelector(".arc-frame"); if (old) old.remove();
-      const panel=$("div","arc-frame");
-      panel.append($("div","muted",
-        `frame ${index} · ${event?.action?.name||event?.action||"observe"} · ${event?.state||"—"} · ${event?.replay?"replay":"live"}`));
-      panel.append(arcGrid(gridFrom(event?.frame??event?.observation??event))); stage.append(panel);
-    });
-  };
-  instances.forEach((instance,index)=>{
-    const state=discoveryState(discovery,instance.id);
-    const button=$("button",state,`${instance.id}${instance.data.primary?" · primary":""}${state?` · ${state}`:""}`);
-    button.dataset.id=instance.id; button.onclick=()=>select(instance); tabs.append(button);
-    if (!index) select(instance);
-  });
-  box.append(tabs,stage); return box;
-}
 function sudokuViolations(grid) {
   const bad=new Set(), side=grid.length;
   const mark=positions=>{
@@ -1238,7 +1158,6 @@ function replayView(replay, discovery) {
     box.append($("div","muted",`${fmt(replay.bytes)} bytes · kept outside the bounded HTML payload`),
       link,details("replay summary",replay.summary||{}));
   }
-  else if (kind.startsWith("arc")) box.append(arcView(replay,discovery));
   else if (kind.includes("maze")) box.append(mazeView(replay,discovery));
   else if (kind.includes("sudoku")) box.append(sudokuView(replay,discovery));
   else box.append($("pre", "", dump(replay)));

@@ -11,9 +11,52 @@ Read the blog post: [rlmflow](https://shyamsn97.github.io/blog/rlmflow/).
 
 It gives an LLM a stateful Python REPL and a graph-native way to spawn agents with fresh context.
 
+The release has two flagship demonstrations: **Shepherd** is the primary product story — rewind, fork, recover, and select from a retained execution graph — while **Needle** is the compact proof of recursive decomposition. Everything else is an API tour or supporting benchmark evidence.
+
+## Flagship examples
+
+### Shepherd: recover the graph, not just the answer
+
+The example first writes a reproducible failed worker trace by scripting eight myopic Sokoban pushes. GPT-5 then reads that execution, previews earlier graph states, and proposes eight differently instructed GPT-5-mini recoveries across several rewind depths. The host forks and runs them as the shepherd's child agents, then selects the highest-scoring result. Planning and recovery play use live model calls; the fixed jam makes runs comparable, and the local deterministic game makes graph replay exact.
+
 <p align="center">
-  <img src="docs/rlm_animation.gif" alt="rlmflow animation" />
+  <img src="https://raw.githubusercontent.com/shyamsn97/rlmflow/main/docs/shepherd_graph.svg" alt="The Shepherd execution graph: one jammed worker, eight rewind branches, six solved recoveries, and one selected winner" width="900" />
 </p>
+<p align="center"><em>One failed run becomes eight recoverable branches inside the same retained graph.</em></p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/shyamsn97/rlmflow/main/docs/static/shepherd/rewind.gif" alt="A live Shepherd run progressing from the deliberate Sokoban jam through graph rewind to the selected recovery" width="460" />
+</p>
+<p align="center"><em>Recorded board replay: deliberate jam → rewind → selected live-model recovery.</em></p>
+
+```bash
+uv run --locked --python 3.12 --extra openai --extra image \
+  python examples/shepherd/shepherd.py \
+  --model gpt-5 --fast-model gpt-5-mini --branches 8 --time-budget 1800
+```
+
+In the checked-in run, six of eight recoveries solved; Shepherd selected `branch2`, which rewound seven pushes and solved in 11 total pushes. The run is saved under `examples/_runs/shepherd/`; `make showcase-shepherd-assets` reproduces the checked-in SVG and GIF assets. See the [example instructions](examples/shepherd/) and [worked walkthrough](docs/shepherd.md).
+
+### Needle: decompose a million-line value
+
+The root receives one million lines through `INPUTS["haystack"]`, partitions the value in its REPL, delegates chunks to GPT-5-nano workers with fresh contexts, and checks their combined answer against the generated secret.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/shyamsn97/rlmflow/main/docs/static/needle-haystack.gif" alt="The million-line Needle run growing from one root into parallel search workers and returning the generated magic number" width="900" />
+</p>
+<p align="center"><em>Parallel graph replay: same-level nodes across the 13 worker branches light together. The recorded run reached 10-way wall-clock concurrency.</em></p>
+
+```bash
+uv run --locked --python 3.12 --extra openai \
+  python examples/needle/haystack.py \
+  --num-lines 1000000 --model gpt-5-mini --fast-model gpt-5-nano
+```
+
+The checked-in run generated `5335239` at line 466,831 and returned the same value in 3m 26s using 13 child workers, with peak concurrency of 10. Its saved graph at `examples/_runs/needle-haystack/` renders directly to a steppable HTML trace, static graph, and level-synchronized parallel animation; `make showcase-needle-assets` reproduces the checked-in assets. See the [Needle example](examples/needle/).
+
+### Benchmarks: long context and visual interaction
+
+The evaluation harness compares the original `official-rlm` runtime with rlmflow at depths 0, 1, and 2 under one contract. OOLONG-Pairs 32K and OOLONG Yahoo 128K are the primary long-context tasks. MazeBench is the official interactive benchmark: agents explore a persistent ASCII world, collect gems, and produce replay artifacts under a shared action budget. See [Evaluation suites](docs/benchmarks.md).
 
 ## Recursive agents as graphs
 
@@ -417,15 +460,11 @@ rlmflow render frames $RUN out/      # a PNG per step (needs [image])
 
 `python -m rlmflow view show …` works the same. Everything here needs nothing beyond the standard library except the two that say otherwise: the viewer wants `rlmflow[viewer]`, and PNG/GIF export wants `rlmflow[image]`. See [`docs/observability.md`](docs/observability.md).
 
-## Recursive meta-agents
+## How Shepherd uses the graph
 
 Because a run is a durable graph rather than a one-way transcript, a second agent can be programmed against it. [Shepherd](https://arxiv.org/abs/2605.10913) (Yu et al., 2026) motivates this experimental example, but rlmflow does not implement Shepherd's reversible environment model. It reads an earlier graph node, forks from it, and re-instructs the copy; external state is rebuilt by the example.
 
-[`examples/shepherd/`](examples/shepherd/) does that to a real failure. A small model jams a Sokoban board past saving; a larger one reads the trace, reverts to eight different earlier pushes, and gives each fork its own plan to try in parallel. The forks are its own children, so the search is one agent tree. A runtime-bound current-frontier renderer adds each worker's live board without putting runtime state on graph nodes or closing over the `Flow`.
-
-<p align="center">
-  <img src="docs/static/shepherd/tiers.gif" alt="A stuck Sokoban worker, the meta-agent that reads its trace, one card per recovery plan, and four workers reverting to different depths and playing on in parallel" width="920" />
-</p>
+[`examples/shepherd/`](examples/shepherd/) does that to a concrete failed trace. A fixed script records a worker shoving one box past saving; a larger model reads the trace, reverts to eight different earlier pushes, and gives each live worker fork its own plan to try in parallel. The forks are its own children, so the search is one agent tree. A runtime-bound current-frontier renderer adds each worker's live board without putting runtime state on graph nodes or closing over the `Flow`.
 
 [`docs/shepherd.md`](docs/shepherd.md) is the full walkthrough: the tools the meta-agent gets, the plans it wrote, and what each branch did.
 
@@ -488,25 +527,28 @@ Run the offline smoke suite with `python examples/run_examples.py`. Every run wr
 
 ## Benchmarks (research beta)
 
-Eval is organized around **named sets** — one question each, not a mixed average.
+Eval is organized around four public **suites** — one question each, not a mixed average.
 
 ```bash
-make eval-smoke
-make eval-reasoning EVAL_MODEL=gpt-5-mini
-python -m benchmarks.eval --list-sets
+make -f benchmarks/Makefile eval-smoke
+make -f benchmarks/Makefile eval-conformance
+make -f benchmarks/Makefile eval-core
+make -f benchmarks/Makefile eval-interactive
+python -m benchmarks.eval --list-suites
 ```
 
-| Set            | Question                                              |
-| -------------- | ----------------------------------------------------- |
-| `reasoning`    | Hard problems, short context (AIME, Sudoku)           |
-| `long-context` | Recursive loop vs vanilla on long documents           |
-| `delegation`   | Cheapest correct route: local / batched query / spawn |
+| Suite         | Question                                                       |
+| ------------- | -------------------------------------------------------------- |
+| `smoke`       | Does the pipeline run end to end without network access?       |
+| `conformance` | Do runtimes obey the same offline environment/search contract? |
+| `core`        | How do harnesses manage paper-aligned long-context tasks?      |
+| `interactive` | How do harnesses scale on persistent visual environments?      |
 
-See [docs/benchmarks.md](docs/benchmarks.md) for the full table, runners, and how to add a dataset. The repository does not include published comparative quality, cost, or latency results.
+See [docs/benchmarks.md](docs/benchmarks.md) for the fixed runner matrix, pilot/full splits, the bounded ARC visual showcase, and result artifacts. The repository does not claim comparative quality, cost, or latency beyond checked-in or reproducibly generated run evidence.
 
 ## Roadmap
 
-- [~] Named eval sets (`reasoning`, `long-context`, `delegation`, …) [benchmarks](docs/benchmarks.md)
+- [~] Four public eval suites (`smoke`, `conformance`, `core`, `interactive`) [benchmarks](docs/benchmarks.md)
 - [ ] Additional remote sandbox providers (E2B, Daytona)
 - [x] Data-only worker-to-host protocol; `LocalRuntime` remains trusted-code only
 - [~] [Experimental RAO utilities](docs/research/rao_implementation_plan.md): rollout collection, per-node rewards, leave-one-out advantages, depth weighting, and trainer export exist; validation results do not
@@ -516,7 +558,7 @@ See [docs/benchmarks.md](docs/benchmarks.md) for the full table, runners, and ho
 
 The top-level docs are short, user-facing guides. The deep dive lives in [`docs/internals.md`](docs/internals.md). Research notes live under [`docs/research/`](docs/research/).
 
-- [**Upgrading to 0.5**](UPGRADING.md): breaking API and persistence changes.
+- [**Upgrading to 0.6**](UPGRADING.md): breaking API and persistence changes.
 - [**Internals**](docs/internals.md): Node structure, Flow transitions, the task queue and pools, Runtime identity, replay, forks, and persistence.
 - [Blog post](https://shyamsn97.github.io/blog/rlmflow/): long-form pitch — recursive agents, why graphs beat flat traces, and walkthroughs.
 - [Positioning](docs/positioning.md): when to use rlmflow vs rlm-minimal, ypi, LangGraph, CrewAI, AutoGen, SWE-agent, Aider.
@@ -530,7 +572,7 @@ The top-level docs are short, user-facing guides. The deep dive lives in [`docs/
 - [Runtimes](docs/runtimes.md): `Runtime` protocol, shipped runtimes (Local / subprocess / Docker / Modal), writing your own.
 - [Prompt customization](docs/prompt_customization.md): `PromptBuilder`, `Flow.build_system_prompt`, `UserQuery.build_system_prompt`, `PromptProfile` / `prompt_profile` / `prompt_router`.
 - [Security](docs/security.md): trust model, Docker isolation knobs, engine-level caps, proxied tools, approval gates.
-- [Benchmarks](docs/benchmarks.md): named eval sets (`smoke`, `reasoning`, `long-context`, `delegation`, `task-graph`, `research`, `code`).
+- [Benchmarks](docs/benchmarks.md): the `smoke`, `conformance`, `core`, and `interactive` suites, with OOLONG as the primary long-context evidence and MazeBench as the visual environment.
 - [Changelog](CHANGELOG.md): release-by-release changes.
 
 ## References

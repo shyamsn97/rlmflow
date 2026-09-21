@@ -2,11 +2,19 @@
 
 Pick the doc that matches what you're trying to do.
 
+## Flagship examples
+
+- [Needle](https://github.com/shyamsn97/rlmflow/tree/main/examples/needle) — recursive decomposition over a million-line REPL input, with a saved graph that can be rendered as SVG, HTML, or GIF.
+- [Shepherd recovery](shepherd.md) — a live meta-agent inspects a failed Sokoban run, rewinds its graph, forks eight recovery plans, and selects the best result.
+- [Flagship release record](release/README.md) — recorded configurations, outcomes, visuals, verification, and claim boundaries.
+
+Together they show why recursive execution is useful and why its state should survive as more than a final answer: decompose work, then intervene in and recover the graph itself. The [benchmark suite](benchmarks.md) separately evaluates long-context work with OOLONG and persistent visual interaction with MazeBench.
+
 ## Get oriented
 
 - [Blog post](https://shyamsn97.github.io/blog/rlmflow/) — long-form pitch. Why recursive agents, why graphs over flat traces, and walkthroughs.
 - [Positioning](positioning.md) — when to use rlmflow vs rlm-minimal, ypi, LangGraph, CrewAI, AutoGen, SWE-agent, Aider.
-- [Shepherd walkthrough](shepherd.md) — one worked run: a meta-agent reverts a jammed Sokoban worker's graph and steers eight recoveries in parallel.
+- [Shepherd walkthrough](shepherd.md) — the flagship worked run and its reproducible visual artifacts.
 
 ## Use rlmflow
 

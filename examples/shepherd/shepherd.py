@@ -328,7 +328,10 @@ async def play_jam(
     yield setup
     action = await land(setup)
     yield action
-    yield await land(action)
+    setup_result = await land(action)
+    yield setup_result
+    if not isinstance(setup_result, ExecOutput):
+        raise RuntimeError(f"failed to construct the Sokoban worker: {setup_result.content}")
 
     reply = f"{JAM_REASON}\n\n```repl\n{jam_code}\n```"
     for _ in range(pushes):
@@ -607,7 +610,6 @@ async def run_shepherd(
                 for branch in branches
             ],
         )
-        best.graph.save(root / "best")
         print(f"\n{summary}\n{best.board()}")
         if dashboard is not None:
             # The live viewer is already frozen, so its best-effort status callback

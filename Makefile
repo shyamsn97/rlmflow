@@ -1,4 +1,4 @@
-.PHONY: clean clean-build clean-pyc clean-test coverage dist docs help install lint lint/flake8 format-md lint-md test test-all test-live test-live-boids examples examples-list examples-optional examples-live examples-sandbox examples-all animation animation-preview animation-mp4 animation-gif animation-gif-small animation-clean bump-version release-check release-tag release-push release
+.PHONY: clean clean-build clean-pyc clean-test coverage dist docs help install lint lint/flake8 format-md lint-md test test-all test-live test-live-boids examples examples-list examples-optional examples-live examples-sandbox examples-all examples-slow showcase-shepherd-assets showcase-needle-assets animation animation-preview animation-mp4 animation-gif animation-gif-small animation-clean bump-version release-check release-tag release-push release
 	{%- if cookiecutter.use_black == 'y' %} lint/black{% endif %}
 .DEFAULT_GOAL := help
 
@@ -178,12 +178,42 @@ examples-slow: ## Run offline + the long opt-in examples that --all skips.
 examples-all: ## Run every example category except the slow opt-in ones.
 	python examples/run_examples.py --all $(EXAMPLES_ARGS)
 
+SHEPHERD_RUN ?= examples/_runs/shepherd
+SHEPHERD_DOC_ASSETS := docs/static/shepherd
+
+showcase-shepherd-assets: ## Publish Shepherd SVGs and GIFs from SHEPHERD_RUN.
+	@test -d "$(SHEPHERD_RUN)/shepherd" || (echo "missing $(SHEPHERD_RUN)/shepherd; run the Shepherd example first" >&2; exit 1)
+	mkdir -p $(SHEPHERD_DOC_ASSETS)
+	uv run --locked --python 3.12 --extra image python examples/shepherd/render_graph.py \
+		--run-dir $(SHEPHERD_RUN) \
+		--out docs/shepherd_graph.svg \
+		--nodes-out docs/shepherd_nodes.svg
+	uv run --locked --python 3.12 --extra image python examples/shepherd/render_rewind.py \
+		--run-dir $(SHEPHERD_RUN) \
+		--out $(SHEPHERD_DOC_ASSETS)/rewind.gif
+	cp "$(SHEPHERD_RUN)/traces/worker.gif" "$(SHEPHERD_DOC_ASSETS)/jam.gif"
+	rm -f $(SHEPHERD_DOC_ASSETS)/branch*.gif
+	cp "$(SHEPHERD_RUN)"/traces/branch*.gif $(SHEPHERD_DOC_ASSETS)/
+
+NEEDLE_RUN ?= examples/_runs/needle-haystack
+NEEDLE_DOC_ASSETS := docs/static
+
+showcase-needle-assets: ## Render and publish the saved million-line Needle graph.
+	@test -f "$(NEEDLE_RUN)/graph.json" || (echo "missing $(NEEDLE_RUN)/graph.json; run the Needle example first" >&2; exit 1)
+	uv run --locked --python 3.12 rlmflow render svg \
+		$(NEEDLE_RUN) $(NEEDLE_DOC_ASSETS)/needle-haystack.svg
+	uv run --locked --python 3.12 rlmflow render html \
+		$(NEEDLE_RUN) $(NEEDLE_RUN)/run.html
+	uv run --locked --python 3.12 --extra image python examples/needle/render_parallel.py \
+		--run-dir $(NEEDLE_RUN) \
+		--out $(NEEDLE_DOC_ASSETS)/needle-haystack.gif
+
 build-docker-image:
 	docker build -t rlmflow:local .
 
 # ── Eval harness ─────────────────────────────────────────────────────
-# Named sets and recipes live in benchmarks/Makefile. `make eval-reasoning`
-# from the repo root forwards here. See docs/benchmarks.md.
+# Public suites and recipes live in benchmarks/Makefile. `make eval-core`
+# from the repo root forwards there. See docs/benchmarks.md.
 eval-%:
 	$(MAKE) -C benchmarks $@
 

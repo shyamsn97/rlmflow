@@ -41,8 +41,8 @@ SUITES: dict[str, SuiteSpec] = {
         ("oolong-pairs-32k", "oolong-yahoo-128k"),
     ),
     "interactive": SuiteSpec(
-        "How do the harnesses scale on persistent visual environments?",
-        ("arc-agi-3", "mazebench"),
+        "How do the harnesses scale in a persistent visual environment?",
+        ("mazebench",),
     ),
 }
 

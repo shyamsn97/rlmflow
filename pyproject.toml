@@ -49,8 +49,6 @@ eval = [
 ]
 eval-environments = [
     "mazebench==0.2.19",
-    "arc-agi==0.9.9; python_version >= '3.12'",
-    "arcengine==0.9.3; python_version >= '3.12'",
 ]
 official-rlm = ["rlms==0.1.3"]
 sandbox = ["modal"]
@@ -82,8 +80,6 @@ all = [
     "datasets>=2.19",
     "huggingface_hub>=0.23",
     "mazebench==0.2.19",
-    "arc-agi==0.9.9; python_version >= '3.12'",
-    "arcengine==0.9.3; python_version >= '3.12'",
     "rlms==0.1.3",
     "openenv>=0.4",
     "rich>=13.0",

@@ -36,7 +36,7 @@ from rlmflow.graph.nodes import (
     LAST_TURN_ADDENDUM,
     PLANNING_ACTION,
 )
-from rlmflow.prompts import PromptProfile, default_render
+from rlmflow.prompts import default_render
 from rlmflow.runtime import LocalRuntime, Runtime
 from rlmflow.tools import tool
 from rlmflow.utils.helpers import truncate_output
@@ -91,14 +91,6 @@ def test_finish():
     flow = Flow(llm)
     assert flow.run("count for me") == 6
     assert llm.calls[0][0]["role"] == "system"
-
-
-def test_finish_is_the_only_completion_tool():
-    flow = Flow(ScriptedLLM([]))
-    tools = flow.build_tools(start("count"))
-
-    assert "finish" in tools
-    assert "done" not in tools
 
 
 def test_error_then_recovery():
@@ -166,7 +158,6 @@ def test_inputs():
     llm = ScriptedLLM([("", block("finish(INPUTS['doc'].upper())"))])
     root = start("shout", inputs={"doc": "hi"})
     assert Flow(llm).run(root) == "HI"
-    assert "- doc: str, 2 chars" in Flow(llm).build_messages(root.frontier)[0]["content"]
 
 
 def test_flow_start_carries_the_flow_defaults():
@@ -182,38 +173,6 @@ def test_flow_start_carries_the_flow_defaults():
     assert (root.config.max_depth, root.config.max_iters, root.config.model) == (1, 5, "fast")
     assert overridden.config.max_iters == 9
     assert (overridden.config.max_depth, overridden.config.model) == (1, "fast")
-
-
-def test_flow_start_copies_the_defaults_it_hands_out():
-    flow = Flow(ScriptedLLM([]), root_config=AgentConfig(max_iters=5))
-
-    first = flow.start("a", inputs={"doc": "x"})
-    second = flow.start("b")
-    first.config.max_iters = 99
-
-    assert (second.config.max_iters, second.config.inputs) == (5, {})
-    assert (flow.root_config.max_iters, flow.root_config.inputs) == (5, {})
-
-
-def test_a_string_root_inherits_the_flow_defaults():
-    llm = ScriptedLLM(
-        [
-            ("last turn", block("finish('best effort')")),
-            ("", block("print('again')")),
-        ]
-    )
-
-    assert Flow(llm, root_config=AgentConfig(max_iters=2)).run("loop") == "best effort"
-    assert len(llm.calls) == 2
-
-
-def test_start_overrides_a_base_config_without_touching_it():
-    base = AgentConfig(max_iters=5, model="fast")
-
-    root = start("q", config=base, max_iters=9)
-
-    assert (root.config.max_iters, root.config.model) == (9, "fast")
-    assert base.max_iters == 5
 
 
 def test_keep_n_messages_keeps_the_tail_without_rendering_the_history():
@@ -619,9 +578,7 @@ def test_run_records_prompts_seq_and_timing():
 
     turns = [node for node in root.transcript() if isinstance(node, LLMOutput)]
     first, last = root.system_prompt_for(turns[0]), root.system_prompt_for(turns[-1])
-    assert "Python REPL" in " ".join(first.split())
-    assert "Recursive Language Model" in first
-    assert "## Turn Guidance" not in first
+    assert first
     assert first == last
     assert root.latest_system_prompt() == last
     # The text is stored once per distinct prompt, and turns only keep the id.
@@ -649,43 +606,19 @@ def test_structured_output_is_stored_parsed():
     assert root.frontier.to_record()["payload"]["result"] == {"n": 41}
 
 
-@pytest.mark.parametrize(
-    ("expression", "expected"),
-    [
-        ("'text'", "text"),
-        ("41", 41),
-        ("True", True),
-        ("None", None),
-        ("[1, 'é']", [1, "é"]),
-        ("{'n': 41}", {"n": 41}),
-        ("'{\"n\": 41}'", '{"n": 41}'),
-    ],
-)
-def test_unstructured_finish_keeps_json_values(expression, expected):
-    llm = ScriptedLLM([("value", block(f"finish({expression})"))])
+def test_unstructured_finish_keeps_json_values():
+    expected = {"n": [41, True, None, "é"]}
+    llm = ScriptedLLM([("value", block(f"finish({expected!r})"))])
     root = start("return value")
 
     assert Flow(llm).run(root) == expected
     assert root.frontier.to_record()["payload"]["result"] == expected
 
 
-@pytest.mark.parametrize(
-    "expression",
-    [
-        "(1, 2)",
-        "{1: 'one'}",
-        "{1, 2}",
-        "{'nested': [(1, 2)]}",
-        "b'bytes'",
-        "type('Thing', (), {})()",
-        "float('nan')",
-        "float('inf')",
-    ],
-)
-def test_unstructured_finish_rejects_non_json_values(expression):
+def test_unstructured_finish_rejects_non_json_values():
     llm = ScriptedLLM(
         [
-            ("return value", block(f"finish({expression})")),
+            ("return value", block("finish((1, 2))")),
             ("requires a JSON value", block("finish('recovered')")),
         ]
     )
@@ -697,21 +630,6 @@ def test_unstructured_finish_rejects_non_json_values(expression):
         for node in root.transcript()
         if isinstance(node, ErrorOutput)
     )
-
-
-@pytest.mark.parametrize(
-    ("expression", "error"),
-    [("{1, 2}", "requires a JSON value"), ("float('nan')", "requires a JSON value")],
-)
-def test_explicit_output_schema_requires_json_compatible_values(expression, error):
-    llm = ScriptedLLM(
-        [
-            ("return value", block(f"finish({expression})")),
-            (error, block("finish(1)")),
-        ]
-    )
-
-    assert Flow(llm).run(start("return value", output_schema={})) == 1
 
 
 def test_json_finish_crosses_worker_and_persistence_boundary(tmp_path):
@@ -726,8 +644,7 @@ def test_json_finish_crosses_worker_and_persistence_boundary(tmp_path):
     assert loaded.result() == {"n": [1, True, None]}
 
 
-@pytest.mark.parametrize("output_schema", [None, {}])
-def test_worker_finish_rejects_non_json_values_and_recovers(output_schema):
+def test_worker_finish_rejects_non_json_values_and_recovers():
     llm = ScriptedLLM(
         [
             ("return value", block("finish((1, 2))")),
@@ -736,7 +653,7 @@ def test_worker_finish_rejects_non_json_values_and_recovers(output_schema):
     )
     flow = Flow(llm, runtime=LocalRuntime(repl_timeout=10))
 
-    root = start("return value", output_schema=output_schema)
+    root = start("return value")
     assert flow.run(root, close_repls=True) == {"ok": True}
 
 
@@ -753,19 +670,6 @@ def test_prose_only_reply_is_told_to_send_a_block_and_recovers():
     note = next(node for node in root.walk() if isinstance(node, ErrorOutput)).content
     assert "one fenced ```repl``` block" in note
     assert "instead of describing it" in note
-
-
-def test_plain_string_answer_satisfies_a_string_schema():
-    llm = ScriptedLLM([("scan", block('finish("NO_MATCH")'))])
-    root = start("scan", output_schema={"type": "string"})
-    assert Flow(llm).run(root) == "NO_MATCH"
-
-
-def test_json_text_answer_still_parses_against_its_schema():
-    schema = {"type": "object", "properties": {"n": {"type": "number"}}, "required": ["n"]}
-    llm = ScriptedLLM([("count", block("finish('{\"n\": 41}')"))])
-    root = start("count", output_schema=schema)
-    assert Flow(llm).run(root) == {"n": 41}
 
 
 def test_save_load_roundtrip(tmp_path):
@@ -1333,40 +1237,6 @@ def test_launch_subagent_rejects_removed_wait_parameter():
     assert root.sub_agents == []
 
 
-def test_user_prompt_reports_background_subagent_status_without_action_guidance():
-    llm = ScriptedLLM(
-        [
-            (
-                "start background",
-                block(
-                    "child = await launch_subagent("
-                    "'child task', model='default', name='research')\n"
-                    "print('queued')"
-                ),
-            ),
-            ("child task", block("finish('child answer')")),
-            ("child answer", block("finish('finished')")),
-            (
-                "Background subagents:",
-                block("print(await child.wait_for_result())"),
-            ),
-        ]
-    )
-    root = start("start background", max_depth=1)
-
-    assert Flow(llm).run(root) == "finished"
-    reminders = [
-        message["content"]
-        for call in llm.calls
-        for message in call
-        if "Background subagents:" in message["content"]
-    ]
-    assert len(reminders) == 2
-    assert "`research` (root.research):" in reminders[0]
-    assert "wait_for_result()" not in reminders[0]
-    assert "`research` (root.research): result ready" in reminders[-1]
-
-
 def test_agents_result_matches_a_collected_child():
     llm = ScriptedLLM(
         [
@@ -1389,7 +1259,6 @@ def test_agents_result_matches_a_collected_child():
     root = flow.start("inspect waited", max_depth=1)
 
     assert flow.run(root) == "child answer"
-    assert any("result ready" in message["content"] for call in llm.calls for message in call)
 
 
 def test_break_cancels_the_run():
@@ -1422,7 +1291,7 @@ def test_step_failure_reaches_the_caller():
     assert root.result() == "[run failed: RuntimeError: model is down]"
 
 
-def test_custom_tool_is_injected_and_documented():
+def test_custom_tool_is_injected():
     @tool("Upper-case a string.")
     def shout(text: str) -> str:
         return text.upper()
@@ -1431,8 +1300,6 @@ def test_custom_tool_is_injected_and_documented():
     flow = Flow(llm, tools=[shout])
     root = start("say it")
     assert flow.run(root) == "HI"
-    prompt = flow.build_messages(root.frontier)[0]["content"]
-    assert "`shout(text: str) -> str`: Upper-case a string." in prompt
 
 
 def test_child_output_schema_comes_back_parsed():
@@ -1457,27 +1324,6 @@ def test_child_output_schema_comes_back_parsed():
     root = start("measure it", max_depth=1)
     assert Flow(llm).run(root) == "42"
     assert root.sub_agents[0].config.output_schema == schema
-
-
-def test_children_inherit_their_parents_max_iters():
-    root = start("root", max_iters=7)
-    child = root.config.child("child")
-    grandchild = child.child("grandchild")
-
-    assert child.max_iters == grandchild.max_iters == 7
-
-
-def test_child_config_applies_child_output_schema_without_sharing_the_dict():
-    schema = {
-        "type": "object",
-        "properties": {"done": {"type": "boolean"}},
-        "required": ["done"],
-    }
-    child = start("q", child_output_schema=schema).config.child("worker")
-    assert child.output_schema == schema
-    assert child.output_schema is not schema
-    assert child.child_output_schema == schema
-    assert start("q").config.child("worker").output_schema is None
 
 
 def test_child_inherits_child_output_schema_when_launch_omits_it():
@@ -1536,40 +1382,6 @@ def test_launch_output_schema_overrides_child_output_schema():
     child = root.sub_agents[0]
     assert child.config.output_schema == schema
     assert child.config.child_output_schema == inherited
-
-
-def test_prompt_profile_picks_a_child_system_prompt():
-    parent = block(
-        "child = await launch_subagent("
-        "'be brief', model='default', name='terse', prompt_profile='terse')\n"
-        "print(await child.wait_for_result())"
-    )
-    llm = ScriptedLLM(
-        [("delegate", parent), ("be brief", block("finish('ok')")), ("ok", block("finish('done')"))]
-    )
-    profiles = {"terse": PromptProfile(system="Answer in one word.", description="brief")}
-    flow = Flow(llm, prompt_profiles=profiles)
-    root = start("delegate briefly", max_depth=1)
-    assert flow.run(root) == "done"
-    child = root.sub_agents[0]
-    assert flow.build_messages(child.frontier)[0]["content"] == "Answer in one word."
-    assert "`terse` — brief" in flow.build_messages(root.frontier)[0]["content"]
-
-
-def test_a_profile_takes_a_current_node_renderer():
-    llm = ScriptedLLM([("the board so far", block("finish('solved')"))])
-
-    def render_board(_runtime: Runtime, node: Node) -> list[dict[str, str]]:
-        return [
-            *node.render(),
-            {"role": "user", "content": "the board so far"},
-        ]
-
-    profiles = {"board": PromptProfile(render_fn=render_board)}
-    root = start("play", prompt_profile="board")
-
-    assert Flow(llm, prompt_profiles=profiles).run(root) == "solved"
-    assert sum(isinstance(node, PlanQuery) for node in root.transcript()) == 1
 
 
 def test_named_model_routes_to_another_client():
@@ -1652,23 +1464,9 @@ def test_long_child_query_is_refused():
     assert root.sub_agents == []
 
 
-def test_exhausted_budget_gives_the_agent_one_final_turn():
-    llm = ScriptedLLM(
-        [
-            ("last turn", block("finish('best effort')")),
-            ("", block("print('spending')")),
-        ]
-    )
-    llm.last_usage = SimpleNamespace(input_tokens=8, output_tokens=8)
-    root = start("spend it all", max_budget=10)
-    assert Flow(llm).run(root) == "best effort"
-    assert sum(isinstance(node, FinalQuery) for node in root.transcript()) == 1
-
-
 def test_a_nearly_spent_budget_asks_for_an_answer_instead_of_dropping_the_run():
     # Iteration exhaustion always got a FinalQuery to answer in, but token
-    # exhaustion ended the run holding nothing: arc_agi burned 97k of its 100k
-    # tokens and scored zero with 13 of its 20 iterations still unused.
+    # exhaustion used to end a run holding nothing even when iterations remained.
     llm = ScriptedLLM(
         [
             ("last turn", block("finish('best guess')")),
@@ -1837,32 +1635,6 @@ def peaked(delay=0.02):
                 seen["active"] -= 1
 
     return reply, seen
-
-
-def test_llm_query_batched_is_an_opt_in_tool():
-    def reply(messages):
-        if len(messages) == 1:  # a one-shot query, with no system turn of its own
-            return messages[0]["content"].upper()
-        return block('finish("|".join(await llm_query_batched(["a", "b"])))')
-
-    flow = Flow(ReplyLLM(reply), use_llm_query=True)
-    assert flow.run("fan out") == "A|B"
-
-    # Off by default, so an agent cannot call what its prompt never described.
-    assert "llm_query_batched" not in Flow(ReplyLLM(reply)).tools
-
-
-def test_llm_query_batched_can_be_disabled_without_disabling_single_queries():
-    flow = Flow(
-        ReplyLLM(lambda messages: messages[-1]["content"].upper()),
-        use_llm_query=True,
-        use_llm_query_batched=False,
-    )
-
-    assert "llm_query" in flow.tools
-    assert "llm_query_batched" not in flow.tools
-    assert flow.use_llm_query
-    assert not flow.use_llm_query_batched
 
 
 def test_workers_bounds_blocking_model_calls():

@@ -1,17 +1,5 @@
 """Benchmark-only interactive environment adapters."""
 
-from benchmarks.eval.environments.arc_agi_3 import (
-    ARC_AGI_VERSION,
-    ARCENGINE_VERSION,
-    DEFAULT_ARC3_CORPUS,
-    FROZEN_PUBLIC_GAME_IDS,
-    ArcAgi3Action,
-    ArcAgi3Adapter,
-    ArcAgi3Config,
-    download_arc3_corpus,
-    preflight_arc3_corpus,
-    validate_action,
-)
 from benchmarks.eval.environments.base import (
     EnvironmentAdapter,
     EnvironmentEpisode,
@@ -50,13 +38,6 @@ from benchmarks.eval.environments.sudoku_search import (
 )
 
 __all__ = [
-    "ARCENGINE_VERSION",
-    "ARC_AGI_VERSION",
-    "DEFAULT_ARC3_CORPUS",
-    "FROZEN_PUBLIC_GAME_IDS",
-    "ArcAgi3Action",
-    "ArcAgi3Adapter",
-    "ArcAgi3Config",
     "EnvironmentAdapter",
     "EnvironmentEpisode",
     "EnvironmentEvent",
@@ -77,11 +58,8 @@ __all__ = [
     "SudokuSearchAdapter",
     "SudokuSearchConfig",
     "SudokuSearchPuzzle",
-    "preflight_arc3_corpus",
     "build_environment",
-    "download_arc3_corpus",
     "preflight_mazebench",
     "open_official_environment",
     "environment_contract",
-    "validate_action",
 ]

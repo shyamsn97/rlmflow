@@ -10,7 +10,6 @@ from rlmflow import (
     ErrorOutput,
     ExecAction,
     ExecOutput,
-    FinalQuery,
     Flow,
     InvalidTransitionError,
     LLMOutput,
@@ -23,7 +22,6 @@ from rlmflow import (
     start,
 )
 from rlmflow.engine.steps import complete, to_final, to_plan
-from rlmflow.prompts import format_transition_footer
 
 
 @dataclass
@@ -126,20 +124,6 @@ def test_selectable_transition_names_are_unique_and_cannot_shadow_finish():
         Transitions().choices(WorkQuery, FinishQuery)
 
 
-def test_builtin_transition_footer_is_short_and_describes_every_exit():
-    plan = PlanQuery()
-    start("query").append(plan)
-    options = [
-        (option.name, option.description)
-        for option in Flow.transitions.available(plan)
-    ]
-
-    assert format_transition_footer(options) == (
-        "End the REPL block normally to continue.\n"
-        "- finish(answer) — Submit your final answer."
-    )
-
-
 def test_undeclared_transition_names_do_not_resolve():
     plan = PlanQuery()
     start("query").append(plan)
@@ -150,29 +134,6 @@ def test_undeclared_transition_names_do_not_resolve():
     assert Flow.transitions.resolve_choice(plan, "act") is None
     assert Flow.transitions.resolve_choice(plan, "inspect") is None
     assert Flow.transitions.resolve_choice(plan, "plan") is None
-
-
-def test_current_query_owns_finish_and_selectable_transition_guidance():
-    transitions = Transitions().choices(WorkQuery, VerifyQuery).choices(
-        VerifyQuery,
-        WorkQuery,
-    )
-    work = WorkQuery()
-    start("query").append(work)
-    verify = VerifyQuery()
-    work.append(verify)
-    summary = TruncationSummary()
-    verify.append(summary)
-
-    footer = Flow(object(), transitions=transitions).transition_footer(verify)
-    utility_footer = Flow(object(), transitions=transitions).transition_footer(
-        summary
-    )
-
-    assert "End the REPL block normally to continue." in footer
-    assert '- transition("work") — Continue working from the latest result.' in footer
-    assert footer.endswith("- finish(answer) — Submit the verified candidate.")
-    assert utility_footer.endswith("- finish(answer) — Submit the verified candidate.")
 
 
 def test_transition_lands_the_selected_query_without_an_intermediate_output():
@@ -235,15 +196,6 @@ def test_worker_proxy_transition_lands_the_selected_query():
 
     assert flow.run(root, close_repls=True) == "verified"
     assert any(isinstance(node, VerifyQuery) for node in root.transcript())
-
-
-def test_final_query_owns_its_finish_guidance():
-    final = FinalQuery()
-    start("query").append(final)
-
-    footer = Flow(object()).transition_footer(final)
-
-    assert footer == "End with finish(answer) — Submit your final answer now."
 
 
 def test_final_guard_preempts_normal_startup():

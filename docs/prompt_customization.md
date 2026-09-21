@@ -16,10 +16,7 @@ root = flow.start("Summarize this document.", inputs={"document": document})
 print(flow.build_system_prompt(root))
 ```
 
-That is the inherited protocol, capability-gated work policy, tools, INPUTS
-sizes, and depth. `flow.build_messages(node)` returns the full message list; on
-a `UserQuery` the first entry is its system text, and on any other node it is
-the inherited prompt.
+That is the inherited protocol, capability-gated work policy, tools, INPUTS sizes, and depth. `flow.build_messages(node)` returns the full message list; on a `UserQuery` the first entry is its system text, and on any other node it is the inherited prompt.
 
 ## Default Shape
 
@@ -27,22 +24,15 @@ The default `PromptBuilder` fills one official-style template:
 
 - You are a Recursive Language Model with a Python REPL that persists across turns.
 - `INPUTS` is the long context; inspect it with `print(...)`.
-- A spawn-capable agent gets a compact allocation, graph, and integration
-  policy. A leaf gets a compact assigned-work policy.
+- A spawn-capable agent gets a compact allocation, graph, and integration policy. A leaf gets a compact assigned-work policy.
 - Live REPL bindings (`finish`, `SHOW_VARS`, `launch_subagent`, `llm_query*` when enabled, plus host tools) fill `{tools}`.
-- Tool guidance contains one local example plus, when spawning is available,
-  one parallel example and one dependency-handle example.
+- Tool guidance contains one local example plus, when spawning is available, one parallel example and one dependency-handle example.
 - REPL stdout over ~20K characters is truncated; only printed stdout is shown back.
 - Do not `finish(...)` on turn 1 without inspecting `INPUTS`.
 
 `Flow.render_tools(node)` is the dynamic “Available in the REPL” list. `Flow.render_inputs(node)` is INPUTS sizes plus per-agent schema and depth.
 
-`PromptBuilder` selects the graph policy when the current agent can spawn and
-the assigned-work policy when it cannot. This is capability gating, not a
-request to delegate. `PlanQuery` adds only a short checklist for the next
-objective, work ownership, known dependencies, and one executable REPL block.
-`FinalQuery.build_system_prompt` appends last-turn submit guidance and drops the
-“don’t finish on turn 1” line.
+`PromptBuilder` selects the graph policy when the current agent can spawn and the assigned-work policy when it cannot. This is capability gating, not a request to delegate. `PlanQuery` adds only a short checklist for the next objective, work ownership, known dependencies, and one executable REPL block. `FinalQuery.build_system_prompt` appends last-turn submit guidance and drops the “don’t finish on turn 1” line.
 
 ## Recommended: Subclass `PromptBuilder`
 
@@ -203,13 +193,7 @@ Everything above shapes the *system* message. The rest of the conversation — t
 
 The default current renderer calls `node.render()` and adds live background-agent status. Recurring plan-and-act, final-answer, and truncation instructions are typed nodes, not injected strings.
 
-`PlanQuery.instruction()` is `Turn {n}/{max}:` plus a short checklist: next
-objective, local or owned work, known dependencies, then one REPL block. Turn 1
-also includes the official first-turn safeguard (“you have not interacted with
-the REPL… look at INPUTS first”). Last-budget-turn user content stays on
-`FinalQuery`; the submit instruction lives on
-`FinalQuery.build_system_prompt`. `format_transition_footer` is engine
-bookkeeping, not prompt policy.
+`PlanQuery.instruction()` is `Turn {n}/{max}:` plus a short checklist: next objective, local or owned work, known dependencies, then one REPL block. Turn 1 also includes the official first-turn safeguard (“you have not interacted with the REPL… look at INPUTS first”). Last-budget-turn user content stays on `FinalQuery`; the submit instruction lives on `FinalQuery.build_system_prompt`. `format_transition_footer` is engine bookkeeping, not prompt policy.
 
 `Flow.build_messages` reserves the current renderer's messages inside `keep_n_messages`, projects the remaining capacity from `node.prev`, prepends `UserQuery.build_system_prompt(self)` when the frontier is a query (otherwise the inherited protocol), and preserves every rendered message in order. Adjacent messages with the same role remain separate.
 

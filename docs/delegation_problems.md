@@ -30,7 +30,7 @@ OOLONG-Pairs 32K and OOLONG Yahoo 128K answer the primary scientific question: d
 
 ## Interactive evidence
 
-ARC-AGI-3 and MazeBench test persistent visual interaction and produce environment replay artifacts. They are valuable qualitative and behavioral evidence, but they do not replace the paper-core long-context comparison.
+MazeBench tests persistent visual interaction and produces environment replay artifacts. It is valuable qualitative and behavioral evidence, but it does not replace the paper-core long-context comparison.
 
 ## Reading results
 

@@ -363,15 +363,18 @@ class Sokoban:
         self.env["legal_moves"] = self.legal_moves()
         self.env["pushes_here"] = self.pushes_here()
         self.env["doomed"] = self.doomed()
-        self.env["player"] = self.player
-        self.env["boxes"] = dict(self.box_items())
-        self.env["goals"] = dict(self.goal_items())
+        # ENV crosses the worker boundary as strict ``JsonValue``. Keep the game's
+        # internal coordinates as tuples, but publish coordinates and trace pairs as
+        # lists so a valid board state cannot kill the REPL during serialization.
+        self.env["player"] = list(self.player) if self.player is not None else None
+        self.env["boxes"] = {name: list(pos) for name, pos in self.box_items()}
+        self.env["goals"] = {name: list(pos) for name, pos in self.goal_items()}
         self.env["box_count"] = len(self.boxes)
         self.env["placed"] = sum(1 for pos in self.boxes if pos in self.targets)
         # This turn's per-sub-step board renders (walk frames + the shove) for the
         # live grid to animate; empty on a turn that moved nothing (a rejected push).
         self.env["frames"] = list(self.turn_frames)
-        self.env["step_frames"] = list(self.step_frames)
+        self.env["step_frames"] = [[label, board] for label, board in self.step_frames]
         # Box positions in stable id order = the branch's box->goal ASSIGNMENT,
         # the signature used to count distinct solutions across the fan-out.
         self.env["assignment"] = ";".join(f"{r},{c}" for r, c in self._pos_by_id)

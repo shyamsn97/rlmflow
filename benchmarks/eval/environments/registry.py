@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from benchmarks.eval.environments.arc_agi_3 import ArcAgi3Adapter, ArcAgi3Config
 from benchmarks.eval.environments.base import EnvironmentAdapter
 from benchmarks.eval.environments.mazebench import MazeBenchAdapter, MazeBenchConfig
 from benchmarks.eval.environments.minimaze import MiniMazeAdapter, MiniMazeConfig
@@ -84,13 +83,7 @@ def bind_tools(kind: str, perform: Perform, *, proxy: bool) -> BoundTools:
         raise ValueError(f"unsupported benchmark environment kind {kind!r}") from exc
     bound: BoundTools = {}
     for spec in definition.operations:
-
-        def invoke(_spec: OperationSpec = spec, **kwargs: Any) -> dict[str, Any]:
-            return perform(_spec.operation, kwargs or None)
-
-        invoke.__name__ = spec.tool_name
-        invoke.__qualname__ = spec.tool_name
-        invoke.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
+        signature = inspect.Signature(
             [
                 inspect.Parameter(
                     parameter.name,
@@ -101,6 +94,19 @@ def bind_tools(kind: str, perform: Perform, *, proxy: bool) -> BoundTools:
             ],
             return_annotation=dict[str, Any],
         )
+
+        def make_invoke(operation: str, tool_signature: inspect.Signature):
+            def invoke(*args: Any, **kwargs: Any) -> dict[str, Any]:
+                payload = dict(tool_signature.bind(*args, **kwargs).arguments)
+                return perform(operation, payload or None)
+
+            invoke.__signature__ = tool_signature  # type: ignore[attr-defined]
+            return invoke
+
+        invoke = make_invoke(spec.operation, signature)
+
+        invoke.__name__ = spec.tool_name
+        invoke.__qualname__ = spec.tool_name
         if proxy:
             bound[spec.tool_name] = tool(spec.description, proxy=True)(invoke)
         else:
@@ -137,19 +143,6 @@ def _mazebench_factory(
             level=str(environment.get("level", "HxI")),
             view=str(environment.get("view", "top-diagonal")),
             yaw=int(environment.get("yaw", 0)),
-        )
-    )
-
-
-def _arc_factory(environment: Mapping[str, Any], output: Path) -> EnvironmentAdapter:
-    return ArcAgi3Adapter(
-        ArcAgi3Config(
-            game_id=str(environment["game_id"]),
-            seed=int(environment.get("seed", 0)),
-            corpus=str(environment["corpus"]),
-            max_actions=int(environment.get("max_actions", 500)),
-            artifact_dir=output,
-            metadata_hashes=environment.get("corpus_metadata_hashes"),
         )
     )
 
@@ -197,20 +190,6 @@ DEFINITIONS: dict[str, EnvironmentDefinition] = {
                 "action_sequence",
                 "Apply a bounded MazeBench command list.",
                 (ParameterSpec("actions", list[str]),),
-            ),
-        ),
-    ),
-    "arc_agi_3": EnvironmentDefinition(
-        "arc_agi_3",
-        _arc_factory,
-        (
-            OperationSpec("observe", "observe", "Inspect the private ARC frame."),
-            OperationSpec("status", "status", "Inspect private ARC status."),
-            OperationSpec(
-                "act",
-                "act",
-                "Apply 1..20 shared-budget ARC actions.",
-                (ParameterSpec("actions", list[dict[str, Any] | str]),),
             ),
         ),
     ),
@@ -271,7 +250,8 @@ DEFINITIONS: dict[str, EnvironmentDefinition] = {
 
 
 def _default_max_actions(kind: str) -> int:
-    return 500 if kind == "arc_agi_3" else 256
+    del kind
+    return 256
 
 
 __all__ = [

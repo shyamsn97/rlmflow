@@ -7,7 +7,6 @@ from benchmarks.eval.suite import register_suites
 
 # Explicit built-ins so decorator registration remains grep-able.
 from benchmarks.eval.tasks import (
-    arc_agi_3,  # noqa: F401
     mazebench,  # noqa: F401
     minimaze,  # noqa: F401
     oolong,  # noqa: F401

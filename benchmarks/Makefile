@@ -1,4 +1,4 @@
-.PHONY: help eval-help eval-list-suites eval-run eval-smoke eval-conformance eval-core eval-interactive eval-arc3-setup
+.PHONY: help eval-help eval-list-suites eval-run eval-smoke eval-conformance eval-core eval-interactive
 .DEFAULT_GOAL := help
 
 REPO_ROOT := $(realpath $(dir $(realpath $(firstword $(MAKEFILE_LIST))))/..)
@@ -56,8 +56,5 @@ eval-conformance: ## Run MiniMaze and Sudoku; set EVAL_SPLIT=full for held-out t
 eval-core: ## Run paper-aligned OOLONG-Pairs 32K and OOLONG Yahoo 128K.
 	$(MAKE) eval-run EVAL_SUITE=core EVAL_SEEDS=0:3
 
-eval-interactive: ## Run ARC-AGI-3 and MazeBench visual environments.
+eval-interactive: ## Run the official MazeBench visual environment.
 	$(MAKE) eval-run EVAL_SUITE=interactive EVAL_SEEDS=0
-
-eval-arc3-setup: ## Download the public ARC-AGI-3 corpus into the offline cache.
-	cd $(REPO_ROOT) && uv run --locked --python 3.12 --extra eval-environments python -m benchmarks.eval.environments.download_arc3

@@ -19,7 +19,6 @@ These are the primary release tasks. Pilot uses a small deterministic subset; fu
 
 How does depth behave in persistent visual environments?
 
-- ARC-AGI-3 provides public microgames and native RHAE scoring.
 - MazeBench provides a watchable embodied trajectory and native completion signals.
 
 These domains headline the replay experience, not the long-context claim.
