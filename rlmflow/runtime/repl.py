@@ -20,38 +20,47 @@ from typing import Any
 class DoneSignal(BaseException):
     """Internal control flow raised by the host completion tool."""
 
-    def __init__(self, answer: Any = None) -> None:
+    def __init__(self, answer: Any = None, *, acceptance: dict[str, Any] | None = None) -> None:
         super().__init__(answer)
         self.answer = answer
+        self.acceptance = acceptance or {}
 
 
-class TransitionSignal(BaseException):
-    """Internal control flow raised by the host transition tool."""
+class VerificationSignal(BaseException):
+    """Internal control flow for a rejected finish candidate."""
 
-    def __init__(self, transition: str) -> None:
-        super().__init__(transition)
-        self.transition = transition
-
-
-class MissingReplError(ValueError):
-    """Agent response did not contain executable REPL code."""
+    def __init__(
+        self,
+        candidate: Any,
+        *,
+        kind: str,
+        feedback: str,
+        schema_hash: str | None = None,
+        verifier_hash: str | None = None,
+    ) -> None:
+        super().__init__(feedback)
+        self.candidate = candidate
+        self.kind = kind
+        self.feedback = feedback
+        self.schema_hash = schema_hash
+        self.verifier_hash = verifier_hash
 
 
 class _CellStopIteration(Exception):
     """StopIteration from cell code, lifted out of the async runner (PEP 479)."""
 
 
-#: Observation returned for a reply with no code, so the retry knows what to fix.
-MISSING_REPL_NOTE = f"""{MissingReplError.__name__}: missing ```repl``` block, so
-nothing ran and this turn produced no observation. Reply with exactly
-one fenced ```repl``` block that carries out the next step instead of describing it."""
+#: Observation returned for an invalid action reply, so the retry knows what to fix.
+MISSING_REPL_NOTE = """MissingReplError: expected exactly one non-empty
+fenced ```repl``` block. Nothing ran and this turn produced no observation.
+Reply with one block that carries out the next step or calls finish(value)."""
 
 
 class ReplStatus(StrEnum):
     OK = "ok"
     ERROR = "error"
     DONE = "done"
-    TRANSITION = "transition"
+    REJECTED = "rejected"
     DEAD = "dead"
 
 
@@ -62,7 +71,8 @@ class ReplRun:
     output: str = ""
     status: ReplStatus = ReplStatus.OK
     answer: Any = None
-    transition: str | None = None
+    verification: VerificationSignal | None = None
+    acceptance: dict[str, Any] | None = None
     error: BaseException | None = None
 
 
@@ -71,10 +81,9 @@ class Repl(ABC):
 
     namespace: dict[str, Any]
     env: dict[str, Any]
-    structured_output: bool
 
     @abstractmethod
-    def seed(self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]) -> None: ...
+    def seed(self, tools: dict[str, Callable[..., object]], args: dict[str, Any]) -> None: ...
 
     @abstractmethod
     def inject(self, name: str, fn: Any) -> None: ...
@@ -230,23 +239,31 @@ class LocalRepl:
     ) -> None:
         self.namespace = namespace if namespace is not None else base_namespace()
         self.env: dict[str, Any] = {}
-        self.inputs: dict[str, str] = {}
+        self.args: dict[str, Any] = {}
+        self._argument_names: set[str] = set()
         self.working_directory = (
             Path(working_directory).resolve() if working_directory is not None else None
         )
-        self.structured_output = False
         if self.working_directory is not None:
             self.working_directory.mkdir(parents=True, exist_ok=True)
-        self.namespace.setdefault("INPUTS", CurrentMapping("inputs"))
         self.namespace.setdefault("ENV", CurrentMapping("env"))
         if not isinstance(sys.stdout, _ContextStream):
             sys.stdout = _ContextStream(sys.stdout)
         if not isinstance(sys.stderr, _ContextStream):
             sys.stderr = _ContextStream(sys.stderr)
 
-    def seed(self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]) -> None:
+    def seed(self, tools: dict[str, Callable[..., object]], args: dict[str, Any]) -> None:
+        reserved = (set(self.namespace) - self._argument_names) | tools.keys()
+        collisions = sorted(args.keys() & reserved)
+        if collisions:
+            joined = ", ".join(collisions)
+            raise ValueError(f"agent arguments collide with REPL bindings: {joined}")
+        for name in self._argument_names - args.keys():
+            self.namespace.pop(name, None)
         self.namespace.update(tools)
-        self.inputs = dict(inputs)
+        self.namespace.update(args)
+        self.args = dict(args)
+        self._argument_names = set(args)
 
     def inject(self, name: str, value: Any) -> None:
         self.namespace[name] = value
@@ -268,8 +285,8 @@ class LocalRepl:
     async def run(self, code: str, *, binding: dict[str, Any] | None = None) -> ReplRun:
         if not code.strip():
             return ReplRun(output=MISSING_REPL_NOTE, status=ReplStatus.ERROR)
-        current = binding or {"inputs": self.inputs, "env": self.env}
-        current.setdefault("inputs", self.inputs)
+        current = binding or {"args": self.args, "env": self.env}
+        current.setdefault("args", self.args)
         current.setdefault("env", self.env)
         buffer = io.StringIO()
         binding_token = _BINDING.set(current)
@@ -281,12 +298,13 @@ class LocalRepl:
                 output=buffer.getvalue().strip(),
                 status=ReplStatus.DONE,
                 answer=signal.answer,
+                acceptance=signal.acceptance,
             )
-        except TransitionSignal as signal:
+        except VerificationSignal as signal:
             return ReplRun(
                 output=buffer.getvalue().strip(),
-                status=ReplStatus.TRANSITION,
-                transition=signal.transition,
+                status=ReplStatus.REJECTED,
+                verification=signal,
             )
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise
@@ -326,9 +344,8 @@ __all__ = [
     "CurrentObject",
     "MISSING_REPL_NOTE",
     "DoneSignal",
-    "TransitionSignal",
+    "VerificationSignal",
     "LocalRepl",
-    "MissingReplError",
     "Repl",
     "ReplRun",
     "ReplStatus",

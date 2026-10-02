@@ -1,19 +1,19 @@
 # Eval harness
 
-Dataset, Model, Runner, Logger. Which suite or direct dataset to run: [`docs/benchmarks.md`](../../docs/benchmarks.md). Public suite membership and runner matrices: [`suite.py`](suite.py).
+The public interface is the environment-centered `benchmark(...)` callable.
+Use the single CLI to run one of the four named benchmarks:
 
 ```bash
-python -m benchmarks.eval --list-suites
-make -f benchmarks/Makefile eval-smoke
+python benchmarks/run_benchmark.py --list
+python benchmarks/run_benchmark.py long-context --split full \
+  --runners official-rlm,rlmflow-depth-0,rlmflow-depth-1,rlmflow-depth-2 \
+  --executor docker
 ```
 
-```python
-from benchmarks.eval import dataset
-from benchmarks.eval.types import Dataset
+Each environment owns its observation, hidden state, scoring, and report data.
+Every runner receives the same canonical observation bytes. The default
+long-context manifest contains two OOLONG TREC-coarse 128K questions for
+`pilot` and ten for `full`.
 
-
-@dataset("my_dataset")
-class MyDataset(Dataset): ...
-```
-
-Import the module from the package `__init__.py`. Add a `SuiteSpec` in `suite.py` only when the dataset belongs to one of the four public scientific questions; otherwise run it directly with an explicit `--runner`.
+See [`docs/benchmarks.md`](../../docs/benchmarks.md) for the catalog, runner
+capabilities, output schema, and Makefile commands.

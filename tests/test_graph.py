@@ -87,10 +87,8 @@ def test_fork_remaps_dependency_agent_ids():
     source.append(DoneOutput(result="source"))
     consumer = AgentStart(
         content="consumer",
-        config=root.config.child(
-            "consumer",
-            inputs={"source": {"$rlmflow_agent": source.id}},
-        ),
+        args={"source": {"$rlmflow_agent": source.id}},
+        config=root.config.child("consumer"),
     )
     action.append(consumer)
     action.record_agent_launch(1, consumer)
@@ -98,8 +96,8 @@ def test_fork_remaps_dependency_agent_ids():
     copied = consumer.fork()
     copied_source, copied_consumer = copied.sub_agents
 
-    assert copied_consumer.config.inputs == {"source": {"$rlmflow_agent": copied_source.id}}
-    assert copied_consumer.input_references == (("source", copied_source.id),)
+    assert copied_consumer.args == {"source": {"$rlmflow_agent": copied_source.id}}
+    assert copied_consumer.argument_references == (("source", copied_source.id),)
 
 
 def test_append_child_rehomes_a_complete_subtree():
@@ -122,8 +120,8 @@ def test_append_child_rehomes_a_complete_subtree():
     assert subtree.config.path == "root.branch0"
     assert nested.config.path == "root.branch0.nested"
     assert action.code == (
-        "_handle = await launch_subagent('', model='default', name='branch0')\n"
-        "print(await _handle.wait_for_result())"
+        "_handle = launch_subagent(task='')\n"
+        "print(await _handle)"
     )
 
 
@@ -138,8 +136,8 @@ def test_append_child_reuses_one_launch_action():
     assert action.child_agents == [first, second]
     assert action.code == (
         "_handles = [\n"
-        "    await launch_subagent('', model='default', name='one'),\n"
-        "    await launch_subagent('', model='default', name='two'),\n"
+        "    launch_subagent(task=''),\n"
+        "    launch_subagent(task=''),\n"
         "]\n"
-        "print([await h.wait_for_result() for h in _handles])"
+        "print(await asyncio.gather(*_handles))"
     )

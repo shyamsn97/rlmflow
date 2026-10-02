@@ -1,6 +1,30 @@
-# Upgrading to 0.6
+# Upgrading to 0.7
 
-Version 0.6 is a deliberate breaking beta release. It does not include compatibility aliases for the pre-0.6 graph, completion, persistence, or TUI APIs. Persistence format v5 is strict; older run directories require an explicit migration or must remain on the runtime that created them.
+Version 0.7 is a clean break. It removes the old transition registry, async launch admission, model-selected child policy, and model-facing `structured_query` surface. There are no compatibility aliases.
+
+## Child launch
+
+Replace:
+
+```python
+child = await launch_subagent(
+    "task",
+    model="fast",
+    name="worker",
+    inputs={"context": context},
+    output_schema=schema,
+)
+result = await child.wait_for_result()
+```
+
+with:
+
+```python
+child = launch_subagent(task="task", context=context, schema=schema)
+result = await child
+```
+
+Flow selects child policy with `delegation_model`, `delegation_prompt_profile`, and `delegation_reuse_worker`. Arguments are strict JSON values or nested `AgentHandle` references. Colocated children reuse the process but keep isolated namespaces. Use `verify=` for a worker-local `value -> str | None` finish verifier.
 
 ## Agent completion
 
@@ -12,11 +36,9 @@ With an explicit `output_schema`, a JSON value or JSON-encoded string is parsed 
 
 ## Structured output guidance
 
-`Flow(enable_structured_output=True)` is now the default. This flag controls whether spawn-capable agents see guidance for optional child `output_schema` values; it does not require every child or root to use a schema. Pass `enable_structured_output=False` to hide that guidance.
-
 When a schema is supplied, pass a JSON Schema object with explicit `properties`, `required`, and `additionalProperties`. Without a schema, child and root results retain JSON-compatible Python values as described above.
 
-`AgentConfig.child_output_schema` is the default `output_schema` for launched children. The coding CLI (`rlmflow run` / `rlmflow tui`) and `examples/coding/agent.py` set it to `CODING_HANDOFF_SCHEMA`, so those children `finish` `{done, diff_summary, concerns, followups}` while the root stays untyped. Launch `output_schema=` still overrides. Scored evals and other `Flow`s do not set this field. A custom `--agent` factory that wants untyped children leaves it `None`.
+`AgentConfig.child_output_schema` is the default schema for launched children. The coding CLI (`rlmflow run` / `rlmflow tui`) and `examples/coding/agent.py` set it to `CODING_HANDOFF_SCHEMA`, so those children `finish` `{done, diff_summary, concerns, followups}` while the root stays untyped. Launch `schema=` overrides it.
 
 ## Multiple roots
 
@@ -64,37 +86,28 @@ Library runs are unbounded by default: `AgentConfig.max_iters` and `max_budget` 
 
 `resume_on_child_done` defaults to `True`. A parent that has already `finish()`ed still receives a child-handoff `UserQuery` and keeps driving. Pass `False` on scored evals that must stay terminal once the parent submits. Background children still deliver a `UserQuery` after the launcher's next `ExecOutput` either way. A mapping `finish()` value is listed as fields in that query; a scalar stays labeled JSON.
 
-A `UserQuery` appended after `ExecOutput` now enters `PlanQuery` instead of calling the model immediately. Host injections after idle REPL output get the same extra plan turn as a child-handoff.
+A `UserQuery` appended after `ExecOutput` calls the model directly. Host injections and child handoffs are already real user messages; the engine does not insert another planning message between them and the model.
 
 ## Dependent child inputs
 
-`launch_subagent(after=...)` is removed. Pass each prerequisite handle under the input name the downstream child should receive:
+Pass each prerequisite handle under the input name the downstream child should receive:
 
 ```python
-# Before
-solution = await launch_subagent(
-    "Solve using INPUTS.",
-    model="default",
-    after={"evidence": evidence},
-)
-
-# Now
-solution = await launch_subagent(
-    "Solve using INPUTS.",
-    model="default",
-    inputs={"evidence": evidence},
+solution = launch_subagent(
+    task="Solve using evidence.",
+    evidence=evidence,
 )
 ```
 
-String and handle values may be mixed in the same `inputs` mapping. Handles are accepted only as top-level values. The downstream child waits for every handle-valued input, then receives each terminal result as a string under that key.
+JSON and handle values may be mixed and nested. The downstream child waits for every referenced handle, then receives each validated result at the same path.
 
 Dependency dataflow no longer changes ownership. All children stay beneath the agent action that launched them, and `max_depth` limits recursive spawning rather than dependency-chain length. `AgentDependency` is no longer exported.
 
 ## Persistence
 
-Persistence v5 stores one flat, parent-linked graph document. Handle-valued inputs retain their stable agent-reference markers, and every `ExecAction` retains launch receipts. The separate `dependencies` payload is removed. Use `persistence.to_document()` and `persistence.from_document()`. Loading rejects v4 and older versions rather than migrating them. Register custom Node types with `persistence.register_node_type`.
+Persistence v7 stores one flat, parent-linked graph document, including each node's durable message snapshot and `AgentStart.args`. Handle-valued arguments retain their stable agent-reference markers, and every `ExecAction` retains launch receipts. Use `persistence.to_document()` and `persistence.from_document()`. Loading rejects v6 and older versions rather than migrating them. A custom Node type is a dataclass subclass with its own `type` name: every data field is saved, and loading finds the class once it has been imported. There is nothing to register and no `to_record` to write.
 
-Cold restore reconstructs complete worker sessions, not just individually unfinished agents. If an unfinished `reuse_repl=True` child depends on a terminal parent's worker, eager and lazy replay rebuild that terminal owner first. Terminal shared tenants in a required session are also replayed because their heap mutations may still be visible to unfinished agents; unrelated terminal sessions remain skipped.
+Cold restore reconstructs required worker sessions, not just individually unfinished agents. If an unfinished `reuse_worker=True` child depends on a terminal parent's worker, eager and lazy replay rebuild that terminal owner first. Agent namespaces remain isolated.
 
 There is no in-process v2 migration path. Export or regenerate old development runs with the version that created them before upgrading.
 
@@ -111,25 +124,48 @@ Initialize `FlowTUI` with `ui.init(flow)` and then call `ui.run()`. The old `ui.
 
 ## Step table
 
-`await flow.step(node)` returns the created `Node`. Register automatic producers with `@Flow.transitions.on(...)`. Declare model-selectable routes with `.choices(current, *targets)`; `transition("name")` then lands the selected `UserQuery` directly from the current `ExecAction`. A blank table is `Flow(llm, transitions=Transitions())`. Extra automatic behavior is `@Review.transitions.on(...)`.
+`await flow.step(node)` returns the created `Node`. Add application rules to a Flow instance:
+
+```python
+@flow.transition(source=ErrorOutput, when=lambda node: node.error == "retry")
+def retry(node):
+    return UserQuery(content="Retry with a new approach.")
+```
+
+`Transitions`, `Flow.transitions`, `transitions=`, `.on`, and subclass registry mutation are removed. Model-selected routes are removed too: `flow.choices(...)`, the REPL `transition("name")` tool, `InvalidTransitionError`, and the prompt's transition footer no longer exist. Express a mode switch as an ordinary `@flow.transition(...)`, using a string `when=` if the switch needs a judgment.
 
 Removed: `StepFunction`, `LLMRequestStep`, `LLMOutputStep`, `ExecActionStep`, `update_step_fn`, `DEFAULT_STEPS`, `DEFAULT_TRANSITIONS`, `Flow.always`, `Flow.when`, `MessageBuilder`, and `FlowMessages`. The queue still uses an internal `Transition`; do not take `.created` off `flow.step`.
 
-## Planning control query
+## Planning
 
-`PlanQuery` now precedes every ordinary model action. Its user turn is `Turn N/M:` (plus a first-turn INPUTS safeguard). `InspectQuery`, `INSPECTION_ACTION`, and the automatic `InspectQuery -> PlanQuery` transition are removed. Custom step registrations must use `PlanQuery`; persisted development runs containing `inspect_query` nodes must be regenerated before loading.
+The legacy turn-counter `PlanQuery`, `to_plan`, `resume_after_child`,
+`child_returned`, and synthetic `Turn N/M:` message remain removed. `AgentStart`
+calls the model directly, and every response plans and executes its next step
+in one REPL block:
+
+```text
+AgentStart -> LLMOutput -> ExecAction -> ExecOutput | DoneOutput
+```
+
+`finish` is available from the first block. The pinned core protocol tells the
+model to finish immediately when code can derive the answer from its inputs, and
+to look at the inputs first when their size, format, or contents are unknown.
 
 ## System prompts
 
-`SystemPromptBuilder`, `.sections`, `DEFAULT_BUILDER`, `Section`, and `Sections` are removed. Subclass `PromptBuilder` and concatenate after `super().__call__(flow, node)`, or pass a string / `(flow, node) -> str` to `Flow(system_prompt=...)`.
+`SystemPromptBuilder`, `PromptBuilder`, `.sections`, `DEFAULT_BUILDER`, `Section`, and `Sections` are removed. Pass a string or `(flow, node) -> str` to `Flow(system_prompt=...)` for whole-system ownership. For additive changes, pass `system_prompt_modifiers=` or profile modifiers that edit the supplied `Prompt`.
 
-`Flow.build_system_prompt(node)` is the inherited protocol. `UserQuery.build_system_prompt(flow)` is what a turn sends; `PlanQuery` wraps with the orchestrator addendum when the agent can spawn, and `FinalQuery` wraps with last-turn submit guidance. `Node.build_system_prompt` is gone — actions and outputs have no prompt hook. Inspect a prompt with `flow.build_system_prompt(root)` or `flow.build_messages(node)`, not `flow.system_prompt.render(...)`.
+Flow creates fresh defaults with `default_system_prompt(node)` and `default_user_prompt(node)`. Nodes customize them through `build_system_prompt(system_prompt, flow)` and `build_messages(user_prompt, flow)`. The latter returns current-turn messages only; `Flow.build_messages(node)` remains the complete request assembler. `render_fn` and `build_user_prompt` are removed.
 
-## Tools and toolsets
+Node chat `render()` is also removed. `build_messages(user_prompt, flow)` is the only message customization hook; its result is snapshotted on the node and used for all later history projection. Persistence v6 stores those snapshots. Background-agent status and transition menus remain live request overlays and are not stored in history.
 
-Use `@tool` for one callable and `@toolset("Title")` for a class that owns several related tools and their prompt documentation. Pass either form as an item in `Flow(tools=[...])`; toolset methods are flattened into the REPL namespace, so agent code calls the method name directly rather than through the class.
+## Tools
 
-Each active toolset renders its own `### Title` subsection. Its `@tool` methods provide the callable signatures and one-line descriptions; an optional `guidance(flow, node)` method adds context-sensitive ordering, shared constraints, or a concise example. Standalone `@tool` callables share a `### Tools` subsection. Empty toolset sections and their guidance are omitted. Reserved builtins use `inject=False` signatures because `Flow` installs their real per-node closures separately.
+`@tool` is the only tool decorator; `@toolset`, `FileTools`, the `BuiltIns` class, and `@tool(inject=...)` are removed. `description` is a string. Replace a toolset class with module-level `@tool` functions grouped in a tuple; `Flow(tools=[...])` flattens one level of nesting.
+
+`FILE_TOOLS` is now a tuple of functions. Replace `FILE_TOOLS.read_file` with `from rlmflow.tools.filesystem import read_file`.
+
+`Flow.build_tools(node)` is the complete model-visible tool map. Flow-owned built-ins, configured application tools, and subclass-provided environment tools are all ordinary decorated callables in that map. The prompt renders it directly; invocation arguments are bound as direct REPL variables alongside `asyncio` and internal execution bindings. Use `flow.llm_query` from host code.
 
 Normal tools are serialized into local workers. Use `@tool(..., proxy=True)` when a tool must execute against host-owned mutable state or another host-only resource.
 
@@ -151,4 +187,4 @@ Pass `execution_guard=` to `Flow`. The guard receives each `ExecAction` before r
 
 ## Tool visibility
 
-`@tool(..., when=at_leaf)` and toolset `visible_tools(flow, node)` now omit the tool from the REPL as well as the prompt. `FILE_TOOLS` writes bind only on agents that cannot spawn. `launch_subagent` is unbound on those agents too. A `max_depth=1` root can launch; its children can write. Intermediate depths that can still spawn keep reads and lose writes. `rlmflow run` / `tui` now default to `max_depth=1` for that reason.
+`@tool(..., when=at_leaf)` now omits the tool from the REPL as well as the prompt. `FILE_TOOLS` writes bind only on agents that cannot spawn. `launch_subagent` is unbound on those agents too. A `max_depth=1` root can launch; its children can write. Intermediate depths that can still spawn keep reads and lose writes. `rlmflow run` / `tui` now default to `max_depth=1` for that reason.

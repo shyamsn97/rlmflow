@@ -17,6 +17,7 @@ from pathlib import Path
 
 from rlmflow import (
     FILE_TOOLS,
+    AgentConfig,
     Flow,
     GraphCheckpointer,
     LLMUsage,
@@ -111,7 +112,7 @@ def run_branch(root: Path, name: str, implementation: str, label: str):
     # File tools run inside this branch's own working directory.
     runtime = LocalRuntime(working_directory=workdir)
     flow = Flow(RepairLLM(implementation, label), tools=[FILE_TOOLS], runtime=runtime)
-    graph = flow.start(TASK, max_depth=0, max_iters=3)
+    graph = flow.start(TASK, config=AgentConfig(max_depth=0, max_iters=3))
 
     async def drive() -> None:
         checkpoint = GraphCheckpointer(workdir / "graph")

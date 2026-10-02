@@ -65,7 +65,7 @@ class Example:
 EXAMPLES: list[Example] = [
     Example("controller-injection", "examples/control/controller_injection.py"),
     Example("streaming-until", "examples/control/streaming_until.py"),
-    Example("reuse-repl", "examples/control/delegation/reuse_repl.py"),
+    Example("reuse-worker", "examples/control/delegation/reuse_repl.py"),
     Example("nonblocking-delegation", "examples/control/delegation/nonblocking.py"),
     Example(
         "step-until",
@@ -77,7 +77,7 @@ EXAMPLES: list[Example] = [
         timeout=300,
         note="uses a live model to demonstrate minimal step(..., until=...) boundaries",
     ),
-    Example("llm-query-batched", "examples/llm_query_batched.py"),
+    Example("llm-query-fanout", "examples/llm_query_fanout.py"),
     Example(
         "structured-output",
         "examples/structured_output.py",
@@ -207,18 +207,6 @@ EXAMPLES: list[Example] = [
         env=("OPENAI_API_KEY",),
         modules=("openai",),
         timeout=300,
-    ),
-    Example(
-        "delegation-behavior",
-        "examples/behavior/delegation.py",
-        category="live",
-        args=("--out-dir", "{tmp}/delegation-behavior"),
-        env=("OPENAI_API_KEY",),
-        modules=("openai",),
-        # Three scenarios, one of which fans out; the heavy boids scenario is
-        # opt-in via --scenario and is not part of this run.
-        timeout=1200,
-        note="grades delegation both ways: fan out on substantial work, stay local on trivial work",
     ),
     Example(
         "dspy-drop-in",

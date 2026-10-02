@@ -13,7 +13,12 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
-from benchmarks.eval.environments.base import EnvironmentAdapter, EnvironmentResult
+from pydantic import JsonValue
+
+from benchmarks.eval.environments.environment import Environment, Observation
+from benchmarks.eval.reporting import EnvironmentReport, RuntimeMetrics
+from benchmarks.eval.telemetry import EnvironmentMetricsView
+from benchmarks.eval.types import Prediction, Score
 
 PACKAGE_VERSION = "0.2.19"
 UPSTREAM_REVISION = "07aa03a5c0ee8b4e0b025a52793055e89cb68bfe"
@@ -107,23 +112,6 @@ def _public_observation(value: object) -> dict[str, Any]:
     return {key: value[key] for key in _OBSERVATION_KEYS if key in value}
 
 
-def _summary(observation: dict[str, Any]) -> dict[str, Any]:
-    return {
-        key: observation[key]
-        for key in (
-            "current_room",
-            "current_view",
-            "yaw",
-            "gem_count",
-            "visited_levels",
-            "player_dead",
-            "game_won",
-            "game_lost",
-        )
-        if key in observation
-    }
-
-
 def _strip_private(value: Any) -> Any:
     if isinstance(value, list):
         return [_strip_private(item) for item in value]
@@ -165,13 +153,61 @@ class MazeBenchConfig:
             raise ValueError("timeout_seconds must be positive")
 
 
-class MazeBenchAdapter(EnvironmentAdapter):
+@dataclass(frozen=True, slots=True)
+class MazeBenchObservation(Observation):
+    values: dict[str, Any]
+
+    @classmethod
+    def from_runtime(cls, value: object) -> MazeBenchObservation:
+        return cls(_public_observation(value))
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        return dict(self.values)
+
+
+@dataclass(frozen=True, slots=True)
+class MazeBenchMetrics:
+    values: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self.values)
+
+
+class MazeBenchEnvironment(Environment[MazeBenchObservation, MazeBenchMetrics]):
     """Host-side adapter over ``scripts/codex-play.js``."""
 
     kind = "mazebench"
+    tool_operations = (
+        ("maze_observe", "observe", "Inspect the sanitized ASCII maze.", ()),
+        (
+            "maze_action",
+            "action",
+            "Apply one documented MazeBench command.",
+            (("action", str),),
+        ),
+        (
+            "maze_action_sequence",
+            "action_sequence",
+            "Apply a bounded MazeBench command list.",
+            (("actions", list[str]),),
+        ),
+    )
 
-    def __init__(self, config: MazeBenchConfig) -> None:
+    def __init__(
+        self,
+        config: MazeBenchConfig,
+        *,
+        description: str | None = None,
+        environment_id: str = "mazebench_hxi",
+        action_budget: int = 256,
+    ) -> None:
         self.config = config
+        self.id = environment_id
+        self.action_budget = action_budget
+        self.candidate_budget = 0
+        self.description = description or (
+            "Play MazeBench from the fixed HxI start and collect as many gems as possible."
+        )
         self._root: Path | None = None
         self._instances: dict[str, Path] = {}
         self._finalized: set[str] = set()
@@ -183,7 +219,7 @@ class MazeBenchAdapter(EnvironmentAdapter):
             self._root = preflight_mazebench()
         return self._root
 
-    def start(self, instance_id: str) -> EnvironmentResult:
+    def start(self, instance_id: str) -> MazeBenchObservation:
         state = self._new_state_path(instance_id)
         args = [
             "start",
@@ -204,9 +240,12 @@ class MazeBenchAdapter(EnvironmentAdapter):
         ]
         if not self.config.allow_quit:
             args.append("--no-quit")
-        observation = _public_observation(self._run(args))
+        observation = MazeBenchObservation.from_runtime(self._run(args))
         self._instances[instance_id] = state
-        return EnvironmentResult(observation, observation_summary=_summary(observation))
+        return observation
+
+    def observe(self, instance_id: str) -> MazeBenchObservation:
+        return self._observation(instance_id)
 
     def fork(
         self,
@@ -214,7 +253,7 @@ class MazeBenchAdapter(EnvironmentAdapter):
         *,
         parent_instance_id: str,
         command_prefix: tuple[str, ...],
-    ) -> EnvironmentResult:
+    ) -> MazeBenchObservation:
         if parent_instance_id not in self._instances:
             raise KeyError(f"unknown parent environment instance {parent_instance_id!r}")
         result = self.start(instance_id)
@@ -223,8 +262,7 @@ class MazeBenchAdapter(EnvironmentAdapter):
                 ["action-sequence", "--state", str(self._instances[instance_id])],
                 input_value={"actions": list(command_prefix), "primary": False},
             )
-            observation = self._observation(instance_id)
-            result = EnvironmentResult(observation, observation_summary=_summary(observation))
+            result = self._observation(instance_id)
         return result
 
     def execute(
@@ -234,28 +272,20 @@ class MazeBenchAdapter(EnvironmentAdapter):
         payload: dict[str, Any],
         *,
         max_actions: int,
-    ) -> EnvironmentResult:
+    ) -> MazeBenchObservation:
         state = self._state_path(instance_id)
         if operation == "observe":
-            observation = _public_observation(self._run(["observe", "--state", str(state)]))
-            return EnvironmentResult(observation, observation_summary=_summary(observation))
+            return MazeBenchObservation.from_runtime(
+                self._run(["observe", "--state", str(state)])
+            )
         if operation == "action":
             if max_actions < 1:
                 raise RuntimeError("the shared environment action budget is exhausted")
             action = _canonical_action(payload.get("action"))
             before = self._actions(instance_id)
             raw = self._run(["action", "--state", str(state), action])
-            accepted = self._accepted_since(instance_id, before)
-            observation = _public_observation(raw)
-            return EnvironmentResult(
-                {
-                    "observation": observation,
-                    "accepted": bool(accepted),
-                    "actions_remaining": max(0, max_actions - len(accepted)),
-                },
-                accepted_actions=accepted,
-                observation_summary=_summary(observation),
-            )
+            self._accepted_since(instance_id, before)
+            return MazeBenchObservation.from_runtime(raw)
         if operation == "action_sequence":
             requested = payload.get("actions")
             if not isinstance(requested, list) or not requested:
@@ -269,50 +299,19 @@ class MazeBenchAdapter(EnvironmentAdapter):
             if not selected:
                 raise RuntimeError("the shared environment action budget is exhausted")
             before = self._actions(instance_id)
-            raw = self._run(
+            self._run(
                 ["action-sequence", "--state", str(state)],
                 input_value={"actions": selected, "primary": self._is_primary(instance_id)},
             )
-            accepted = self._accepted_since(instance_id, before)
+            self._accepted_since(instance_id, before)
             observation = self._observation(instance_id)
-            steps = raw.get("steps") if isinstance(raw.get("steps"), list) else []
-            public_steps = [
-                {
-                    key: step[key]
-                    for key in (
-                        "index",
-                        "action",
-                        "recorded",
-                        "action_count_before",
-                        "action_count_after",
-                        "error",
-                    )
-                    if key in step
-                }
-                for step in steps
-                if isinstance(step, dict)
-            ]
-            return EnvironmentResult(
-                {
-                    "requested_count": len(actions),
-                    "attempted_count": int(raw.get("attempted_count") or 0),
-                    "completed_count": len(accepted),
-                    "stopped_early": len(accepted) < len(actions),
-                    "stop_reason": (
-                        "shared_budget_exhausted"
-                        if len(selected) < len(actions) and len(accepted) == len(selected)
-                        else str(raw.get("stop_reason") or "completed")
-                    ),
-                    "steps": public_steps,
-                    "final_observation": observation,
-                    "actions_remaining": max(0, max_actions - len(accepted)),
-                },
-                accepted_actions=accepted,
-                observation_summary=_summary(observation),
-            )
+            return observation
         raise ValueError(f"unknown MazeBench operation {operation!r}")
 
-    def primary_metrics(self, instance_id: str) -> dict[str, Any]:
+    def accepted_prefix(self, instance_id: str) -> tuple[str, ...]:
+        return self._accepted_since(instance_id, 0)
+
+    def metrics(self, instance_id: str) -> MazeBenchMetrics:
         session = self._session(instance_id)
         status = session.get("lastStatus") if isinstance(session.get("lastStatus"), dict) else {}
         actions = session.get("actions") if isinstance(session.get("actions"), list) else []
@@ -327,7 +326,7 @@ class MazeBenchAdapter(EnvironmentAdapter):
         if isinstance(initial, dict) and initial.get("board_state_hash"):
             hashes.add(str(initial["board_state_hash"]))
         gems = max(0, int(status.get("gem_count") or 0))
-        return {
+        return MazeBenchMetrics({
             "score": float(gems),
             "gems_collected": gems,
             "rooms_visited": len(status.get("visited_levels") or []),
@@ -337,7 +336,45 @@ class MazeBenchAdapter(EnvironmentAdapter):
             "accepted_actions": len(actions),
             "game_won": gems >= GAME_WON_GEM_COUNT,
             "win_condition_gems": GAME_WON_GEM_COUNT,
-        }
+        })
+
+    def report(
+        self,
+        prediction: Prediction,
+        runtime: RuntimeMetrics,
+    ) -> EnvironmentReport[MazeBenchMetrics]:
+        view = EnvironmentMetricsView.from_prediction(prediction)
+        raw_environment = prediction.metrics.get("environment", {})
+        if not isinstance(raw_environment, dict):
+            raw_environment = {}
+        gems = max(0, int(view.primary.get("gems_collected", 0) or 0))
+        selected = not view.selection_required or view.selection_made
+        won = bool(view.primary.get("game_won")) and gems >= GAME_WON_GEM_COUNT
+        score = Score(
+            value=float(gems) if selected else 0.0,
+            correct=bool(won and selected),
+            details={
+                **view.common_details(),
+                "gems_collected": gems,
+                "game_won": won,
+                "win_condition_gems": GAME_WON_GEM_COUNT,
+            },
+        )
+        return EnvironmentReport(
+            benchmark="",
+            environment_id=self.id,
+            runner="",
+            model="",
+            seed=None,
+            answer=prediction.answer,
+            score=score,
+            description_sha256="",
+            observation_sha256="",
+            runtime=runtime,
+            environment=MazeBenchMetrics(dict(raw_environment)),
+            artifacts=prediction.artifacts,
+            error=prediction.error,
+        )
 
     def artifacts(self, instance_id: str) -> dict[str, str]:
         state = self._state_path(instance_id)
@@ -430,8 +467,8 @@ class MazeBenchAdapter(EnvironmentAdapter):
             and action.get("command_text")
         )
 
-    def _observation(self, instance_id: str) -> dict[str, Any]:
-        return _public_observation(
+    def _observation(self, instance_id: str) -> MazeBenchObservation:
+        return MazeBenchObservation.from_runtime(
             self._run(["observe", "--state", str(self._state_path(instance_id))])
         )
 
@@ -531,6 +568,8 @@ class MazeBenchAdapter(EnvironmentAdapter):
         return value
 
 
+MazeBenchAdapter = MazeBenchEnvironment
+
 __all__ = [
     "DEFAULT_LEVEL",
     "DEFAULT_VIEW",
@@ -538,6 +577,9 @@ __all__ = [
     "GAME_WON_GEM_COUNT",
     "MazeBenchAdapter",
     "MazeBenchConfig",
+    "MazeBenchEnvironment",
+    "MazeBenchMetrics",
+    "MazeBenchObservation",
     "PACKAGE_VERSION",
     "RUNTIME_SHA256",
     "UPSTREAM_REVISION",

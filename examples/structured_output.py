@@ -88,14 +88,14 @@ def main() -> None:
 
     query = (
         "Build a packing plan for my upcoming trip. The important weather info "
-        'is in `INPUTS["trip_brief"]`. Make sure to delegate each city to child '
+        "is in `trip_brief`. Make sure to delegate each city to child "
         "agents."
     )
 
     root = flow.start(
         query,
-        inputs={"trip_brief": TRIP_BRIEF},
-        output_schema=json_schema_for(PackingPlan),
+        config=AgentConfig(output_schema=json_schema_for(PackingPlan)),
+        trip_brief=TRIP_BRIEF,
     )
     out_dir = Path(args.out_dir)
 

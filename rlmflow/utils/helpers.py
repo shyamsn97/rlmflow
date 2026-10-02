@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import inspect
 from typing import Any
 
-from rlmflow.graph.nodes import LLMUsage
 from rlmflow.tools import get_tool_metadata
-from rlmflow.utils.code import find_code_blocks
+from rlmflow.utils.code import find_code_blocks, find_repl_blocks
 
 
 def code_block(text: str) -> str:
@@ -16,38 +14,18 @@ def code_block(text: str) -> str:
     return blocks[0] if blocks else ""
 
 
-def accepts_kwarg(fn: Any, name: str) -> bool:
-    """Whether ``fn`` accepts keyword ``name`` (explicitly or via ``**kwargs``).
-
-    Used to push ``timeout`` only to clients that take it, so lean fake/test
-    clients are never handed an unexpected kwarg.
-    """
-    try:
-        params = inspect.signature(fn).parameters.values()
-    except (TypeError, ValueError):
-        return True  # can't introspect (e.g. a C builtin); assume it accepts it
-    return any(
-        p.kind is p.VAR_KEYWORD
-        or (p.name == name and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY))
-        for p in params
-    )
+def repl_code_block(text: str) -> str:
+    """Return the sole non-empty ``repl`` action block, or ``""`` if invalid."""
+    blocks = find_repl_blocks(text)
+    if len(blocks) != 1 or not blocks[0]:
+        return ""
+    return blocks[0]
 
 
 def tool_name(fn: Any) -> str:
     """Registered name of a tool callable, falling back to ``fn.__name__``."""
     meta = get_tool_metadata(fn)
     return meta.name if meta is not None else fn.__name__
-
-
-def usage_from_client(client: Any) -> LLMUsage:
-    """Read token usage off an LLM client's ``last_usage`` (0 if unreported)."""
-    usage = getattr(client, "last_usage", None)
-    if usage is None:
-        return LLMUsage()
-    return LLMUsage(
-        input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
-        output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
-    )
 
 
 def truncate_output(output: str, limit: int) -> str:
@@ -82,10 +60,9 @@ def sampling_kwargs(
 
 
 __all__ = [
-    "accepts_kwarg",
     "code_block",
+    "repl_code_block",
     "sampling_kwargs",
     "tool_name",
     "truncate_output",
-    "usage_from_client",
 ]

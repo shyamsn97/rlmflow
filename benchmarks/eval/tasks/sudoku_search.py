@@ -3,18 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from pathlib import Path
 
 from benchmarks.eval import dataset
-from benchmarks.eval.environments.base import EnvironmentEpisode
 from benchmarks.eval.environments.sudoku_search import (
-    SudokuSearchAdapter,
-    SudokuSearchConfig,
     SudokuSearchPuzzle,
     render_grid,
 )
-from benchmarks.eval.tasks.environment import grade_environment
-from benchmarks.eval.types import Dataset, Example, Prediction, Score
+from benchmarks.eval.types import Dataset, Example
 
 DEFAULT_ACTION_BUDGET = 192
 DEFAULT_CANDIDATE_BUDGET = 8
@@ -131,7 +126,7 @@ protocol.
 
 @dataset(
     "sudoku_search",
-    tags=["conformance", "environment", "sudoku"],
+    tags=["interactive", "environment", "sudoku"],
 )
 class SudokuSearchDataset(Dataset):
     """Deterministic visual Sudoku manifests with private candidate branches."""
@@ -164,60 +159,6 @@ class SudokuSearchDataset(Dataset):
         selected = puzzles if limit is None else puzzles[:limit]
         return [self._example(puzzle) for puzzle in selected]
 
-    def score(self, example: Example, prediction: Prediction) -> Score:
-        grade = grade_environment(
-            prediction,
-            native_keys=("score", "placement_score"),
-        )
-        native_exact = bool(grade.view.primary.get("exact", False))
-        exact = native_exact and grade.selected
-        return Score(
-            value=grade.value,
-            correct=exact,
-            details=grade.details(
-                error=prediction.error,
-                puzzle_id=example.metadata.get("source_id"),
-                native_scorer="sudoku_exact_and_placement",
-                placement_score=grade.view.native_float("placement_score", bounded=True),
-                native_exact=native_exact,
-                exact=exact,
-            ),
-        )
-
-    def make_episode(
-        self,
-        example: Example,
-        *,
-        artifact_dir: str | Path | None = None,
-        role: str = "primary",
-    ) -> EnvironmentEpisode:
-        """Open the runner-neutral environment represented by ``example``."""
-
-        del role
-        environment = example.metadata.get("environment", {})
-        if not isinstance(environment, dict) or environment.get("kind") != "sudoku_search":
-            raise ValueError("example is not a Sudoku search environment task")
-        puzzle = _puzzle_by_id(str(environment.get("puzzle_id", "")))
-        action_budget = _positive_integer(environment.get("action_budget"), "action_budget")
-        candidate_budget = _positive_integer(
-            environment.get("candidate_budget"),
-            "candidate_budget",
-        )
-        return EnvironmentEpisode(
-            SudokuSearchAdapter(
-                SudokuSearchConfig(
-                    puzzle=puzzle,
-                    artifact_dir=Path(artifact_dir) if artifact_dir is not None else None,
-                )
-            ),
-            max_actions=action_budget,
-            episode_id=example.id,
-            candidate_budget=candidate_budget,
-        )
-
-    create_episode = make_episode
-    episode = make_episode
-
     def _example(self, puzzle: SudokuSearchPuzzle) -> Example:
         visual = render_grid(
             puzzle.initial_grid,
@@ -228,7 +169,9 @@ class SudokuSearchDataset(Dataset):
             f"{TASK_PROMPT}\nPuzzle: {puzzle.id}\n"
             f"Rules: fill 1..{puzzle.size}; each row, column, and "
             f"{puzzle.box_rows}x{puzzle.box_columns} box contains every value once.\n\n"
-            f"{visual}"
+            f"{visual}\n\n"
+            f"Shared environment action budget: {self.action_budget}.\n"
+            f"Candidate submission budget: {self.candidate_budget}.\n"
         )
         environment = {
             "kind": "sudoku_search",
@@ -292,13 +235,6 @@ def _select_puzzles(manifest: str | Sequence[str]) -> tuple[SudokuSearchPuzzle, 
     if unknown:
         raise ValueError(f"unknown frozen Sudoku puzzle(s): {', '.join(unknown)}")
     return tuple(known[puzzle_id] for puzzle_id in ids)
-
-
-def _puzzle_by_id(puzzle_id: str) -> SudokuSearchPuzzle:
-    try:
-        return next(puzzle for puzzle in ALL_PUZZLES if puzzle.id == puzzle_id)
-    except StopIteration as exc:
-        raise ValueError(f"unknown frozen Sudoku puzzle {puzzle_id!r}") from exc
 
 
 def _positive_integer(value: object, label: str) -> int:

@@ -13,7 +13,7 @@ is the one the worker recorded on the way out.
 Needs Pillow and the sprite tiles (see ``sprites.py``). Run a shepherd first, then:
 
     python examples/shepherd/render_rewind.py
-    python examples/shepherd/render_rewind.py --out docs/shepherd_rewind.gif
+    python examples/shepherd/render_rewind.py --out docs/static/shepherd/rewind.gif
 """
 
 from __future__ import annotations

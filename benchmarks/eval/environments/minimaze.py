@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from benchmarks.eval.environments.base import EnvironmentAdapter, EnvironmentResult
+from pydantic import JsonValue
+
+from benchmarks.eval.environments.environment import Environment, Observation
+from benchmarks.eval.reporting import EnvironmentReport, RuntimeMetrics
+from benchmarks.eval.telemetry import EnvironmentMetricsView
+from benchmarks.eval.types import Prediction, Score
 
 ACTIONS = ("up", "down", "left", "right")
 ACTION_DELTAS = {
@@ -105,6 +110,42 @@ class _MiniMazeInstance:
     replay_actions: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class MiniMazeObservation(Observation):
+    task_id: str
+    ascii: str
+    legend: dict[str, str]
+    position: tuple[int, int]
+    keys: tuple[str, ...]
+    gems_collected: int
+    total_gems: int
+    coverage: float
+    completed: bool
+    legal_actions: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        return {
+            "task_id": self.task_id,
+            "ascii": self.ascii,
+            "legend": self.legend,
+            "position": list(self.position),
+            "keys": list(self.keys),
+            "gems_collected": self.gems_collected,
+            "total_gems": self.total_gems,
+            "coverage": self.coverage,
+            "completed": self.completed,
+            "legal_actions": list(self.legal_actions),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class MiniMazeMetrics:
+    values: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self.values)
+
+
 def normalize_action(value: object, *, index: int | None = None) -> str:
     """Validate and canonicalize one movement command."""
 
@@ -117,17 +158,34 @@ def normalize_action(value: object, *, index: int | None = None) -> str:
     return action
 
 
-class MiniMazeAdapter(EnvironmentAdapter):
+class MiniMazeEnvironment(Environment[MiniMazeObservation, MiniMazeMetrics]):
     """Small deterministic maze with replayable private branch state."""
 
     kind = "minimaze"
     operations = ("observe", "action", "action_sequence")
+    tool_operations = (
+        ("observe", "observe", "Observe the private fogged maze.", ()),
+        (
+            "action",
+            "action",
+            "Move up, down, left, or right.",
+            (("action", str),),
+        ),
+        (
+            "action_sequence",
+            "action_sequence",
+            "Apply a bounded movement list.",
+            (("actions", list[str]),),
+        ),
+    )
 
     def __init__(
         self,
         config: MiniMazeConfig | MiniMazeSpec,
         *,
         artifact_dir: str | Path | None = None,
+        description: str | None = None,
+        environment_id: str | None = None,
     ) -> None:
         if isinstance(config, MiniMazeConfig):
             self.spec = config.spec
@@ -141,6 +199,13 @@ class MiniMazeAdapter(EnvironmentAdapter):
             else None
         )
         self._instances: dict[str, _MiniMazeInstance] = {}
+        self.id = environment_id or f"minimaze_{self.spec.id}"
+        self.action_budget = self.spec.action_budget
+        self.candidate_budget = self.spec.candidate_budget
+        self.description = description or (
+            "Navigate the fog-of-war MiniMaze and collect every gem. "
+            "Use observe, action, and action_sequence."
+        )
         self._start = self._find("S")[0]
         self._all_gems = frozenset(self._find("*"))
         self._traversable = frozenset(
@@ -153,7 +218,7 @@ class MiniMazeAdapter(EnvironmentAdapter):
         if self._optimal_actions is None:
             raise ValueError(f"{self.spec.id}: all gems must be reachable")
 
-    def start(self, instance_id: str) -> EnvironmentResult:
+    def start(self, instance_id: str) -> MiniMazeObservation:
         if instance_id in self._instances:
             raise ValueError(f"MiniMaze instance {instance_id!r} already exists")
         instance = _MiniMazeInstance(position=self._start)
@@ -166,10 +231,13 @@ class MiniMazeAdapter(EnvironmentAdapter):
                 "index": 0,
                 "kind": "observation",
                 "replay": False,
-                "observation": observation,
+                "observation": observation.to_dict(),
             }
         )
-        return self._result(instance, observation=observation)
+        return observation
+
+    def observe(self, instance_id: str) -> MiniMazeObservation:
+        return self._observation(self._instance(instance_id))
 
     def fork(
         self,
@@ -177,7 +245,7 @@ class MiniMazeAdapter(EnvironmentAdapter):
         *,
         parent_instance_id: str,
         command_prefix: tuple[str, ...],
-    ) -> EnvironmentResult:
+    ) -> MiniMazeObservation:
         if parent_instance_id not in self._instances:
             raise KeyError(f"unknown immediate parent MiniMaze instance {parent_instance_id!r}")
         self.start(instance_id)
@@ -188,7 +256,7 @@ class MiniMazeAdapter(EnvironmentAdapter):
             self._apply(instance, action, replay=True)
             instance.replay_actions += 1
         observation = self._observation(instance)
-        return self._result(instance, observation=observation)
+        return observation
 
     def execute(
         self,
@@ -197,7 +265,7 @@ class MiniMazeAdapter(EnvironmentAdapter):
         payload: dict[str, Any],
         *,
         max_actions: int,
-    ) -> EnvironmentResult:
+    ) -> MiniMazeObservation:
         instance = self._instance(instance_id)
         if operation == "observe":
             if payload:
@@ -208,10 +276,10 @@ class MiniMazeAdapter(EnvironmentAdapter):
                     "index": len(instance.events),
                     "kind": "observation",
                     "replay": False,
-                    "observation": observation,
+                    "observation": observation.to_dict(),
                 }
             )
-            return self._result(instance, observation=observation)
+            return observation
 
         if operation == "action":
             if set(payload) != {"action"}:
@@ -234,46 +302,17 @@ class MiniMazeAdapter(EnvironmentAdapter):
         selected = requested[:max_actions]
         if not selected:
             raise RuntimeError("the shared MiniMaze action budget is exhausted")
-        accepted: list[str] = []
-        step_results: list[dict[str, Any]] = []
         for action in selected:
-            event = self._apply(instance, action, replay=False)
-            accepted.append(action)
-            step_results.append(
-                {
-                    "index": len(accepted) - 1,
-                    "action": action,
-                    "outcome": event["outcome"],
-                    "position": list(instance.position),
-                    "completed": self._complete(instance),
-                }
-            )
+            self._apply(instance, action, replay=False)
             if self._complete(instance):
                 break
         observation = self._observation(instance)
-        return EnvironmentResult(
-            value={
-                "requested_count": len(requested),
-                "completed_count": len(accepted),
-                "stopped_early": len(accepted) < len(requested),
-                "stop_reason": (
-                    "completed"
-                    if self._complete(instance) and len(accepted) < len(requested)
-                    else (
-                        "shared_budget_exhausted"
-                        if len(selected) < len(requested)
-                        else "completed_sequence"
-                    )
-                ),
-                "steps": step_results,
-                "observation": observation,
-                "actions_remaining": max(0, max_actions - len(accepted)),
-            },
-            accepted_actions=tuple(accepted),
-            observation_summary=self._summary(instance),
-        )
+        return observation
 
-    def primary_metrics(self, instance_id: str) -> dict[str, Any]:
+    def accepted_prefix(self, instance_id: str) -> tuple[str, ...]:
+        return tuple(self._instance(instance_id).commands)
+
+    def metrics(self, instance_id: str) -> MiniMazeMetrics:
         instance = self._instance(instance_id)
         gems_collected = len(instance.gems)
         total_gems = len(self._all_gems)
@@ -292,7 +331,7 @@ class MiniMazeAdapter(EnvironmentAdapter):
             + SCORE_WEIGHTS["coverage"] * coverage
             + SCORE_WEIGHTS["path_efficiency"] * path_efficiency
         )
-        return {
+        return MiniMazeMetrics({
             "score": min(1.0, max(0.0, score)),
             "task_id": self.spec.id,
             "completed": gems_collected == total_gems,
@@ -319,10 +358,10 @@ class MiniMazeAdapter(EnvironmentAdapter):
             "optimal_completion_actions": self._optimal_actions,
             "position": list(instance.position),
             "score_weights": dict(SCORE_WEIGHTS),
-        }
+        })
 
     def candidate_metrics(self, instance_id: str) -> tuple[float, dict[str, Any]]:
-        metrics = self.primary_metrics(instance_id)
+        metrics = self.metrics(instance_id).to_dict()
         public = {
             key: metrics[key]
             for key in (
@@ -342,6 +381,43 @@ class MiniMazeAdapter(EnvironmentAdapter):
             )
         }
         return float(metrics["score"]), public
+
+    def report(
+        self,
+        prediction: Prediction,
+        runtime: RuntimeMetrics,
+    ) -> EnvironmentReport[MiniMazeMetrics]:
+        view = EnvironmentMetricsView.from_prediction(prediction)
+        raw_environment = prediction.metrics.get("environment", {})
+        if not isinstance(raw_environment, dict):
+            raw_environment = {}
+        native = view.native_float("score", bounded=True)
+        selected = not view.selection_required or view.selection_made
+        primary = view.primary
+        score = Score(
+            value=native if selected else 0.0,
+            correct=bool(primary.get("completed") and selected),
+            details={
+                **view.common_details(),
+                "native_progress_score": native,
+                "completed": bool(primary.get("completed")),
+            },
+        )
+        return EnvironmentReport(
+            benchmark="",
+            environment_id=self.id,
+            runner="",
+            model="",
+            seed=None,
+            answer=prediction.answer,
+            score=score,
+            description_sha256="",
+            observation_sha256="",
+            runtime=runtime,
+            environment=MiniMazeMetrics(dict(raw_environment)),
+            artifacts=prediction.artifacts,
+            error=prediction.error,
+        )
 
     def artifacts(self, instance_id: str) -> dict[str, str]:
         if self.artifact_dir is None:
@@ -376,7 +452,7 @@ class MiniMazeAdapter(EnvironmentAdapter):
                         for event in current.events
                         if event["kind"] == "action"
                     ],
-                    "metrics": self.primary_metrics(current_id),
+                    "metrics": self.metrics(current_id).to_dict(),
                 }
                 for current_id, current in self._instances.items()
             },
@@ -439,7 +515,7 @@ class MiniMazeAdapter(EnvironmentAdapter):
             "from": list(before),
             "to": list(instance.position),
             "outcome": outcome,
-            "observation": observation,
+            "observation": observation.to_dict(),
         }
         instance.events.append(event)
         return event
@@ -451,7 +527,7 @@ class MiniMazeAdapter(EnvironmentAdapter):
                 if abs(row - player_row) + abs(column - player_column) <= self.spec.fog_radius:
                     instance.seen.add((row, column))
 
-    def _observation(self, instance: _MiniMazeInstance) -> dict[str, Any]:
+    def _observation(self, instance: _MiniMazeInstance) -> MiniMazeObservation:
         rendered: list[str] = []
         for row, line in enumerate(self.spec.rows):
             output: list[str] = []
@@ -474,11 +550,11 @@ class MiniMazeAdapter(EnvironmentAdapter):
                 else:
                     output.append(cell)
             rendered.append("".join(output))
-        metrics = self.primary_metrics_for_observation(instance)
-        return {
-            "task_id": self.spec.id,
-            "ascii": "\n".join(rendered),
-            "legend": {
+        metrics = self._visible_metrics(instance)
+        return MiniMazeObservation(
+            task_id=self.spec.id,
+            ascii="\n".join(rendered),
+            legend={
                 "@": "player",
                 "#": "wall",
                 ".": "explored floor",
@@ -488,39 +564,18 @@ class MiniMazeAdapter(EnvironmentAdapter):
                 "A-Z": "locked matching door",
                 "/": "unlocked door",
             },
-            "position": list(instance.position),
-            "keys": sorted(instance.keys),
-            "gems_collected": len(instance.gems),
-            "total_gems": len(self._all_gems),
-            "coverage": metrics["coverage"],
-            "completed": self._complete(instance),
-            "available_actions": list(ACTIONS),
-        }
+            position=instance.position,
+            keys=tuple(sorted(instance.keys)),
+            gems_collected=len(instance.gems),
+            total_gems=len(self._all_gems),
+            coverage=metrics["coverage"],
+            completed=self._complete(instance),
+            legal_actions=ACTIONS,
+        )
 
-    def primary_metrics_for_observation(self, instance: _MiniMazeInstance) -> dict[str, float]:
+    def _visible_metrics(self, instance: _MiniMazeInstance) -> dict[str, float]:
         seen_walkable = len(instance.seen & self._traversable)
         return {"coverage": seen_walkable / len(self._traversable)}
-
-    def _summary(self, instance: _MiniMazeInstance) -> dict[str, Any]:
-        return {
-            "position": list(instance.position),
-            "gems_collected": len(instance.gems),
-            "total_gems": len(self._all_gems),
-            "keys": sorted(instance.keys),
-            "coverage": self.primary_metrics_for_observation(instance)["coverage"],
-            "completed": self._complete(instance),
-        }
-
-    def _result(
-        self,
-        instance: _MiniMazeInstance,
-        *,
-        observation: Mapping[str, Any],
-    ) -> EnvironmentResult:
-        return EnvironmentResult(
-            dict(observation),
-            observation_summary=self._summary(instance),
-        )
 
     def _complete(self, instance: _MiniMazeInstance) -> bool:
         return instance.gems == self._all_gems
@@ -551,7 +606,8 @@ class MiniMazeAdapter(EnvironmentAdapter):
         return None
 
 
-MiniMazeEnvironmentAdapter = MiniMazeAdapter
+MiniMazeAdapter = MiniMazeEnvironment
+MiniMazeEnvironmentAdapter = MiniMazeEnvironment
 
 __all__ = [
     "ACTIONS",
@@ -560,7 +616,10 @@ __all__ = [
     "SCORE_WEIGHTS",
     "MiniMazeAdapter",
     "MiniMazeConfig",
+    "MiniMazeEnvironment",
     "MiniMazeEnvironmentAdapter",
+    "MiniMazeMetrics",
+    "MiniMazeObservation",
     "MiniMazeProtocolError",
     "MiniMazeSpec",
     "normalize_action",

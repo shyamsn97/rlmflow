@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rlmflow.graph.nodes import AgentStart, Node
+from rlmflow.graph.nodes import (
+    AgentStart,
+    Node,
+    TransitionDecision,
+    VerificationFailure,
+)
 
 DETAIL_LIMIT = 1600
 
@@ -36,15 +41,19 @@ def timeline(root: Node) -> list[Node]:
     return sorted(root.walk(), key=lambda node: node.created_at)
 
 
-def agent_path(node: Node) -> str:
-    agent = node if isinstance(node, AgentStart) else node.parent_agent
-    return agent.config.path if agent is not None else "root"
-
-
 def summarize(node: Node, limit: int = 96) -> str:
     """A single line describing what this node did."""
     if isinstance(node, AgentStart):
         text = f"start {node.config.path} · model {node.config.model}"
+    elif isinstance(node, TransitionDecision):
+        choice = (
+            node.candidates[node.selected_rule_id]
+            if node.selected_rule_id is not None
+            else "continue"
+        )
+        text = f"selected {choice}"
+    elif isinstance(node, VerificationFailure):
+        text = f"{node.kind} rejected: {node.feedback}"
     elif node.type == "done_output":
         text = f"done {_stringify(getattr(node, 'result', None) or node.content)}"
     elif node.type == "error_output":
@@ -60,13 +69,28 @@ def node_detail(node: Node, limit: int = DETAIL_LIMIT) -> str:
     blocks: list[str] = []
     if isinstance(node, AgentStart):
         blocks.append(f"query:\n{node.content}")
-        if node.config.inputs:
-            blocks.append(f"inputs: {', '.join(node.config.inputs)}")
+        if node.args:
+            blocks.append(f"args: {', '.join(node.args)}")
     code = getattr(node, "code", "")
     if code:
         blocks.append(f"code:\n{code}")
     if node.content and not isinstance(node, AgentStart):
         blocks.append(f"content:\n{node.content}")
+    if isinstance(node, TransitionDecision):
+        choices = "\n".join(
+            f"- {rule_id}: {condition}" for rule_id, condition in node.candidates.items()
+        )
+        blocks.append(
+            f"choices:\n{choices}\n"
+            f"selected: {node.selected_rule_id or 'continue'}\n"
+            f"read set: {', '.join(node.read_set_node_ids)}"
+        )
+    if isinstance(node, VerificationFailure):
+        blocks.append(
+            f"kind: {node.kind}\n"
+            f"candidate: {_stringify(node.candidate)}\n"
+            f"feedback: {node.feedback}"
+        )
     result = getattr(node, "result", None)
     if result is not None:
         blocks.append(f"result:\n{_stringify(result)}")
@@ -91,7 +115,7 @@ def steps(root: Node) -> list[Step]:
         Step(
             index=index,
             node=node,
-            agent=agent_path(node),
+            agent=node.parent_agent.config.path if node.parent_agent else "root",
             kind=node.type,
             summary=summarize(node),
             detail=node_detail(node),

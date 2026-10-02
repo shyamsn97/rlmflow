@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from rlmflow import (
+    AgentConfig,
     AgentStart,
     Flow,
     Node,
@@ -90,7 +91,10 @@ async def demo_next_idle_and_resume() -> None:
         return "```repl\nprint('working')\n```"
 
     flow = Flow(ScriptedLLM(reply))
-    graph = flow.start("work until I inject a stop instruction", max_iters=8)
+    graph = flow.start(
+        "work until I inject a stop instruction",
+        config=AgentConfig(max_iters=8),
+    )
 
     events = await collect(flow, graph, until=after_appends(3))
     print_nodes("callable boundary: exactly three appended nodes", events, graph)
@@ -127,16 +131,15 @@ async def demo_callable_boundary_with_child() -> None:
         if first_user(messages) == "parent":
             return (
                 "```repl\n"
-                "child = await launch_subagent("
-                "'child', model='default', name='child')\n"
-                "result = await child.wait_for_result()\n"
+                "child = launch_subagent(task='child')\n"
+                "result = await child\n"
                 "finish('parent saw ' + result)\n"
                 "```"
             )
         return "```repl\nfinish('child done')\n```"
 
     flow = Flow(ScriptedLLM(reply))
-    graph = flow.start("parent", max_depth=1)
+    graph = flow.start("parent", config=AgentConfig(max_depth=1))
 
     def child_done(node: Node, root: Node) -> bool:
         return node.parent_agent is not root and node.type == "done_output"

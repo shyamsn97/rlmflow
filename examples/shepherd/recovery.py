@@ -214,8 +214,8 @@ async def prepare_branch(
     # and a branch dies at its turn ceiling mid-solve, which reads as giving up.
     fork.config.max_iters = fork.llm_turns() + budget + slack
     fork.config.name = f"branch{index}"
-    fork.config.inputs.pop("_worker_strategy", None)
-    fork.config.inputs["_shepherd_order"] = order_text
+    fork.args.pop("_worker_strategy", None)
+    fork.args["_shepherd_order"] = order_text
     fork.frontier.append(
         UserQuery(
             content=(

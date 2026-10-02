@@ -15,7 +15,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from benchmarks.eval.candidates import CandidateLedger, CandidateRecord
-from benchmarks.eval.environments.base import EnvironmentAdapter, EnvironmentResult
+from benchmarks.eval.environments.environment import (
+    Environment,
+    Observation,
+    observation_sha256,
+)
 
 
 def _timestamp(value: float) -> str:
@@ -57,7 +61,7 @@ class EpisodeEvent:
     started_at: float
     finished_at: float
     accepted_actions: tuple[str, ...]
-    observation_summary: dict[str, Any]
+    observation: dict[str, Any]
     primary: bool
     error: str | None = None
     call_id: int = 0
@@ -79,7 +83,7 @@ class EpisodeEvent:
             "duration_ms": round((self.finished_at - self.started_at) * 1_000, 3),
             "accepted_actions": list(self.accepted_actions),
             "accepted_action_count": self.accepted_action_count,
-            "observation_summary": dict(self.observation_summary),
+            "observation": dict(self.observation),
             "primary": self.primary,
             "probe": not self.primary,
             **({"error": self.error} if self.error else {}),
@@ -91,17 +95,19 @@ class EpisodeCore:
 
     def __init__(
         self,
-        adapter: EnvironmentAdapter,
+        adapter: Environment,
         *,
         max_actions: int,
         episode_id: str,
         candidate_budget: int = 0,
+        expected_observation_sha256: str | None = None,
     ) -> None:
         if isinstance(max_actions, bool) or not isinstance(max_actions, int) or max_actions < 1:
             raise ValueError("max_actions must be a positive integer")
         self.adapter = adapter
         self.max_actions = max_actions
         self.episode_id = episode_id
+        self.expected_observation_sha256 = expected_observation_sha256
         self.candidates = (
             CandidateLedger(max_evaluations=candidate_budget, episode_id=episode_id)
             if candidate_budget
@@ -110,7 +116,7 @@ class EpisodeCore:
         self.owners: dict[str, EpisodeOwner] = {}
         self.prefixes: dict[str, tuple[str, ...]] = {}
         self.events: list[EpisodeEvent] = []
-        self.initial: EnvironmentResult | None = None
+        self.initial: Observation | None = None
         self._final_metrics: dict[str, Any] | None = None
         self._final_artifacts: dict[str, str] | None = None
         self._closed = False
@@ -128,7 +134,7 @@ class EpisodeCore:
     def initial_observation(self) -> dict[str, Any]:
         if self.initial is None:
             raise RuntimeError("environment episode has not started")
-        return dict(self.initial.value)
+        return self.initial.to_dict()
 
     @property
     def root_owner(self) -> EpisodeOwner:
@@ -150,8 +156,17 @@ class EpisodeCore:
                 return self.owners[owner_id]
             owner = self._owner(owner_id, path, None, depth, True, 0)
             self.initial = self.adapter.start(owner.instance_id)
-            if self.initial.accepted_actions:
+            if self.adapter.accepted_prefix(owner.instance_id):
                 raise ValueError("environment start must not consume model actions")
+            observed_hash = observation_sha256(self.initial)
+            if (
+                self.expected_observation_sha256 is not None
+                and observed_hash != self.expected_observation_sha256
+            ):
+                raise RuntimeError(
+                    "canonical observation hash mismatch: "
+                    f"expected {self.expected_observation_sha256}, got {observed_hash}"
+                )
             self.owners[owner_id] = owner
             self.prefixes[owner_id] = ()
             return owner
@@ -195,7 +210,7 @@ class EpisodeCore:
                 len(accepted_prefix),
             )
             started = time.time()
-            result = EnvironmentResult({})
+            result: Observation | None = None
             error = None
             try:
                 result = self.adapter.fork(
@@ -203,8 +218,6 @@ class EpisodeCore:
                     parent_instance_id=parent.instance_id,
                     command_prefix=accepted_prefix,
                 )
-                if result.accepted_actions:
-                    raise ValueError("fork replay must not consume the shared action budget")
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
                 raise
@@ -219,11 +232,11 @@ class EpisodeCore:
                         started,
                         time.time(),
                         (),
-                        dict(result.observation_summary),
+                        result.to_dict() if result is not None else {},
                         False,
                         error,
                         call_id,
-                        dict(result.value),
+                        result.to_dict() if result is not None else {},
                     )
                 )
             self.owners[owner_id] = owner
@@ -242,7 +255,9 @@ class EpisodeCore:
         with self._lock:
             owner = self.owners[owner_id]
             started = time.time()
-            result = EnvironmentResult({})
+            result: Observation | None = None
+            before = self.adapter.accepted_prefix(owner.instance_id)
+            accepted: tuple[str, ...] = ()
             error = None
             try:
                 result = self.adapter.execute(
@@ -251,7 +266,11 @@ class EpisodeCore:
                     dict(payload or {}),
                     max_actions=self.actions_remaining,
                 )
-                if len(result.accepted_actions) > self.actions_remaining:
+                after = self.adapter.accepted_prefix(owner.instance_id)
+                if after[: len(before)] != before:
+                    raise RuntimeError("environment rewrote its accepted action prefix")
+                accepted = after[len(before) :]
+                if len(accepted) > self.actions_remaining:
                     raise RuntimeError("environment adapter exceeded the shared action budget")
             except Exception as exc:  # noqa: BLE001 - every tool failure is row telemetry
                 error = f"{type(exc).__name__}: {exc}"
@@ -263,22 +282,24 @@ class EpisodeCore:
                 operation,
                 started,
                 time.time(),
-                tuple(result.accepted_actions),
-                dict(result.observation_summary),
+                accepted,
+                result.to_dict() if result is not None else {},
                 owner.primary,
                 error,
                 call_id,
-                dict(result.value),
+                result.to_dict() if result is not None else {},
             )
             self.events.append(event)
-            if result.accepted_actions:
+            if accepted:
                 self.prefixes[owner_id] = (
                     *self.prefixes[owner_id],
-                    *result.accepted_actions,
+                    *accepted,
                 )
             if error:
                 raise RuntimeError(error)
-            return dict(result.value)
+            if result is None:
+                raise RuntimeError("environment returned no observation")
+            return result.to_dict()
 
     def submit_candidate(
         self,
@@ -291,20 +312,27 @@ class EpisodeCore:
         if self.candidates is None:
             raise RuntimeError("candidate search is not enabled")
         with self._lock:
-            if self.candidates.evaluations_remaining < 1:
-                raise RuntimeError("candidate evaluation budget exhausted")
             owner = self.owners[owner_id]
+            self.candidates.validate_submission(
+                owner_path=owner.path,
+                label=label,
+                parent_candidate_id=parent_candidate_id,
+            )
             index = self.candidates.max_evaluations - self.candidates.evaluations_remaining
             prefix = self.prefixes[owner_id]
             snapshot_id = self._instance_id(f"{owner_id}:candidate:{index}")
-            result = self.adapter.fork(
+            self.adapter.fork(
                 snapshot_id,
                 parent_instance_id=owner.instance_id,
                 command_prefix=prefix,
             )
-            if result.accepted_actions:
-                raise ValueError("candidate snapshot must not consume actions")
-            score, public = self.adapter.candidate_metrics(snapshot_id)
+            candidate_metrics = getattr(self.adapter, "candidate_metrics", None)
+            if candidate_metrics is None:
+                public = _metrics_dict(self.adapter.metrics(snapshot_id))
+                raw_score = public.get("score", 0.0)
+                score = float(raw_score) if isinstance(raw_score, (int, float)) else 0.0
+            else:
+                score, public = candidate_metrics(snapshot_id)
             return self.candidates.submit(
                 owner_id=owner.id,
                 owner_path=owner.path,
@@ -330,16 +358,15 @@ class EpisodeCore:
             actor_is_root=self.owners[owner_id].primary,
         )
 
-    def metrics(self, *, parity_contract: dict[str, Any]) -> dict[str, Any]:
+    def metrics(self) -> dict[str, Any]:
         selected = self.candidates.selected if self.candidates is not None else None
         primary = (
             self._final_metrics
             if self._final_metrics is not None
-            else self.adapter.primary_metrics(self.scored_instance_id)
+            else _metrics_dict(self.adapter.metrics(self.scored_instance_id))
         )
         return {
             "kind": self.adapter.kind,
-            "parity_contract": parity_contract,
             "episode_id": self.episode_id,
             "action_budget": self.max_actions,
             "accepted_actions": self.accepted_action_count,
@@ -376,18 +403,26 @@ class EpisodeCore:
     def artifacts(self) -> dict[str, str]:
         if self._final_artifacts is not None:
             return dict(self._final_artifacts)
-        return self.adapter.artifacts(self.scored_instance_id)
+        artifacts = getattr(self.adapter, "artifacts", None)
+        return artifacts(self.scored_instance_id) if artifacts is not None else {}
 
     def close(self) -> None:
         with self._lock:
             if self._closed:
                 return
             try:
-                self._final_metrics = self.adapter.primary_metrics(self.scored_instance_id)
-                self._final_artifacts = self.adapter.artifacts(self.scored_instance_id)
+                self._final_metrics = _metrics_dict(
+                    self.adapter.metrics(self.scored_instance_id)
+                )
+                artifacts = getattr(self.adapter, "artifacts", None)
+                self._final_artifacts = (
+                    artifacts(self.scored_instance_id) if artifacts is not None else {}
+                )
             finally:
                 self._closed = True
-                self.adapter.close()
+                close = getattr(self.adapter, "close", None)
+                if close is not None:
+                    close()
 
     def _owner(
         self,
@@ -412,6 +447,15 @@ class EpisodeCore:
     def _instance_id(self, source: str) -> str:
         digest = hashlib.sha256(f"{self.episode_id}\0{source}".encode()).hexdigest()[:16]
         return f"env_{digest}"
+
+
+def _metrics_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    to_dict = getattr(value, "to_dict", None)
+    if to_dict is None:
+        raise TypeError("environment metrics must provide to_dict()")
+    return dict(to_dict())
 
 
 __all__ = ["EpisodeCore", "EpisodeEvent", "EpisodeOwner"]

@@ -81,7 +81,10 @@ def demo_nested_flow():
         )
     )
     outer = Flow(inner)
-    root = outer.start("What's the 7th Fibonacci number? Use ```repl``` to compute.", max_iters=3)
+    root = outer.start(
+        "What's the 7th Fibonacci number? Use ```repl``` to compute.",
+        config=AgentConfig(max_iters=3),
+    )
     run_dir = example_run_dir("drop-in-llm") / "nested-flow"
 
     async def drive() -> None:

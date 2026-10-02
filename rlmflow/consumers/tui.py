@@ -68,7 +68,7 @@ class FlowTUI(StreamConsumer):
         if self.root is None:
             if query is None:
                 return None
-            self.root = self.flow.start(query, inputs=inputs or {})
+            self.root = self.flow.start(query, **(inputs or {}))
         elif query is not None:
             self.root.frontier.append(UserQuery(content=query))
         async for node in self.flow.run_streaming(self.root, until=until):
@@ -192,7 +192,7 @@ class FlowTUI(StreamConsumer):
                         yield TextArea(
                             id="context",
                             soft_wrap=True,
-                            placeholder="Optional context passed as INPUTS['context']",
+                            placeholder="Optional context bound as `context`",
                         )
                         with Horizontal(id="send-row"):
                             yield Button("Send", id="send", variant="primary")
@@ -569,17 +569,17 @@ def node_panel(node: Node):
         kind = node.type
     elif isinstance(node, AgentStart):
         body = node.content
-        inputs = node.config.inputs
-        if inputs:
+        args = node.args
+        if args:
             listed = ", ".join(
                 (
                     f"{name} ({len(value)} chars)"
                     if isinstance(value, str)
                     else f"{name} (agent {agent_ref_id(value) or 'invalid ref'})"
                 )
-                for name, value in inputs.items()
+                for name, value in args.items()
             )
-            body = f"{body}\n\n[INPUTS: {listed}]"
+            body = f"{body}\n\n[ARGS: {listed}]"
         kind = "query"
     elif isinstance(node, UserQuery):
         body = node.content

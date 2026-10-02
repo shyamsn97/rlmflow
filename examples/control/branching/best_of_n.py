@@ -15,6 +15,7 @@ import shutil
 from pathlib import Path
 
 from rlmflow import (
+    AgentConfig,
     Flow,
     LLMUsage,
 )
@@ -36,10 +37,9 @@ QUERY = (
 ROOT_REPLY = (
     "```repl\n"
     f"fruits = {[name for name, _ in FRUITS]!r}\n"
-    "handles = [await launch_subagent("
-    "f\"Classify {name} as 'citrus' or 'not_citrus'.\", "
-    "model='default', name=f'classify_{name}') for name in fruits]\n"
-    "results = [await handle.wait_for_result() for handle in handles]\n"
+    "handles = [launch_subagent("
+    "task=f\"Classify {name} as 'citrus' or 'not_citrus'.\") for name in fruits]\n"
+    "results = await asyncio.gather(*handles)\n"
     "finish(', '.join(f'{name}={r}' for name, r in zip(fruits, results)))\n"
     "```"
 )
@@ -76,7 +76,7 @@ def score(result: str) -> tuple[int, dict[str, str]]:
 def run_branch(root: Path, idx: int) -> tuple[str, int, dict[str, str], int]:
     llm = MockLLM(seed=idx)
     flow = Flow(llm)
-    graph = flow.start(QUERY, max_depth=1, max_iters=10)
+    graph = flow.start(QUERY, config=AgentConfig(max_depth=1, max_iters=10))
     flow.run(graph)
     # Each branch persists to its own directory (graph.json).
     graph.save(root / f"branch_{idx}")

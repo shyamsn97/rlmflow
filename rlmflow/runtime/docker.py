@@ -5,10 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from rlmflow.graph.nodes import AgentStart
 from rlmflow.runtime.connections import DEFAULT_REPL_TIMEOUT, PopenConnection
-from rlmflow.runtime.repl import Repl
-from rlmflow.runtime.repl_client import WorkerRepl, WorkerSession
 from rlmflow.runtime.runtime import Runtime
 
 
@@ -81,7 +78,6 @@ class DockerRuntime(Runtime):
         repl_timeout: float | None = DEFAULT_REPL_TIMEOUT,
         execution_timeout: float | None = None,
         preimports: Sequence[str] | None = None,
-        **options: object,
     ) -> None:
         super().__init__(working_directory=working_directory, preimports=preimports)
         self.image = image
@@ -101,27 +97,14 @@ class DockerRuntime(Runtime):
             "workdir": workdir,
             "extra_args": extra_args,
             "docker_bin": docker_bin,
-            **options,
         }
 
-    def open(self, agent: AgentStart) -> Repl:
-        if agent.config.reuse_repl and agent.parent is not None:
-            parent = agent.parent.parent_agent
-            parent_repl = self.repls.get(parent.id)
-            if not isinstance(parent_repl, WorkerRepl):
-                raise RuntimeError("reuse_repl requires a live parent worker")
-            return WorkerRepl(parent_repl.session, tenant_id=agent.id)
-        connection = PopenConnection(
+    def connect(self) -> PopenConnection:
+        return PopenConnection(
             build_docker_argv(self.image, preimports=self.preimports, **self.options),
             cwd=self.working_directory or Path.cwd(),
             label="Docker REPL worker",
         )
-        session = WorkerSession(
-            connection,
-            timeout=self.repl_timeout,
-            execution_timeout=self.execution_timeout,
-        )
-        return WorkerRepl(session, tenant_id=agent.id)
 
 
 __all__ = ["DockerRuntime", "build_docker_argv"]

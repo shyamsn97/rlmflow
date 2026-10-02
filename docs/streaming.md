@@ -33,11 +33,11 @@ The implementation is deliberately split by responsibility:
 - [`rlmflow/flow.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/flow.py)
   - `Flow.run_streaming`: the driver loop;
   - `Flow.step`: one complete Node transition;
-  - `Flow.launch_tool`: child creation, submission, and joining;
-  - `rlmflow.engine.steps`: `@Flow.transitions.on` producers;
+  - `rlmflow.engine.delegation`: child creation, submission, and joining;
+  - `rlmflow.engine.steps`: declarative `@transition` producers;
   - `rlmflow.engine.handoff`: child `DoneOutput` → parent `UserQuery`.
 - [`rlmflow/engine/execution.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/engine/execution.py)
-  - `Transition`: submitted Node, created Node, and infrastructure error;
+  - `StepResult`: submitted Node, created Node, and infrastructure error;
   - `TaskQueue`: active tasks, completed transitions, child-terminal wake-ups;
   - `Pool`, `ThreadPool`, `SequentialPool`: compute placement and capacity.
 - [`rlmflow/engine/boundaries.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/engine/boundaries.py)
@@ -70,22 +70,21 @@ Pool / Runtime
 `Flow.step(node)` consumes one frontier Node and returns its next durable Node:
 
 ```text
-AgentStart ──> to_plan / to_final          ─> PlanQuery | FinalQuery
-UserQuery  ──> complete / to_plan / guards ─> LLMOutput | PlanQuery | FinalQuery | TruncationSummary
-ExecOutput ──> to_plan                     ─> PlanQuery
-ErrorOutput─> to_plan / to_final           ─> PlanQuery | FinalQuery
+AgentStart ──> complete / guards ─> LLMOutput | FinalQuery | TruncationSummary
+UserQuery  ──> complete / guards ─> LLMOutput | FinalQuery | TruncationSummary
+ExecOutput ──> complete / guards ─> LLMOutput | FinalQuery | TruncationSummary
+ErrorOutput─> complete / guards ─> LLMOutput | FinalQuery | TruncationSummary
 
-LLMOutput  ──> to_action ─> ExecAction
-ExecAction ──> run_repl  ─> ExecOutput | ErrorOutput | ReplDead | DoneOutput | selected UserQuery
+LLMOutput  ──> to_action         ─> ExecAction
+           └─> to_missing_action ─> ExecAction(code="")
+ExecAction ──> run_repl  ─> ExecOutput | ErrorOutput | ReplDead | DoneOutput | VerificationFailure
 ```
-
-Named choices are the direct `ExecAction -> UserQuery` case. `Transitions.choices(CurrentQuery, *targets)` declares the allowed targets, and `transition("name")` selects one without creating an intermediate `ExecOutput`.
 
 The queue records both sides of that step:
 
 ```python
 @dataclass(slots=True)
-class Transition:
+class StepResult:
     submitted: Node
     created: Node
     error: BaseException | None = None

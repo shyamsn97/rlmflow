@@ -108,7 +108,19 @@ def export_run_traces(
         (out / f"{name}.json").write_text(json.dumps(trace, indent=2))
         renders = [board for _label, board in steps]
         if have_tiles:
-            sprites.save_gif(renders, out / f"{name}.gif")
+            # The worker trace is the deliberate jam. Hold the last board before
+            # the loop restarts so the unrecoverable position reads as the ending.
+            if name == "worker":
+                sprites.save_gif(
+                    renders,
+                    out / f"{name}.gif",
+                    ms=280,
+                    loop=0,
+                    hold_last_ms=2500,
+                    end_caption="unrecoverable",
+                )
+            else:
+                sprites.save_gif(renders, out / f"{name}.gif")
 
 
 class PanelViewer(StreamConsumer):

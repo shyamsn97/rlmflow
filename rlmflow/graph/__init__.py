@@ -17,12 +17,15 @@ from rlmflow.graph.nodes import (
     LLMUsage,
     Node,
     OutputNode,
-    PlanQuery,
+    RepairQuery,
     ReplDead,
     RunStats,
+    TransitionDecision,
     TruncationSummary,
     UserQuery,
+    VerificationFailure,
     start,
+    turn_mode_for,
 )
 
 __all__ = [
@@ -41,11 +44,14 @@ __all__ = [
     "LLMUsage",
     "Node",
     "OutputNode",
-    "PlanQuery",
     "ReplDead",
+    "RepairQuery",
     "RunStats",
+    "TransitionDecision",
     "TruncationSummary",
     "UserQuery",
+    "VerificationFailure",
     "persistence",
     "start",
+    "turn_mode_for",
 ]

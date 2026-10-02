@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import keyword
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Any
 
-DEFAULT_QUERY = """Please read through the provided INPUTS if present and answer any
-queries or respond to any instructions contained within it."""
+DEFAULT_QUERY = "Complete the requested task."
 AGENT_REF_KEY = "$rlmflow_agent"
-AgentInputValue = str | dict[str, str]
+AgentArgValue = Any
 #: Official RLM truncates each REPL block at 20K characters (`format_iteration`).
 DEFAULT_MAX_OUTPUT_CHARS = 20_000
 DEFAULT_MAX_QUERY_CHARS = 20_000
@@ -28,13 +28,24 @@ def agent_ref_id(value: object) -> str | None:
     return None
 
 
-def input_references(inputs: Mapping[str, object]) -> tuple[tuple[str, str], ...]:
-    """Return ``(input_name, agent_id)`` pairs from top-level input values."""
-    return tuple(
-        (name, agent_id)
-        for name, value in inputs.items()
-        if (agent_id := agent_ref_id(value)) is not None
-    )
+def argument_references(args: Mapping[str, object]) -> tuple[tuple[str, str], ...]:
+    """Return ``(argument_path, agent_id)`` pairs from nested JSON arguments."""
+    references: list[tuple[str, str]] = []
+
+    def visit(path: str, value: object) -> None:
+        agent_id = agent_ref_id(value)
+        if agent_id is not None:
+            references.append((path, agent_id))
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                visit(f"{path}.{key}" if path else str(key), item)
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(f"{path}[{index}]", item)
+
+    for name, value in args.items():
+        visit(name, value)
+    return tuple(references)
 
 
 def validate_agent_name(name: str) -> None:
@@ -47,6 +58,14 @@ def validate_agent_name(name: str) -> None:
         raise ValueError(f"invalid child name {name!r}")
 
 
+def validate_argument_name(name: str) -> None:
+    """Require invocation arguments that can be bound as Python variables."""
+    if not isinstance(name, str) or not name.isidentifier() or keyword.iskeyword(name):
+        raise ValueError(f"invalid invocation argument name {name!r}")
+    if name == "task":
+        raise ValueError("'task' is the invocation task and cannot be passed twice")
+
+
 @dataclass
 class AgentConfig:
     name: str = "root"
@@ -54,15 +73,15 @@ class AgentConfig:
     depth: int = 0
     model: str = "default"
     prompt_profile: str = "default"
-    #: Persistent launch inputs. A child handle is stored as one exact
-    #: ``{AGENT_REF_KEY: agent_id}`` marker and resolved only when seeding the REPL.
-    inputs: dict[str, AgentInputValue] = field(default_factory=dict)
     output_schema: dict[str, Any] | None = None
     #: Default ``output_schema`` for launched children. Launch ``output_schema=``
     #: still wins. The root's own ``output_schema`` is independent.
     child_output_schema: dict[str, Any] | None = None
-    #: Place a child in its caller's live Python worker.
-    reuse_repl: bool = False
+    #: Durable identity of a launch verifier whose callable remains in the parent worker.
+    verifier_id: str | None = None
+    verifier_hash: str | None = None
+    #: Place a child in its caller's worker while keeping an isolated namespace.
+    reuse_worker: bool = False
     max_depth: int = 1
     #: How many model turns this agent may take. ``None`` means unbounded.
     max_iters: int | None = None
@@ -86,10 +105,11 @@ class AgentConfig:
             "name": name,
             "path": f"{self.path}.{name}",
             "depth": self.depth + 1,
-            "inputs": {},
             "output_schema": schema,
             "child_output_schema": deepcopy(schema),
-            "reuse_repl": False,
+            "verifier_id": None,
+            "verifier_hash": None,
+            "reuse_worker": False,
         }
         return replace(self, **{**values, **overrides})
 
@@ -107,10 +127,8 @@ def can_spawn(agent: Any) -> bool:
 def at_leaf(flow: Any = None, node: Any = None) -> bool:
     """True when this agent cannot spawn — the usual place for implementation tools.
 
-    Pass as ``@tool(..., when=at_leaf)``. ``flow`` is accepted so the callable
-    matches ``visible_tools`` / ``when`` ``(flow, node)`` signatures.
+    Pass as ``@tool(..., when=at_leaf)``; ``when`` predicates take ``(flow, node)``.
     """
-    del flow
     agent = None if node is None else getattr(node, "parent_agent", None)
     return not can_spawn(agent)
 
@@ -121,10 +139,10 @@ __all__ = [
     "DEFAULT_MAX_QUERY_CHARS",
     "DEFAULT_QUERY",
     "AgentConfig",
-    "AgentInputValue",
+    "AgentArgValue",
     "agent_ref_id",
     "at_leaf",
     "can_spawn",
-    "input_references",
+    "argument_references",
     "validate_agent_name",
 ]

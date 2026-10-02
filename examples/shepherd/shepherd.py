@@ -19,6 +19,7 @@ from pathlib import Path
 import cloudpickle
 
 from rlmflow import (
+    AgentConfig,
     AgentStart,
     DoneOutput,
     ExecOutput,
@@ -27,7 +28,6 @@ from rlmflow import (
     Node,
     PromptProfile,
     Runtime,
-    default_render,
 )
 from rlmflow.consumers import LiveGraphTree
 from rlmflow.llm import client_for
@@ -168,9 +168,9 @@ META_QUERY = """\
 The Sokoban worker in `jam` walked itself into a bad irreversible plan. Rewind it
 and restart it {n} different ways; the best branch is the one that counts.
 
-- `INPUTS["jam"]`: the stuck state as JSON. `INPUTS["max_rewind"]`: how far back
+- `jam`: the stuck state as JSON. `max_rewind`: how far back
   you may go.
-- `await preview(k)` for 1 <= k <= int(INPUTS["max_rewind"]) shows the board k
+- `await preview(k)` for 1 <= k <= int(max_rewind) shows the board k
   pushes ago: `board`, the maze as ASCII with row and column rulers and `#` for
   wall; `boxes` as {{"B1": [row, col]}}; `goals` as {{"G1": [row, col]}}; and
   `legal_pushes` such as `"B1 up from (4,3)"`. Print `board` and read the walls off it —
@@ -287,7 +287,7 @@ def board_prompt(runtime: Runtime, agent: AgentStart, *, simple: bool = False) -
             "board is current. " + action
         )
 
-    order = agent.config.inputs.get("_shepherd_order")
+    order = agent.args.get("_shepherd_order")
     guidance = (
         f"\n\n{scoreboard(state, agent)}"
         f"\n\nStanding order: lock {order}. Each box goes to the goal named for "
@@ -392,12 +392,15 @@ async def run_shepherd(
     construct = SIMPLE_CONSTRUCT if simple_moves else CONSTRUCT
     jam_code = SIMPLE_JAM_CODE if simple_moves else JAM_CODE
 
-    def render_worker(runtime: Runtime, node: Node) -> list[dict[str, str]]:
-        messages = default_render(runtime, node)
-        content = board_prompt(runtime, node.parent_agent, simple=simple_moves)
+    def add_worker_board(user_prompt, flow: Flow, node: Node) -> None:
+        content = board_prompt(flow.runtime, node.parent_agent, simple=simple_moves)
         if content:
-            messages.append({"role": "user", "content": content})
-        return messages
+            user_prompt.add_section(
+                "turn.board",
+                content,
+                order=1050,
+                source="add_worker_board",
+            )
 
     flow = Flow(
         client_for(model, reasoning_effort=effort),
@@ -405,8 +408,7 @@ async def run_shepherd(
         prompt_profiles={
             "worker": PromptProfile(
                 system=SIMPLE_WORKER_SYSTEM if simple_moves else WORKER_SYSTEM,
-                render_fn=render_worker,
-                description="myopic Sokoban worker",
+                user_modifiers=add_worker_board,
             )
         },
     )
@@ -419,15 +421,16 @@ async def run_shepherd(
     flow.inject("Sokoban", Sokoban)
     worker = flow.start(
         WORKER_QUERY,
-        model="worker",
-        prompt_profile="worker",
-        max_depth=0,
-        max_iters=max_iters,
+        config=AgentConfig(
+            model="worker",
+            prompt_profile="worker",
+            max_depth=0,
+            max_iters=max_iters,
+        ),
     )
     shepherd = flow.start(
         META_QUERY.format(n=n_branches),
-        max_depth=max_depth,
-        max_iters=max_iters,
+        config=AgentConfig(max_depth=max_depth, max_iters=max_iters),
     )
 
     # The terminal view is the same shape as the other examples': one live agent
@@ -530,7 +533,7 @@ async def run_shepherd(
             plans,
             expected_plans=n_branches,
         )
-        shepherd.config.inputs = {
+        shepherd.args = {
             "jam": json.dumps(tools["jam"]),
             "max_rewind": str(tools["max_rewind"]),
         }

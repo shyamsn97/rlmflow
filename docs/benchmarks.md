@@ -1,73 +1,83 @@
-# Evaluation suites
+# Benchmarks
 
-The benchmark package has one pipeline:
+The benchmark harness has one public interface:
 
-`SuiteSpec → Dataset → Example → Runner → Prediction → Score → Row`
-
-`benchmarks/eval/suite.py` is the complete public suite registry. There are no compatibility aliases or hidden legacy sets.
-
-## Public suites
-
-- `smoke` runs `synthetic_needle` with the fake runner and makes no network calls.
-- `conformance` runs MiniMaze and Sudoku Search. These fast offline environments test private forks, shared budgets, candidate submission, and root selection.
-- `core` runs the paper-aligned OOLONG-Pairs 32K and OOLONG Yahoo 128K tasks. This is the primary long-context evidence.
-- `interactive` runs the official MazeBench world. It provides persistent visual interaction and replay-oriented evidence.
-
-Use `--split pilot` for bring-up and `--split full` for the frozen evidence split. Split selection is part of each dataset; pilot/full are not separate suite names.
-
-## Comparison contract
-
-Every suite except `smoke` runs exactly:
-
-1. `official-rlm`
-1. `rlmflow-depth-0`
-1. `rlmflow-depth-1`
-1. `rlmflow-depth-2`
-
-The three rlmflow arms instantiate the same runner class. `max_depth` is the only treatment variable. Official RLM is a separate upstream reference and is reported as such.
-
-The runtime bindings share task bytes, filesystem fixtures, environment operation specifications, episode state, action/candidate budgets, scoring, and normalized telemetry. The only intentional environment asymmetry is that rlmflow can represent handle-valued dependency edges while upstream RLM exposes recursive subcalls.
-
-## Commands
-
-```bash
-make -f benchmarks/Makefile eval-list-suites
-make -f benchmarks/Makefile eval-smoke
-make -f benchmarks/Makefile eval-conformance
-make -f benchmarks/Makefile eval-core
-make -f benchmarks/Makefile eval-interactive
+```python
+benchmark(
+    name="delegation",
+    description="...",
+    environments=environments,
+    runners=["prime-agent", "official-rlm", "jaz", "rlmflow-depth-1"],
+    model="openai:gpt-5-mini",
+    output_dir=Path("benchmarks/runs/delegation"),
+)
 ```
 
-Set `EVAL_SPLIT=full` for full manifests. The non-smoke commands use paid model APIs; the refactor and CI checks do not launch them.
+An environment is one complete scored problem. A benchmark is a collection of
+environments run against each requested runner. Every runner receives the same
+task description and canonical observation bytes. Hidden answers and simulator
+state remain inside the environment.
 
-Direct CLI use follows the same registry:
+## Benchmark catalog
+
+- `smoke`: one deterministic synthetic needle/haystack environment.
+- `delegation`: swarm fan-out; pilot has one eight-shard problem and full has two.
+- `long-context`: a fixed OOLONG TREC-coarse 128K slice; pilot has two
+  questions and full has ten.
+- `interactive`: MiniMaze, Sudoku Search, and MazeBench.
+
+`pilot` and `full` are frozen manifests, not sampling requests. Needle and
+MazeBench expose their one deterministic environment in both splits.
+The other OOLONG datasets remain available as explicit datasets but are not
+part of the default benchmark.
+
+See [Long-context prompt guidance](research/long_context_prompt_guidance.md)
+for the current Official RLM comparison, failure analysis, and proposed
+rlmflow prompt experiment.
+
+## CLI
+
+There is one command:
 
 ```bash
-python -m benchmarks.eval --dataset conformance --split pilot --full
+python benchmarks/run_benchmark.py --list
+
+python benchmarks/run_benchmark.py delegation --split full \
+  --runners prime-agent,official-rlm,jaz,rlmflow-depth-1 \
+  --model openai:gpt-5-mini \
+  --executor docker --parallelism 4
+
+python benchmarks/run_benchmark.py interactive --split pilot \
+  --runners official-rlm,rlmflow-depth-1
 ```
 
-A direct dataset name requires an explicit `--runner`, preventing accidental departures from the canonical matrix.
+`--runners` is repeatable and also accepts comma-separated values. Executors are
+`local`, `docker`, and `modal`. To resume, pass `--resume --output <existing-run>`.
 
-## Evidence roles
+The Makefile provides thin recipes:
 
-The `core` suite is the primary scientific comparison. OOLONG-Pairs uses the paper's fixed 32K pair-aggregation setting, while OOLONG Yahoo tests information scaling at 128K. Compare paired rows by dataset, model, runner, and seed.
+```bash
+make -f benchmarks/Makefile smoke
+make -f benchmarks/Makefile delegation
+make -f benchmarks/Makefile long-context
+make -f benchmarks/Makefile interactive
+```
 
-MazeBench is supporting interactive evidence. It uses the official fixed H×I, top-diagonal, yaw-0 start and a shared action budget. The root explores a persistent ASCII world and is scored on gems collected, with 100 gems as the native win condition. Child trajectories remain private probes. Generated visual reports synchronize execution topology, actions, candidate state, and environment replay.
+## Outputs
 
-## Results
+Each run directory contains:
 
-The stable serialized units remain `Row` and `Prediction.metrics`, so old JSONL artifacts remain readable. New runners emit one canonical telemetry vocabulary at the runner boundary. Matrix, comparison, Markdown, release-gate, and visual report commands are read-only consumers of that vocabulary.
+- `rows.jsonl`: one `EnvironmentReport` per environment and runner;
+- `summary.json`: runner aggregates;
+- `report.md` and `report.html`: the same per-problem metrics table;
+- runner artifacts under `artifacts/`.
 
-Environment runs include:
+Every row records task and observation hashes, score/error, token counts, wall
+time, turns, agents, nodes, and environment metrics. Delegation rows include
+children, query calls, launch/retrieval/dedup evidence, and per-shard answers.
+Interactive rows include actions, forks, candidate selection, completion, and
+native task metrics.
 
-- accepted, primary, and probe action counts;
-- private instance and replay events;
-- candidate count, selected candidate, and selection regret;
-- selection compliance; and
-- domain-native score details.
-
-Do not average native scores across domains. Compare runners within each dataset/domain and seed.
-
-## Acceptance
-
-`python -m benchmarks.eval.calibrate_search` performs structural conformance checks without model calls. `benchmarks/eval/acceptance.py` is the single source for required runners, domains, seeds, runtime limits, selection compliance, and difficulty thresholds. A release does not require positive depth lift. Any delegation-benefit claim requires the measured depth-2 arm to beat depth 0 under the shared contract.
+Gold answers are never serialized into worker payloads. A description or
+observation hash mismatch is an infrastructure error and receives no semantic
+score.

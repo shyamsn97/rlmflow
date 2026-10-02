@@ -49,8 +49,20 @@ class InjectProxyRequest(BaseRequest):
     is_async: bool = False
 
 
+class VerifyRequest(BaseRequest):
+    cmd: Literal["verify"] = "verify"
+    verifier_id: str
+    candidate: JsonValue
+
+
 ReplRequest = Annotated[
-    PingRequest | RunRequest | InjectRequest | RetrieveRequest | RemoveRequest | InjectProxyRequest,
+    PingRequest
+    | RunRequest
+    | InjectRequest
+    | RetrieveRequest
+    | RemoveRequest
+    | InjectProxyRequest
+    | VerifyRequest,
     Field(discriminator="cmd"),
 ]
 
@@ -63,7 +75,6 @@ class ReplResponse(WireModel):
     error: str | None = None
     value: JsonValue = None
     env: dict[str, JsonValue] | None = None
-    transition: str | None = None
 
 
 class ProxyCall(WireModel):
@@ -81,7 +92,6 @@ class ProxyResponse(WireModel):
     ok: bool = True
     value: str | None = None
     done: bool = False
-    transition: str | None = None
     error: str | None = None
 
 
@@ -117,6 +127,7 @@ __all__ = [
     "ReplResponse",
     "RetrieveRequest",
     "RunRequest",
+    "VerifyRequest",
     "WireModel",
     "dump_message",
     "parse_client_message",

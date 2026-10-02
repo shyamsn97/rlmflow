@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from rlmflow.engine.execution import Transition
+from rlmflow.engine.execution import StepResult
 from rlmflow.flow import Flow
 from rlmflow.graph.nodes import (
     AgentConfig,
@@ -30,7 +30,7 @@ from rlmflow.rao.credit import (
 )
 from rlmflow.rao.env import Env, EnvSession, env_tool
 
-#: Key the initial observation is handed to the root agent under, via ``INPUTS``.
+#: Direct root argument containing the initial environment observation.
 OBSERVATION_INPUT = "observation"
 
 
@@ -144,11 +144,10 @@ class RolloutFlow(Flow):
         self._sample_sinks[agent.id] = sink
         return self._create_pooled_llm(
             model,
-            key=agent.id,
             request_kwargs={"sample_sink": sink},
         )
 
-    async def _drive(self, node: Node) -> Transition:
+    async def _drive(self, node: Node) -> StepResult:
         transition = await super()._drive(node)
         created = transition.created
         agent = created.parent_agent
@@ -302,7 +301,7 @@ class Collector:
             observation = await session.reset()
             root = self.flow.start(
                 task.goal,
-                inputs={OBSERVATION_INPUT: json.dumps(observation, default=str)},
+                **{OBSERVATION_INPUT: json.dumps(observation, default=str)},
             )
             self.flow.bind(root, session)
             trees.append(RolloutTree(task=task, root=root, index=index, session=session))

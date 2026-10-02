@@ -3,77 +3,168 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import threading
 from typing import Any
 
-from rlmflow.graph.config import AGENT_REF_KEY, agent_ref_id, input_references
+from rlmflow.engine import verification
+from rlmflow.graph.config import AGENT_REF_KEY, agent_ref_id
 from rlmflow.graph.nodes import (
-    DEFAULT_QUERY,
     AgentStart,
     DoneOutput,
     ExecAction,
     Node,
+    build_agent,
     validate_agent_name,
 )
 from rlmflow.runtime.repl_client import current_rpc_call_id
-from rlmflow.structured import json_schema_for
 from rlmflow.tools.agents import AgentHandle
 from rlmflow.tools.tools import tool
 
+LAUNCH_DESCRIPTION = """\
+Launch a recursive agent immediately. Pass `name=` for a stable child name, JSON \
+keyword arguments or child handles, `schema=` for a validated result, and `verify=` \
+for repair feedback.
+
+Example — launch ready independent work together:
+```repl
+first = launch_subagent(name="first", task="Produce deliverable A.")
+second = launch_subagent(name="second", task="Produce deliverable B.")
+print(await asyncio.gather(first, second))
+```
+Example — declare a known dependency without waiting first:
+```repl
+source = launch_subagent(task="Produce the source artifact.")
+review = launch_subagent(task="Validate artifact.", artifact=source)
+print(await review)
+```"""
+
 
 def launch_tool(flow: Any, node: Node):
-    mutation_lock = asyncio.Lock()
+    mutation_lock = threading.Lock()
 
-    @tool(
-        "Spawn or resume one focused child agent with an explicitly chosen model. "
-        "Pass a child handle as an inputs value to wait for that child and inject "
-        "its result into the new agent's INPUTS.",
-        proxy=True,
-    )
-    async def launch_subagent(
-        goal: str,
+    @tool(LAUNCH_DESCRIPTION, proxy=True, is_async=False)
+    def launch_subagent(
         *,
-        model: str,
+        task: str,
         name: str | None = None,
-        inputs: dict[str, str | AgentHandle] | None = None,
-        output_schema: Any = None,
-        prompt_profile: str | None = None,
-        reuse_repl: bool = False,
+        schema: Any = None,
+        verify: Any = None,
+        **json_args: Any,
     ) -> AgentHandle:
         if not isinstance(node, ExecAction):
             raise TypeError("launch_subagent requires an ExecAction")
         call_id = current_rpc_call_id()
-        async with mutation_lock:
-            existing_id = node.launched_agent_ids.get(call_id)
-            if existing_id is not None:
-                root = node.root
-                existing = root.find_agent(existing_id) if root is not None else None
-                if existing is None:
-                    raise ValueError(
-                        f"launch receipt {node.id}:{call_id} points to missing "
-                        f"agent {existing_id!r}"
-                    )
-                return _handle(existing)
-            if flow.queue is None:
-                raise ValueError(f"replayed launch call {node.id}:{call_id} has no launch receipt")
 
-            if not isinstance(goal, str):
-                raise TypeError("launch_subagent goal must be a string")
-            spec = {
-                "query": goal,
-                "name": name,
-                "inputs": resolve_inputs(node, inputs),
-                "model": model,
-                "output_schema": output_schema,
-                "prompt_profile": prompt_profile,
-                "reuse_repl": reuse_repl,
-            }
-            resolved = flow.resolve_child(node, spec, call_id)
-            node.record_agent_launch(call_id, resolved)
-            _sort_launched_children(node)
-            flow.submit_child(resolved)
-        return _handle(resolved)
+        def attach() -> AgentHandle:
+            with mutation_lock:
+                return _attach(
+                    flow,
+                    node,
+                    call_id,
+                    task=task,
+                    name=name,
+                    schema=schema,
+                    verify=verify,
+                    json_args=json_args,
+                )
+
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        owner_loop = getattr(flow, "_active_loop", None)
+        if current_loop is owner_loop or flow.queue is None:
+            return attach()
+        if owner_loop is None:
+            raise RuntimeError("launch_subagent has no active Flow event loop")
+
+        async def attach_on_owner() -> AgentHandle:
+            return attach()
+
+        return asyncio.run_coroutine_threadsafe(attach_on_owner(), owner_loop).result()
 
     return launch_subagent
+
+
+def _attach(
+    flow: Any,
+    node: ExecAction,
+    call_id: int,
+    *,
+    task: object,
+    name: object,
+    schema: Any,
+    verify: Any,
+    json_args: dict[str, Any],
+) -> AgentHandle:
+    verifier_id, verifier_hash = _register_verifier(
+        flow,
+        node,
+        call_id,
+        verify,
+    )
+    existing_id = node.launched_agent_ids.get(call_id)
+    if existing_id is not None:
+        root = node.root
+        existing = root.find_agent(existing_id) if root is not None else None
+        if existing is None:
+            raise ValueError(
+                f"launch receipt {node.id}:{call_id} points to missing "
+                f"agent {existing_id!r}"
+            )
+        if existing.config.verifier_hash != verifier_hash:
+            raise ValueError(
+                f"replayed launch verifier changed for {existing.config.path!r}"
+            )
+        if name is not None and name != existing.config.name:
+            raise ValueError(
+                f"replayed launch name changed for {existing.config.path!r}: {name!r}"
+            )
+        return _handle(existing)
+    if flow.queue is None:
+        raise ValueError(f"replayed launch call {node.id}:{call_id} has no launch receipt")
+
+    if not isinstance(task, str):
+        raise TypeError("launch_subagent task must be a string")
+    if name is not None:
+        validate_agent_name(name)
+    spec = {
+        "task": task,
+        "name": name,
+        "args": resolve_args(node, json_args),
+        "output_schema": (
+            flow.output_codec.normalize(schema) if schema is not None else None
+        ),
+        "verifier_id": verifier_id,
+        "verifier_hash": verifier_hash,
+    }
+    resolved = flow.resolve_child(node, spec, call_id)
+    node.record_agent_launch(call_id, resolved)
+    _sort_launched_children(node)
+    submit_child(flow, resolved)
+    return _handle(resolved)
+
+
+def _register_verifier(
+    flow: Any,
+    action: ExecAction,
+    call_id: int,
+    verify: Any,
+) -> tuple[str | None, str | None]:
+    if verify is None:
+        return None, None
+    verifier_id = f"{action.id}:{call_id}"
+    if callable(verify):
+        flow._verifiers[verifier_id] = verify
+        return verifier_id, verification.fingerprint(verify)
+    if (
+        isinstance(verify, dict)
+        and verify.get("$rlmflow_verifier") == verifier_id
+        and isinstance(verify.get("fingerprint"), str)
+    ):
+        return verifier_id, verify["fingerprint"]
+    raise TypeError("launch_subagent verify must be a callable")
 
 
 def _handle(agent: AgentStart) -> AgentHandle:
@@ -84,46 +175,60 @@ def _handle(agent: AgentStart) -> AgentHandle:
     )
 
 
-def resolve_inputs(
+def resolve_args(
     action: ExecAction,
-    inputs: object,
-) -> dict[str, str | dict[str, str]]:
-    """Validate immediate strings and persist top-level handle-valued inputs."""
-    if inputs is None:
+    args: object,
+) -> dict[str, Any]:
+    """Validate strict JSON arguments and persist nested handle references."""
+    if args is None:
         return {}
-    if not isinstance(inputs, dict):
-        raise TypeError("launch_subagent inputs must be a mapping")
+    if not isinstance(args, dict):
+        raise TypeError("launch_subagent arguments must be a mapping")
     root = action.root
     owner = action.parent_agent
     if root is None or owner is None:
-        raise RuntimeError("cannot resolve inputs from a detached action")
+        raise RuntimeError("cannot resolve arguments from a detached action")
 
-    resolved: dict[str, str | dict[str, str]] = {}
+    resolved: dict[str, Any] = {}
     sources: set[str] = set()
-    for input_name, value in inputs.items():
-        if not isinstance(input_name, str) or not input_name:
-            raise ValueError("input names must be non-empty strings")
-        if isinstance(value, str):
-            resolved[input_name] = value
-            continue
-        agent_id = value.agent_id if isinstance(value, AgentHandle) else agent_ref_id(value)
-        if agent_id is None:
-            raise TypeError(f"input {input_name!r} must be a string or top-level AgentHandle")
 
-        source = root.find_agent(agent_id)
-        if source is None:
-            raise ValueError(f"input {input_name!r} refers to unknown agent {agent_id!r}")
-        launch_action = root._index.launch_actions_by_agent_id.get(source.id)
-        launch_owner = launch_action.parent_agent if launch_action is not None else None
-        if launch_owner is not owner:
-            raise ValueError(
-                f"input {input_name!r} agent {source.config.path!r} is outside "
-                "the current agent's delegation scope"
-            )
-        if source.id in sources:
-            raise ValueError(f"duplicate agent input {source.config.path!r}")
-        sources.add(source.id)
-        resolved[input_name] = {AGENT_REF_KEY: source.id}
+    def resolve(value: Any, path: str) -> Any:
+        agent_id = value.agent_id if isinstance(value, AgentHandle) else agent_ref_id(value)
+        if agent_id is not None:
+            source = root.find_agent(agent_id)
+            if source is None:
+                raise ValueError(f"argument {path!r} refers to unknown agent {agent_id!r}")
+            launch_action = root._index.launch_actions_by_agent_id.get(source.id)
+            launch_owner = launch_action.parent_agent if launch_action is not None else None
+            if launch_owner is not owner:
+                raise ValueError(
+                    f"argument {path!r} agent {source.config.path!r} is outside "
+                    "the current agent's delegation scope"
+                )
+            if source.id in sources:
+                raise ValueError(f"duplicate agent argument {source.config.path!r}")
+            sources.add(source.id)
+            return {AGENT_REF_KEY: source.id}
+        if value is None or isinstance(value, (str, bool, int)):
+            return value
+        if isinstance(value, float):
+            json.dumps(value, allow_nan=False)
+            return value
+        if isinstance(value, list):
+            return [resolve(item, f"{path}[{index}]") for index, item in enumerate(value)]
+        if isinstance(value, dict):
+            nested: dict[str, Any] = {}
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    raise TypeError(f"argument {path!r} contains a non-string object key")
+                nested[key] = resolve(item, f"{path}.{key}")
+            return nested
+        raise TypeError(f"argument {path!r} must be JSON-compatible or an AgentHandle")
+
+    for argument_name, value in args.items():
+        if not isinstance(argument_name, str) or not argument_name:
+            raise ValueError("argument names must be non-empty strings")
+        resolved[argument_name] = resolve(value, argument_name)
     return resolved
 
 
@@ -134,43 +239,30 @@ def resolve_child(
     call_id: int,
 ) -> AgentStart:
     """Create one new direct child after receipt resolution has missed."""
-    explicit_name = spec.get("name")
-    if explicit_name is not None:
-        root = action.root
-        for agent_id in action.launched_agent_ids.values():
-            existing = root.find_agent(agent_id) if root is not None else None
-            if existing is not None and existing.config.name == explicit_name:
-                references = input_references(spec.get("inputs") or {})
-                if existing.input_references != references:
-                    raise ValueError(
-                        f"launch {existing.config.name!r} was repeated with "
-                        "different handle-valued inputs"
-                    )
-                return existing
-
     parent = action.parent_agent
-    query = spec.get("query", "")
-    if explicit_name is None:
-        used = {child.config.name for child in parent.sub_agents}
+    task = spec.get("task", "")
+    requested_name = spec.get("name")
+    used = {child.config.name for child in parent.sub_agents}
+    if requested_name is None:
         index = call_id
         while f"child{index}" in used:
             index += 1
         name = f"child{index}"
     else:
-        name = explicit_name
+        name = requested_name
     validate_agent_name(name)
     if any(child.config.name == name for child in parent.sub_agents):
         raise ValueError(f"duplicate child name {name!r}")
 
     if parent.config.depth >= parent.config.max_depth:
         raise ValueError(f"cannot launch beyond max depth {parent.config.max_depth}")
-    if len(query) > parent.config.max_query_chars:
+    if len(task) > parent.config.max_query_chars:
         raise ValueError(f"subagent goal exceeds {parent.config.max_query_chars} characters")
-    model = spec["model"]
+    model = flow.delegation_model or parent.config.model
     if model not in flow._llm_clients:
         available = ", ".join(sorted(flow._llm_clients))
         raise ValueError(f"unknown model {model!r}; available models: {available}")
-    return flow.new_child(action, name, spec)
+    return new_child(flow, action, name, spec)
 
 
 def submit_child(flow: Any, child: AgentStart) -> None:
@@ -192,7 +284,7 @@ def submit_leaf(flow: Any, leaf: Node, *, publish: bool = False) -> bool:
     owner = leaf.parent_agent
     if owner is None or owner.terminal:
         return False
-    if leaf is owner and owner.input_references:
+    if leaf is owner and owner.argument_references:
         if owner.dependency_scheduled or owner.blocked:
             return False
         owner.dependency_scheduled = True
@@ -213,7 +305,7 @@ def ready_dependents(node: Node) -> list[AgentStart]:
         for agent in root.iter_agents()
         if agent.frontier is agent
         and not agent.dependency_scheduled
-        and any(source_id == source.id for _name, source_id in agent.input_references)
+        and any(source_id == source.id for _name, source_id in agent.argument_references)
         and not agent.blocked
     ]
 
@@ -227,20 +319,24 @@ def new_child(
     """Open a child agent of ``node``'s agent, attached to ``node``."""
     if flow.budget_exhausted(node):
         raise RuntimeError("cannot launch a new subagent after max_budget is exhausted")
-    schema = spec.get("output_schema")
     overrides = {
         key: value
         for key, value in {
-            "inputs": dict(spec.get("inputs") or {}),
-            "model": spec.get("model"),
-            "prompt_profile": spec.get("prompt_profile"),
-            "output_schema": (json_schema_for(schema) if schema is not None else None),
-            "reuse_repl": spec.get("reuse_repl"),
+            "model": flow.delegation_model or node.parent_agent.config.model,
+            "prompt_profile": (
+                flow.delegation_prompt_profile
+                or node.parent_agent.config.prompt_profile
+            ),
+            "reuse_worker": flow.delegation_reuse_worker,
+            "output_schema": spec.get("output_schema"),
+            "verifier_id": spec.get("verifier_id"),
+            "verifier_hash": spec.get("verifier_hash"),
         }.items()
         if value is not None
     }
-    child = AgentStart(
-        content=spec.get("query") or DEFAULT_QUERY,
+    child = build_agent(
+        spec.get("task", ""),
+        spec.get("args"),
         config=node.parent_agent.config.child(name, **overrides),
     )
     node.append(child)
@@ -279,8 +375,8 @@ __all__ = [
     "launch_tool",
     "new_child",
     "ready_dependents",
-    "resolve_inputs",
+    "resolve_args",
     "resolve_child",
-    "submit_leaf",
     "submit_child",
+    "submit_leaf",
 ]

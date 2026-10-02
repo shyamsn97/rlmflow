@@ -1,25 +1,35 @@
-"""Minimal structured-output helpers."""
+"""Structured-output contracts, codecs, and compatibility helpers."""
 
 from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import jsonschema
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 
 Schema = type[BaseModel] | TypeAdapter[Any] | Mapping[str, Any] | str
+ContractSource = Literal["finish", "query"]
 _JSON_VALUE = TypeAdapter(JsonValue)
 
 
-def json_schema_for(schema: Schema) -> dict[str, Any]:
-    if isinstance(schema, Mapping | str):
-        json_schema = dict(_load_json_schema(schema))
-    else:
-        json_schema = _json_schema_for_pydantic(schema)
-    jsonschema.validators.validator_for(json_schema).check_schema(json_schema)
-    return json_schema
+@runtime_checkable
+class OutputCodec(Protocol):
+    """A replaceable JSON-value contract implementation."""
+
+    def normalize(self, schema: Schema) -> dict[str, Any]: ...
+
+    def render_contract(
+        self,
+        schema: Schema,
+        *,
+        source: ContractSource,
+    ) -> str: ...
+
+    def parse(self, content: str, schema: Schema) -> Any: ...
+
+    def validate(self, value: object, schema: Schema) -> Any: ...
 
 
 class StructuredOutputError(ValueError):
@@ -30,27 +40,80 @@ class StructuredOutputError(ValueError):
         super().__init__(_format_error_message(content, schema, cause))
 
 
-def system_prompt_hint(schema: Schema) -> str:
-    return json.dumps(json_schema_for(schema), indent=2)
+class JsonSchemaCodec:
+    """Default Pydantic/JSON-Schema codec.
 
+    Runtime contracts are normalized to JSON Schema dictionaries before they
+    enter agent configuration. Direct compatibility calls may still pass a
+    Pydantic model or ``TypeAdapter`` and receive its typed result.
+    """
 
-def parse_structured_output(content: str, schema: Schema) -> Any:
-    """Validate JSON content against a Pydantic or JSON schema."""
-    if isinstance(schema, Mapping | str):
+    def normalize(self, schema: Schema) -> dict[str, Any]:
+        if isinstance(schema, Mapping | str):
+            normalized = dict(_load_json_schema(schema))
+        else:
+            normalized = _json_schema_for_pydantic(schema)
+        jsonschema.validators.validator_for(normalized).check_schema(normalized)
+        return normalized
+
+    def render_contract(
+        self,
+        schema: Schema,
+        *,
+        source: ContractSource,
+    ) -> str:
+        schema_hint = json.dumps(self.normalize(schema), indent=2)
+        if source == "query":
+            return f"Return only JSON matching this schema:\n{schema_hint}"
+        return (
+            "This run requires structured output. When complete, call "
+            "`finish(value)` with a JSON-compatible Python value matching this "
+            "JSON Schema exactly — the value itself, not a status string:\n\n"
+            f"```json\n{schema_hint}\n```"
+        )
+
+    def parse(self, content: str, schema: Schema) -> Any:
+        """Parse JSON text and validate it against ``schema``."""
+        if isinstance(schema, Mapping | str):
+            try:
+                value = json.loads(content, parse_constant=_reject_json_constant)
+                jsonschema.validate(instance=value, schema=_load_json_schema(schema))
+                return value
+            except (json.JSONDecodeError, jsonschema.ValidationError, ValueError) as exc:
+                raise StructuredOutputError(
+                    content=content,
+                    schema=schema,
+                    cause=exc,
+                ) from exc
         try:
-            value = json.loads(content, parse_constant=_reject_json_constant)
-            jsonschema.validate(instance=value, schema=_load_json_schema(schema))
-            return value
-        except (json.JSONDecodeError, jsonschema.ValidationError, ValueError) as exc:
-            raise StructuredOutputError(
-                content=content,
-                schema=schema,
-                cause=exc,
-            ) from exc
-    try:
-        return _adapter_for(schema).validate_json(content)
-    except ValidationError as exc:
-        raise StructuredOutputError(content=content, schema=schema, cause=exc) from exc
+            return _adapter_for(schema).validate_json(content)
+        except ValidationError as exc:
+            raise StructuredOutputError(content=content, schema=schema, cause=exc) from exc
+
+    def validate(self, value: object, schema: Schema) -> Any:
+        """Validate a Python JSON value or a pre-encoded JSON string."""
+        if not isinstance(value, str):
+            try:
+                content = json.dumps(as_finish_value(value), allow_nan=False)
+            except (TypeError, ValueError) as exc:
+                raise StructuredOutputError(
+                    content=repr(value),
+                    schema=schema,
+                    cause=exc,
+                ) from exc
+            return self.parse(content, schema)
+        try:
+            return self.parse(value, schema)
+        except StructuredOutputError:
+            # A bare enum string such as "continue" is a value, not a JSON document.
+            return self.parse(json.dumps(value), schema)
+
+
+DEFAULT_OUTPUT_CODEC = JsonSchemaCodec()
+
+
+def json_schema_for(schema: Schema) -> dict[str, Any]:
+    return DEFAULT_OUTPUT_CODEC.normalize(schema)
 
 
 def as_finish_value(answer: object) -> JsonValue:
@@ -64,28 +127,6 @@ def as_finish_value(answer: object) -> JsonValue:
             "booleans, None, lists, or dictionaries with string keys"
         ) from exc
     return value
-
-
-def parse_structured_answer(answer: object, schema: Schema) -> Any:
-    """Validate an answer given as a Python value or as pre-encoded JSON text."""
-    if not isinstance(answer, str):
-        try:
-            content = json.dumps(as_finish_value(answer), allow_nan=False)
-        except (TypeError, ValueError) as exc:
-            raise StructuredOutputError(content=repr(answer), schema=schema, cause=exc) from exc
-        return parse_structured_output(content, schema)
-    try:
-        return parse_structured_output(answer, schema)
-    except StructuredOutputError:
-        # A bare string such as NO_MATCH is a value, not a JSON document.
-        return parse_structured_output(json.dumps(answer), schema)
-
-
-class StructuredOutputParser:
-    """Compatibility shim for the original public parser object."""
-
-    system_prompt_hint = staticmethod(system_prompt_hint)
-    __call__ = staticmethod(parse_structured_output)
 
 
 def _adapter_for(schema: type[BaseModel] | TypeAdapter[Any]) -> TypeAdapter[Any]:
@@ -135,12 +176,12 @@ def _format_error_message(content: str, schema: Schema, cause: Exception) -> str
 
 
 __all__ = [
+    "ContractSource",
+    "DEFAULT_OUTPUT_CODEC",
+    "JsonSchemaCodec",
+    "OutputCodec",
     "Schema",
     "StructuredOutputError",
-    "StructuredOutputParser",
     "as_finish_value",
     "json_schema_for",
-    "parse_structured_answer",
-    "parse_structured_output",
-    "system_prompt_hint",
 ]

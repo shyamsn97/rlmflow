@@ -13,25 +13,23 @@ The core installation needs `cloudpickle` for value transfer. `ModalRuntime` add
 
 Agent Python always crosses a process boundary. This provides fault and state isolation, but local subprocesses are not security sandboxes.
 
-## Isolated and shared agents
+## Isolated and colocated agents
 
-Each root and child gets an isolated worker by default. Pass `reuse_repl=True` to place a child in its caller's existing worker:
+Each root and child gets an isolated worker by default. Placement is Flow-owned; set `delegation_reuse_worker=True` to place delegated children in their caller's worker process while retaining a separate Python namespace:
 
 ```python
-analyst = await launch_subagent(
-    "Continue from the live objects prepared above.",
-    model="default",
-    name="analyst",
-    reuse_repl=True,
-)
-result = await analyst.wait_for_result()
+flow = Flow(client, delegation_reuse_worker=True)
+
+# In agent REPL code:
+analyst = launch_subagent(task="Analyze records.", records=records)
+result = await analyst
 ```
 
-Shared agents have separate transcripts, model turns, `INPUTS`, `ENV`, completion, and output attribution. They use the same interpreter and globals, so imports, mutable objects, caches, open resources, and object identity are shared immediately. Worker termination affects every tenant in that worker.
+Colocated agents have separate namespaces, transcripts, model turns, invocation arguments, `ENV`, completion, and output attribution. They share only the interpreter process and host connection. Worker termination affects every tenant in that worker.
 
-The worker can execute multiple shared tenants concurrently. Per-execution context routes `INPUTS`, `ENV`, output, completion, and host-tool calls back to the correct agent. User code can use ordinary top-level `await` and `asyncio.gather(...)`.
+The worker can execute multiple isolated tenants concurrently. Per-execution context routes `ENV`, output, completion, and host-tool calls back to the correct agent. Invocation arguments are rebound as direct variables before each action. User code can use ordinary top-level `await` and `asyncio.gather(...)`.
 
-A worker outlives the agent that answered in it: finishing does not close a REPL, so a fan-out holds one worker per child until you close them. Close a run's REPLs with `close_repls=True` on `run`/`arun`/`run_streaming`, one with `flow.runtime.close_repl(agent)`, or everything the Flow owns with `await flow.aclose()` — see [Control](control.md#cleanup).
+A worker outlives the agent that answered in it: finishing does not close a REPL. Without colocation a fan-out holds one worker per child until you close them. Close a run's REPLs with `close_repls=True` on `run`/`arun`/`run_streaming`, one with `flow.runtime.close_repl(agent)`, or everything the Flow owns with `await flow.aclose()` — see [Control](control.md#cleanup).
 
 ## Working directory and tools
 
@@ -73,9 +71,9 @@ A timeout terminates the entire worker because Python cannot safely kill an arbi
 
 ## Restore behavior
 
-Saved graphs remain the durable state. `restore="replay"` reconstructs unfinished namespaces before scheduling the run. `restore="lazy"` waits until an agent is about to execute code, then replays the recorded executions needed by that worker. `reuse_repl=True` is live sharing, not namespace cloning.
+Saved graphs remain the durable state. `restore="replay"` reconstructs unfinished namespaces before scheduling the run. `restore="lazy"` waits until an agent is about to execute code, then replays the recorded executions needed by that worker. `reuse_worker=True` restores process placement without sharing agent globals.
 
-Restore operates on physical worker sessions. If any tenant in a shared session is unfinished, the worker owner and every tenant whose recorded actions contributed to that heap are replayed parent-first—even when some are terminal. A terminal session with no unfinished tenant is skipped.
+Restore operates on physical worker sessions. If a colocated tenant is unfinished, its worker owner is rebuilt first so the child can reopen in that session. Each tenant then replays only its own namespace.
 
 ## Docker
 

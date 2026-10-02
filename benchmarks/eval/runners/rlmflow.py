@@ -8,18 +8,27 @@ import time
 
 from benchmarks.eval import runner
 from benchmarks.eval.artifacts import render_problem_artifacts
+from benchmarks.eval.delegation.fanout import rlmflow_trace
 from benchmarks.eval.delegation.metrics import (
     delegation_metrics,
 )
 from benchmarks.eval.delegation.parity import comparison_contract
 from benchmarks.eval.environments.base import EnvironmentEpisode, EnvironmentFlow
-from benchmarks.eval.environments.registry import DEFINITIONS, build_environment
+from benchmarks.eval.environments.registry import (
+    action_budget,
+    build_environment,
+    candidate_budget,
+)
 from benchmarks.eval.metrics import graph_metrics
 from benchmarks.eval.runners.shared import (
     FACT_LOOKUP_DESCRIPTION,
     fact_lookup_data,
+    fanout_payloads_from_example,
+    fanout_shards_from_payloads,
     prepare_run,
+    runtime_prompt,
 )
+from benchmarks.eval.tasks.swarm_fanout import fanout_payloads
 from benchmarks.eval.types import Example, Model, Prediction, RunContext, Runner
 from rlmflow import (
     AgentConfig,
@@ -42,7 +51,6 @@ class RLMFlowLocalRunner(Runner):
         live_save: bool = True,
         max_steps: int | None = None,
         use_llm_query: bool = True,
-        use_llm_query_batched: bool = True,
         use_agent_tree: bool = False,
         worker_model: str | None = None,
         divide_budget_by_best_of_n: bool = False,
@@ -53,7 +61,6 @@ class RLMFlowLocalRunner(Runner):
         self.live_save = live_save
         self.max_steps = max_steps
         self.use_llm_query = use_llm_query
-        self.use_llm_query_batched = use_llm_query_batched
         self.use_agent_tree = use_agent_tree
         self.worker_model = worker_model
         self.divide_budget_by_best_of_n = divide_budget_by_best_of_n
@@ -61,7 +68,17 @@ class RLMFlowLocalRunner(Runner):
     def run(self, example: Example, model: Model, ctx: RunContext) -> Prediction:
         graph_dir = ctx.artifact_dir / "graph"
         prepared = prepare_run(example, ctx, runtime="rlmflow")
-        inputs = prepared.inputs
+        inputs: dict[str, object] = dict(prepared.inputs)
+        canonical_payloads = fanout_payloads_from_example(example)
+        shards = _fanout_shards(example) or fanout_shards_from_payloads(canonical_payloads)
+        if canonical_payloads is not None:
+            inputs["fanout_payloads"] = canonical_payloads
+        elif shards is not None:
+            inputs["fanout_payloads"] = fanout_payloads(
+                shards,
+                prepared.work_dir / "shards",
+            )
+        prompt = _runtime_prompt(example, "rlmflow")
         max_depth = self.max_depth
         best_of_n = int(ctx.params.get("best_of_n", 1))
         max_budget = self.max_budget
@@ -76,21 +93,21 @@ class RLMFlowLocalRunner(Runner):
             llm_clients=llm_clients,
             delegation_model="worker" if llm_clients is not None else None,
             use_llm_query=self.use_llm_query,
-            use_llm_query_batched=self.use_llm_query_batched,
             use_agent_tree=self.use_agent_tree,
         )
         environment = prepared.environment
         environment_episode = None
-        if isinstance(environment, dict) and str(environment.get("kind", "")) in DEFINITIONS:
+        if isinstance(environment, dict):
             built = build_environment(
                 environment,
                 artifact_dir=ctx.artifact_dir / "environment",
             )
             environment_episode = EnvironmentEpisode(
-                built.adapter,
-                max_actions=built.max_actions,
+                built,
+                max_actions=action_budget(built),
                 episode_id=prepared.episode_id,
-                candidate_budget=built.candidate_budget,
+                candidate_budget=candidate_budget(built),
+                expected_observation_sha256=environment.get("observation_sha256"),
             )
             flow = EnvironmentFlow(
                 _ModelClient(model),
@@ -118,8 +135,8 @@ class RLMFlowLocalRunner(Runner):
         # Seed the durable graph; `run_streaming` then drives the whole tree,
         # mutating that graph in place and publishing each changed Node.
         graph = flow.start(
-            example.prompt,
-            inputs=inputs,
+            prompt,
+            **inputs,
         )
         cap = self.max_steps or max(200, self.max_iters * max(1, max_depth + 1) * 25)
         steps = 0
@@ -161,7 +178,8 @@ class RLMFlowLocalRunner(Runner):
             "iterations": steps,
             "comparison_contract": comparison_contract(
                 runtime="rlmflow",
-                prompt=example.prompt,
+                task_prompt=example.prompt,
+                delivered_prompt=prompt,
                 inputs=inputs,
                 root_model=model.name,
                 worker_model=self.worker_model,
@@ -179,6 +197,11 @@ class RLMFlowLocalRunner(Runner):
                 **delegation,
             },
         }
+        if shards is not None:
+            metrics["fanout"] = rlmflow_trace(
+                shards,
+                delegation["child_runs"],
+            )
         if environment_metrics is not None:
             metrics["environment"] = environment_metrics
         artifacts = {"graph_path": str(graph_dir)}
@@ -304,6 +327,20 @@ def _example_tools(example: Example) -> list:
             raise KeyError(f"unknown entity {entity!r}; available: {choices}") from exc
 
     return [fact_lookup]
+
+
+def _fanout_shards(example: Example) -> list[dict] | None:
+    shards = example.metadata.get("shards")
+    return list(shards) if example.metadata.get("fixture") and isinstance(shards, list) else None
+
+
+def _runtime_prompt(example: Example, runtime: str) -> str:
+    shards = _fanout_shards(example)
+    if shards is None and example.metadata.get("environment_family") != "fanout":
+        return example.prompt
+    from benchmarks.eval.tasks.swarm_fanout import fanout_runtime_guidance
+
+    return runtime_prompt(example.prompt, fanout_runtime_guidance(runtime))
 
 
 __all__ = [

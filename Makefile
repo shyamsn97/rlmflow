@@ -1,15 +1,5 @@
-.PHONY: clean clean-build clean-pyc clean-test coverage dist docs help install lint lint/flake8 format-md lint-md test test-all test-live test-live-boids examples examples-list examples-optional examples-live examples-sandbox examples-all examples-slow showcase-shepherd-assets showcase-needle-assets animation animation-preview animation-mp4 animation-gif animation-gif-small animation-clean bump-version release-check release-tag release-push release
-	{%- if cookiecutter.use_black == 'y' %} lint/black{% endif %}
+.PHONY: clean clean-build clean-pyc clean-test help install lint format-md lint-md serve-docs test test-all examples examples-list examples-optional examples-live examples-sandbox examples-all examples-slow showcase-shepherd-assets showcase-needle-assets showcase-boids-assets animation animation-preview animation-mp4 animation-gif animation-gif-small animation-clean bump-version release-check release-tag release-push release
 .DEFAULT_GOAL := help
-
-define BROWSER_PYSCRIPT
-import os, webbrowser, sys
-
-from urllib.request import pathname2url
-
-webbrowser.open("file://" + pathname2url(os.path.abspath(sys.argv[1])))
-endef
-export BROWSER_PYSCRIPT
 
 define PRINT_HELP_PYSCRIPT
 import re, sys
@@ -59,7 +49,6 @@ print(f"{path}: {old_version} -> {new_version}")
 endef
 export BUMP_VERSION_PYSCRIPT
 
-BROWSER := python -c "$$BROWSER_PYSCRIPT"
 BUMP ?= patch
 VERSION ?=
 
@@ -88,10 +77,7 @@ clean-test: ## remove test and coverage artifacts
 	rm -fr coverage/
 	rm -fr .pytest_cache
 
-lint: ## check style with flake8
-	isort --profile black rlmflow
-	black rlmflow
-	flake8 rlmflow
+lint: ## Check Python style with Ruff, matching CI.
 	python -m ruff check .
 
 # ── Markdown ─────────────────────────────────────────────────────────
@@ -108,48 +94,14 @@ lint-md: ## Check public markdown formatting without writing changes.
 install: clean lint
 	python -m pip install . --upgrade
 
-doc:
-	rm -rf docs/reference/
-	pdocs as_markdown rlmflow -o docs/reference
-	cp examples/*.ipynb docs/examples/
-
 serve-docs:
 	mkdocs serve
-
-commit: install test doc
-	git add .
-	git commit -a
 
 test: ## Run the default test suite.
 	python -m pytest
 
 test-all: build-docker-image ## Run all tests, including Docker-gated integration tests.
 	RECURSIVE_FLOW_DOCKER_TEST=1 python -m pytest
-
-# Behavioral checks against a real model: does the prompt delegate substantial
-# independent work, and does it stay local on trivial work? Pinned to one model
-# so results stay comparable across prompt changes. Override with
-#   make test-live LIVE_MODEL=gpt-5 LIVE_ARGS="-k explainers"
-LIVE_MODEL ?= gpt-5-mini
-LIVE_ARGS ?= -m live
-
-# These runs cost money, so name each scenario as it goes rather than printing
-# dots. `-vv` because the config's `-q` (pyproject `addopts`) cancels the first
-# `-v`; the second one is what actually reaches verbose. Names of tests a filter
-# dropped come from the `pytest_deselected` hook in `tests/conftest.py`.
-LIVE_PYTEST = RLMFLOW_LIVE_TESTS=1 RLMFLOW_LIVE_MODEL=$(LIVE_MODEL) \
-	python -m pytest tests/test_delegation_behavior.py
-
-test-live: ## Run every live delegation-behavior check, boids included (needs an API key, costs money).
-	$(LIVE_PYTEST) $(LIVE_ARGS) -s -vv -ra
-
-# Selected by node id rather than by marker, so the one scenario you asked for is
-# the only thing collected and nothing is reported as deselected.
-test-live-boids: ## Run only the boids delegation check (slow: an 8-module task).
-	$(LIVE_PYTEST)::test_boids_delegates_the_substantial_modules -s -vv -ra
-
-test-html: test
-	$(BROWSER) tests/cov-report/index.html
 
 # Every examples target writes a pass/fail/skip report to
 # examples/_runs/examples_report.md (with the output of each failure). Override
@@ -208,11 +160,32 @@ showcase-needle-assets: ## Render and publish the saved million-line Needle grap
 		--run-dir $(NEEDLE_RUN) \
 		--out $(NEEDLE_DOC_ASSETS)/needle-haystack.gif
 
+BOIDS_RUN ?= examples/_runs/coding/boids-rlmflow
+BOIDS_DOC_ASSETS := docs/static/boids
+
+showcase-boids-assets: ## Validate Boids and publish its browser and graph visuals.
+	@test -f "$(BOIDS_RUN)/graph/graph.json" || (echo "missing $(BOIDS_RUN)/graph/graph.json; run the Boids example first" >&2; exit 1)
+	mkdir -p $(BOIDS_DOC_ASSETS)
+	uv run --locked --python 3.12 python examples/coding/boids/validate.py \
+		$(BOIDS_RUN) \
+		--browser \
+		--screenshot $(BOIDS_DOC_ASSETS)/simulation.png \
+		--report $(BOIDS_RUN)/validation.json
+	uv run --locked --python 3.12 --extra image python examples/coding/boids/render_simulation.py \
+		--run-dir $(BOIDS_RUN) \
+		--gif $(BOIDS_DOC_ASSETS)/simulation.gif \
+		--mp4 $(BOIDS_DOC_ASSETS)/simulation.mp4
+	uv run --locked --python 3.12 rlmflow render svg \
+		$(BOIDS_RUN)/graph $(BOIDS_DOC_ASSETS)/graph.svg
+	uv run --locked --python 3.12 --extra image python examples/coding/boids/render_parallel.py \
+		--run-dir $(BOIDS_RUN)/graph \
+		--out $(BOIDS_DOC_ASSETS)/graph.gif
+
 build-docker-image:
 	docker build -t rlmflow:local .
 
 # ── Eval harness ─────────────────────────────────────────────────────
-# Public suites and recipes live in benchmarks/Makefile. `make eval-core`
+# Public suites and recipes live in benchmarks/Makefile. `make eval-long-context`
 # from the repo root forwards there. See docs/benchmarks.md.
 eval-%:
 	$(MAKE) -C benchmarks $@

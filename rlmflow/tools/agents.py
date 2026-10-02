@@ -183,10 +183,6 @@ class AgentDirectory:
         """The agent whose REPL received this directory."""
         return self._by_id[self.viewer_id]
 
-    def all(self) -> list[AgentInfo]:
-        """Every agent in root-first tree order."""
-        return list(self.agents)
-
     def get(self, selector: str | AgentHandle | AgentInfo | None = None) -> AgentInfo | None:
         """Resolve self, an id/path, a direct relative, or a unique tree-wide name."""
         if selector is None:
@@ -369,7 +365,7 @@ def build_agent_directory(
     }
     dependents: dict[str, list[str]] = {}
     for agent in root.iter_agents():
-        for _input_name, source_id in agent.input_references:
+        for _argument_name, source_id in agent.argument_references:
             dependents.setdefault(source_id, []).append(agent.config.path)
     info: list[AgentInfo] = []
 
@@ -405,13 +401,13 @@ def build_agent_directory(
                 ),
                 dependency_paths=tuple(
                     source.config.path
-                    for _input_name, source_id in agent.input_references
+                    for _argument_name, source_id in agent.argument_references
                     if (source := root.find_agent(source_id)) is not None
                 ),
                 dependent_paths=tuple(dependents.get(agent.id, ())),
                 blocked_on_paths=tuple(
                     source.config.path
-                    for _input_name, source_id in agent.input_references
+                    for _argument_name, source_id in agent.argument_references
                     if ((source := root.find_agent(source_id)) is not None and not source.terminal)
                 ),
                 _result=_json_safe(agent.result()) if agent.terminal else None,
@@ -428,7 +424,6 @@ def build_agent_directory(
 __all__ = [
     "AGENTS_BINDING",
     "AGENT_OBSERVE_TOOL",
-    "AGENT_REF_KEY",
     "AGENT_WAIT_TOOL",
     "AgentDirectory",
     "AgentFrontier",

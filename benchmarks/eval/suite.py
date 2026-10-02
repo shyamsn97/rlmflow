@@ -28,21 +28,22 @@ class SuiteSpec:
 
 SUITES: dict[str, SuiteSpec] = {
     "smoke": SuiteSpec(
-        "Does the evaluation pipeline run end to end without network access?",
+        "Can the evaluation pipeline recover a needle from a synthetic haystack?",
         ("synthetic_needle",),
         ("fake",),
     ),
-    "conformance": SuiteSpec(
-        "Do all runtimes obey the same offline environment and selection contract?",
-        ("minimaze", "sudoku_search"),
+    "delegation": SuiteSpec(
+        "Can the harness fan out independent work without fabricating or dropping results?",
+        ("swarm-fanout",),
+        ("prime-agent", "official-rlm", "jaz", "rlmflow-depth-1"),
     ),
-    "core": SuiteSpec(
+    "long-context": SuiteSpec(
         "How do the harnesses manage paper-aligned long-context information tasks?",
-        ("oolong-pairs-32k", "oolong-yahoo-128k"),
+        ("oolong-trec-coarse-128k",),
     ),
     "interactive": SuiteSpec(
-        "How do the harnesses scale in a persistent visual environment?",
-        ("mazebench",),
+        "How do the harnesses search and act in persistent environments?",
+        ("minimaze", "sudoku_search", "mazebench"),
     ),
 }
 

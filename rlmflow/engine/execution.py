@@ -23,7 +23,6 @@ class Pool(ABC):
         self,
         fn: Callable[..., Any],
         *args: Any,
-        key: object | None = None,
         **kwargs: Any,
     ) -> Any:
         """Run one compute call under this backend's placement policy."""
@@ -33,7 +32,6 @@ class Pool(ABC):
         self,
         fn: Callable[..., Any],
         *args: Any,
-        key: object | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[Any]:
         """Run one streaming compute call under this backend's policy."""
@@ -56,10 +54,8 @@ class ThreadPool(Pool):
         self,
         fn: Callable[..., Any],
         *args: Any,
-        key: object | None = None,
         **kwargs: Any,
     ) -> Any:
-        del key
         if inspect.iscoroutinefunction(fn):
             return await fn(*args, **kwargs)
         loop = asyncio.get_running_loop()
@@ -73,10 +69,8 @@ class ThreadPool(Pool):
         self,
         fn: Callable[..., Any],
         *args: Any,
-        key: object | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[Any]:
-        del key
         if inspect.isasyncgenfunction(fn) or inspect.iscoroutinefunction(fn):
             if self._async_slots is None:
                 async for item in self._iterate_async(fn, args, kwargs):
@@ -159,10 +153,8 @@ class SequentialPool(Pool):
         self,
         fn: Callable[..., Any],
         *args: Any,
-        key: object | None = None,
         **kwargs: Any,
     ) -> Any:
-        del key
         async with self._lock:
             result = fn(*args, **kwargs)
             return await result if inspect.isawaitable(result) else result
@@ -171,10 +163,8 @@ class SequentialPool(Pool):
         self,
         fn: Callable[..., Any],
         *args: Any,
-        key: object | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[Any]:
-        del key
         async with self._lock:
             result = fn(*args, **kwargs)
             if inspect.isawaitable(result):
@@ -188,7 +178,7 @@ class SequentialPool(Pool):
 
 
 @dataclass(slots=True)
-class Transition:
+class StepResult:
     """A submitted node and what it created."""
 
     submitted: Node
@@ -205,7 +195,7 @@ class TaskQueue:
 
     def __init__(self) -> None:
         self.running: dict[int, tuple[Node, asyncio.Task[None]]] = {}
-        self.done: asyncio.Queue[Transition] = asyncio.Queue()
+        self.done: asyncio.Queue[StepResult] = asyncio.Queue()
         self.changed = asyncio.Condition()
 
     def __bool__(self) -> bool:
@@ -227,15 +217,15 @@ class TaskQueue:
         task = asyncio.create_task(self._run(node, fn))
         self.running[key] = (node, task)
         if publish:
-            self.done.put_nowait(Transition(submitted=node, created=node))
+            self.done.put_nowait(StepResult(submitted=node, created=node))
         return task
 
     async def _run(self, node: Node, fn: Callable[[Node], Any]) -> None:
         with running_step(node):
             result = fn(node)
             transition = await result if inspect.isawaitable(result) else result
-        if not isinstance(transition, Transition):
-            raise TypeError(f"task returned {type(transition).__name__}, expected Transition")
+        if not isinstance(transition, StepResult):
+            raise TypeError(f"task returned {type(transition).__name__}, expected StepResult")
 
         # Publish before waking a parent, so a child boundary gets first refusal.
         self.done.put_nowait(transition)
@@ -245,8 +235,8 @@ class TaskQueue:
             async with self.changed:
                 self.changed.notify_all()
 
-    async def next(self) -> Transition:
-        """Return the next graph transition."""
+    async def next(self) -> StepResult:
+        """Return the next completed graph step."""
         transition = await self.done.get()
         if not transition.is_agent_start:
             self.running.pop(id(transition.submitted), None)
@@ -272,7 +262,7 @@ class TaskQueue:
 __all__ = [
     "Pool",
     "SequentialPool",
+    "StepResult",
     "TaskQueue",
     "ThreadPool",
-    "Transition",
 ]

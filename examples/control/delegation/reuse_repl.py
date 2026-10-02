@@ -1,4 +1,4 @@
-"""Share live Python state with one child while keeping another isolated.
+"""Let Flow place delegated children in the parent's worker with isolated state.
 
 This deterministic example uses a scripted model, so it needs no API key.
 
@@ -8,45 +8,31 @@ Run:
 
 from __future__ import annotations
 
-from rlmflow import Flow, LLMUsage
+from rlmflow import AgentConfig, Flow, LLMUsage
 
 ROOT_REPLY = """\
-```python
+```repl
 shared = ["parent"]
-parent_identity = id(shared)
+parent_pid = os.getpid()
 
-shared_child = await launch_subagent(
-    "Append 'shared-child' to the existing shared list, then return its id.",
-    model="default",
-    name="shared",
-    reuse_repl=True,
+worker_child = launch_subagent(
+    task="Report whether you share the parent worker but not its Python globals.",
+    parent_pid=parent_pid,
 )
-isolated_child = await launch_subagent(
-    "Report whether a global named 'shared' exists in your REPL.",
-    model="default",
-    name="isolated",
-)
-shared_identity = await shared_child.wait_for_result()
-isolated_view = await isolated_child.wait_for_result()
+report = await worker_child
 
-finish(
-    f"same_object={shared_identity == str(parent_identity)}; "
-    f"values={shared}; isolated_sees_shared={isolated_view}"
-)
+finish(f"{report}; parent_values={shared}")
 ```"""
 
 SHARED_REPLY = """\
-```python
-shared.append("shared-child")
-finish(str(id(shared)))
+```repl
+finish(
+    f"same_worker={os.getpid() == parent_pid}; "
+    f"isolated={'shared' not in globals()}"
+)
 ```"""
 
-ISOLATED_REPLY = """\
-```python
-finish(str("shared" in globals()))
-```"""
-
-EXPECTED = "same_object=True; values=['parent', 'shared-child']; " "isolated_sees_shared=False"
+EXPECTED = "same_worker=True; isolated=True; parent_values=['parent']"
 
 
 class ScriptedLLM:
@@ -58,19 +44,16 @@ class ScriptedLLM:
         query = "\n\n".join(
             message["content"] for message in messages if message["role"] == "user"
         )
-        if "Append 'shared-child'" in query:
+        if "Report whether" in query:
             return SHARED_REPLY
-        if "whether a global named 'shared'" in query:
-            return ISOLATED_REPLY
         return ROOT_REPLY
 
 
 def main() -> None:
-    flow = Flow(ScriptedLLM())
+    flow = Flow(ScriptedLLM(), delegation_reuse_worker=True)
     root = flow.start(
-        "Demonstrate explicit shared and isolated child REPLs.",
-        max_depth=1,
-        max_iters=3,
+        "Demonstrate isolated child namespaces in one worker.",
+        config=AgentConfig(max_depth=1, max_iters=3),
     )
     try:
         result = flow.run(root)

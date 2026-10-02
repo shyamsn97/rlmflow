@@ -1,12 +1,12 @@
 # Agent-Directed Transitions and Graph Evolution
 
-> **Status:** Earlier routing-design analysis. Nothing here is implemented. [`graph_context_evolution.md`](graph_context_evolution.md) supersedes its optional `continue_with(...)` recommendation with a graph-grounded, cross-run context-evolution design requiring no new model-facing control API.
+> **Status:** Earlier routing-design analysis. Nothing here is implemented. The named-choice feature it analyzes (`flow.choices(...)`, `transition("name")`, `TransitionSignal`, `InvalidTransitionError`) was removed in 0.7.0. `PlanQuery` and its extra observation-to-plan hop were removed later as well; references below preserve the historical design being evaluated. [`graph_context_evolution.md`](graph_context_evolution.md) supersedes its optional `continue_with(...)` recommendation with a graph-grounded, cross-run context-evolution design requiring no new model-facing control API.
 >
 > **Question:** should an rlmflow agent be able to change the static transition policy in `rlmflow.engine.steps`, and what would a natural graph-native API look like?
 
 ## Decision
 
-Do not let a running agent rewrite `Flow.transitions`, register Python producers, or maintain a mutable state-machine definition.
+Do not let a running agent rewrite Flow's private transition policy, register Python producers, or maintain a mutable state-machine definition.
 
 Keep the existing API precise:
 
@@ -56,13 +56,13 @@ It is already dynamic. The model grows it whenever it executes code, delegates, 
 This is the policy that says what kinds of nodes may follow other kinds of nodes. In rlmflow, it is the trusted producer table registered with:
 
 ```python
-@Flow.transitions.on(...)
+@flow.transition(...)
 ```
 
 and the host-declared choice sets registered with:
 
 ```python
-Flow.transitions.choices(CurrentQuery, TargetQuery)
+flow.choices(CurrentQuery, TargetQuery)
 ```
 
 This definition is static for a `Flow` instance.
@@ -90,7 +90,8 @@ The default kernel in `rlmflow.engine.steps` is:
 ```text
 AgentStart / observation -> PlanQuery
 UserQuery                 -> LLMOutput
-LLMOutput                 -> ExecAction
+LLMOutput + repl          -> ExecAction
+LLMOutput + invalid reply -> empty ExecAction -> ErrorOutput
 ExecAction                -> ExecOutput | ErrorOutput | DoneOutput | selected UserQuery
 ```
 
@@ -109,9 +110,9 @@ ExecAction containing transition("verify")
 
 There is no intermediate `ExecOutput`. `transition("verify")` raises a `TransitionSignal`; the runtime returns a transition status; `run_repl` resolves the currently offered target and returns that `UserQuery`.
 
-Host-defined behavior persists across utility nodes because `Transitions.current_behavior(node)` scans backward for the latest query class participating in a choice set. A `PlanQuery` or `TruncationSummary` does not erase it.
+Host-defined behavior persists across utility nodes because choice resolution scans backward for the latest query class participating in a choice set. A `PlanQuery` or `TruncationSummary` does not erase it.
 
-At the time of this review, repository uses of `Transitions.choices(...)` and `transition("name")` are confined to transition tests; no example or benchmark exercises the feature. The semantics are tested, but there is not yet product evidence that named behaviors improve an rlmflow task.
+At the time of this review, repository uses of `flow.choices(...)` and `transition("name")` are confined to transition tests; no example or benchmark exercises the feature. The semantics are tested, but there is not yet product evidence that named behaviors improve an rlmflow task.
 
 These properties are valuable and should remain.
 
@@ -183,7 +184,7 @@ rlmflow does not need Temporal's exact replay model, but the transferable rule i
 
 > A model decision that affects future execution must be represented in durable history, not only in a mutable in-memory controller.
 
-A `ContinuationQuery` satisfies this. Mutating `Flow.transitions` from REPL code does not.
+A `ContinuationQuery` satisfies this. Mutating Flow's private transition policy from REPL code does not.
 
 ### Workflow-optimization research uses an outer evaluation loop
 
@@ -344,10 +345,8 @@ Stdout is not observed.
 ### Delegation plus continuation
 
 ```python
-review = await launch_subagent(
-    "Review the current implementation for correctness.",
-    model="default",
-    name="review",
+review = launch_subagent(
+    task="Review the current implementation for correctness.",
 )
 
 continue_with(
@@ -419,7 +418,7 @@ On `TurnMode.FINAL`, expose only `finish`.
 - end the REPL action immediately;
 - discard stdout from that action, matching `transition`;
 - create exactly one `ContinuationQuery`;
-- never alter `Flow.transitions`;
+- never alter Flow's private transition policy;
 - never accept Python callables, node classes, tool names, models, or policy overrides.
 
 Existing hard policy still wins:
@@ -474,7 +473,7 @@ In `rlmflow.tools.namespace`:
 - raise `ContinueSignal` with the normalized instruction;
 - reserve the name against host tool injection.
 
-The prompt-owning `BuiltIns` toolset should advertise the exact runtime signature only when enabled.
+Add it to `Flow.build_tools(node)` only when enabled; the prompt renders its signature from that same mapping.
 
 ### Engine
 
@@ -667,7 +666,7 @@ Inspect whether continuation text changes subsequent actions or merely restates 
 
 ### Experiment 2: static named choices
 
-Give the same tasks a small host-defined behavior graph using existing `Transitions.choices`.
+Give the same tasks a small host-defined behavior graph using `flow.choices`.
 
 This separates the value of explicit phase structure from the value of agent-authored phase text.
 
@@ -753,7 +752,7 @@ continue_with("the exact objective for my next turn")
 
 landing a durable `ContinuationQuery`.
 
-If the experiment does not beat the normal `ExecOutput -> PlanQuery` loop, remove it. If reusable host phases help, improve `Transitions.choices`. If workflow structure improves only after repeated evaluation, build an outer-loop optimizer over saved rlmflow graphs.
+If the experiment does not beat the normal `ExecOutput -> PlanQuery` loop, remove it. If reusable host phases help, improve `flow.choices`. If workflow structure improves only after repeated evaluation, build an outer-loop optimizer over saved rlmflow graphs.
 
 That uses the graph where it is strongest:
 

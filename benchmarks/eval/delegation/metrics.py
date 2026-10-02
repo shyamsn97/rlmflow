@@ -8,7 +8,16 @@ from collections import Counter, defaultdict
 from datetime import datetime
 from typing import Any
 
-from rlmflow import AgentStart, ErrorOutput, ExecAction, ExecOutput, LLMOutput, ReplDead
+from rlmflow import (
+    AgentStart,
+    ErrorOutput,
+    ExecAction,
+    ExecOutput,
+    LLMOutput,
+    ReplDead,
+    TransitionDecision,
+    VerificationFailure,
+)
 
 
 def _timestamp(node) -> float | None:
@@ -77,6 +86,7 @@ def _child_telemetry(child: AgentStart) -> dict[str, Any]:
     return {
         "agent_id": child.id,
         "parent_agent_id": parent.id if parent is not None else None,
+        "name": child.config.name,
         "path": child.config.path,
         "depth": child.config.depth,
         "model": child.config.model,
@@ -84,9 +94,12 @@ def _child_telemetry(child: AgentStart) -> dict[str, Any]:
         "launch_action_id": launch_action.id if launch_action is not None else None,
         "retrieval_action_ids": [action.id for action in retrieval_actions],
         "intervening_parent_actions": intervening_parent_actions,
-        "input_keys": sorted(child.config.inputs),
-        "dependency_input_keys": sorted(name for name, _source_id in child.input_references),
+        "argument_keys": sorted(child.args),
+        "dependency_argument_keys": sorted(
+            name for name, _source_id in child.argument_references
+        ),
         "goal_hash": _hash(child.content),
+        "prompt_sha256": hashlib.sha256(child.content.encode()).hexdigest(),
         "result_hash": _hash(result) if result else None,
         "launched_at": launched_at,
         "completed_at": completed_at,
@@ -146,7 +159,9 @@ def _dependency_chain_depth(agents: list[AgentStart]) -> int:
         agent = by_id.get(agent_id)
         sources = [
             source_id
-            for _input_name, source_id in (agent.input_references if agent is not None else ())
+            for _argument_name, source_id in (
+                agent.argument_references if agent is not None else ()
+            )
             if source_id in by_id
         ]
         value = 0 if not sources else 1 + max(depth(source_id) for source_id in sources)
@@ -198,6 +213,12 @@ def delegation_metrics(root: AgentStart) -> dict[str, Any]:
     query_calls = sum(
         len(re.findall(r"\bllm_query(?:_batched)?\s*\(", node.code)) for node in actions
     )
+    decisions = [
+        node for node in root.walk() if isinstance(node, TransitionDecision)
+    ]
+    verification_failures = [
+        node for node in root.walk() if isinstance(node, VerificationFailure)
+    ]
     spent = root.usage
     child_runs = [_child_telemetry(child) for child in children]
     routing_decisions = [_routing_decision(agent) for agent in agents]
@@ -205,10 +226,10 @@ def delegation_metrics(root: AgentStart) -> dict[str, Any]:
         {
             "source_agent_id": source_id,
             "target_agent_id": agent.id,
-            "input_name": input_name,
+            "argument_name": argument_name,
         }
         for agent in children
-        for input_name, source_id in agent.input_references
+        for argument_name, source_id in agent.argument_references
     ]
     launch_batch_records = []
     for action_id, batch in sorted(
@@ -234,7 +255,7 @@ def delegation_metrics(root: AgentStart) -> dict[str, Any]:
                     if action is not None
                 },
                 "size": len(batch),
-                "ready_size": sum(not child.input_references for child in batch),
+                "ready_size": sum(not child.argument_references for child in batch),
             }
         )
 
@@ -251,7 +272,7 @@ def delegation_metrics(root: AgentStart) -> dict[str, Any]:
         "max_launch_batch": max((len(batch) for batch in launch_batches.values()), default=0),
         "max_ready_launch_batch": max(
             (
-                sum(not child.input_references for child in batch)
+                sum(not child.argument_references for child in batch)
                 for batch in launch_batches.values()
             ),
             default=0,
@@ -263,6 +284,17 @@ def delegation_metrics(root: AgentStart) -> dict[str, Any]:
         "retrieval_events": sum(len(action.retrieved_agent_ids) for action in actions),
         "dependency_edges": dependency_edges,
         "dependency_edge_count": len(dependency_edges),
+        "transition_decisions": len(decisions),
+        "matched_transition_decisions": sum(
+            decision.selected_rule_id is not None for decision in decisions
+        ),
+        "verification_failures": len(verification_failures),
+        "schema_failures": sum(
+            failure.kind == "schema" for failure in verification_failures
+        ),
+        "verifier_failures": sum(
+            failure.kind == "verifier" for failure in verification_failures
+        ),
         "launch_batch_records": launch_batch_records,
         "wait_events": waits,
         "retrieved_child_results": retrieved_children,

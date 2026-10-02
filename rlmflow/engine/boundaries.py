@@ -1,4 +1,4 @@
-"""Named streaming boundaries over published graph nodes."""
+"""Streaming boundaries over published graph nodes."""
 
 from __future__ import annotations
 
@@ -18,15 +18,8 @@ _BOUNDARIES: dict[str, Boundary] = {
 }
 
 
-def register(name: str, boundary: Boundary) -> None:
-    """Register a process-wide named streaming boundary."""
-    if name in _FULL_RUN or name in _BOUNDARIES:
-        raise ValueError(f"boundary {name!r} is already defined")
-    _BOUNDARIES[name] = boundary
-
-
 def resolve(until: StepUntil) -> Boundary | None:
-    """Resolve a built-in, registered, or callable boundary."""
+    """Resolve a built-in or callable boundary."""
     if until in _FULL_RUN:
         return None
     if callable(until):
@@ -37,4 +30,4 @@ def resolve(until: StepUntil) -> Boundary | None:
         raise ValueError(f"unknown until boundary: {until!r}") from None
 
 
-__all__ = ["Boundary", "StepUntil", "register", "resolve"]
+__all__ = ["Boundary", "StepUntil", "resolve"]

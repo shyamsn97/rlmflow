@@ -6,7 +6,12 @@ from dataclasses import dataclass
 from statistics import fmean, median
 from typing import Any
 
-from benchmarks.eval.suite import DEPTH_COMPARISON
+DEPTH_COMPARISON = (
+    "official-rlm",
+    "rlmflow-depth-0",
+    "rlmflow-depth-1",
+    "rlmflow-depth-2",
+)
 
 
 @dataclass(frozen=True, slots=True)

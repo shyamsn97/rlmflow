@@ -340,7 +340,12 @@ push("up")
 
 `goto(...)` computes the player's shortest ordinary walking route to the chosen square; `push(...)` then performs exactly one box push. This gives the model one irreversible decision per turn while preserving an honest movement trace for visualization.
 
-The worker profile's current-frontier `render_fn(runtime, node)` calls `board_prompt`, which stamps `ENV["turn"]` through `repl.update_env` before each live model request. The game refuses a second push with the same marker. Replay does not stamp a live turn, so recorded pushes can be applied back-to-back while rebuilding state. Adjacent board and observation turns stay separate messages; projection does not coalesce them.
+The worker profile's live user-prompt modifier calls `board_prompt`, which
+stamps `ENV["turn"]` through `repl.update_env` before each live model request.
+The game refuses a second push with the same marker. Replay does not stamp a
+live turn, so recorded pushes can be applied back-to-back while rebuilding
+state. The board is a named section on the current user prompt and is not
+persisted into the durable node graph.
 
 Solved means every box is on a goal:
 

@@ -4,11 +4,66 @@ All notable changes to **rlmflow** are recorded here. The format follows [Keep a
 
 ## [Unreleased]
 
-## [0.6.0] — 2026-09-16
+### Breaking
+
+- **Transitions are declarative and instance-owned.** Built-in producers use module-level `@transition(...)`; applications use `@flow.transition(...)`. Each decorated function is one `TransitionFunction`. Callable guards retain ordered deterministic resolution; eligible string guards are resolved together by one structured multiple-choice request. The public `Transitions` registry, `Flow.transitions`, constructor table injection, and subclass mutation hooks are removed.
+
+- **Model-selected named choices are removed.** `flow.choices(...)`, the REPL `transition("name")` tool, `TransitionSignal`, `ReplStatus.TRANSITION`, `InvalidTransitionError`, and the prompt transition footer are gone. Every edge is now an automatic transition function.
+
+- **Delegation is eager and Flow-owned.** Agent code calls `launch_subagent(task=..., schema=None, verify=None, **json_inputs)` and gets an awaitable handle immediately. Flow selects child model, prompt profile, and placement. The old `goal`, `model`, `name`, `inputs`, `output_schema`, `prompt_profile`, and `reuse_repl` launch arguments are removed.
+
+- **Structured model calls have one tool path.** Host code retains `Flow.structured_query`; REPL code uses `llm_query(..., schema=...)`. The model-facing `structured_query` tool and structured-output compatibility flags are removed.
+
+- **Node messages are durable snapshots and persistence is v6.** Node chat `render()` is removed. A query's `build_messages(user_prompt, flow)` runs once, stores its validated message list on the node, and all later history, save/load, and fork operations reuse that snapshot. Live child status remains a request-only Flow overlay. Persistence v6 records snapshots explicitly and rejects v5 runs.
+
+- **Model turns use one strict REPL protocol.** Every model response must contain exactly one non-empty fenced `repl` block, and only `finish(value)` completes an agent. Plain prose, ordinary code fences, empty blocks, and multiple REPL blocks now enter protocol-error recovery without executing partial content.
+
+- **Flow owns fresh prompt defaults; nodes own specialization.** Use `Flow.default_system_prompt(node)` / `default_user_prompt(node)` for prepared `Prompt` instances, `Node.build_system_prompt(system_prompt, flow)` to customize the system prompt, and `Node.build_messages(user_prompt, flow)` to emit current-turn messages. `PromptBuilder`, `build_user_prompt`, `render_fn`, `RenderFn`, and `default_render` are removed. System/user modifiers remain the additive customization path, and `str(prompt)` renders a `Prompt`.
+
+### Removed
+
+- **`llm_query_batched` is removed.** Use the ordinary `llm_query` tool with
+  `await asyncio.gather(*(llm_query(prompt) for prompt in prompts))`. The
+  duplicate tool, host method, constructor flag, and reserved name are gone.
+
+- **Dead core surface.** `graph_diff`, `GraphDiff`, `StructuralEdge`, `system_prompt_hint`, `StructuredResult.envelope`, `MissingReplError` (the protocol-error text still starts with `MissingReplError:`), `PromptProfile.description`, `MAX_STATIC_PROMPT_CHARS`, `AgentDirectory.all`, `utils.accepts_kwarg`, `utils.usage_from_client`, the `Flow` tool shims (`finish_tool`, `launch_tool`, `wait_agent_tool`, `observe_agent_tool`, `transition_tool`), `Flow.call_stream`, `Flow.execute_action`, `Flow.tool_namespace_for_prompt`, `Flow.submit_child`, `Flow.new_child`, `Flow.ensure_replayed`, `Flow.register_verifier`, `Flow.verify_candidate`, and the `rlmflow.view` exports `node_shape`, `NODE_COLORS`, `NODE_SHAPES`, and `summarize`. Worker runtimes now implement `Runtime.connect()`; the shared `Runtime.open` wraps it in a session. `Flow.resolve_child` remains the per-child override hook.
+
+- **Unused prompts, runtime, and engine surface.** `SYSTEM_PROMPT` (a static copy of the default prompt that `Flow` never used), `Runtime.namespace_for`, `engine.boundaries.register` (pass a callable `until=` instead), `AppendChild.child`, the unused `key=` placement argument on `Pool.call`/`Pool.stream`, `PooledLLMClient`, and `Flow.call_chat`, the `DockerRuntime(**options)` catch-all, and the worker's `--workdir` flag. Public exports dropped (the code is still used internally): `PromptModifier`, `PromptSectionError`, `SystemPromptFn`, `format_tool_line`, and the duplicate `at_leaf`/`can_spawn` re-exports from `rlmflow.tools` (import them from `rlmflow`).
+
+- **Toolsets.** `@toolset`, `ToolsetMetadata`, `FileTools`, the `BuiltIns` prompt stubs, `@tool(inject=...)`, and `Flow.toolsets` are removed. `@tool` is the only tool decorator; group related tools in a tuple, which `tools=` flattens one level. The `SHOW_VARS` line the stubs advertised is gone too — nothing bound it.
+
+- **Legacy synthetic planning turns.** The old turn-counter `PlanQuery`, `to_plan`, `resume_after_child`, `child_returned`, and `USER_PROMPT` are removed. Each model response plans and executes its next step in one REPL block; no synthetic message is inserted after observations.
+
+### Changed
+
+- **Evidence-first guidance lives in the core protocol.** The pinned system prompt asks each turn to plan the immediate next action from observations already obtained, compute answers from the inputs rather than assumptions, finish in one block when code can derive the answer directly, and look first when the inputs' size, format, or contents are unknown. Before `finish`, agents check the candidate against the inputs. No turn is forced to observe-only, and `finish` is available from the first block.
+- **Root and child calls share one argument contract.** `Flow.run(task, **args)`, `Flow.start(task, **args)`, and `launch_subagent(task=..., **args)` all build agents through the same constructor. `task` and named JSON arguments are direct REPL variables; the model-facing `INPUTS` mapping is removed. Runtime controls belong in an explicit `AgentConfig`. Persisted graphs use v7 and store invocation `args` on each `AgentStart`.
+- **Worker reuse no longer shares agent globals.** `delegation_reuse_worker=True` colocates child tenants in the parent's process while retaining isolated namespaces. It replaces the misleading `delegation_reuse_repl` name and prevents concurrent children from overwriting one another's direct invocation variables.
+- **Benchmark task requirements are runner-neutral and auditable.** Every row fingerprints the same benchmark-owned task, named inputs, and fixture bytes. Framework-specific API guidance is appended separately and receives its own hash. The delegation suite now shares all scored root requirements across PrimeAgent, Official RLM, JAZ, and rlmflow, and scores PrimeAgent's final response directly instead of imposing a unique output-file requirement.
+- **Built-ins and application tools share one interface.** `Flow.build_tools(node)` returns the complete map of real decorated callables: Flow-owned built-ins, configured application tools, and subclass-provided environment tools. The prompt renders that map directly, while `Flow.build_namespace(node)` adds non-tool execution bindings. `llm_query` is node-bound like `finish` and `launch_subagent`, so its static description and default model match its calling agent. The old prompt-only stubs and callable descriptions are gone. The local-work example and `AGENTS` notes remain prompt sections (`guidance.local`, `capabilities.agents`).
+- **All prompt prose lives in `rlmflow.prompts.text`.** `rlmflow.graph.prompts` is gone; its turn strings, execution policy, and `AGENTS_TEXT` sit with `CORE_PROTOCOL_TEXT` in one import-free module. `rlmflow.prompts` no longer re-exports `build_messages` / `render_tools` (use `rlmflow.prompts.messages`), and argument manifests live in `rlmflow.prompts.prompts`.
+- **`FILE_TOOLS` is a tuple of plain functions.** Import individual tools from `rlmflow.tools.filesystem` (`read_file`, `write_file`, …) instead of `FILE_TOOLS.<name>`.
+- **Persistence saves node fields generically.** `persistence.to_record(node)` writes every data field of a node, so node classes no longer carry hand-written `to_record` overrides, and loading finds node classes by their `type` name instead of a registry. `persistence.register_node_type` is removed: a custom node is just a dataclass subclass with its own `type`. Records no longer repeat `content` under a separate `output` key, and a base `ActionNode` now keeps its `code` across save and load. `ChatMessage` and `message_snapshot` live in `rlmflow.graph.nodes`.
+
+### Fixed
+
+- **Swarm-fanout child prompts are runner-neutral.** PrimeAgent, Official RLM, JAZ, and rlmflow now invoke every worker with the exact same complete text prompt containing worker name, filename, question, and shard content. Only the framework-owned invocation mechanism differs. The previous adapters used different data-delivery interfaces, confounding child-quality comparisons.
+
+- **Verifier fingerprints match across host and worker.** `rlmflow.engine.verification` owns the one verifier fingerprint and schema hash. Previously a verifier registered in a worker REPL hashed differently from one registered in-process, so replaying a launch on the other side reported a verifier mismatch. Runs saved with launch verifiers before this change carry the old hash and will report that mismatch once on replay.
 
 ### Added
 
-- **Minimal shared evaluation suite.** `smoke`, `conformance`, `core`, and `interactive` are the complete public surface. Every non-smoke suite uses `official-rlm` plus one rlmflow implementation at depth 0, 1, and 2. A runtime-neutral episode core owns private forks, shared budgets, immutable candidate snapshots, root selection, metrics, and artifacts; typed operation specs generate both runtime tool bindings. MiniMaze/Sudoku provide offline conformance, OOLONG-Pairs 32K/OOLONG Yahoo 128K provide paper-core evidence, and MazeBench provides interactive replay evidence. Legacy sets, runner aliases, task packs, manifests, Make targets, and benchmark-only dependencies are removed.
+- **Durable semantic choices and finish verification.** Source-compatible string transition guards are presented together to the Flow's configured structured engine, which selects one compact transition name or `continue` in a single request. One `TransitionDecision` persists the complete candidate set, selected durable rule ID, and read-set hash for replay. This path works with Chat, Instructor, Jev, retry, and fallback engines. Launch-local finish verifiers reject candidates into `VerificationFailure` and repair the same child.
+
+- **Structured output contracts and producers are modular.** `OutputCodec` owns normalization, prompt guidance, parsing, and local validation. One `StructuredEngine` per Flow powers state-oriented `structured_query` calls and schema-backed `llm_query` calls. Chat is the default; optional Instructor and Jev engines are available, while retry, fallback, and confidence policies remain explicit wrappers. Agent `finish(value)` remains local and deterministic.
+
+## [0.6.0] — 2026-09-21
+
+### Added
+
+- **Three reproducible release showcases.** Shepherd demonstrates graph rewind and recovery, Needle demonstrates recursive parallel search, and Boids demonstrates practical multi-agent software construction. From product-level constraints that prescribe neither files nor graph topology, the recorded Boids root chooses a five-file architecture, launches five independent coding workers concurrently plus one focused repair, validates local references, JavaScript syntax, browser console health, and nonblank rendering, then publishes a browser poster, continuous GIF/MP4 recording, and level-synchronized graph animation. Each showcase has a locked run command and an asset-regeneration Make target.
+
+- **Four focused evaluation suites.** `smoke`, `delegation`, `long-context`, and `interactive` are the complete public surface. Smoke is synthetic needle retrieval, delegation is the four-runtime swarm fan-out matrix, long-context is OOLONG, and interactive combines MiniMaze, Sudoku Search, and MazeBench. A runtime-neutral episode core owns private forks, shared budgets, immutable candidate snapshots, root selection, metrics, and artifacts; all interactive tasks use one normalized environment report contract.
 
 - **Child completion is a parent-owned `UserQuery`.** When a child `finish()`es, the launching agent gets a durable `[handoff {path}]` observation after its next `ExecOutput` (batched if several children completed), unless the result is already routed through another agent's handle-valued `inputs`. A mapping result is listed as fields so the next `PlanQuery` can read the memo; a scalar stays labeled JSON. `ErrorOutput` / `ReplDead` do not flush. `resume_on_child_done=True` by default wakes a finished parent with the same query; pass `False` on scored evals that must stay terminal. Mailboxes are live-only and rebuilt on stream start. See [`docs/control.md`](docs/control.md).
 
@@ -18,13 +73,19 @@ All notable changes to **rlmflow** are recorded here. The format follows [Keep a
 
 ### Changed
 
+- **The public release surface is intentionally smaller.** Orphan generated docs and duplicate media, unused delegation corpora and examples, obsolete live-prompt checks, disconnected release-gate wiring, and stale Read the Docs configuration are removed. Research notes, RAO, and autoresearch remain intact.
+
 - **Persistence is now v5.** Dependency references use stable agent IDs, `ExecAction` records persist launch receipts, and handle-valued input references survive replay. Older graph versions are rejected without migration or direct-child replay fallbacks.
 
 - **`UserQuery` after `ExecOutput` now plans.** A `UserQuery` whose previous node is `ExecOutput` (or `DoneOutput`) takes `to_plan` rather than `complete`, so a child-handoff or a host injection after idle REPL output gets a `PlanQuery` before the next model action.
 
-- **`PlanQuery` splits planner vs worker policy.** Spawn-capable agents are told to use the smallest useful graph, keep focused work local, and pass handles as inputs only to downstream children with substantive work. Agents that cannot spawn get a worker addendum: own the slice, no TODOs, `finish` the actual answer.
+- **`PlanQuery` splits planner vs worker policy.** Spawn-capable agents are told that children provide fresh context, cheaper models, and concurrent execution; substantial outputs with clear interfaces get independent owners when that reduces token cost or wall-clock time. Agents that cannot spawn get a worker addendum: own the slice, no TODOs, `finish` the actual answer.
 
 - **`@tool(..., when=)` gates prompt and REPL together.** A `(flow, node) -> bool` predicate (or a toolset `visible_tools(flow, node)`) hides a host tool from that agent in both the docs and the namespace. `at_leaf` is true when the agent cannot spawn. `FILE_TOOLS` writes (`write_file`, `edit_file`, `append_file`) use it. `launch_subagent` is no longer bound on leaves, matching its prompt. The coding CLI default is now `max_depth=1` so launched children can write.
+
+### Breaking
+
+- **The 0.6 graph, execution, and persistence APIs replace their pre-0.6 counterparts.** Existing integrations and saved runs may require changes; see [`UPGRADING.md`](UPGRADING.md) for the migration guide.
 
 ## [0.5.0] — 2026-09-08
 
@@ -53,7 +114,7 @@ All notable changes to **rlmflow** are recorded here. The format follows [Keep a
 
 - **A spent token budget finalizes the whole agent tree instead of dropping the run.** Exhausting `max_budget` used to return `[budget exceeded]`, discarding work already paid for. The threshold now creates one `FinalQuery` for every unfinished agent. Descendants finalize first; each waiting parent then receives their results and gets its own synthesis turn. Already generated `LLMOutput` / `ExecAction` work is allowed to land, while new child creation is rejected after exhaustion. Final prompts expose only `finish(...)`, so no new delegation or one-shot query is advertised. `max_budget` is therefore a soft whole-run threshold: overrun is bounded by calls already in flight plus one final turn per unfinished agent.
 
-- **Cold restore rebuilds worker sessions required by unfinished shared children.** Replay now groups agents by physical worker ownership. A session containing any unfinished tenant is reconstructed parent-first, including terminal parent owners and terminal shared tenants whose mutations remain visible to unfinished agents. Unrelated terminal sessions stay skipped. Both eager and lazy restore now handle a terminal parent with an unfinished `reuse_repl=True` child.
+- **Cold restore rebuilds worker sessions required by unfinished colocated children.** Replay groups agents by physical worker ownership and reconstructs a required terminal owner before an unfinished `reuse_worker=True` child. Agent namespaces remain isolated.
 
 - **Builtin prompt signatures match their runtime closures.** Generated tool documentation now advertises `finish(answer)` and keyword-only `model=` for `launch_subagent`, exactly as the executable tools accept them.
 
@@ -139,8 +200,7 @@ All notable changes to **rlmflow** are recorded here. The format follows [Keep a
 - **Pool orchestration is separate from compute.** `TaskQueue` drives transition coroutines directly while `Pool.stream` and `Pool.call` place and bound model compute. A parent can await children without consuming a compute slot. `Flow(workers=...)` and custom pools retain their existing public meaning.
 - **`Flow(llm_request_timeout=...)`** — bounds every model call. The client's own `timeout` is set too, where it takes one: cancelling a blocking call frees the caller but not the thread, so only the client can end the request.
 - **`Flow(use_llm_query=True)`** — puts `llm_query_batched` in the agent's REPL for independent one-shot prompts, which need no trajectory, no REPL, and no delegation. Off by default, so an agent is never offered a tool its prompt did not describe; `flow.llm_query_batched` calls it from host code either way.
-- **Delegation behavior is measured, not asserted in prose.** `examples/behavior/delegation.py` runs scenarios in both directions against a live model and grades each from its trajectory: child count, how many children a single turn launched, and children that spent a turn returning nothing. One scenario must fan out (three independent explainers), two must stay local (a single config lookup, and four statistics over one list — separable-looking but trivial), and the boids task is available with `--scenario boids`, graded on fan-out plus the module contracts it must satisfy. The two local scenarios also grade the answer, so "no subagents" cannot be earned by answering badly. `--repeat N` reports a pass rate, since the behavior is stochastic. `tests/test_delegation_behavior.py` runs the same scenarios under the new `live` marker — skipped unless `RLMFLOW_LIVE_TESTS=1` and a key is present, so the default suite and CI never call an API. `make test-live` runs every scenario including boids and pins the model to keep runs comparable, and `make test-live-boids` runs that one by node id when iterating on it. Each live test is named for the scenario it runs, the live targets report verbosely, and a `pytest_deselected` hook names what a filter dropped and which filter dropped it, so a paid run that never reached a scenario no longer looks like one that covered it. The graders are covered by unmarked tests in that module against canned trajectories.
-- **The boids example asks for module contracts, not three files.** The old task had three outputs but roughly one turn of work, so solving it inline was the correct call and it could not tell us anything about delegation. It now specifies `vec.js`, `spatial.js`, `rules.js`, `species.js`, `render.js`, `main.js`, `index.html`, and `style.css`, each with the global it owns, and asks for 2000 boids at 60fps — a spatial grid instead of all-pairs scanning, four species with their own rule weights, and a renderer doing HiDPI scaling, fading trails, and an FPS readout. The requirements name interfaces, which is what a spec does; they still say nothing about subagents, so the execution topology stays the model's decision. `BoidsSimulation` now returns the files written and what was verified rather than echoing three file bodies back through the transcript.
+- **The boids example asks for module contracts, not three files.** The old task had three outputs but roughly one turn of work, so solving it inline was the correct call and it could not tell us anything about delegation. It now specifies `vec.js`, `spatial.js`, `rules.js`, `species.js`, `render.js`, `main.js`, `index.html`, and `style.css`, each with the global it owns, and asks for 2000 boids at 60fps — a spatial grid instead of all-pairs scanning, four species with their own rule weights, and a renderer doing HiDPI scaling, fading trails, and an FPS readout. The release showcase explicitly assigns non-overlapping module groups to parallel coding workers, then leaves integration and verification with the root. `BoidsSimulation` returns the files written and what was verified rather than echoing file bodies through the transcript.
 
 ### Prompt and runtime changes
 

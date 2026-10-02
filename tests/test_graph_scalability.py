@@ -1,6 +1,7 @@
 import json
 from collections import Counter
 from dataclasses import dataclass
+from typing import ClassVar
 
 import pytest
 
@@ -65,7 +66,7 @@ def test_deep_graph_operations_are_iterative(tmp_path):
 def test_fork_and_persistence_preserve_full_config_without_sharing_values(tmp_path):
     root = start(
         "configured",
-        inputs={"doc": "value"},
+        args={"doc": "value"},
         output_schema={"type": "string"},
         child_output_schema={
             "type": "object",
@@ -87,7 +88,7 @@ def test_fork_and_persistence_preserve_full_config_without_sharing_values(tmp_pa
     assert fork.config == root.config
     assert loaded.config == root.config
     assert fork.config is not root.config
-    assert fork.config.inputs is not root.config.inputs
+    assert fork.args is not root.args
     assert fork.config.output_schema is not root.config.output_schema
     assert fork.config.child_output_schema is not root.config.child_output_schema
 
@@ -122,17 +123,22 @@ def test_run_index_tracks_counts_usage_agents_and_errors():
         root.stats.node_counts["node"] = 1  # type: ignore[index]
 
 
-def test_v5_is_flat_strict_and_rejects_v4():
+def test_v7_is_flat_strict_and_rejects_v6():
     root, _ = chain(4)
     document = persistence.to_document(root)
 
-    assert document["version"] == 5
+    assert document["version"] == 7
     assert "root" not in document
     assert all("children" not in record for record in document["nodes"])
     assert persistence.to_document(persistence.from_document(document)) == document
 
-    with pytest.raises(persistence.UnsupportedGraphVersion, match="requires v5"):
-        persistence.from_document({"version": 4, "root": {}})
+    with pytest.raises(persistence.UnsupportedGraphVersion, match="requires v7"):
+        persistence.from_document({"version": 6, "nodes": []})
+
+    missing_snapshot = json.loads(json.dumps(document))
+    del missing_snapshot["nodes"][0]["payload"]["messages"]
+    with pytest.raises(ValueError, match="no message snapshot field"):
+        persistence.from_document(missing_snapshot)
 
     broken = {**document, "nodes": [dict(record) for record in document["nodes"]]}
     broken["nodes"][1]["parent_id"] = "later"
@@ -145,7 +151,29 @@ def test_v5_is_flat_strict_and_rejects_v4():
         persistence.from_document(unknown)
 
 
-def test_persistence_rejects_invalid_input_references_and_cycles():
+def test_multi_message_snapshots_survive_persistence_and_fork():
+    @dataclass
+    class BoardQuery(UserQuery):
+        type: ClassVar[str] = "test_board_query_snapshot"
+
+    root = start("root")
+    query = BoardQuery(content="move")
+    root.append(query)
+    query.snapshot_messages(
+        [
+            {"role": "user", "content": "board"},
+            {"role": "user", "content": "move"},
+        ]
+    )
+
+    loaded = persistence.from_document(persistence.to_document(root))
+    forked = query.fork()
+
+    assert loaded.frontier.message_dicts() == query.message_dicts()
+    assert forked.frontier.message_dicts() == query.message_dicts()
+
+
+def test_persistence_rejects_invalid_argument_references_and_cycles():
     root = start("root")
     action = ExecAction(code="launch")
     root.append(action)
@@ -156,21 +184,26 @@ def test_persistence_rejects_invalid_input_references_and_cycles():
     action.append(right)
     action.record_agent_launch(1, right)
 
-    left.config.inputs["right"] = {"$rlmflow_agent": right.id}
-    right.config.inputs["left"] = {"$rlmflow_agent": left.id}
+    left.args["files"] = ["a.txt", "b.txt"]
+    loaded = persistence.from_document(persistence.to_document(root))
+    assert loaded.find_agent(left.id).args["files"] == ["a.txt", "b.txt"]
+    left.args.clear()
+
+    left.args["right"] = {"$rlmflow_agent": right.id}
+    right.args["left"] = {"$rlmflow_agent": left.id}
     with pytest.raises(ValueError, match="dependency cycle"):
         persistence.to_document(root)
 
-    right.config.inputs.clear()
-    left.config.inputs["right"] = {"$rlmflow_agent": "missing"}
+    right.args.clear()
+    left.args["right"] = {"$rlmflow_agent": "missing"}
     with pytest.raises(ValueError, match="references missing agent"):
         persistence.to_document(root)
 
-    left.config.inputs["right"] = {"$rlmflow_agent": left.id}
+    left.args["right"] = {"$rlmflow_agent": left.id}
     with pytest.raises(ValueError, match="cannot depend on itself"):
         persistence.to_document(root)
 
-    left.config.inputs["right"] = {"$rlmflow_agent": right.id, "extra": "bad"}
+    left.args["right"] = {"$rlmflow_agent": right.id, "extra": "bad"}
     with pytest.raises(TypeError, match="exact agent reference"):
         persistence.to_document(root)
 
@@ -190,10 +223,8 @@ def test_persistence_rejects_out_of_scope_input_reference():
     owner.append(owner_action)
     consumer = AgentStart(
         content="consumer",
-        config=owner.config.child(
-            "consumer",
-            inputs={"source": {"$rlmflow_agent": source.id}},
-        ),
+        args={"source": {"$rlmflow_agent": source.id}},
+        config=owner.config.child("consumer"),
     )
     owner_action.append(consumer)
     owner_action.record_agent_launch(0, consumer)
@@ -221,14 +252,15 @@ def test_graph_file_is_the_atomic_save_commit_point(tmp_path, monkeypatch):
     assert [node.id for node in persistence.load(run).walk()] == committed_ids
 
 
-def test_large_inputs_are_content_addressed_once_across_graph_views(tmp_path):
+def test_large_args_are_content_addressed_once_across_graph_views(tmp_path):
     large = "payment,row\n" + ("merchant,100.00\n" * 8_000)
-    root = start("root", inputs={"data": large})
+    root = start("root", args={"data": large})
     action = ExecAction(code="delegate")
     root.append(action)
     child = AgentStart(
         content="child",
-        config=root.config.child("child", inputs={"data": large}),
+        args={"data": large},
+        config=root.config.child("child"),
     )
     action.append(child)
 
@@ -236,14 +268,14 @@ def test_large_inputs_are_content_addressed_once_across_graph_views(tmp_path):
     graph_text = (run / "graph.json").read_text(encoding="utf-8")
     graph = json.loads(graph_text)
     refs = [
-        record["payload"]["inputs"]["data"]
+        record["payload"]["args"]["data"]
         for record in graph["nodes"]
         if record["type"] == "agent_start"
     ]
-    blobs = list((run / "input_blobs").iterdir())
+    blobs = list((run / "arg_blobs").iterdir())
 
     assert len(blobs) == 1
-    assert len({ref[persistence.INPUT_BLOB_REF_KEY] for ref in refs}) == 1
+    assert len({ref[persistence.ARG_BLOB_REF_KEY] for ref in refs}) == 1
     assert large not in graph_text
     assert large not in (run / "agents" / "root" / "agent.json").read_text()
     assert large not in (run / "agents" / "root" / "session.jsonl").read_text()
@@ -251,8 +283,8 @@ def test_large_inputs_are_content_addressed_once_across_graph_views(tmp_path):
 
     loaded = persistence.load(run)
 
-    assert loaded.config.inputs["data"] == large
-    assert loaded.find_agent(child.id).config.inputs["data"] == large
+    assert loaded.args["data"] == large
+    assert loaded.find_agent(child.id).args["data"] == large
 
 
 def test_removed_graph_apis_have_no_compatibility_aliases():
@@ -269,7 +301,6 @@ def test_removed_graph_apis_have_no_compatibility_aliases():
 
 
 def test_registered_custom_node_round_trips():
-    @persistence.register_node_type
     @dataclass
     class ReviewOutput(Node):
         type = "test_review_output"

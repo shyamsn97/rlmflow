@@ -36,7 +36,7 @@ It gives an LLM a REPL and recursive delegation tools, then persists every query
 - Typed graph state with save/load persistence, fork, and time-travel
 - Parallel child execution with a thread pool
 - `agents/` persistence for per-agent state logs
-- `INPUTS` payloads for per-agent task data
+- Direct invocation arguments for per-agent task data
 - Interactive visualization (Gradio viewer)
 - Token tracking and budgets
 - Multiple LLM backends and model routing

@@ -104,9 +104,14 @@ class OolongPairsDataset(Dataset):
 
     def _example(self, row: dict[str, Any], context: str) -> Example:
         question_id = str(row.get("id", "")).strip()
+        question = str(row.get("question", "")).strip()
         return Example(
             id=f"oolong_pairs_{self.context_len}_{int(question_id):02d}",
-            prompt=str(row.get("question", "")).strip(),
+            prompt=(
+                f"{question}\n\n"
+                "Parse the canonical observation JSON. Its `context` field contains "
+                "the complete source text to use as evidence."
+            ),
             context={"context": context},
             expected=list(row.get("answer") or []),
             metadata={
@@ -175,7 +180,7 @@ class OolongPairsDataset(Dataset):
         return context
 
 
-@dataset("oolong-pairs-32k", tags=["core", "paper-aligned", "long-context"])
+@dataset("oolong-pairs-32k", tags=["long-context", "paper-aligned"])
 class OolongPairsPaperDataset(OolongPairsDataset):
     """The paper's 20 OOLONG-Pairs queries at 32K, official order.
 

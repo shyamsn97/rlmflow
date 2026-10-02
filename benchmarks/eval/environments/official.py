@@ -9,15 +9,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from benchmarks.eval.environments.base import (
-    EnvironmentAdapter,
-    candidate_protocol_message,
-)
+from benchmarks.eval.environments.base import candidate_protocol_message
+from benchmarks.eval.environments.environment import Environment
 from benchmarks.eval.environments.episode import EpisodeCore
 from benchmarks.eval.environments.registry import (
+    action_budget,
     bind_tools,
     build_environment,
-    environment_contract,
+    candidate_budget,
 )
 
 
@@ -28,24 +27,26 @@ class OfficialEnvironmentEpisode:
 
     def __init__(
         self,
-        adapter: EnvironmentAdapter,
+        adapter: Environment,
         *,
         max_actions: int,
         episode_id: str,
         candidate_budget: int = 0,
+        expected_observation_sha256: str | None = None,
     ) -> None:
         self.core = EpisodeCore(
             adapter,
             max_actions=max_actions,
             episode_id=episode_id,
             candidate_budget=candidate_budget,
+            expected_observation_sha256=expected_observation_sha256,
         )
         self._rlm_owners: dict[int, str] = {}
         self._thread = threading.local()
         self._counter = 0
 
     @property
-    def adapter(self) -> EnvironmentAdapter:
+    def adapter(self) -> Environment:
         return self.core.adapter
 
     @property
@@ -181,7 +182,7 @@ class OfficialEnvironmentEpisode:
             rlm_type._subcall = original_subcall
 
     def metrics(self) -> dict[str, Any]:
-        return self.core.metrics(parity_contract=_parity_contract(self.adapter.kind))
+        return self.core.metrics()
 
     def artifacts(self) -> dict[str, str]:
         return self.core.artifacts()
@@ -255,20 +256,17 @@ def open_official_environment(
 ) -> OfficialEnvironmentEpisode:
     built = build_environment(environment, artifact_dir=artifact_dir)
     episode = OfficialEnvironmentEpisode(
-        built.adapter,
-        max_actions=built.max_actions,
+        built,
+        max_actions=action_budget(built),
         episode_id=episode_id,
-        candidate_budget=built.candidate_budget,
+        candidate_budget=candidate_budget(built),
+        expected_observation_sha256=(
+            str(environment["observation_sha256"])
+            if environment.get("observation_sha256")
+            else None
+        ),
     )
     episode.start()
     return episode
-
-
-def _parity_contract(kind: str) -> dict[str, Any]:
-    try:
-        return environment_contract(kind)
-    except ValueError:
-        return {"version": "test-adapter", "kind": kind, "operations": []}
-
 
 __all__ = ["OfficialEnvironmentEpisode", "open_official_environment"]

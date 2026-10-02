@@ -66,7 +66,6 @@ def test_pooled_client_is_a_callable_chat_primitive():
         Client(),
         SequentialPool(),
         timeout=2,
-        key="agent",
         request_kwargs={"marker": "sample"},
     )
 
@@ -402,10 +401,7 @@ def test_flow_consumes_the_pooled_stream_primitive():
             self.chat_calls = 0
 
         async def stream(self, messages, **_kwargs):
-            yield LLMChunk(
-                text='```repl\nfinish("ok")\n```',
-                usage=LLMUsage(2, 2),
-            )
+            yield LLMChunk(text='```repl\nfinish("ok")\n```', usage=LLMUsage(2, 2))
 
         def chat(self, messages, **_kwargs):
             self.chat_calls += 1

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from benchmarks.eval import dataset
 from benchmarks.eval.environments.mazebench import (
     DEFAULT_LEVEL,
@@ -14,7 +12,7 @@ from benchmarks.eval.environments.mazebench import (
     UPSTREAM_REVISION,
     preflight_mazebench,
 )
-from benchmarks.eval.types import Dataset, Example, Prediction, Score
+from benchmarks.eval.types import Dataset, Example
 
 
 @dataset(
@@ -55,12 +53,13 @@ class MazeBenchDataset(Dataset):
                 id="delegation_mazebench_hxi",
                 prompt=(
                     "Play MazeBench from the fixed HxI top-diagonal ASCII start. Inspect "
-                    "`INPUTS['environment_observation']`, then use `maze_observe()`, "
+                    "`environment_observation`, then use `maze_observe()`, "
                     "`maze_action(action)`, or `maze_action_sequence(actions)`. Build a "
                     "compact map as you explore and collect as many unique gems as possible. "
                     "The native win condition is exactly 100 gems. Root actions determine "
                     "the score; child trajectories are private probes, and all trajectories "
-                    "share one action budget. Finish with a short route summary."
+                    f"share one action budget of {self.max_actions} actions. Finish with a "
+                    "short route summary."
                 ),
                 expected={"game_won_gem_count": GAME_WON_GEM_COUNT},
                 metadata={
@@ -87,40 +86,6 @@ class MazeBenchDataset(Dataset):
                 },
             )
         ]
-
-    def score(self, example: Example, prediction: Prediction) -> Score:
-        del example
-        environment = prediction.metrics.get("environment")
-        primary = environment.get("primary") if isinstance(environment, dict) else {}
-        primary = primary if isinstance(primary, dict) else {}
-        gems = _nonnegative_int(primary.get("gems_collected"))
-        game_won = bool(primary.get("game_won")) and gems >= GAME_WON_GEM_COUNT
-        details: dict[str, Any] = {
-            "gems_collected": gems,
-            "game_won": game_won,
-            "win_condition_gems": GAME_WON_GEM_COUNT,
-            "rooms_visited": _nonnegative_int(primary.get("rooms_visited")),
-            "novel_block_positions": _nonnegative_int(primary.get("novel_block_positions")),
-            "unique_states": _nonnegative_int(primary.get("unique_states")),
-            "primary_actions": _nonnegative_int(
-                environment.get("primary_actions") if isinstance(environment, dict) else 0
-            ),
-            "probe_actions": _nonnegative_int(
-                environment.get("probe_actions") if isinstance(environment, dict) else 0
-            ),
-            "instances_forked": _nonnegative_int(
-                environment.get("instances_forked") if isinstance(environment, dict) else 0
-            ),
-        }
-        return Score(value=float(gems), correct=game_won, details=details)
-
-
-def _nonnegative_int(value: object) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
-
 
 __all__ = [
     "GAME_WON_GEM_COUNT",

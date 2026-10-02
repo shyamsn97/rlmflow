@@ -107,7 +107,10 @@ def _run_cli(flow: Flow, workdir: Path, *, max_depth: int, max_iters: int) -> No
         if not query or query.lower() in ("quit", "exit", "q"):
             break
 
-        root = flow.start(query, max_depth=max_depth, max_iters=max_iters)
+        root = flow.start(
+            query,
+            config=AgentConfig(max_depth=max_depth, max_iters=max_iters),
+        )
         asyncio.run(_stream(flow, root, graph_dir))
 
         print(f"\n{root.result() or '(no result)'}\n")

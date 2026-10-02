@@ -72,7 +72,7 @@ def _panel(step: Step) -> str:
 
 def _transcript(nodes: list[Node], agent_path: str) -> str:
     """One agent's own nodes, in order, as of the step being shown."""
-    own = [node for node in nodes if _path_of(node) == agent_path]
+    own = [node for node in nodes if node.parent_agent is not None and node.parent_agent.config.path == agent_path]
     if not own:
         return f"_{escape(agent_path)} has not started yet._"
     blocks = [f"**{agent_path}** · {len(own)} nodes so far"]
@@ -80,11 +80,6 @@ def _transcript(nodes: list[Node], agent_path: str) -> str:
         detail = node_detail(node, limit=1200)
         blocks.append(f"`{node.seq}` **{node.type}**\n\n```\n{detail or '(no content)'}\n```")
     return "\n\n".join(blocks)
-
-
-def _path_of(node: Node) -> str:
-    agent = node.parent_agent
-    return agent.config.path if agent is not None else ""
 
 
 def open_viewer(

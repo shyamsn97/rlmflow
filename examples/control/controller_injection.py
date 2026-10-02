@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 from rlmflow import (
+    AgentConfig,
     ExecOutput,
     Flow,
     LLMUsage,
@@ -71,7 +72,10 @@ def observation_injection() -> None:
     banner("1. Inject an observation and let the LLM react")
 
     flow = Flow(DemoLLM())
-    graph = flow.start("Wait for a controller note, then finish.", max_depth=0, max_iters=4)
+    graph = flow.start(
+        "Wait for a controller note, then finish.",
+        config=AgentConfig(max_depth=0, max_iters=4),
+    )
     assert_types(graph, ["agent_start"])
 
     graph.frontier.append(ExecOutput(content=OBSERVATION))
@@ -107,7 +111,10 @@ def controller_stop_instruction() -> None:
     banner("2. Inject a controller stop instruction")
 
     flow = Flow(DemoLLM())
-    graph = flow.start("This run will be stopped by the controller.", max_depth=0, max_iters=4)
+    graph = flow.start(
+        "This run will be stopped by the controller.",
+        config=AgentConfig(max_depth=0, max_iters=4),
+    )
     run_dir = example_run_dir("controller-injection") / "controller-stop-instruction"
 
     async def run_with_controller_stop() -> None:

@@ -118,4 +118,4 @@ jobs:
           assert version("mazebench") == "0.2.19"
           PY
           node --version
-      - run: python -m benchmarks.eval.calibrate_search
+      - run: python -m benchmarks.eval.validate

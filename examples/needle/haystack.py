@@ -2,7 +2,7 @@
 
 Inspired by alexzhang13/rlm-minimal's million-line magic-number demo. This
 version passes the haystack as a single REPL input instead of writing many
-files, so the agent must chunk `INPUTS["haystack"]` and fan out parallel child
+files, so the agent must chunk `haystack` and fan out parallel child
 agents.
 
 Usage:
@@ -103,9 +103,9 @@ def main():
 
     root = flow.start(
         "I'm looking for a magic number buried somewhere in the haystack in "
-        "INPUTS['haystack']. What is it? Chunk the string and search the "
+        "`haystack`. What is it? Chunk the string and search the "
         "pieces in parallel.",
-        inputs={"haystack": haystack},
+        haystack=haystack,
     )
     out_dir = Path(args.out_dir)
     consumers = ConsumerGroup()

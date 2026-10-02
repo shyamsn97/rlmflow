@@ -4,18 +4,17 @@ from __future__ import annotations
 
 import contextvars
 import hashlib
-import json
 import time
 from collections import Counter
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import uuid4
 
 from rlmflow.graph.config import (
@@ -23,25 +22,53 @@ from rlmflow.graph.config import (
     DEFAULT_QUERY,
     AgentConfig,
     agent_ref_id,
-    can_spawn,
-    input_references,
+    argument_references,
     validate_agent_name,
-)
-from rlmflow.graph.prompts import (
-    COLD_REPL_NOTE,
-    EXECUTION_POLICY,
-    FINAL_ANSWER_ACTION,
-    FIRST_TURN_SAFEGUARD,
-    LAST_TURN_ADDENDUM,
-    ORCHESTRATOR_ADDENDUM,
-    PLANNING_ACTION,
-    TRUNCATION_SUMMARY,
-    TURN_ONE_FINISH_SENTENCE,
-    USER_PROMPT,
-    WORKER_ADDENDUM,
-    orchestrator_addendum,
+    validate_argument_name,
 )
 from rlmflow.llm import LLMUsage
+from rlmflow.prompts.text import (
+    COLD_REPL_NOTE,
+    FINAL_ANSWER_ACTION,
+    TRUNCATION_SUMMARY,
+)
+
+if TYPE_CHECKING:
+    from rlmflow.flow import Flow
+    from rlmflow.prompts.sections import Prompt
+
+
+@dataclass(frozen=True, slots=True)
+class ChatMessage:
+    """One immutable message stored on a transcript node."""
+
+    role: str
+    content: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {"role": self.role, "content": self.content}
+
+
+def message_snapshot(messages: object) -> tuple[ChatMessage, ...]:
+    """Validate provider-shaped messages and freeze them for transcript history."""
+    if not isinstance(messages, list):
+        raise TypeError(
+            f"build_messages() must return list[dict[str, str]], not {type(messages).__name__}"
+        )
+    snapshot: list[ChatMessage] = []
+    for index, message in enumerate(messages):
+        if not isinstance(message, dict):
+            raise TypeError(f"message {index} must be a dict, not {type(message).__name__}")
+        if set(message) != {"role", "content"}:
+            raise ValueError(f"message {index} must contain exactly 'role' and 'content'")
+        role = message["role"]
+        content = message["content"]
+        if not isinstance(role, str) or not role:
+            raise TypeError(f"message {index} role must be a non-empty string")
+        if not isinstance(content, str):
+            raise TypeError(f"message {index} content must be a string")
+        snapshot.append(ChatMessage(role, content))
+    return tuple(snapshot)
 
 
 class AgentBusyError(RuntimeError):
@@ -105,26 +132,6 @@ def running_step(node: Node) -> Iterator[None]:
             agent.in_flight = previous
 
 
-def agent_payload(agent: AgentStart | None) -> dict[str, Any]:
-    """The agent fields the run format repeats on every query node."""
-    config = agent.config if agent is not None else AgentConfig()
-    return {
-        "inputs": dict(config.inputs),
-        "model": config.model,
-        "prompt_profile": config.prompt_profile,
-        "output_schema": config.output_schema,
-        "child_output_schema": config.child_output_schema,
-        "reuse_repl": config.reuse_repl,
-        "max_depth": config.max_depth,
-        "max_iters": config.max_iters,
-        "max_budget": config.max_budget,
-        "keep_n_messages": config.keep_n_messages,
-        "max_output_length": config.max_output_length,
-        "max_query_chars": config.max_query_chars,
-        "resume_on_child_done": config.resume_on_child_done,
-    }
-
-
 class TurnMode(StrEnum):
     """What kind of REPL exit a model turn must produce."""
 
@@ -168,7 +175,7 @@ class RunIndex:
                 raise ValueError(f"duplicate agent path {node.config.path!r}")
             self.agents_by_id[node.id] = node
             self.agents_by_path[node.config.path] = node
-        if isinstance(node, LLMOutput):
+        if isinstance(node, (LLMOutput, TransitionDecision)):
             self.usage = self.usage + node.usage
         if isinstance(node, ErrorOutput):
             self.errors.append(node)
@@ -214,6 +221,11 @@ class Node:
     #: (a nudge, a final-answer prod) were not executed, so they have no timing.
     started_at: float | None = None
     finished_at: float | None = None
+    _messages: tuple[ChatMessage, ...] | None = field(
+        default=(),
+        repr=False,
+        compare=False,
+    )
 
     def append(self, node: Node) -> None:
         """Hang ``node`` off this frontier. Same-agent children become the new frontier."""
@@ -341,9 +353,53 @@ class Node:
             yield node
             node = node.prev
 
-    def render(self) -> list[dict[str, str]]:
-        """This node as zero or more canonical chat messages."""
-        return []
+    def instruction(self, flow: Flow | None = None) -> str:
+        """Return this node's primary current-turn instruction text."""
+        return self.content
+
+    def build_system_prompt(
+        self,
+        system_prompt: Prompt,
+        flow: Flow,
+    ) -> Prompt:
+        """Customize and return Flow's prepared system prompt."""
+        return system_prompt
+
+    def build_messages(
+        self,
+        user_prompt: Prompt,
+        flow: Flow,
+    ) -> list[dict[str, str]]:
+        """Build only this node's current-turn messages."""
+        content = str(user_prompt)
+        return [{"role": "user", "content": content}] if content else []
+
+    @property
+    def messages(self) -> tuple[ChatMessage, ...] | None:
+        """The durable message snapshot, or ``None`` before a query is built."""
+        return self._messages
+
+    def snapshot_messages(self, messages: list[dict[str, str]]) -> tuple[ChatMessage, ...]:
+        """Store one validated message snapshot; an existing snapshot is immutable."""
+        snapshot = message_snapshot(messages)
+        if self._messages is None:
+            self._messages = snapshot
+        elif self._messages != snapshot:
+            raise RuntimeError(f"node {self.id!r} already has a different message snapshot")
+        return self._messages
+
+    def message_dicts(self) -> list[dict[str, str]]:
+        """Return mutable provider dictionaries copied from the durable snapshot."""
+        if self._messages is None:
+            raise RuntimeError(f"node {self.id!r} has no message snapshot")
+        return [message.as_dict() for message in self._messages]
+
+    def _history_message_dicts(self) -> list[dict[str, str]]:
+        """Snapshot an unconsumed injected query before projecting it as history."""
+        if self._messages is None:
+            content = self.instruction()
+            self.snapshot_messages([{"role": "user", "content": content}] if content else [])
+        return self.message_dicts()
 
     def project(
         self,
@@ -361,7 +417,7 @@ class Node:
         groups: list[list[dict[str, str]]] = []
         remaining = keep
         for node in self.iter_backwards():
-            messages = node.render()
+            messages = node._history_message_dicts()
             if remaining is not None:
                 messages = messages[-remaining:]
             if not messages:
@@ -376,7 +432,9 @@ class Node:
 
     def subtree_usage(self) -> LLMUsage:
         """Model usage below this node, computed in O(subtree size)."""
-        spent = (node.usage for node in self.walk() if isinstance(node, LLMOutput))
+        spent = (
+            node.usage for node in self.walk() if isinstance(node, (LLMOutput, TransitionDecision))
+        )
         return sum(spent, LLMUsage())
 
     def timing(self) -> dict[str, Any]:
@@ -391,20 +449,9 @@ class Node:
 
     def to_record(self) -> dict[str, Any]:
         """This node as one shallow persistence record."""
-        agent = self.parent_agent
-        timing = self.timing()
-        metadata: dict[str, Any] = {"created_at": _isoformat(self.created_at)}
-        if timing:
-            metadata["timing"] = timing
-        return {
-            "id": self.id,
-            "parent_id": self.parent.id if self.parent is not None else None,
-            "type": self.type,
-            "agent_id": agent.config.path if agent is not None else None,
-            "order": self.seq,
-            "metadata": metadata,
-            "payload": {"content": self.content},
-        }
+        from rlmflow.graph import persistence
+
+        return persistence.to_record(self)
 
     def fork(self) -> AgentStart:
         """Create an independent, fresh-identity branch ending at this node."""
@@ -420,6 +467,12 @@ class AgentStart(Node):
     type: ClassVar[str] = "agent_start"
     id: str = field(default_factory=new_agent_id)
     content: str = DEFAULT_QUERY
+    args: dict[str, Any] = field(default_factory=dict)
+    _messages: tuple[ChatMessage, ...] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     config: AgentConfig = field(default_factory=AgentConfig)
     sub_agents: list[AgentStart] = field(default_factory=list, repr=False)
     #: Content-addressed table of the system prompts this agent's turns ran under:
@@ -437,6 +490,8 @@ class AgentStart(Node):
     _index: RunIndex = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        if self._messages is None:
+            self._messages = (ChatMessage("user", self.content),) if self.content else ()
         self.root = self
         self.parent_agent = self
         self.frontier = self
@@ -444,9 +499,6 @@ class AgentStart(Node):
         self.dependency_scheduled = False
         self._index = RunIndex()
         self._index.register(self)
-
-    def render(self) -> list[dict[str, str]]:
-        return [{"role": "user", "content": self.content}]
 
     @property
     def terminal(self) -> bool:
@@ -460,7 +512,7 @@ class AgentStart(Node):
     def blocked(self) -> bool:
         """Whether at least one handle-valued input is not terminal."""
         root = self.root
-        references = self.input_references
+        references = self.argument_references
         if not references or root is None:
             return False
         return any(
@@ -469,40 +521,38 @@ class AgentStart(Node):
         )
 
     @property
-    def input_references(self) -> tuple[tuple[str, str], ...]:
-        """Return persistent ``(input_name, source_id)`` dependency bindings."""
-        return input_references(self.config.inputs)
+    def argument_references(self) -> tuple[tuple[str, str], ...]:
+        """Return persistent ``(argument_name, source_id)`` dependency bindings."""
+        return argument_references(self.args)
 
-    def resolved_inputs(self) -> dict[str, str]:
-        """Materialize handle-valued launch inputs for this agent's REPL."""
+    def resolved_args(self) -> dict[str, Any]:
+        """Materialize handle-valued invocation arguments for this agent's REPL."""
         root = self.root
         if root is None:
             raise RuntimeError("cannot resolve inputs for a detached agent")
-        resolved: dict[str, str] = {}
-        for name, value in self.config.inputs.items():
-            if isinstance(value, str):
-                resolved[name] = value
-                continue
+
+        def resolve(value: Any, path: str) -> Any:
             source_id = agent_ref_id(value)
-            if source_id is None:
-                raise TypeError(f"input {name!r} must be a string or agent handle")
-            source = root.find_agent(source_id)
-            if source is None:
-                raise ValueError(f"input {name!r} references missing agent {source_id!r}")
-            if not source.terminal:
-                raise RuntimeError(f"input {name!r} source {source.config.path!r} is not complete")
-            result = source.result()
-            resolved[name] = (
-                result
-                if isinstance(result, str)
-                else json.dumps(
-                    result,
-                    ensure_ascii=False,
-                    allow_nan=False,
-                    sort_keys=True,
-                )
-            )
-        return resolved
+            if source_id is not None:
+                source = root.find_agent(source_id)
+                if source is None:
+                    raise ValueError(f"input {path!r} references missing agent {source_id!r}")
+                if not source.terminal:
+                    raise RuntimeError(
+                        f"input {path!r} source {source.config.path!r} is not complete"
+                    )
+                return source.result()
+            if isinstance(value, dict):
+                return {key: resolve(item, f"{path}.{key}") for key, item in value.items()}
+            if isinstance(value, list):
+                return [resolve(item, f"{path}[{index}]") for index, item in enumerate(value)]
+            return value
+
+        return {name: resolve(value, name) for name, value in self.args.items()}
+
+    def invocation_arguments(self) -> dict[str, Any]:
+        """Return this invocation's task and resolved JSON arguments."""
+        return {"task": self.content, **self.resolved_args()}
 
     def leaves(self) -> list[Node]:
         out: list[Node] = []
@@ -559,11 +609,6 @@ class AgentStart(Node):
         self._require_run_root()
         return self._index.agents_by_id.get(agent_id)
 
-    def find_agent_by_path(self, path: str) -> AgentStart | None:
-        """Find an agent by its stable dotted path without scanning the tree."""
-        self._require_run_root()
-        return self._index.agents_by_path.get(path)
-
     def errors(self) -> tuple[ErrorOutput, ...]:
         """Errors in append order without scanning the graph."""
         self._require_run_root()
@@ -599,12 +644,6 @@ class AgentStart(Node):
                 return text
         return None
 
-    def to_record(self) -> dict[str, Any]:
-        data = super().to_record()
-        data["payload"].update(agent_payload(self))
-        data["payload"]["system_prompts"] = dict(self.system_prompts)
-        return data
-
     def save(self, path: str | Path) -> Path:
         """Write this tree to ``path`` as a run directory, and return it."""
         from rlmflow.graph import persistence  # file work is not part of the model
@@ -620,63 +659,44 @@ class AgentStart(Node):
 
 
 @dataclass
-class UserQuery(Node):
-    type: ClassVar[str] = "user_query"
-    turn_mode: ClassVar[TurnMode] = TurnMode.ACTION
-    finish_description: ClassVar[str] = "Submit your final answer."
+class TransitionDecision(Node):
+    """One durable choice among the semantic edges eligible at a source node."""
 
-    def instruction(self) -> str:
-        return self.content
-
-    def render(self) -> list[dict[str, str]]:
-        return [{"role": "user", "content": self.instruction()}]
-
-    def build_system_prompt(self, flow: Any) -> str:
-        """System prompt for this turn. Default is the flow's inherited protocol."""
-        return flow.build_system_prompt(self)
-
-    def to_record(self) -> dict[str, Any]:
-        data = super().to_record()
-        data["payload"].update(agent_payload(self.parent_agent))
-        return data
+    type: ClassVar[str] = "transition_decision"
+    candidates: dict[str, str] = field(default_factory=dict)
+    selected_rule_id: str | None = None
+    source_node_id: str = ""
+    read_set_node_ids: list[str] = field(default_factory=list)
+    read_set_hash: str = ""
+    model: str = "default"
+    prompt_hash: str = ""
+    engine_metadata: dict[str, Any] = field(default_factory=dict)
+    usage: LLMUsage = field(default_factory=LLMUsage)
 
 
 @dataclass
-class PlanQuery(UserQuery):
-    type: ClassVar[str] = "plan_query"
+class UserQuery(Node):
+    type: ClassVar[str] = "user_query"
+    turn_mode: ClassVar[TurnMode] = TurnMode.ACTION
+    _messages: tuple[ChatMessage, ...] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
-    def instruction(self) -> str:
-        agent = self.parent_agent
-        if agent is None:
-            turns = 0
-            max_iters = None
-        else:
-            turns = sum(
-                isinstance(node, LLMOutput) and node.seq < self.seq for node in agent.transcript()
-            )
-            max_iters = agent.config.max_iters
-        if self.content:
-            body = self.content
-        else:
-            if max_iters is None:
-                body = f"Turn {turns + 1}:"
-            else:
-                body = USER_PROMPT.format(iter_1=turns + 1, max_iter=max_iters)
-            if turns == 0:
-                body = FIRST_TURN_SAFEGUARD + body
-        return f"{body}\n\n{PLANNING_ACTION}"
+
+@dataclass
+class RepairQuery(UserQuery):
+    """Ask the same agent to repair a rejected finish candidate."""
+
+    type: ClassVar[str] = "repair_query"
 
 
 @dataclass
 class FinalQuery(UserQuery):
     type: ClassVar[str] = "final_query"
     turn_mode: ClassVar[TurnMode] = TurnMode.FINAL
-    finish_description: ClassVar[str] = "Submit your final answer now."
     content: str = FINAL_ANSWER_ACTION
-
-    def build_system_prompt(self, flow: Any) -> str:
-        text = flow.build_system_prompt(self).replace(TURN_ONE_FINISH_SENTENCE, "").rstrip()
-        return f"{text}\n\n{LAST_TURN_ADDENDUM}"
 
 
 @dataclass
@@ -733,18 +753,6 @@ class ExecAction(ActionNode):
             default=None,
         )
 
-    def to_record(self) -> dict[str, Any]:
-        data = super().to_record()
-        data["payload"] = {
-            "code": self.code,
-            "repl_execution_order": self.repl_execution_order,
-            "retrieved_agent_ids": list(self.retrieved_agent_ids),
-            "launched_agent_ids": {
-                str(call_id): agent_id for call_id, agent_id in self.launched_agent_ids.items()
-            },
-        }
-        return data
-
 
 @dataclass
 class AppendChild(ExecAction):
@@ -755,12 +763,6 @@ class AppendChild(ExecAction):
     @property
     def child_agents(self) -> list[AgentStart]:
         return [child for child in self.children if isinstance(child, AgentStart)]
-
-    def child(self, name: str) -> AgentStart | None:
-        return next(
-            (child for child in self.child_agents if child.config.name == name),
-            None,
-        )
 
     def append(self, node: Node) -> None:
         super().append(node)
@@ -807,19 +809,16 @@ class AppendChild(ExecAction):
         return subtree
 
     def _refresh_code(self) -> None:
-        calls = [
-            (f"launch_subagent('', model={child.config.model!r}, name={child.config.name!r})")
-            for child in self.child_agents
-        ]
+        calls = ["launch_subagent(task='')" for _child in self.child_agents]
         for call_id, child in enumerate(self.child_agents):
             self.record_agent_launch(call_id, child)
         if len(calls) == 1:
-            self.code = f"_handle = await {calls[0]}\nprint(await _handle.wait_for_result())"
+            self.code = f"_handle = {calls[0]}\nprint(await _handle)"
             return
         self.code = (
             "_handles = [\n"
-            + "".join(f"    await {call},\n" for call in calls)
-            + "]\nprint([await h.wait_for_result() for h in _handles])"
+            + "".join(f"    {call},\n" for call in calls)
+            + "]\nprint(await asyncio.gather(*_handles))"
         )
 
 
@@ -833,42 +832,34 @@ class OutputNode(Node):
 @dataclass
 class LLMOutput(OutputNode):
     type: ClassVar[str] = "llm_output"
+    _messages: tuple[ChatMessage, ...] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     code: str = ""
     usage: LLMUsage = field(default_factory=LLMUsage)
     #: Key into the owning agent's ``system_prompts`` table.
     prompt_id: str = ""
 
-    def render(self) -> list[dict[str, str]]:
-        return [{"role": "assistant", "content": self.content}]
-
-    def to_record(self) -> dict[str, Any]:
-        data = super().to_record()
-        data["payload"]["code"] = self.code
-        agent = self.parent_agent
-        config = agent.config if agent is not None else AgentConfig()
-        metadata: dict[str, Any] = {
-            "model": config.model,
-            "usage": asdict(self.usage),
-            "system_prompt": self.prompt_id,
-        }
-        if config.keep_n_messages is not None:
-            metadata["keep_n_messages"] = config.keep_n_messages
-        data["metadata"] = {**metadata, **data["metadata"]}
-        return data
+    def __post_init__(self) -> None:
+        if self._messages is None:
+            self._messages = (ChatMessage("assistant", self.content),)
 
 
 @dataclass
 class ExecOutput(OutputNode):
     type: ClassVar[str] = "exec_output"
     turn_mode: ClassVar[TurnMode] = TurnMode.ACTION
+    _messages: tuple[ChatMessage, ...] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
-    def render(self) -> list[dict[str, str]]:
-        return [{"role": "user", "content": self.content}]
-
-    def to_record(self) -> dict[str, Any]:
-        data = super().to_record()
-        data["payload"]["output"] = self.content
-        return data
+    def __post_init__(self) -> None:
+        if self._messages is None:
+            self._messages = (ChatMessage("user", self.content),)
 
 
 @dataclass
@@ -876,14 +867,15 @@ class ErrorOutput(OutputNode):
     type: ClassVar[str] = "error_output"
     turn_mode: ClassVar[TurnMode] = TurnMode.ACTION
     error: str = "exec"
+    _messages: tuple[ChatMessage, ...] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
-    def render(self) -> list[dict[str, str]]:
-        return [{"role": "user", "content": self.content}]
-
-    def to_record(self) -> dict[str, Any]:
-        data = super().to_record()
-        data["payload"].update({"error": self.error, "output": self.content})
-        return data
+    def __post_init__(self) -> None:
+        if self._messages is None:
+            self._messages = (ChatMessage("user", self.content),)
 
 
 @dataclass
@@ -894,54 +886,96 @@ class ReplDead(ErrorOutput):
 
 
 @dataclass
+class VerificationFailure(OutputNode):
+    """One schema or verifier rejection of a finish candidate."""
+
+    type: ClassVar[str] = "verification_failure"
+    turn_mode: ClassVar[TurnMode] = TurnMode.ACTION
+    candidate: Any = None
+    kind: str = "verifier"
+    feedback: str = ""
+    schema_hash: str | None = None
+    verifier_hash: str | None = None
+    observations: str = ""
+    _messages: tuple[ChatMessage, ...] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        if not self.content:
+            self.content = self.feedback
+        if self._messages is None:
+            self._messages = (ChatMessage("user", self.content),)
+
+
+@dataclass
 class DoneOutput(OutputNode):
     type: ClassVar[str] = "done_output"
     result: Any = None
-
-    def to_record(self) -> dict[str, Any]:
-        data = super().to_record()
-        data["payload"].update({"result": self.result, "output": self.content})
-        return data
+    schema_hash: str | None = None
+    verifier_hash: str | None = None
+    verified: bool = False
 
 
-def start(query: str = "", *, config: AgentConfig | None = None, **overrides: Any) -> AgentStart:
-    """A root agent to hand to ``Flow.run``.
+def turn_mode_for(node: Node) -> TurnMode:
+    """Return the model-turn mode governing a query, reply, action, or result."""
+    if isinstance(node, (ExecOutput, ErrorOutput, DoneOutput)):
+        action = node.prev
+        return turn_mode_for(action) if isinstance(action, ExecAction) else TurnMode.NONE
+    if isinstance(node, ExecAction):
+        reply = node.prev
+        return turn_mode_for(reply) if isinstance(reply, LLMOutput) else TurnMode.NONE
+    if isinstance(node, LLMOutput):
+        source = node.prev
+        return source.turn_mode if source is not None else TurnMode.NONE
+    return node.turn_mode
 
-    ``config`` is the starting point, a fresh :class:`AgentConfig` when omitted, and
-    keyword overrides replace fields on a copy of it the way ``AgentConfig.child``
-    does — so ``AgentConfig`` stays the one place a default is written down::
 
-        start("find the bug", max_iters=8)
-
-    ``Flow.start`` is the same thing carrying that flow's defaults.
-    """
-    base = deepcopy(config) if config is not None else AgentConfig()
-    if "inputs" in overrides:
-        overrides["inputs"] = dict(overrides["inputs"] or {})
+def build_agent(
+    task: str,
+    args: Mapping[str, Any] | None = None,
+    *,
+    config: AgentConfig | None = None,
+) -> AgentStart:
+    """Build one agent from a task, JSON arguments, and runtime configuration."""
+    if not isinstance(task, str):
+        raise TypeError("agent task must be a string")
+    values = dict(args or {})
+    for name in values:
+        validate_argument_name(name)
     return AgentStart(
-        content=query or DEFAULT_QUERY,
-        config=replace(base, **overrides) if overrides else base,
+        content=task or DEFAULT_QUERY,
+        args=values,
+        config=deepcopy(config) if config is not None else AgentConfig(),
     )
+
+
+def start(
+    task: str = "",
+    *,
+    config: AgentConfig | None = None,
+    args: Mapping[str, Any] | None = None,
+    **config_overrides: Any,
+) -> AgentStart:
+    """Build a graph root with explicit arguments and configuration overrides."""
+    configured = deepcopy(config) if config is not None else AgentConfig()
+    if config_overrides:
+        configured = replace(configured, **config_overrides)
+    return build_agent(task, args, config=configured)
 
 
 __all__ = [
     "DEFAULT_MAX_QUERY_CHARS",
     "AgentBusyError",
+    "ChatMessage",
     "active_step",
     "running_step",
     "DEFAULT_QUERY",
     "COLD_REPL_NOTE",
-    "EXECUTION_POLICY",
     "FINAL_ANSWER_ACTION",
-    "FIRST_TURN_SAFEGUARD",
-    "LAST_TURN_ADDENDUM",
-    "ORCHESTRATOR_ADDENDUM",
-    "PLANNING_ACTION",
     "TRUNCATION_SUMMARY",
-    "TURN_ONE_FINISH_SENTENCE",
-    "USER_PROMPT",
-    "WORKER_ADDENDUM",
-    "orchestrator_addendum",
     "AgentConfig",
     "ActionNode",
     "AgentStart",
@@ -955,15 +989,19 @@ __all__ = [
     "LLMUsage",
     "Node",
     "OutputNode",
-    "PlanQuery",
     "ReplDead",
+    "RepairQuery",
     "RunStats",
+    "TransitionDecision",
     "TruncationSummary",
     "TurnMode",
     "UserQuery",
-    "can_spawn",
+    "VerificationFailure",
+    "build_agent",
     "new_agent_id",
     "new_node_id",
     "start",
+    "turn_mode_for",
     "validate_agent_name",
+    "message_snapshot",
 ]

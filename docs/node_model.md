@@ -2,7 +2,7 @@
 
 `rlmflow` records every agent run as a typed tree of nodes. One agent's slice of that tree is its transcript, and it alternates between **queries**, **actions**, and **outputs**:
 
-- **Queries** (`UserQuery`) are model-facing turns: a plan, a last-turn prod, or an explicit user message.
+- **Queries** (`UserQuery`) are explicit model-facing turns: a host or child message, a repair request, a last-turn prod, or a truncation notice.
 - **Actions** (`ActionNode`) are work the engine did on the agent's behalf: execute a block of code.
 - **Outputs** (`OutputNode`) are values produced by a model, runtime, or terminal engine step. `LLMOutput` renders as the assistant reply; `ExecOutput` and `ErrorOutput` are observations fed back to the model; `DoneOutput` ends the agent.
 
@@ -16,7 +16,7 @@ Every action is followed by exactly one output (or a `DoneOutput`). This makes e
 Node
 ├── AgentStart      (an agent's opening query; also the root of a run)
 ├── UserQuery
-│   ├── PlanQuery
+│   ├── RepairQuery
 │   ├── FinalQuery
 │   └── TruncationSummary
 ├── ActionNode
@@ -30,7 +30,7 @@ Node
 │   └── DoneOutput
 ```
 
-`ActionNode` and `OutputNode` group nodes by what the engine executes and what its stages produce. The model "turn" is the `LLMOutput` itself. Planning, final-answer, and truncation are `UserQuery` subclasses the engine commits; a dead REPL is a `ReplDead`. `UserQuery.build_system_prompt` is the only prompt hook, so inheriting `OutputNode` does not make `LLMOutput` prompt-bearing.
+`ActionNode` and `OutputNode` group nodes by what the engine executes and what its stages produce. The model "turn" is the `LLMOutput` itself. Repair, final-answer, and truncation guidance are also `UserQuery` subclasses; a dead REPL is a `ReplDead`. Nodes receive prepared prompts through `build_system_prompt(system_prompt, flow)` and `build_messages(user_prompt, flow)`; inheriting `OutputNode` does not itself make a node prompt-bearing.
 
 An `AgentStart` is both a node in its parent's tree and the handle for a whole agent: it owns that agent's `frontier`, `config`, `sub_agents`, and system prompt table. The root of a run is just the `AgentStart` nobody launched.
 
@@ -53,7 +53,7 @@ The concrete payloads are:
 | ------------------- | -------------------- | --------------------------------------------------------- |
 | `AgentStart`        | `agent_start`        | `content` (the agent's query), `config`, `system_prompts` |
 | `UserQuery`         | `user_query`         | `content`                                                 |
-| `PlanQuery`         | `plan_query`         | planned next-action prompt before each working turn       |
+| `RepairQuery`       | `repair_query`       | rejected finish feedback                                  |
 | `FinalQuery`        | `final_query`        | last-iter prompt (default)                                |
 | `TruncationSummary` | `truncation_summary` | keep_n notice (default)                                   |
 | `LLMOutput`         | `llm_output`         | `content` (the reply), `code`, `usage`, `prompt_id`       |
@@ -63,7 +63,7 @@ The concrete payloads are:
 | `ReplDead`          | `repl_dead`          | crash text plus the cold-REPL note, `error="repl"`        |
 | `DoneOutput`        | `done_output`        | `result`, `content`                                       |
 
-`LLMOutput.code` is the block extracted from the reply; `ExecAction.code` is what the engine actually ran. `LLMOutput.prompt_id` keys into `agent.system_prompts`, so the exact system prompt a turn ran under is recoverable with `agent.system_prompt_for(node)`. `DoneOutput` is the only terminal node: an agent is finished when `agent.terminal` is true, which means its frontier is a `DoneOutput`. The only completion tool is `finish(...)`.
+`LLMOutput.code` is the sole non-empty explicit `repl` block extracted from the reply; `ExecAction.code` is what the engine actually ran. Plain text, ordinary Markdown code fences, empty blocks, and multiple `repl` blocks are non-executable protocol errors. `LLMOutput.prompt_id` keys into `agent.system_prompts`, so the exact system prompt a turn ran under is recoverable with `agent.system_prompt_for(node)`. `DoneOutput` is the only terminal node: an agent is finished when `agent.terminal` is true, which means its frontier is a `DoneOutput`. Model-driven completion always comes from `finish(value)` inside the REPL; an `output_schema` validates that value.
 
 ## Navigating
 
@@ -84,31 +84,22 @@ agent.leaves()     # the frontier of this agent and of every agent below it
 
 ## Chat Projection
 
-`node.render()` is how a node becomes zero or more chat messages. User-like nodes (`AgentStart`, `UserQuery`, `ExecOutput`, `ErrorOutput`) render as `user`; `LLMOutput` as `assistant`; bookkeeping (`ExecAction`, `DoneOutput`) as an empty list. A `UserQuery` subclass inherits the user turn, and a custom node may return an assistant/user pair or any other ordered message list.
+Each node carries an immutable message snapshot. Model-facing query nodes build that snapshot exactly once through `build_messages(user_prompt, flow)`. `LLMOutput`, `ExecOutput`, and `ErrorOutput` initialize snapshots directly from their recorded content; bookkeeping nodes have an empty snapshot.
 
-`node.project(keep=...)` walks `prev`, calls each node's canonical `render()`, flattens the results, and stops after `keep` messages. `Flow.build_messages` projects history from `node.prev`, renders only the current frontier through the Flow or prompt profile's `render_fn(runtime, node)`, and prepends the system prompt. It preserves rendered messages in order, including adjacent messages with the same role.
+`node.project(keep=...)` walks `prev`, flattens stored snapshots, and stops after `keep` messages. It never rebuilds a historical prompt or consults live runtime state. A custom query may return several messages from `build_messages`; those exact messages remain in later context and survive save/load and fork.
+
+Background-agent status and named transitions are request-only Flow overlays. They are appended to a copy of the current snapshot, so they stay fresh without accumulating in history.
 
 ## Normal Flow
 
-A one-turn successful run looks like this:
+`AgentStart` calls the model directly. An agent may finish in its first block,
+or observe its inputs and decide from the printed result:
 
 ```text
 AgentStart
-  -> PlanQuery
-  -> LLMOutput(code="finish('answer')")
-  -> ExecAction
-  -> DoneOutput(result="answer")
-```
-
-A multi-turn run loops through LLM and exec halves:
-
-```text
-AgentStart
-  -> PlanQuery
-  -> LLMOutput(code="x = compute()")
+  -> LLMOutput(code="x = compute(task); print(x)")
   -> ExecAction
   -> ExecOutput(content="...")
-  -> PlanQuery
   -> LLMOutput(code="finish({'answer': x})")
   -> ExecAction
   -> DoneOutput(result={"answer": ...})
@@ -122,13 +113,12 @@ Errors are observations too. The next LLM turn sees the traceback and can recove
 LLMOutput(code="1 / 0")
   -> ExecAction
   -> ErrorOutput(error="exec", content="ZeroDivisionError: ...")
-  -> PlanQuery
   -> LLMOutput(code="finish(...)")
 ```
 
 An `ErrorOutput` means the agent's own code raised. A `ReplDead` means the REPL itself died and took the namespace with it; the agent is told that its variables are gone before the next model request.
 
-Every ordinary action turn lands a `PlanQuery` before its `LLMOutput`, including startup and turns after REPL output, errors, or a returned child. Its user content is `Turn N/M:` (plus a first-turn INPUTS safeguard). The system message for that turn is `node.build_system_prompt(flow)` on the `UserQuery`: the inherited protocol, plus the orchestrator addendum when the agent can spawn, or the worker addendum when it cannot. `FinalQuery` replaces `PlanQuery` on the last allowed iteration and wraps the protocol with last-turn submit guidance. `TruncationSummary` records a `keep_n` overflow, and application code may append a generic `UserQuery` explicitly. Successful REPL blocks continue without an explicit model-facing transition call.
+`AgentStart`, `UserQuery`, `ExecOutput`, and `ErrorOutput` call the model after final-turn and truncation guards. The invariant system protocol asks each turn to plan and execute the immediate next step, and to look at the inputs first when their size, format, or contents are unknown. `Flow.build_system_prompt(node)` uses the spawn-capable execution policy when the agent can spawn and the worker policy when it cannot. `FinalQuery` supplies one last-turn instruction, `RepairQuery` carries rejected-finish feedback, `TruncationSummary` records a `keep_n` overflow, and application code may append a generic `UserQuery` explicitly.
 
 ## Delegation
 
@@ -141,15 +131,13 @@ finding_schema = {
     "required": ["conclusion"],
     "additionalProperties": False,
 }
-search = await launch_subagent(
-    "Find the evidence",
-    model="default",
-    name="search",
-    inputs={"chunk": chunk},
-    output_schema=finding_schema,
+search = launch_subagent(
+    task="Find the evidence",
+    chunk=chunk,
+    schema=finding_schema,
 )
 # Later, when the answer is needed:
-result = await search.wait_for_result()
+result = await search
 assert set(result) == {"conclusion"}
 ```
 
@@ -170,13 +158,13 @@ A host can set `AgentConfig.child_output_schema` so launched children get a sche
 `flow.run_streaming(root, until=...)` advances the run and yields each node as it lands; the tree is mutated in place. One logical reasoning turn is usually several node transitions:
 
 1. LLM half: `AgentStart | UserQuery | ExecOutput | ErrorOutput -> LLMOutput`.
-1. Exec half: `LLMOutput -> ExecAction -> <observation>`.
+1. Resolution: exactly one non-empty `repl` block goes through `ExecAction -> <observation>`; any other model response becomes a protocol `ErrorOutput`.
 
 Each pass, the engine steps every leaf in the tree — the frontier of every agent that has not answered and is not already being stepped — so the parent and its children advance together:
 
 - an agent whose frontier is a `DoneOutput` does nothing unless `resume_on_child_done` appended a `UserQuery`;
-- an agent at `LLMOutput` runs its code next;
-- an agent at `AgentStart`, `UserQuery`, `ExecOutput`, or `ErrorOutput` calls the model next (a `UserQuery` after `ExecOutput` / `DoneOutput` takes a `PlanQuery` first);
+- an agent at `LLMOutput` runs its sole explicit `repl` block, or enters protocol-error recovery if the response is invalid;
+- an agent at `AgentStart`, `UserQuery`, `ExecOutput`, or `ErrorOutput` calls the model next after automatic guards;
 - an agent at `ExecAction` runs that block — but while a block is running, its agent's frontier is that action and the step already owns it, so the leaves that advance are its children's.
 
 ## Persistence

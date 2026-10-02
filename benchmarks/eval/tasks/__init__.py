@@ -12,6 +12,7 @@ from benchmarks.eval.tasks import (
     oolong,  # noqa: F401
     oolong_pairs,  # noqa: F401
     sudoku_search,  # noqa: F401
+    swarm_fanout,  # noqa: F401
     synthetic_needle,  # noqa: F401
 )
 

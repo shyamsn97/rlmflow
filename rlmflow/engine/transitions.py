@@ -1,15 +1,19 @@
-"""Empty table of ``@transitions.on`` producers and named choice menus."""
+"""Automatic transitions: one decorated function per edge, resolved first-match."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator
+import hashlib
+import inspect
+import json
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
+from typing import Any
 
-from rlmflow.graph.nodes import Node, UserQuery
+from rlmflow.graph.nodes import Node, TransitionDecision
 
-Guard = Callable[[Node], bool]
-Producer = Callable[..., Node]
-RESERVED_NAMES = frozenset({"finish"})
+Condition = Callable[[Node], "bool | Awaitable[bool]"] | str
+SemanticChoice = tuple[tuple[str, str, str], ...]
+Judge = Callable[[Node, SemanticChoice], Awaitable[TransitionDecision]]
 
 
 class TransitionPolicyError(ValueError):
@@ -17,187 +21,208 @@ class TransitionPolicyError(ValueError):
 
 
 class TransitionProtocolError(RuntimeError):
-    """Invalid transition selection produced by the model."""
-
-
-class InvalidTransitionError(TransitionProtocolError):
-    """The model selected a transition unavailable from the current behavior."""
-
-    def __init__(self, name: str, available: Iterable[str]) -> None:
-        choices = tuple(available)
-        super().__init__(f"transition {name!r} is unavailable; available: {list(choices)!r}")
-        self.name = name
-        self.available = choices
+    """The model broke the turn protocol a transition depends on."""
 
 
 @dataclass(frozen=True, slots=True)
-class Row:
-    sources: tuple[type[Node], ...]
-    fn: Producer
-    when: Guard | None = None
+class TransitionFunction:
+    """A producer carrying its complete automatic-transition declaration."""
 
-    def matches(self, node: Node) -> bool:
-        return isinstance(node, self.sources) and (self.when is None or self.when(node))
+    fn: Callable[..., Any]
+    sources: tuple[type[Node], ...] | None
+    when: Condition | None = None
+    node_only: bool = False
 
+    @classmethod
+    def create(
+        cls,
+        fn: Callable[..., Any],
+        *,
+        source: type[Node] | tuple[type[Node], ...] | str,
+        when: Condition | None = None,
+        node_only: bool = False,
+    ) -> TransitionFunction:
+        _validate_condition(when)
+        return cls(fn, _normalize_sources(source), when, node_only)
 
-@dataclass(frozen=True)
-class TransitionOption:
-    name: str
-    description: str
-    target: type[UserQuery]
+    @property
+    def __name__(self) -> str:
+        return self.fn.__name__
 
-
-@dataclass(frozen=True, slots=True)
-class ChoiceSet:
-    current: type[UserQuery]
-    targets: tuple[type[UserQuery], ...]
-    when: Guard | None = None
-
-
-class Transitions:
-    """Producer rows plus named ``transition("...")`` choices. Starts empty."""
-
-    def __init__(self) -> None:
-        self._rows: list[Row] = []
-        self._choices: list[ChoiceSet] = []
-        self._base: Transitions | None = None
-
-    def derive(self) -> Transitions:
-        """Child table: own rows win, then this table."""
-        child = Transitions()
-        child._base = self
-        return child
-
-    def on(self, *sources: type[Node], when: Guard | None = None):
-        """Register a producer. ``@table.on(UserQuery)`` or stacked."""
-        _validate_sources(sources)
-
-        def register(fn: Producer) -> Producer:
-            self._rows.append(Row(sources=sources, fn=fn, when=when))
-            return fn
-
-        return register
-
-    def choices(
-        self,
-        current: type[UserQuery],
-        *targets: type[UserQuery],
-        when: Guard | None = None,
-    ) -> Transitions:
-        """Allow ``transition("...")`` to select a target from ``current``."""
-        _validate_behavior(current)
-        if not targets:
-            raise TransitionPolicyError("a transition choice list cannot be empty")
-        for target in targets:
-            _validate_behavior(target)
-        names = [target.name for target in targets]
-        if len(names) != len(set(names)):
-            raise TransitionPolicyError(
-                f"duplicate transition names from {current.__name__}: {names!r}"
-            )
-        existing = {
-            target.name for choices in self._own_choices(current) for target in choices.targets
-        }
-        repeated = existing.intersection(names)
-        if repeated:
-            raise TransitionPolicyError(
-                f"duplicate transition names from {current.__name__}: {sorted(repeated)!r}"
-            )
-        self._choices.append(ChoiceSet(current=current, targets=targets, when=when))
-        return self
-
-    def _own_choices(self, current: type[UserQuery]) -> Iterator[ChoiceSet]:
-        for choices in self._choices:
-            if choices.current is current:
-                yield choices
-
-    def resolve(self, node: Node) -> Producer:
-        for row in self._rows:
-            if row.matches(node):
-                return row.fn
-        if self._base is not None:
-            return self._base.resolve(node)
-        raise TypeError(f"cannot step {type(node).__name__}")
-
-    def available(self, node: Node) -> tuple[TransitionOption, ...]:
-        behavior = self.current_behavior(node)
-        if behavior is None:
-            return ()
-        found: dict[str, TransitionOption] = {}
-        for choices in self._walk_choices():
-            if not isinstance(behavior, choices.current):
-                continue
-            if choices.when is not None and not choices.when(node):
-                continue
-            for target in choices.targets:
-                found.setdefault(
-                    target.name,
-                    TransitionOption(
-                        name=target.name,
-                        description=target.transition_description,
-                        target=target,
-                    ),
-                )
-        return tuple(found.values())
-
-    def current_behavior(self, node: Node) -> UserQuery | None:
-        """Return the latest query participating in a choice set."""
-        classes: dict[type[UserQuery], None] = {}
-        for choices in self._walk_choices():
-            classes.setdefault(choices.current, None)
-            for target in choices.targets:
-                classes.setdefault(target, None)
-        if not classes:
-            return None
-        kinds = tuple(classes)
-        return next(
-            (item for item in node.iter_backwards() if isinstance(item, kinds)),
-            None,
+    @property
+    def id(self) -> str:
+        source = (
+            "all"
+            if self.sources is None
+            else ",".join(f"{item.__module__}.{item.__qualname__}" for item in self.sources)
         )
+        condition = (
+            self.when
+            if isinstance(self.when, str) or self.when is None
+            else f"{self.when.__module__}.{self.when.__qualname__}"
+        )
+        fingerprint = json.dumps(
+            {
+                "condition": condition,
+                "source": source,
+                "handler": f"{self.fn.__module__}.{self.fn.__qualname__}",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(fingerprint.encode()).hexdigest()
 
-    def resolve_choice(self, node: Node, name: str) -> TransitionOption | None:
-        return next((option for option in self.available(node) if option.name == name), None)
+    def accepts(self, node: Node) -> bool:
+        return self.sources is None or isinstance(node, self.sources)
 
-    def _walk_choices(self) -> Iterator[ChoiceSet]:
-        current: Transitions | None = self
-        while current is not None:
-            yield from current._choices
-            current = current._base
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self.fn(*args, **kwargs)
 
-    def __str__(self) -> str:
-        lines = []
-        for row in self._rows:
-            source = "|".join(item.__name__ for item in row.sources)
-            guard = f" when {row.when.__name__}" if row.when is not None else ""
-            lines.append(f"{source} -> {row.fn.__name__}{guard}")
-        return "\n".join(lines)
+    async def produce(self, flow: Any, node: Node) -> Node:
+        created = self.fn(node) if self.node_only else self.fn(flow, node)
+        if inspect.isawaitable(created):
+            created = await created
+        if not isinstance(created, Node):
+            raise TypeError(
+                f"transition handler {self.__name__} returned "
+                f"{type(created).__name__}, expected Node"
+            )
+        return created
 
 
-def _validate_sources(sources: tuple[type[Node], ...]) -> None:
+def transition(
+    *,
+    source: type[Node] | tuple[type[Node], ...] | str,
+    when: Condition | None = None,
+):
+    """Wrap one built-in producer with its automatic-transition declaration."""
+
+    def decorate(fn: Callable[..., Any]) -> TransitionFunction:
+        return TransitionFunction.create(fn, source=source, when=when)
+
+    return decorate
+
+
+async def resolve(
+    transitions: Iterable[TransitionFunction],
+    node: Node,
+    judge: Judge,
+) -> tuple[TransitionFunction, Node, Node]:
+    """Return ``(function, anchor, source)`` for the selected transition.
+
+    Callable conditions before the first semantic condition retain first-match
+    priority. At the first string condition, all source-compatible string
+    conditions before the next unconditional fallback become one structured
+    choice. A selected semantic edge wins there; ``continue`` resumes deterministic
+    first-match resolution after that choice. The one durable decision is reused
+    on replay.
+    """
+    items = tuple(transitions)
+    recorded: TransitionDecision | None = None
+    source = node
+    while isinstance(source, TransitionDecision):
+        if recorded is not None:
+            raise ValueError("expected one transition decision per source node")
+        recorded = source
+        source = source.prev
+    if recorded is not None and recorded.source_node_id != source.id:
+        raise ValueError("transition decision chain has inconsistent source nodes")
+
+    anchor = node
+    semantic_resolved = False
+    for index, transition_fn in enumerate(items):
+        if not transition_fn.accepts(source):
+            continue
+        when = transition_fn.when
+        if isinstance(when, str):
+            if semantic_resolved:
+                continue
+            semantic = _semantic_choices(items[index:], source)
+            if recorded is not None:
+                decision = recorded
+                policy = tuple(
+                    (rule_id, condition) for rule_id, _label, condition in semantic
+                )
+                if tuple(decision.candidates.items()) != policy:
+                    raise ValueError("recorded transition decision no longer matches policy")
+            else:
+                decision = await judge(source, semantic)
+                anchor.append(decision)
+                anchor = decision
+            semantic_resolved = True
+            if decision.selected_rule_id is not None:
+                selected = next(
+                    (
+                        candidate
+                        for candidate in items
+                        if candidate.id == decision.selected_rule_id
+                        and candidate.accepts(source)
+                        and isinstance(candidate.when, str)
+                    ),
+                    None,
+                )
+                if selected is None:
+                    raise ValueError("semantic transition selected an unknown rule")
+                return selected, anchor, source
+            continue
+        elif when is None:
+            return transition_fn, anchor, source
+        else:
+            outcome = when(source)
+            if bool(await outcome if inspect.isawaitable(outcome) else outcome):
+                return transition_fn, anchor, source
+    raise TypeError(f"cannot step {type(source).__name__}")
+
+
+def _semantic_choices(
+    transitions: tuple[TransitionFunction, ...],
+    source: Node,
+) -> SemanticChoice:
+    """Semantic choices reachable before the next unconditional fallback."""
+    choices: list[tuple[str, str, str]] = []
+    for transition_fn in transitions:
+        if not transition_fn.accepts(source):
+            continue
+        when = transition_fn.when
+        if when is None:
+            break
+        if isinstance(when, str):
+            choices.append((transition_fn.id, transition_fn.__name__, when))
+    if not choices:
+        raise ValueError("semantic transition choice requires at least one candidate")
+    if len({rule_id for rule_id, _label, _condition in choices}) != len(choices):
+        raise TransitionPolicyError("semantic transitions must have unique rule IDs")
+    if len({label for _rule_id, label, _condition in choices}) != len(choices):
+        raise TransitionPolicyError(
+            "semantic transitions in one choice must have unique function names"
+        )
+    return tuple(choices)
+
+
+def _validate_condition(when: Any) -> None:
+    if isinstance(when, str) and not when.strip():
+        raise TransitionPolicyError("semantic transition condition cannot be empty")
+    if when is not None and not isinstance(when, str) and not callable(when):
+        raise TransitionPolicyError("when must be a callable, string, or None")
+
+
+def _normalize_sources(
+    source: type[Node] | tuple[type[Node], ...] | str,
+) -> tuple[type[Node], ...] | None:
+    if source == "all":
+        return None
+    sources = source if isinstance(source, tuple) else (source,)
     if not sources or any(
         not isinstance(item, type) or not issubclass(item, Node) for item in sources
     ):
-        raise TransitionPolicyError("source must contain Node classes")
-
-
-def _validate_behavior(target: type[UserQuery]) -> None:
-    if not isinstance(target, type) or not issubclass(target, UserQuery):
-        raise TransitionPolicyError("selectable states must be UserQuery classes")
-    name = getattr(target, "name", None)
-    if not isinstance(name, str) or not name.strip():
-        raise TransitionPolicyError(f"{target.__name__} has no transition name")
-    if name in RESERVED_NAMES:
-        raise TransitionPolicyError(f"transition name {name!r} is reserved")
-    description = getattr(target, "transition_description", None)
-    if not isinstance(description, str) or not description.strip():
-        raise TransitionPolicyError(f"{target.__name__} has no transition description")
+        raise TransitionPolicyError("source must be a Node class, tuple of Node classes, or 'all'")
+    return sources
 
 
 __all__ = [
-    "InvalidTransitionError",
-    "RESERVED_NAMES",
-    "TransitionOption",
+    "TransitionFunction",
     "TransitionPolicyError",
     "TransitionProtocolError",
-    "Transitions",
+    "resolve",
+    "transition",
 ]

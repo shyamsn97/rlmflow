@@ -64,7 +64,7 @@ def dependency_routed(child: AgentStart) -> bool:
     return any(
         source_id == child.id
         for agent in root.iter_agents()
-        for _input_name, source_id in agent.input_references
+        for _argument_name, source_id in agent.argument_references
     )
 
 
@@ -108,7 +108,7 @@ def apply(node: Node) -> list[Node]:
     return extra
 
 
-def restore(root: AgentStart) -> None:
+def rebuild_mailboxes(root: AgentStart) -> None:
     """Rebuild mailboxes from the tree and flush any parent already sitting idle."""
     for agent in root.iter_agents():
         agent.pending_handoffs.clear()
@@ -161,14 +161,9 @@ def _jsonish(value: Any) -> str:
 
 
 __all__ = [
-    "HANDOFF_RESULT_MAX",
     "Handoff",
     "apply",
-    "delivered",
-    "dependency_routed",
-    "enqueue",
     "flush",
-    "marker",
-    "restore",
+    "rebuild_mailboxes",
     "supervisor",
 ]

@@ -22,7 +22,6 @@ from rlmflow import (
     DockerRuntime,
     Flow,
     LocalRuntime,
-    PromptBuilder,
     SubprocessRuntime,
     tool,
 )
@@ -54,7 +53,7 @@ BASELINE_RESULT_PATH = Path(__file__).with_name("baseline_result.json")
 
 ADAPTER_PROMPT = """
 Autoresearch loop policy:
-- `INPUTS["task_instructions"]` is task context only. Inspect it first.
+- `task_instructions` is task context only. Inspect it first.
 - Do not use git or run training manually. Use `submit_trial(slug, hypothesis)`.
 - Call `run_baseline()` once; it uses the cached baseline result and does not
   submit a Modal job.
@@ -144,8 +143,8 @@ Spend the WHOLE budget — a plateau means pivot, not stop:
   `remaining_submissions == 0`.
 
 Editing train.py (do it the robust way):
-- Implementation children edit only `INPUTS["trial_dir"]/train.py`, then call
-  `submit_trial(INPUTS["slug"], INPUTS["hypothesis"])`.
+- Implementation children edit only `trial_dir/train.py`, then call
+  `submit_trial(slug, hypothesis)`.
 - ALWAYS edit by full-file rewrite: read the entire file, then `write_file` the
   COMPLETE updated contents yourself, changing only the constants/lines your
   hypothesis needs. Do NOT use `edit_file`, and NEVER construct source by string
@@ -154,12 +153,11 @@ Editing train.py (do it the robust way):
   `flush=True)` into `flush = 1798`).
 - If `submit_trial` returns `preflight_failed`, read the reported line number,
   re-read the current file, and fix it with ONE more full-file `write_file`. If
-  it still fails, re-read `INPUTS["trial_dir"]/train.py` from scratch and rewrite
+  it still fails, re-read `trial_dir/train.py` from scratch and rewrite
   cleanly. Do not retry more than twice; if still broken, return the failure row.
 - If it returns any other failure row, return it to the parent.
-- `launch_subagent(..., inputs=...)` values may be strings or top-level child
-  handles. Use `str(...)` for immediate counts and JSON strings for immediate
-  structured values.
+- `launch_subagent(task=..., **inputs)` values may be strict JSON values or child
+  handles.
 
 Root sketch (root is the planner: plan a wave, fan out implementers, repeat):
 ```repl
@@ -184,16 +182,16 @@ tried = {r.get("slug") for r in runs} | {r.get("hypothesis") for r in runs}
 ideas = [(s, h, seed) for s, h, seed in candidates if s not in tried and h not in tried][:remaining]
 trials = [create_trial(s, h, parent_slug=(seed["slug"] if seed else "baseline")) for s, h, seed in ideas]
 handles = [
-    await launch_subagent(
-        "Read INPUTS['trial_dir']/train.py in full, then write_file the complete "
+    launch_subagent(
+        task="Read trial_dir/train.py in full, then write_file the complete "
         "updated file changing only the constants your hypothesis needs, then submit_trial(...).",
-        model="default",
-        name=row["slug"],
-        inputs={"trial_dir": row["agent_trial_dir"], "slug": row["slug"], "hypothesis": row["hypothesis"]},
+        trial_dir=row["agent_trial_dir"],
+        slug=row["slug"],
+        hypothesis=row["hypothesis"],
     )
     for row in trials
 ]
-results = [await handle.wait_for_result() for handle in handles]
+results = await asyncio.gather(*handles)
 # Print results and STOP here — this is ONE wave for ONE turn. Do not wrap this
 # in a `while` loop over a fixed candidate list; finishing the turn lets your
 # NEXT turn reason about `results` and brainstorm genuinely new hypotheses. If
@@ -204,9 +202,13 @@ print(results, list_runs(), best_run(), submission_status())
 """
 
 
-class AutoresearchPrompt(PromptBuilder):
-    def __call__(self, flow=None, node=None) -> str:
-        return f"{super().__call__(flow, node)}\n\n{ADAPTER_PROMPT.strip()}"
+def add_autoresearch_prompt(prompt, flow=None, node=None):
+    prompt.add_section(
+        "profile.autoresearch",
+        ADAPTER_PROMPT,
+        order=800,
+        source="add_autoresearch_prompt",
+    )
 
 
 class ExperimentCrashed(RuntimeError):
@@ -653,13 +655,13 @@ def run(args: argparse.Namespace) -> None:
         runtime=runtime,
         tools=[FILE_TOOLS, *build_autoresearch_tools(state)],
         workers=args.parallel,
-        system_prompt=AutoresearchPrompt(),
+        system_prompt_modifiers=add_autoresearch_prompt,
     )
 
     query = f"""\
 Run autoresearch for up to {args.max_submissions} non-baseline submissions.
 
-Use INPUTS["task_instructions"] for task context. Use the system prompt for the
+Use `task_instructions` for task context. Use the system prompt for the
 rlmflow loop policy and examples.
 
 Start with run_baseline(); it is cached and does not run Modal. You are the
@@ -677,7 +679,7 @@ launch the next one.
     graph_dir = args.out / "graph"
     root = flow.start(
         query,
-        inputs={"task_instructions": (example_dir / "program.md").read_text()},
+        task_instructions=(example_dir / "program.md").read_text(),
         max_depth=args.max_depth,
         max_iters=args.max_iters,
     )

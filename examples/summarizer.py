@@ -81,25 +81,23 @@ def generate_long_document(sections: int, *, seed: int = 7) -> str:
 
 
 SUMMARIZE_QUERY = """\
-The full document is in `INPUTS["document"]` (a str). It is long, so summarize
+The full document is in `document` (a str). It is long, so summarize
 it with a map-reduce strategy instead of reading it all at once:
 
-1. Split `INPUTS["document"]` into a handful of contiguous chunks (aim for ~4-8
-   chunks). For example: `lines = INPUTS["document"].splitlines()`, then slice
+1. Split `document` into a handful of contiguous chunks (aim for ~4-8
+   chunks). For example: `lines = document.splitlines()`, then slice
    into ranges.
-2. Launch all chunk summaries before collecting any result, using the "fast"
-   model. Pass each chunk via `inputs` (a dict of str -> str):
+2. Launch all chunk summaries before collecting any result. Flow selects the
+   configured child model:
    handles = [
-       await launch_subagent(
-           "Summarize `INPUTS['passage']` in 3-4 sentences, preserving "
+       launch_subagent(
+           task="Summarize `passage` in 3-4 sentences, preserving "
            "any concrete facts, dates, and decisions.",
-           name=f"chunk-{i}",
-           inputs={"passage": chunk_text},
-           model="fast",
+           passage=chunk_text,
        )
        for i, chunk_text in enumerate(chunks)
    ]
-   summaries = [await handle.wait_for_result() for handle in handles]
+   summaries = await asyncio.gather(*handles)
    All children run concurrently after launch; collecting handles sequentially
    does not serialize their execution.
 3. Combine the child summaries into a single coherent summary of the whole
@@ -149,11 +147,12 @@ def main() -> None:
     flow = Flow(
         client_for(args.model),
         llm_clients=llm_clients,
+        delegation_model="fast" if args.fast_model else None,
         runtime=runtime,
         root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
     )
 
-    root = flow.start(SUMMARIZE_QUERY, inputs={"document": document})
+    root = flow.start(SUMMARIZE_QUERY, document=document)
     out_dir = Path(args.out_dir)
 
     async def drive() -> None:

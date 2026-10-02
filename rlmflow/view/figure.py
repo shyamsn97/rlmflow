@@ -35,6 +35,9 @@ NODE_COLORS: dict[str, str] = {
     "append_child": "#ffd33d",  # gold       — spawns children, then waits
     "done_output": "#56d364",  # emerald    — terminal success
     "error_output": "#ff7b72",  # coral      — failure
+    "transition_decision": "#d2a8ff",  # violet — semantic branch judgment
+    "verification_failure": "#f85149",  # red   — rejected finish candidate
+    "repair_query": "#ffa657",  # amber       — same-agent repair request
 }
 
 # Shape pairs with colour so types stay separable when small, in greyscale, or
@@ -48,6 +51,9 @@ NODE_SHAPES: dict[str, str] = {
     "append_child": "star",
     "done_output": "hexagon",
     "error_output": "x",
+    "transition_decision": "diamond",
+    "verification_failure": "x",
+    "repair_query": "circle-open",
 }
 
 FALLBACK_COLOR = "#8b949e"
@@ -88,10 +94,6 @@ def node_color(node: Node) -> str:
 
 def node_shape(node: Node) -> str:
     return NODE_SHAPES.get(node.type, FALLBACK_SHAPE)
-
-
-def agent_of(node: Node) -> AgentStart | None:
-    return node if isinstance(node, AgentStart) else node.parent_agent
 
 
 def node_label(node: Node) -> str:
@@ -305,7 +307,7 @@ def marker(x: float, y: float, shape: str, color: str, r: float, *, ring: bool =
 
 def hover_text(node: Node) -> str:
     """Identity only — the detail panel carries the content."""
-    agent = agent_of(node)
+    agent = node.parent_agent
     rows = [f"{agent.config.path if agent else 'root'} · {node.type}"]
     tokens = node_tokens(node)
     if tokens:

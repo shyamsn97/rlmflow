@@ -158,7 +158,7 @@ def read_branches(shepherd: AgentStart, winner: str, boards: dict[str, str]) -> 
             outcome=str(agent.result() or "unfinished"),
             turns=agent.llm_turns(),
             nodes=sum(1 for _ in agent.walk()),
-            plan=str(agent.config.inputs.get("_shepherd_order", "")),
+            plan=str(agent.args.get("_shepherd_order", "")),
             won=agent.config.name == winner,
             board=boards.get(agent.config.name, ""),
         )
@@ -622,7 +622,7 @@ def main() -> None:
         worker_pushes = max(0, worker_turns - 1)
 
     max_rewind = None
-    raw_rewind = shepherd.config.inputs.get("max_rewind")
+    raw_rewind = shepherd.args.get("max_rewind")
     if raw_rewind is not None and str(raw_rewind).strip().isdigit():
         max_rewind = int(str(raw_rewind).strip())
 

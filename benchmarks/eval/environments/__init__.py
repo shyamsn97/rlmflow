@@ -1,13 +1,12 @@
-"""Benchmark-only interactive environment adapters."""
+"""Benchmark environments."""
 
 from benchmarks.eval.environments.base import (
-    EnvironmentAdapter,
     EnvironmentEpisode,
     EnvironmentEvent,
     EnvironmentFlow,
     EnvironmentInstance,
-    EnvironmentResult,
 )
+from benchmarks.eval.environments.environment import Environment, Observation
 from benchmarks.eval.environments.mazebench import (
     GAME_WON_GEM_COUNT,
     PACKAGE_VERSION,
@@ -15,44 +14,53 @@ from benchmarks.eval.environments.mazebench import (
     UPSTREAM_REVISION,
     MazeBenchAdapter,
     MazeBenchConfig,
+    MazeBenchEnvironment,
+    MazeBenchObservation,
     preflight_mazebench,
 )
 from benchmarks.eval.environments.minimaze import (
     MiniMazeAdapter,
     MiniMazeConfig,
+    MiniMazeEnvironment,
+    MiniMazeObservation,
     MiniMazeSpec,
 )
 from benchmarks.eval.environments.official import (
     OfficialEnvironmentEpisode,
     open_official_environment,
 )
-from benchmarks.eval.environments.registry import (
-    PARITY_CONTRACT_VERSION,
-    build_environment,
-    environment_contract,
-)
+from benchmarks.eval.environments.registry import build_environment
 from benchmarks.eval.environments.sudoku_search import (
+    SudokuEnvironment,
+    SudokuObservation,
     SudokuSearchAdapter,
     SudokuSearchConfig,
     SudokuSearchPuzzle,
 )
+from benchmarks.eval.reporting import EnvironmentReport
 
 __all__ = [
-    "EnvironmentAdapter",
+    "Environment",
     "EnvironmentEpisode",
     "EnvironmentEvent",
     "EnvironmentFlow",
     "EnvironmentInstance",
-    "EnvironmentResult",
+    "EnvironmentReport",
     "GAME_WON_GEM_COUNT",
     "MazeBenchAdapter",
     "MazeBenchConfig",
+    "MazeBenchEnvironment",
+    "MazeBenchObservation",
     "MiniMazeAdapter",
     "MiniMazeConfig",
+    "MiniMazeEnvironment",
+    "MiniMazeObservation",
     "MiniMazeSpec",
     "OfficialEnvironmentEpisode",
     "PACKAGE_VERSION",
-    "PARITY_CONTRACT_VERSION",
+    "Observation",
+    "SudokuEnvironment",
+    "SudokuObservation",
     "RUNTIME_SHA256",
     "UPSTREAM_REVISION",
     "SudokuSearchAdapter",
@@ -61,5 +69,4 @@ __all__ = [
     "build_environment",
     "preflight_mazebench",
     "open_official_environment",
-    "environment_contract",
 ]

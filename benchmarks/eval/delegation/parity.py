@@ -7,16 +7,15 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from benchmarks.eval.environments.registry import environment_contract
-
-COMPARISON_CONTRACT_VERSION = "official-rlm-comparison-v1"
+COMPARISON_CONTRACT_VERSION = "runner-neutral-task-v2"
 
 
 def comparison_contract(
     *,
     runtime: str,
-    prompt: str,
-    inputs: Mapping[str, str],
+    task_prompt: str,
+    delivered_prompt: str,
+    inputs: Mapping[str, Any],
     root_model: str,
     worker_model: str | None,
     recursive_levels: int,
@@ -28,12 +27,22 @@ def comparison_contract(
     candidate_budget = int(environment.get("candidate_budget", 0)) if environment is not None else 0
     action_budget = int(environment.get("max_actions", 0)) if environment is not None else 0
     kind = str(environment.get("kind", "")) if environment is not None else ""
-    action_schema = environment_contract(kind) if kind else None
+    action_schema = None
+    if kind:
+        from benchmarks.eval.environments.catalog import environment_class
+
+        action_schema = [
+            {"tool": tool_name, "operation": operation}
+            for tool_name, operation, _description, _parameters in (
+                environment_class(kind).tool_operations
+            )
+        ]
     effective_worker = worker_model or root_model
     return {
         "version": COMPARISON_CONTRACT_VERSION,
         "runtime": runtime,
-        "task_prompt_sha256": _hash(prompt),
+        "task_prompt_sha256": _hash(task_prompt),
+        "delivered_prompt_sha256": _hash(delivered_prompt),
         "inputs_sha256": _hash(
             json.dumps(inputs, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         ),
@@ -66,7 +75,11 @@ def comparison_contract(
 
 def comparable_contract_payload(contract: Mapping[str, Any]) -> dict[str, Any]:
     """Return fields that must be byte-for-byte equal across runtime arms."""
-    return {key: value for key, value in contract.items() if key not in {"runtime", "handle_dag"}}
+    return {
+        key: value
+        for key, value in contract.items()
+        if key not in {"runtime", "delivered_prompt_sha256", "handle_dag"}
+    }
 
 
 def _hash(value: str) -> str:

@@ -8,37 +8,29 @@ import os
 import shutil
 import time
 from copy import deepcopy
+from dataclasses import asdict, fields
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
 from rlmflow.graph.config import AGENT_REF_KEY, AgentConfig, agent_ref_id
 from rlmflow.graph.nodes import (
-    ActionNode,
     AgentStart,
-    AppendChild,
-    DoneOutput,
-    ErrorOutput,
     ExecAction,
-    ExecOutput,
-    FinalQuery,
     LLMOutput,
     LLMUsage,
     Node,
-    OutputNode,
-    PlanQuery,
-    ReplDead,
-    TruncationSummary,
+    TransitionDecision,
     UserQuery,
     _isoformat,
+    message_snapshot,
     new_agent_id,
     new_node_id,
 )
 
-VERSION = 5
-INPUT_BLOB_THRESHOLD_BYTES = 64 * 1024
-INPUT_BLOB_REF_KEY = "$rlmflow_input_blob"
-NodeT = TypeVar("NodeT", bound=Node)
+VERSION = 7
+ARG_BLOB_THRESHOLD_BYTES = 64 * 1024
+ARG_BLOB_REF_KEY = "$rlmflow_arg_blob"
 
 
 class UnsupportedGraphVersion(ValueError):
@@ -50,41 +42,121 @@ class UnsupportedGraphVersion(ValueError):
         self.supported = VERSION
 
 
-_NODE_TYPES: dict[str, type[Node]] = {}
+#: Node fields that are the tree itself; the record's envelope carries them.
+_TREE_FIELDS = frozenset(
+    {
+        "id",
+        "root",
+        "parent_agent",
+        "children",
+        "parent",
+        "seq",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "_messages",
+    }
+)
 
 
-def register_node_type(cls: type[NodeT]) -> type[NodeT]:
-    """Register one unique Node type for persistence decoding."""
-    name = cls.type
-    existing = _NODE_TYPES.get(name)
-    if existing is not None and existing is not cls:
-        raise ValueError(f"node type {name!r} is already registered to {existing.__name__}")
-    _NODE_TYPES[name] = cls
-    return cls
+def agent_payload(agent: AgentStart | None) -> dict[str, Any]:
+    """The agent fields the run format repeats on every query node."""
+    config = agent.config if agent is not None else AgentConfig()
+    return {
+        "args": dict(agent.args) if agent is not None else {},
+        "model": config.model,
+        "prompt_profile": config.prompt_profile,
+        "output_schema": config.output_schema,
+        "child_output_schema": config.child_output_schema,
+        "verifier_id": config.verifier_id,
+        "verifier_hash": config.verifier_hash,
+        "reuse_worker": config.reuse_worker,
+        "max_depth": config.max_depth,
+        "max_iters": config.max_iters,
+        "max_budget": config.max_budget,
+        "keep_n_messages": config.keep_n_messages,
+        "max_output_length": config.max_output_length,
+        "max_query_chars": config.max_query_chars,
+        "resume_on_child_done": config.resume_on_child_done,
+    }
 
 
-for _node_type in (
-    Node,
-    AgentStart,
-    UserQuery,
-    PlanQuery,
-    FinalQuery,
-    TruncationSummary,
-    LLMOutput,
-    ActionNode,
-    ExecAction,
-    AppendChild,
-    OutputNode,
-    ExecOutput,
-    ErrorOutput,
-    ReplDead,
-    DoneOutput,
-):
-    register_node_type(_node_type)
+def _plain(value: Any) -> Any:
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    if isinstance(value, dict):
+        return {str(key): item for key, item in value.items()}
+    return value
+
+
+def to_record(node: Node) -> dict[str, Any]:
+    """One shallow record: the tree envelope plus every data field of the node."""
+    agent = node.parent_agent
+    metadata: dict[str, Any] = {"created_at": _isoformat(node.created_at)}
+    timing = node.timing()
+    if timing:
+        metadata["timing"] = timing
+    messages = node.messages
+    payload: dict[str, Any] = {
+        "content": node.content,
+        "messages": None if messages is None else [message.as_dict() for message in messages],
+    }
+    if isinstance(node, AgentStart):
+        payload |= agent_payload(node)
+        payload["system_prompts"] = dict(node.system_prompts)
+    else:
+        payload |= {
+            item.name: _plain(getattr(node, item.name))
+            for item in fields(node)
+            if item.name not in _TREE_FIELDS
+        }
+        if isinstance(node, UserQuery):
+            payload |= agent_payload(agent)
+        if isinstance(node, LLMOutput):
+            del payload["usage"], payload["prompt_id"]
+            config = agent.config if agent is not None else AgentConfig()
+            turn: dict[str, Any] = {
+                "model": config.model,
+                "usage": asdict(node.usage),
+                "system_prompt": node.prompt_id,
+            }
+            if config.keep_n_messages is not None:
+                turn["keep_n_messages"] = config.keep_n_messages
+            metadata = {**turn, **metadata}
+        elif isinstance(node, TransitionDecision):
+            del payload["usage"]
+            metadata["usage"] = asdict(node.usage)
+    return {
+        "id": node.id,
+        "parent_id": node.parent.id if node.parent is not None else None,
+        "type": node.type,
+        "agent_id": agent.config.path if agent is not None else None,
+        "order": node.seq,
+        "metadata": metadata,
+        "payload": payload,
+    }
+
+
+def _node_types() -> dict[str, type[Node]]:
+    """Every defined Node class that declares its own ``type``."""
+    found: dict[str, type[Node]] = {}
+    stack: list[type[Node]] = [Node]
+    while stack:
+        cls = stack.pop()
+        stack.extend(cls.__subclasses__())
+        if "type" not in vars(cls):
+            continue
+        existing = found.setdefault(cls.type, cls)
+        if existing is not cls:
+            raise ValueError(
+                f"node type {cls.type!r} is defined by both "
+                f"{existing.__qualname__} and {cls.__qualname__}"
+            )
+    return found
 
 
 def to_document(root: AgentStart) -> dict[str, Any]:
-    """Return one complete v5 run document."""
+    """Return one complete v7 run document."""
     if root.root is not root or root.parent is not None:
         raise ValueError("a persisted run must be a standalone root")
     _validate_graph(root)
@@ -100,7 +172,7 @@ def to_document(root: AgentStart) -> dict[str, Any]:
 
 
 def from_document(data: dict[str, Any]) -> AgentStart:
-    """Strictly rebuild a v5 run in one parent-before-child pass."""
+    """Strictly rebuild a v7 run in one parent-before-child pass."""
     version = data.get("version")
     if version != VERSION:
         raise UnsupportedGraphVersion(version)
@@ -173,50 +245,43 @@ def from_document(data: dict[str, Any]) -> AgentStart:
 
 
 def _validate_graph(root: AgentStart) -> None:
-    """Reject dangling launch receipts and invalid handle-valued inputs."""
+    """Reject invalid JSON arguments, dependencies, and launch receipts."""
     edges: dict[str, tuple[str, ...]] = {}
     for agent in root.iter_agents():
         sources: list[str] = []
         source_ids: set[str] = set()
-        for input_name, value in agent.config.inputs.items():
-            if not isinstance(input_name, str) or not input_name:
+        for argument_name, value in agent.args.items():
+            if not isinstance(argument_name, str) or not argument_name:
                 raise ValueError(
-                    f"agent {agent.config.path!r} has invalid input name {input_name!r}"
+                    f"agent {agent.config.path!r} has invalid argument name {argument_name!r}"
                 )
-            if isinstance(value, str):
-                continue
-            source_id = agent_ref_id(value)
-            if source_id is None:
-                raise TypeError(
-                    f"agent {agent.config.path!r} input {input_name!r} must be "
-                    "a string or exact agent reference"
-                )
-            source = root.find_agent(source_id)
-            if source is None:
-                raise ValueError(
-                    f"agent {agent.config.path!r} input {input_name!r} references "
-                    f"missing agent {source_id!r}"
-                )
-            if source is agent:
-                raise ValueError(f"agent {agent.config.path!r} cannot depend on itself")
-            consumer_launch = root._index.launch_actions_by_agent_id.get(agent.id)
-            source_launch = root._index.launch_actions_by_agent_id.get(source.id)
-            if (
-                consumer_launch is None
-                or source_launch is None
-                or consumer_launch.parent_agent is not source_launch.parent_agent
-            ):
-                raise ValueError(
-                    f"agent {agent.config.path!r} input {input_name!r} references "
-                    "an agent outside its launch scope"
-                )
-            if source.id in source_ids:
-                raise ValueError(
-                    f"agent {agent.config.path!r} has duplicate agent input source "
-                    f"{source.config.path!r}"
-                )
-            source_ids.add(source.id)
-            sources.append(source.id)
+            for path, source_id in _validate_arg_value(argument_name, value):
+                source = root.find_agent(source_id)
+                if source is None:
+                    raise ValueError(
+                        f"agent {agent.config.path!r} argument {path!r} references "
+                        f"missing agent {source_id!r}"
+                    )
+                if source is agent:
+                    raise ValueError(f"agent {agent.config.path!r} cannot depend on itself")
+                consumer_launch = root._index.launch_actions_by_agent_id.get(agent.id)
+                source_launch = root._index.launch_actions_by_agent_id.get(source.id)
+                if (
+                    consumer_launch is None
+                    or source_launch is None
+                    or consumer_launch.parent_agent is not source_launch.parent_agent
+                ):
+                    raise ValueError(
+                        f"agent {agent.config.path!r} argument {path!r} references "
+                        "an agent outside its launch scope"
+                    )
+                if source.id in source_ids:
+                    raise ValueError(
+                        f"agent {agent.config.path!r} has duplicate agent argument source "
+                        f"{source.config.path!r}"
+                    )
+                source_ids.add(source.id)
+                sources.append(source.id)
         edges[agent.id] = tuple(sources)
 
     state: dict[str, int] = {}
@@ -264,11 +329,41 @@ def _validate_graph(root: AgentStart) -> None:
             receipts[agent_id] = (node.id, call_id)
 
 
+def _validate_arg_value(path: str, value: object) -> list[tuple[str, str]]:
+    """Validate one persisted JSON value and return nested agent references."""
+    source_id = agent_ref_id(value)
+    if source_id is not None:
+        return [(path, source_id)]
+    if value is None or isinstance(value, (str, bool, int)):
+        return []
+    if isinstance(value, float):
+        try:
+            json.dumps(value, allow_nan=False)
+        except ValueError as exc:
+            raise TypeError(f"argument {path!r} must contain a finite float") from exc
+        return []
+    if isinstance(value, list):
+        references: list[tuple[str, str]] = []
+        for index, item in enumerate(value):
+            references.extend(_validate_arg_value(f"{path}[{index}]", item))
+        return references
+    if isinstance(value, dict):
+        if AGENT_REF_KEY in value:
+            raise TypeError(f"argument {path!r} must contain an exact agent reference")
+        references = []
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"argument {path!r} contains a non-string object key")
+            references.extend(_validate_arg_value(f"{path}.{key}", item))
+        return references
+    raise TypeError(f"argument {path!r} must be JSON-compatible or an exact agent reference")
+
+
 def save(root: AgentStart, path: str | Path) -> Path:
     """Write derived views, then atomically commit the authoritative graph."""
     run = Path(path)
     agents = run / "agents"
-    blobs = _InputBlobStore(run / "input_blobs")
+    blobs = _ArgBlobStore(run / "arg_blobs")
     agents.mkdir(parents=True, exist_ok=True)
     _write_agents(root, agents, blobs)
     _write_json(run / "latest.json", _summary_document(root))
@@ -277,7 +372,7 @@ def save(root: AgentStart, path: str | Path) -> Path:
 
 
 def load(path: str | Path) -> AgentStart:
-    """Load a strict v5 run directory."""
+    """Load a strict v6 run directory."""
     run = Path(path)
     graph_path = run / "graph.json"
     try:
@@ -286,7 +381,7 @@ def load(path: str | Path) -> AgentStart:
         raise ValueError(f"{graph_path} is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise TypeError(f"{graph_path} must contain a JSON object")
-    return from_document(_resolve_document(data, run / "input_blobs"))
+    return from_document(_resolve_document(data, run / "arg_blobs"))
 
 
 def clone_until(stop: Node) -> AgentStart:
@@ -320,20 +415,20 @@ def clone_until(stop: Node) -> AgentStart:
         record["parent_id"] = id_map[parent_id] if parent_id is not None else None
         payload = record.get("payload")
         if isinstance(payload, dict):
-            inputs = payload.get("inputs")
-            if isinstance(inputs, dict):
-                remapped_inputs: dict[str, Any] = {}
-                for name, value in inputs.items():
+            args = payload.get("args")
+            if isinstance(args, dict):
+                remapped_args: dict[str, Any] = {}
+                for name, value in args.items():
                     source_id = agent_ref_id(value)
                     if source_id is None:
-                        remapped_inputs[name] = value
+                        remapped_args[name] = value
                         continue
                     if source_id not in id_map:
                         raise ValueError(
-                            f"fork at {stop.id!r} is not closed over input dependency {source_id!r}"
+                            f"fork at {stop.id!r} is not closed over argument dependency {source_id!r}"
                         )
-                    remapped_inputs[name] = {AGENT_REF_KEY: id_map[source_id]}
-                payload["inputs"] = remapped_inputs
+                    remapped_args[name] = {AGENT_REF_KEY: id_map[source_id]}
+                payload["args"] = remapped_args
             launched = payload.get("launched_agent_ids")
             if isinstance(launched, dict):
                 payload["launched_agent_ids"] = {
@@ -345,6 +440,14 @@ def clone_until(stop: Node) -> AgentStart:
             if isinstance(retrieved, list):
                 payload["retrieved_agent_ids"] = [
                     id_map[agent_id] for agent_id in retrieved if agent_id in id_map
+                ]
+            source_node_id = payload.get("source_node_id")
+            if isinstance(source_node_id, str) and source_node_id in id_map:
+                payload["source_node_id"] = id_map[source_node_id]
+            node_ids = payload.get("read_set_node_ids")
+            if isinstance(node_ids, list):
+                payload["read_set_node_ids"] = [
+                    id_map[node_id] for node_id in node_ids if node_id in id_map
                 ]
         record.setdefault("metadata", {})["created_at"] = _isoformat(stamp + offset * 1e-6)
 
@@ -368,7 +471,7 @@ def _agent_document(agent: AgentStart) -> dict[str, Any]:
         "parent_agent_id": config.path.rpartition(".")[0] or None,
         "depth": config.depth,
         "query": agent.content,
-        "inputs": dict(config.inputs),
+        "args": dict(agent.args),
         "model": config.model,
         "prompt_profile": config.prompt_profile,
         "output_schema": config.output_schema,
@@ -393,14 +496,14 @@ def _summary_document(root: AgentStart) -> dict[str, Any]:
 def _write_agents(
     root: AgentStart,
     agents_path: Path,
-    blobs: _InputBlobStore,
+    blobs: _ArgBlobStore,
 ) -> None:
     pending = [(root, agents_path / root.config.name)]
     while pending:
         agent, path = pending.pop()
         path.mkdir(parents=True, exist_ok=True)
         agent_document = _agent_document(agent)
-        agent_document["inputs"] = blobs.encode_inputs(agent_document["inputs"])
+        agent_document["args"] = blobs.encode_args(agent_document["args"])
         _write_json(path / "agent.json", agent_document)
         _write_json(path / "latest.json", _encode_record(agent.frontier.to_record(), blobs))
         lines = [
@@ -413,20 +516,20 @@ def _write_agents(
     _prune(agents_path, {root.config.name})
 
 
-class _InputBlobStore:
-    """Content-address large agent inputs once per persisted graph."""
+class _ArgBlobStore:
+    """Content-address large agent arguments once per persisted graph."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def encode_inputs(self, inputs: dict[str, Any]) -> dict[str, Any]:
-        return {name: self.encode(value) for name, value in inputs.items()}
+    def encode_args(self, args: dict[str, Any]) -> dict[str, Any]:
+        return {name: self.encode(value) for name, value in args.items()}
 
     def encode(self, value: Any) -> Any:
         if not isinstance(value, str):
             return value
         encoded = value.encode("utf-8")
-        if len(encoded) < INPUT_BLOB_THRESHOLD_BYTES:
+        if len(encoded) < ARG_BLOB_THRESHOLD_BYTES:
             return value
         digest = hashlib.sha256(encoded).hexdigest()
         self.path.mkdir(parents=True, exist_ok=True)
@@ -434,24 +537,24 @@ class _InputBlobStore:
         if not blob_path.exists():
             _write_text(blob_path, value)
         return {
-            INPUT_BLOB_REF_KEY: digest,
+            ARG_BLOB_REF_KEY: digest,
             "encoding": "utf-8",
             "bytes": len(encoded),
         }
 
 
-def _encode_document(data: dict[str, Any], blobs: _InputBlobStore) -> dict[str, Any]:
+def _encode_document(data: dict[str, Any], blobs: _ArgBlobStore) -> dict[str, Any]:
     for record in data.get("nodes", []):
         _encode_record(record, blobs)
     return data
 
 
-def _encode_record(record: dict[str, Any], blobs: _InputBlobStore) -> dict[str, Any]:
+def _encode_record(record: dict[str, Any], blobs: _ArgBlobStore) -> dict[str, Any]:
     if record.get("type") != AgentStart.type:
         return record
     payload = record.get("payload")
-    if isinstance(payload, dict) and isinstance(payload.get("inputs"), dict):
-        payload["inputs"] = blobs.encode_inputs(payload["inputs"])
+    if isinstance(payload, dict) and isinstance(payload.get("args"), dict):
+        payload["args"] = blobs.encode_args(payload["args"])
     return record
 
 
@@ -460,32 +563,32 @@ def _resolve_document(data: dict[str, Any], blob_path: Path) -> dict[str, Any]:
         if record.get("type") != AgentStart.type:
             continue
         payload = record.get("payload")
-        if not isinstance(payload, dict) or not isinstance(payload.get("inputs"), dict):
+        if not isinstance(payload, dict) or not isinstance(payload.get("args"), dict):
             continue
-        payload["inputs"] = {
-            name: _resolve_input(value, blob_path) for name, value in payload["inputs"].items()
+        payload["args"] = {
+            name: _resolve_arg(value, blob_path) for name, value in payload["args"].items()
         }
     return data
 
 
-def _resolve_input(value: Any, blob_path: Path) -> Any:
+def _resolve_arg(value: Any, blob_path: Path) -> Any:
     if not isinstance(value, dict) or set(value) != {
-        INPUT_BLOB_REF_KEY,
+        ARG_BLOB_REF_KEY,
         "encoding",
         "bytes",
     }:
         return value
-    digest = value.get(INPUT_BLOB_REF_KEY)
+    digest = value.get(ARG_BLOB_REF_KEY)
     if not isinstance(digest, str) or len(digest) != 64:
-        raise ValueError(f"invalid input blob digest {digest!r}")
+        raise ValueError(f"invalid argument blob digest {digest!r}")
     path = blob_path / f"{digest}.txt"
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError as exc:
-        raise ValueError(f"missing input blob {digest}") from exc
+        raise ValueError(f"missing argument blob {digest}") from exc
     encoded = text.encode("utf-8")
     if len(encoded) != value.get("bytes") or hashlib.sha256(encoded).hexdigest() != digest:
-        raise ValueError(f"input blob {digest} failed integrity validation")
+        raise ValueError(f"argument blob {digest} failed integrity validation")
     return text
 
 
@@ -505,10 +608,14 @@ def _new_node(data: dict[str, Any]) -> Node:
         raise TypeError(f"node {data.get('id')!r} metadata must be an object")
     payload = dict(raw_payload)
     metadata = raw_metadata
+    if "messages" not in payload:
+        raise ValueError(f"node {data.get('id')!r} has no message snapshot field")
+    raw_messages = payload.pop("messages")
+    snapshot = None if raw_messages is None else message_snapshot(raw_messages)
     type_name = data.get("type")
-    cls = _NODE_TYPES.get(type_name)
+    cls = _node_types().get(type_name)
     if cls is None:
-        raise ValueError(f"unknown node type {type_name!r}; register it before loading")
+        raise ValueError(f"unknown node type {type_name!r}; import its class before loading")
     timing = metadata.get("timing") or {}
     if not isinstance(timing, dict):
         raise TypeError(f"node {data.get('id')!r} timing must be an object")
@@ -526,22 +633,25 @@ def _new_node(data: dict[str, Any]) -> Node:
         return AgentStart(
             id=data["id"],
             content=payload.get("content", ""),
+            args=dict(payload.get("args") or {}),
+            _messages=snapshot,
             config=_config(agent_id, payload),
             system_prompts=dict(payload.get("system_prompts") or {}),
             **ran,
         )
-    fields = {name: value for name, value in payload.items() if name in cls.__dataclass_fields__}
-    if issubclass(cls, ExecAction) and "launched_agent_ids" in fields:
-        launched = fields["launched_agent_ids"]
+    values = {name: value for name, value in payload.items() if name in cls.__dataclass_fields__}
+    if issubclass(cls, ExecAction) and "launched_agent_ids" in values:
+        launched = values["launched_agent_ids"]
         if not isinstance(launched, dict):
             raise TypeError(f"node {data.get('id')!r} launch receipts must be an object")
-        fields["launched_agent_ids"] = {
+        values["launched_agent_ids"] = {
             int(call_id): agent_id for call_id, agent_id in launched.items()
         }
+    if cls in {LLMOutput, TransitionDecision}:
+        values["usage"] = LLMUsage(**(metadata.get("usage") or {}))
     if cls is LLMOutput:
-        fields["usage"] = LLMUsage(**(metadata.get("usage") or {}))
-        fields["prompt_id"] = metadata.get("system_prompt", "")
-    return cls(id=data["id"], **fields, **ran)
+        values["prompt_id"] = metadata.get("system_prompt", "")
+    return cls(id=data["id"], _messages=snapshot, **values, **ran)
 
 
 def _epoch(stamp: str | None) -> float | None:
@@ -555,12 +665,13 @@ def _config(path: str, payload: dict[str, Any]) -> AgentConfig:
         name=path.rpartition(".")[2],
         path=path,
         depth=path.count("."),
-        inputs=dict(payload.get("inputs") or {}),
         model=payload.get("model", "default"),
         prompt_profile=payload.get("prompt_profile", "default"),
         output_schema=payload.get("output_schema"),
         child_output_schema=payload.get("child_output_schema"),
-        reuse_repl=bool(payload.get("reuse_repl", False)),
+        verifier_id=payload.get("verifier_id"),
+        verifier_hash=payload.get("verifier_hash"),
+        reuse_worker=bool(payload.get("reuse_worker", False)),
         max_depth=payload.get("max_depth", 1),
         max_iters=payload.get("max_iters", defaults.max_iters),
         max_budget=payload.get("max_budget", defaults.max_budget),
@@ -593,12 +704,12 @@ def _write_text(path: Path, text: str) -> None:
 
 
 __all__ = [
-    "INPUT_BLOB_THRESHOLD_BYTES",
+    "ARG_BLOB_THRESHOLD_BYTES",
     "VERSION",
     "UnsupportedGraphVersion",
     "from_document",
     "load",
-    "register_node_type",
+    "to_record",
     "save",
     "to_document",
 ]

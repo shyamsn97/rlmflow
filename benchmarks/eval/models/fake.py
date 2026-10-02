@@ -25,11 +25,11 @@ class FakeModel(Model):
         }
         answer = _extract_synthetic_secret(prompt)
         wants_repl = "```repl" in prompt or "finish(" in prompt or "Python REPL" in prompt
-        # The needle task references its input as INPUTS['haystack'] (single
+        # The needle task references its direct `haystack` argument (single
         # quotes); match the key loosely so the secret hasn't-been-seen branch
         # fires regardless of quote style before falling back to finish(...).
         if wants_repl and answer == "UNKNOWN" and "haystack" in prompt:
-            return '```repl\nprint(INPUTS["haystack"])\n```'
+            return '```repl\nprint(haystack)\n```'
         if wants_repl:
             return f'```repl\nfinish("{answer}")\n```'
         return answer
@@ -43,6 +43,12 @@ def _extract_synthetic_secret(prompt: str) -> str:
     if not marker_match:
         return "UNKNOWN"
     marker = marker_match.group(0)
+    serialized = re.search(
+        rf"marker: {re.escape(marker)}(?:\\n|\n).*?secret: (SECRET-[0-9-]+)",
+        prompt,
+    )
+    if serialized is not None:
+        return serialized.group(1)
     lines = prompt.splitlines()
     for index, line in enumerate(lines):
         if line.strip() == f"marker: {marker}":

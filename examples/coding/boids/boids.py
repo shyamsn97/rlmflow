@@ -14,50 +14,42 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import inspect
+import json
 import os
 import shutil
 import sys
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import asdict
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
+from validate import validate_project, write_report
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-TASK = """Create a runnable browser-based boids simulation in plain HTML, CSS, and JavaScript."""
+TASK = """Create a polished browser-based boids simulation in plain HTML, CSS, and JavaScript."""
 
 CONTEXT = """
 Requirements:
-- The main runnable interface is `index.html`. No build tools and no external
-    libraries. Do not use ES modules; wire scripts with `<script src="..."></script>`
-    tags. Do not add configuration controls, just the canvas.
+- Write the complete runnable app into the current working directory rather than
+  returning source files in the final response.
+- Use no build tools or external libraries.
 - Render 2000 boids on a full-viewport 2D canvas over a dark background, at 60fps.
-- Modules and their public contracts. The names are fixed, and each file defines
-    exactly the global it is listed with:
-    - `vec.js` defines `Vec` with add, sub, scale, limit, mag, normalize, and dist.
-    - `spatial.js` defines `SpatialGrid(cellSize)` with insert(boid), clear(), and
-        neighbors(boid, radius). It must serve every boid each frame without
-        all-pairs scanning.
-    - `rules.js` defines `Rules` with align, cohere, separate, and
-        avoid(boid, obstacles). Each returns a steering `Vec`.
-    - `species.js` defines `SPECIES`: four entries, each with its own color,
-        maxSpeed, perception radius, and rule weights.
-    - `render.js` defines `Renderer(ctx)` with draw(boids, obstacles, fps): HiDPI
-        scaling, fading trails, orientation-aware boid shapes, and an on-canvas
-        FPS readout.
-    - `main.js` boots the boids across the four species, rebuilds the grid every
-        frame, applies the rules, wraps movement at the edges, and drives the
-        requestAnimationFrame loop.
-    - `index.html` loads the scripts in dependency order.
-    - `style.css` styles the full-viewport dark canvas.
-- Verify before returning: every file exists, every listed global is defined in
-    its own file, script tags are in dependency order, and no file uses a global
-    it was not given.
+- Use spatial partitioning rather than all-pairs scanning, four visually distinct
+  species, fading trails, orientation-aware shapes, and an on-canvas FPS readout.
+- Choose a clean file structure and implementation architecture appropriate to
+  the task.
+- Verify the completed app before returning.
 """
+PROMPT = f"{TASK}\n\n{CONTEXT.strip()}"
+TASK_SHA256 = hashlib.sha256(PROMPT.encode()).hexdigest()
 
 
 @contextmanager
@@ -98,6 +90,13 @@ def suffixed_dir(base: Path, suffix: str) -> Path:
     return base.with_name(f"{base.name}-{suffix}")
 
 
+def record_metadata(run_dir: Path, metadata: dict[str, Any]) -> None:
+    (run_dir / "run-metadata.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def supported_kwargs(callable_obj, kwargs: dict) -> dict:
     parameters = inspect.signature(callable_obj).parameters
     accepted = {name for name, param in parameters.items() if param.kind != param.VAR_KEYWORD}
@@ -123,6 +122,7 @@ class BoidsSimulation(BaseModel):
 def run_rlmflow(
     run_dir: Path,
     *,
+    force: bool,
     model: str,
     fast_model: str,
     max_depth: int,
@@ -133,14 +133,15 @@ def run_rlmflow(
 
     from rlmflow import (
         FILE_TOOLS,
+        AgentConfig,
         AgentStart,
         Flow,
         LocalRuntime,
         json_schema_for,
     )
 
-    reset_run_dir(run_dir, force=True)
-    (run_dir / "task.txt").write_text(TASK)
+    reset_run_dir(run_dir, force=force)
+    (run_dir / "task.txt").write_text(PROMPT)
 
     runtime = LocalRuntime(working_directory=run_dir)
     flow = Flow(
@@ -152,13 +153,15 @@ def run_rlmflow(
     )
 
     print(f"\n=== rlmflow run ===\nworkdir: {run_dir}\nmodel: {model}\n")
+    started = time.perf_counter()
     try:
         root = flow.start(
-            TASK,
-            inputs={"context": CONTEXT},
-            output_schema=json_schema_for(BoidsSimulation),
-            max_depth=max_depth,
-            max_iters=max_iters,
+            PROMPT,
+            config=AgentConfig(
+                output_schema=json_schema_for(BoidsSimulation),
+                max_depth=max_depth,
+                max_iters=max_iters,
+            ),
         )
         graph_dir = run_dir / "graph"
 
@@ -170,9 +173,31 @@ def run_rlmflow(
 
         result = root.result() or ""
         (run_dir / "response.txt").write_text(str(result))
+        validation = validate_project(run_dir, browser=True)
+        write_report(validation, run_dir / "validation.json")
+        record_metadata(
+            run_dir,
+            {
+                "schema_version": 1,
+                "runner": "rlmflow",
+                "task_sha256": TASK_SHA256,
+                "model": model,
+                "fast_model": fast_model,
+                "max_depth": max_depth,
+                "max_iters": max_iters,
+                "max_concurrency": max_concurrency,
+                "elapsed_seconds": round(time.perf_counter() - started, 3),
+                "completed": bool(result),
+                "usage": asdict(root.usage),
+                "validation_passed": validation["passed"],
+            },
+        )
         print("\nrlmflow response:")
         print(result or "(no result)")
         print(f"\nrlmflow graph: {graph_dir}")
+        print(f"validation: {'PASS' if validation['passed'] else 'FAIL'}")
+        if not validation["passed"]:
+            raise RuntimeError(f"generated application failed validation: {run_dir / 'validation.json'}")
     finally:
         flow.runtime.close_repls()
 
@@ -184,6 +209,7 @@ def run_rlmflow(
 def run_official_rlm(
     run_dir: Path,
     *,
+    force: bool,
     model: str,
     max_depth: int,
     max_iters: int,
@@ -198,12 +224,13 @@ def run_official_rlm(
             "Official RLM is not installed. Install it with `python -m pip install rlms`."
         ) from exc
 
-    reset_run_dir(run_dir, force=True)
+    reset_run_dir(run_dir, force=force)
     log_dir = run_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "task.txt").write_text(TASK)
+    (run_dir / "task.txt").write_text(PROMPT)
 
     print(f"\n=== official RLM run ===\nworkdir: {run_dir}\nmodel: {model}\n")
+    started = time.perf_counter()
     logger = RLMLogger(log_dir=str(log_dir), file_name="boids")
     rlm_kwargs = supported_kwargs(
         RLM,
@@ -222,16 +249,37 @@ def run_official_rlm(
     # Official RLM's local REPL runs in-process, so cwd controls where normal
     # Python file writes land.
     with pushd(run_dir):
-        completion = rlm.completion(CONTEXT, root_prompt=TASK)
+        completion = rlm.completion("", root_prompt=PROMPT)
 
     response = str(completion.response)
     (run_dir / "response.txt").write_text(response)
+    validation = validate_project(run_dir, browser=True)
+    write_report(validation, run_dir / "validation.json")
+    record_metadata(
+        run_dir,
+        {
+            "schema_version": 1,
+            "runner": "official-rlm",
+            "task_sha256": TASK_SHA256,
+            "model": model,
+            "max_depth": max_depth,
+            "max_iters": max_iters,
+            "max_concurrency": max_concurrency,
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "completed": bool(response),
+            "usage": None,
+            "validation_passed": validation["passed"],
+        },
+    )
     if completion.metadata is not None:
         (run_dir / "metadata_type.txt").write_text(type(completion.metadata).__name__)
 
     print("\nofficial RLM response:")
     print(response or "(no result)")
     print(f"\nofficial RLM logs: {log_dir}")
+    print(f"validation: {'PASS' if validation['passed'] else 'FAIL'}")
+    if not validation["passed"]:
+        raise RuntimeError(f"generated application failed validation: {run_dir / 'validation.json'}")
     print("\nofficial RLM files:")
     for item in summarize_files(run_dir):
         print(f"- {item}")
@@ -279,10 +327,9 @@ def main() -> None:
     official_dir = suffixed_dir(out_dir, "rlm-official")
 
     if args.runner in ("rlmflow", "both"):
-        if rlmflow_dir.exists() and args.force:
-            shutil.rmtree(rlmflow_dir)
         run_rlmflow(
             rlmflow_dir,
+            force=args.force,
             model=args.model,
             fast_model=args.fast_model,
             max_depth=args.max_depth,
@@ -291,10 +338,9 @@ def main() -> None:
         )
 
     if args.runner in ("rlm", "both"):
-        if official_dir.exists() and args.force:
-            shutil.rmtree(official_dir)
         run_official_rlm(
             official_dir,
+            force=args.force,
             model=args.model,
             max_depth=args.max_depth,
             max_iters=args.max_iters,

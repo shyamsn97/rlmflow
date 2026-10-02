@@ -9,7 +9,6 @@ from collections.abc import Sequence
 from contextlib import suppress
 from typing import Any
 
-from rlmflow.graph.nodes import AgentStart
 from rlmflow.runtime.connections import STDERR_LINES
 from rlmflow.runtime.protocol import (
     ProxyCall,
@@ -18,8 +17,6 @@ from rlmflow.runtime.protocol import (
     dump_message,
     parse_client_message,
 )
-from rlmflow.runtime.repl import Repl
-from rlmflow.runtime.repl_client import WorkerRepl, WorkerSession
 from rlmflow.runtime.runtime import Runtime
 
 
@@ -149,14 +146,8 @@ class ModalRuntime(Runtime):
         self.execution_timeout = execution_timeout
         self.container_kwargs = dict(container_kwargs)
 
-    def open(self, agent: AgentStart) -> Repl:
-        if agent.config.reuse_repl and agent.parent is not None:
-            parent = agent.parent.parent_agent
-            parent_repl = self.repls.get(parent.id)
-            if not isinstance(parent_repl, WorkerRepl):
-                raise RuntimeError("reuse_repl requires a live parent worker")
-            return WorkerRepl(parent_repl.session, tenant_id=agent.id)
-        connection = _ModalConnection(
+    def connect(self) -> _ModalConnection:
+        return _ModalConnection(
             app_name=self.app_name,
             remote_workdir=self.remote_workdir,
             image=self.image,
@@ -164,12 +155,6 @@ class ModalRuntime(Runtime):
             container_kwargs=self.container_kwargs,
             command=self.worker_command("python"),
         )
-        session = WorkerSession(
-            connection,
-            timeout=self.repl_timeout,
-            execution_timeout=self.execution_timeout,
-        )
-        return WorkerRepl(session, tenant_id=agent.id)
 
 
 __all__ = ["ModalRuntime"]

@@ -8,8 +8,9 @@ The public story is focused:
 
 1. [Needle](needle/) proves recursive decomposition: a root agent divides a million-line in-memory value among fresh-context workers and combines their findings.
 1. [Shepherd](shepherd/) shows why retaining the execution graph matters: a meta-agent can inspect a failed run, rewind it, fork several recoveries, re-instruct them, and select the best result.
+1. [Boids](coding/) applies recursive execution to practical software construction: a coding agent chooses the architecture and graph for a dependency-free browser simulation from product-level constraints.
 
-Both are live examples:
+All three are live examples:
 
 ```bash
 uv run --locked --python 3.12 --extra openai --extra image \
@@ -19,6 +20,10 @@ uv run --locked --python 3.12 --extra openai --extra image \
 uv run --locked --python 3.12 --extra openai \
   python examples/needle/haystack.py \
   --num-lines 1000000 --model gpt-5-mini --fast-model gpt-5-nano
+
+uv run --locked --python 3.12 --extra openai --extra image \
+  python examples/coding/boids/boids.py \
+  --runner rlmflow --model gpt-5 --fast-model gpt-5-mini --force
 ```
 
 OOLONG and MazeBench remain in the separate [benchmark harness](../docs/benchmarks.md), where their results can be compared across the same runtime matrix.
@@ -29,7 +34,7 @@ OOLONG and MazeBench remain in the separate [benchmark harness](../docs/benchmar
 | ---------------------------------------------- | ---------------------------------------------------------- |
 | [`showcase.py`](showcase.py)                   | End-to-end `Flow` run, persistence, and gym-style stepping |
 | [`drop_in_llm.py`](drop_in_llm.py)             | Minimal `FlowLLM` as a drop-in LLM                         |
-| [`llm_query_batched.py`](llm_query_batched.py) | `llm_query_batched` in the REPL                            |
+| [`llm_query_fanout.py`](llm_query_fanout.py)   | Concurrent `llm_query` calls with `asyncio.gather`         |
 | [`skills.py`](skills.py)                       | On-disk skills + dynamic prompt section                    |
 | [`structured_output.py`](structured_output.py) | Root + child `output_schema` validation                    |
 | [`summarizer.py`](summarizer.py)               | Recursive map-reduce summarization                         |
@@ -45,39 +50,29 @@ python examples/summarizer.py --sections 10
 | Folder                           | What it shows                                                                                                                                       |
 | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`needle/`](needle/)             | Needle-in-haystack (in-memory + filesystem variants)                                                                                                |
-| [`coding/`](coding/)             | Interactive file-editing agent; launched children finish `CODING_HANDOFF_SCHEMA`                                                                    |
+| [`coding/`](coding/)             | Interactive file-editing agent plus the flagship model-designed Boids browser build                                                                 |
 | [`autoresearch/`](autoresearch/) | TinyStories autoresearch loop with Modal GPU trials                                                                                                 |
 | [`shepherd/`](shepherd/)         | Live meta-agent recovers a jammed Sokoban worker by forking its graph and replaying recovery branches in parallel, with board panels + a node trace |
 
-[`shepherd/README.md`](shepherd/README.md) has the canonical run and artifact commands. [`docs/shepherd.md`](../docs/shepherd.md) is the worked-run walkthrough: the jam, the plans the meta-agent wrote against it, what each recovery branch did, and how `render_fn(runtime, node)` adds the live board to only the current worker frontier.
+[`shepherd/README.md`](shepherd/README.md) has the canonical run and artifact commands. [`docs/shepherd.md`](../docs/shepherd.md) is the worked-run walkthrough: the jam, the plans the meta-agent wrote against it, what each recovery branch did, and how a profile user-prompt modifier adds the live board to the current worker turn.
 
 After a Shepherd run, `make showcase-shepherd-assets` redraws the agent summary and every-node graph as SVG, animates the jam → rewind → recovery transition, and publishes all branch trace GIFs to the documentation paths.
 
 ## Tours & integrations
 
-| Folder                     | What it shows                                                          |
-| -------------------------- | ---------------------------------------------------------------------- |
-| [`graph/`](graph/)         | Offline Node API (query, navigate, save, fork)                         |
-| [`control/`](control/)     | Delegation, branching, injection                                       |
-| [`behavior/`](behavior/)   | Grades the prompt's delegation behavior both ways against a live model |
-| [`sandboxes/`](sandboxes/) | Docker and Modal remote execution                                      |
-| [`providers/`](providers/) | DSPy, MCP, Tinker adapters                                             |
+| Folder                     | What it shows                                  |
+| -------------------------- | ---------------------------------------------- |
+| [`graph/`](graph/)         | Offline Node API (query, navigate, save, fork) |
+| [`control/`](control/)     | Delegation, branching, injection               |
+| [`sandboxes/`](sandboxes/) | Docker and Modal remote execution              |
+| [`providers/`](providers/) | DSPy, MCP, Tinker adapters                     |
 
-The shared-state delegation example is deterministic and needs no API key:
+The worker-colocation and nonblocking delegation examples are deterministic and need no API key:
 
 ```bash
 python examples/control/delegation/reuse_repl.py
 python examples/control/delegation/nonblocking.py
 ```
-
-[`behavior/delegation.py`](behavior/delegation.py) does need one. It runs scenarios that should fan out and scenarios that should stay local, then grades each run from its trajectory — child count, same-turn launch batch, and children that burned a turn to produce nothing — so a prompt change can be measured instead of argued about. The boids scenario checks whether the orchestrator derives independent component scopes from task context; the lookup and statistics scenarios guard against delegating atomic work:
-
-```bash
-python examples/behavior/delegation.py --repeat 3     # delegation is stochastic
-python examples/behavior/delegation.py --scenario boids
-```
-
-`make test-live` runs the same scenarios through [`tests/test_delegation_behavior.py`](../tests/test_delegation_behavior.py), which the normal test suite skips.
 
 ______________________________________________________________________
 

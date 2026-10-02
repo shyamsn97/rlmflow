@@ -1,11 +1,11 @@
-"""Skills as on-disk artifacts plus a PromptBuilder subclass.
+"""Skills as on-disk artifacts plus a live prompt modifier.
 
 This example demonstrates the intended shape for user-authored skills:
 
 1. A skill is just a file on disk you choose, e.g.
    ``skills/numpy-linear-algebra/SKILL.md``. There is no hardcoded directory.
-2. A ``PromptBuilder`` subclass concatenates selected skill files at prompt
-   render time, so edits show up on the next turn.
+2. A system prompt modifier contributes one named skill section at prompt render
+   time, so edits show up on the next turn.
 3. The agent runs with a real LLM client; pass ``--print-prompt`` to inspect
    the rendered prompt before the LLM call.
 
@@ -24,7 +24,6 @@ from pathlib import Path
 from rlmflow import (
     AgentConfig,
     Flow,
-    PromptBuilder,
 )
 from rlmflow.llm import OpenAIClient
 
@@ -91,9 +90,7 @@ def install_example_skill(skills_dir: Path) -> Path:
     return path
 
 
-class SkillsPrompt(PromptBuilder):
-    """Official protocol plus skill files loaded from disk."""
-
+class SkillFiles:
     def __init__(self, skill_paths: list[Path]) -> None:
         self.skill_paths = skill_paths
 
@@ -111,19 +108,25 @@ class SkillsPrompt(PromptBuilder):
             "file loaded into the prompt for this run.\n\n" + "\n\n".join(sections)
         )
 
-    def __call__(self, flow=None, node=None) -> str:
+    def modify_prompt(self, prompt, flow=None, node=None):
         extra = self._skills()
-        text = super().__call__(flow, node)
-        return f"{text}\n\n{extra}" if extra else text
+        if extra:
+            prompt.add_section(
+                "skills.files",
+                extra,
+                order=800,
+                source=type(self).__name__,
+            )
 
 
 def build_flow(skills_dir: Path, *, model: str) -> Flow:
     """Create a flow whose prompt includes the installed skill."""
     skill_path = install_example_skill(skills_dir)
+    skills = SkillFiles([skill_path])
     return Flow(
         OpenAIClient(model=model),
         root_config=AgentConfig(max_iters=MAX_ITERS),
-        system_prompt=SkillsPrompt([skill_path]),
+        system_prompt_modifiers=skills.modify_prompt,
     )
 
 

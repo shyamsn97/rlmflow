@@ -6,10 +6,10 @@ from rlmflow.runtime.modal import ModalRuntime
 from rlmflow.runtime.repl import (
     DEFAULT_PREIMPORTS,
     DoneSignal,
-    MissingReplError,
     Repl,
     ReplRun,
     ReplStatus,
+    VerificationSignal,
     base_namespace,
 )
 from rlmflow.runtime.repl_client import WorkerRepl, WorkerSession
@@ -27,11 +27,11 @@ __all__ = [
     "DoneSignal",
     "ExecutionGuard",
     "LocalRuntime",
-    "MissingReplError",
     "ModalRuntime",
     "Repl",
     "ReplRun",
     "ReplStatus",
+    "VerificationSignal",
     "Runtime",
     "SubprocessRuntime",
     "WrappedRuntime",

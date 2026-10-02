@@ -1,6 +1,6 @@
 # Graph-Native Context Evolution
 
-> **Status:** Research and architecture proposal. Nothing here is implemented.
+> **Status:** Research and architecture proposal. Nothing here is implemented. References to named behavior choices and `transition("name")` predate their removal in 0.7.0.
 >
 > **Scope:** use rlmflow's recursive execution graph as the evidence, provenance, and scope system for ACE-style context evolution—without turning the graph into a mutable workflow definition.
 >
@@ -55,16 +55,15 @@ Every `Node` has at most one `parent`. The complete run is rooted at one `AgentS
 
 ```text
 AgentStart(root)
-└── PlanQuery
-    └── LLMOutput
-        └── ExecAction
-            ├── AgentStart(researcher)
-            │   └── ...
-            ├── AgentStart(reviewer)
-            │   └── ...
-            └── ExecOutput
-                └── PlanQuery
-                    └── ...
+└── LLMOutput
+    └── ExecAction
+        ├── AgentStart(researcher)
+        │   └── ...
+        ├── AgentStart(reviewer)
+        │   └── ...
+        └── ExecOutput
+            └── LLMOutput
+                └── ...
 ```
 
 This is mathematically a tree, which is a restricted graph. Runtime references such as retrieved agent IDs add semantic links, but they do not change the single-parent storage structure.
@@ -86,7 +85,7 @@ This is the meaningful sense in which rlmflow is dynamic.
 
 ### The workflow definition: mostly static
 
-`Flow.transitions` determines which trusted producer handles each frontier node. The default rows in `engine.steps` implement model calls, REPL execution, planning boundaries, truncation, and finalization.
+Flow's private transition policy determines which trusted producer handles each frontier node. The declarations in `engine.steps` implement model calls, REPL execution, planning boundaries, truncation, and finalization.
 
 The host may declare named behavior choices. The model may select one with `transition("name")`, but it does not create the behavior or its outgoing choices.
 
@@ -280,7 +279,7 @@ synthesis
 domain-specific
 ```
 
-`applies_to` may contain prompt profiles, toolsets, task families, or other host-defined tags. Do not encode arbitrary executable predicates.
+`applies_to` may contain prompt profiles, tool groups, task families, or other host-defined tags. Do not encode arbitrary executable predicates.
 
 An entry should be small and actionable:
 
@@ -479,19 +478,21 @@ This is where graph structure should determine semantics, not merely visualizati
 
 The playbook should influence behavior through the existing prompt path.
 
-A playbook-aware prompt source:
+A playbook-aware system modifier:
 
 ```python
-class PlaybookPrompt(PromptBuilder):
-    def __call__(self, flow, node):
-        base = super().__call__(flow, node)
-        entries = flow.playbooks.retrieve(
-            revision=node.parent_agent.config.playbook_revision,
-            profile=node.parent_agent.config.prompt_profile,
-            query=node.parent_agent.content,
-            max_tokens=playbook_budget(node),
-        )
-        return f"{base}\n\n### Learned playbook\n{render(entries)}"
+def add_playbook(prompt, flow, node):
+    entries = flow.playbooks.retrieve(
+        revision=node.parent_agent.config.playbook_revision,
+        profile=node.parent_agent.config.prompt_profile,
+        query=node.parent_agent.content,
+        max_tokens=playbook_budget(node),
+    )
+    prompt.add_section(
+        "memory.playbook",
+        "### Learned playbook\n" + render(entries),
+        order=800,
+    )
 ```
 
 The exact API is illustrative. The important rules are:
@@ -604,7 +605,6 @@ The node path could be:
 ```text
 ExecAction
   -> ContextDelta
-  -> PlanQuery
   -> LLMOutput under the new local context
 ```
 
@@ -870,7 +870,7 @@ Compare static, monolithic rewrite, flat ACE, and graph-aware variants.
 
 Only after cross-run value is established, prototype `ContextDelta` and branch-local inheritance.
 
-Do not make `Flow.transitions` mutable. If `ContextDelta` needs a new producer, register that route as ordinary host-owned static policy.
+Do not expose the private transition table. If `ContextDelta` needs a new producer, register that route as ordinary host-owned instance policy with `@flow.transition`.
 
 ## Test Plan
 

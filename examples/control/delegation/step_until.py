@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 from rlmflow import (
+    AgentConfig,
     AgentStart,
     Flow,
     Node,
@@ -71,7 +72,10 @@ def print_nodes(title: str, nodes: list[Node], graph: Node) -> None:
 
 async def run_example(args: argparse.Namespace) -> AgentStart:
     flow = Flow(client_for(args.model), workers=args.max_concurrency)
-    graph = flow.start(QUERY, max_depth=args.max_depth, max_iters=args.max_iters)
+    graph = flow.start(
+        QUERY,
+        config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
+    )
     observed: list[Node] = []
     out_dir = Path(args.out_dir)
 

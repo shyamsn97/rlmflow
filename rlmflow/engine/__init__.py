@@ -6,13 +6,13 @@ and one ``Flow.run_streaming`` call can drive several roots at once.
 """
 
 from rlmflow.engine import boundaries
-from rlmflow.engine.execution import Pool, SequentialPool, TaskQueue, ThreadPool, Transition
+from rlmflow.engine.execution import Pool, SequentialPool, StepResult, TaskQueue, ThreadPool
 
 __all__ = [
     "Pool",
     "SequentialPool",
+    "StepResult",
     "TaskQueue",
     "ThreadPool",
-    "Transition",
     "boundaries",
 ]

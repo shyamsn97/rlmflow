@@ -29,7 +29,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rlmflow import AgentStart, Flow, Node, json_schema_for
+from rlmflow import AgentConfig, AgentStart, Flow, Node, json_schema_for
 from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -83,11 +83,11 @@ EXPECTED_HITS = {
 EXPECTED_MISSING: set[str] = set()
 
 QUERY = """\
-Solve the word search puzzle in `INPUTS["puzzle"]`.
+Solve the word search puzzle in `puzzle`.
 
-`json.loads(INPUTS["puzzle"])` gives `{"target_word": str, "grid": [str, ...]}`,
+`json.loads(puzzle)` gives `{"target_word": str, "grid": [str, ...]}`,
 one string per grid row, so `grid[row][col]` is the letter at that coordinate.
-Pass `INPUTS["puzzle"]` through unchanged to every sub-agent you create — a
+Pass `puzzle` through unchanged to every sub-agent you create — a
 sub-agent that does not get it cannot see the grid or the word to look for.
 
 Rules for the coordinates you report:
@@ -135,9 +135,11 @@ def run(model: str, out_dir: Path) -> None:
 
     graph = flow.start(
         QUERY,
-        inputs={"puzzle": PUZZLE},
-        output_schema=json_schema_for(WordSearchResult),
-        max_depth=2,
+        config=AgentConfig(
+            output_schema=json_schema_for(WordSearchResult),
+            max_depth=2,
+        ),
+        puzzle=PUZZLE,
     )
     print_tree(graph)
 

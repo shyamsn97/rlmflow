@@ -23,6 +23,7 @@ from rlmflow.runtime.protocol import (
     ReplResponse,
     RetrieveRequest,
     RunRequest,
+    VerifyRequest,
     WireModel,
 )
 from rlmflow.runtime.repl import (
@@ -31,7 +32,7 @@ from rlmflow.runtime.repl import (
     Repl,
     ReplRun,
     ReplStatus,
-    TransitionSignal,
+    VerificationSignal,
 )
 from rlmflow.tools import get_tool_metadata
 from rlmflow.tools.agents import AGENTS_BINDING
@@ -69,7 +70,8 @@ class _RunState:
     step: Node | None
     proxied: dict[str, Callable[..., object]]
     answer: Any = _NO_ANSWER
-    transition: str | None = None
+    verification: VerificationSignal | None = None
+    acceptance: dict[str, Any] | None = None
 
 
 class WorkerSession:
@@ -208,7 +210,8 @@ class WorkerSession:
                 try:
                     fn = state.proxied[message.proxy]
                     value = fn(*message.args, **message.kwargs)
-                    if inspect.isawaitable(value):
+                    metadata = get_tool_metadata(fn)
+                    if inspect.isawaitable(value) and bool(metadata and metadata.is_async):
                         value = self._await_host(value, state.loop)
                     return value
                 finally:
@@ -223,15 +226,16 @@ class WorkerSession:
             value = Context().run(in_step)
         except DoneSignal as signal:
             state.answer = signal.answer
+            state.acceptance = signal.acceptance
             response = ProxyResponse(id=message.id, done=True)
-        except TransitionSignal as signal:
-            state.transition = signal.transition
-            response = ProxyResponse(id=message.id, transition=signal.transition)
+        except VerificationSignal as signal:
+            state.verification = signal
+            response = ProxyResponse(id=message.id, done=True)
         except BaseException as exc:  # noqa: BLE001 - host tool failures cross the wire
             response = ProxyResponse(
                 id=message.id,
                 ok=False,
-                error=f"{type(exc).__name__}: {exc}",
+                error=f"{message.proxy}: {type(exc).__name__}: {exc}",
             )
         else:
             response = ProxyResponse(id=message.id, value=encode_host_value(value))
@@ -260,9 +264,9 @@ class WorkerSession:
         binding: dict[str, Any] = {
             "run_id": run_id,
             "tenant_id": tenant.tenant_id,
-            "inputs": dict(tenant.inputs),
+            "step_id": state.step.id if state.step is not None else run_id,
+            "args": dict(tenant.args),
             "env": dict(tenant.env),
-            "structured_output": tenant.structured_output,
         }
         agents = tenant.namespace.get(AGENTS_BINDING)
         if agents is not None:
@@ -285,13 +289,13 @@ class WorkerSession:
                     output=response.output,
                     status=ReplStatus.DONE,
                     answer=state.answer,
+                    acceptance=state.acceptance,
                 )
-            transition = response.transition or state.transition
-            if transition is not None:
+            if state.verification is not None:
                 return ReplRun(
                     output=response.output,
-                    status=ReplStatus.TRANSITION,
-                    transition=transition,
+                    status=ReplStatus.REJECTED,
+                    verification=state.verification,
                 )
             status = ReplStatus.ERROR if response.errored else ReplStatus.OK
             return ReplRun(output=response.output, status=status)
@@ -325,18 +329,17 @@ class WorkerRepl(Repl):
         self.tenant_id = tenant_id or uuid.uuid4().hex
         self.namespace: dict[str, Any] = {}
         self.env: dict[str, Any] = {}
-        self.inputs: dict[str, str] = {}
-        self.structured_output = False
+        self.args: dict[str, Any] = {}
         self.proxied: dict[str, Callable[..., object]] = {}
         self.closed = False
         self._run_lock = threading.Lock()
         self.session.add_tenant(self)
 
-    def seed(self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]) -> None:
+    def seed(self, tools: dict[str, Callable[..., object]], args: dict[str, Any]) -> None:
         self.namespace = dict(tools)
-        self.inputs = dict(inputs)
+        self.args = dict(args)
         for name, value in tools.items():
-            if name not in {"INPUTS", "ENV", "AGENTS", AGENTS_BINDING}:
+            if name not in {"ENV", "AGENTS", AGENTS_BINDING}:
                 self.inject(name, value)
 
     def inject(self, name: str, value: Any) -> None:
@@ -389,6 +392,23 @@ class WorkerRepl(Repl):
 
     def update_env(self, values: dict[str, Any]) -> None:
         self.env.update(values)
+
+    def verify(self, verifier_id: str, candidate: object) -> str | None:
+        """Run a verifier retained by this worker tenant."""
+        response = self.session.request(
+            VerifyRequest(
+                id=self.session._next_id("verify"),
+                tenant_id=self.tenant_id,
+                verifier_id=verifier_id,
+                candidate=candidate,
+            ),
+            timeout=self.session.timeout,
+        )
+        if not response.ok:
+            raise RuntimeError(response.error or "verifier failed")
+        if response.value is not None and not isinstance(response.value, str):
+            raise TypeError("verify must return str or None")
+        return response.value
 
     async def run(self, code: str) -> ReplRun:
         if not code.strip():

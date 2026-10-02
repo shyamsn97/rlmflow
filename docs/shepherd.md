@@ -42,36 +42,34 @@ walked (3, 2)->(4, 3) in 2 cells
 pushed B1 up: (3, 3)->(2, 3)
 ```
 
-#### Live board context without coupling nodes to Flow
+#### Live board context through the user prompt
 
-The worker needs the current board in every model request, but that state lives in its REPL rather than in the durable node graph. The example therefore uses a current-frontier `render_fn`. `Flow` passes its runtime to the renderer:
+The worker needs the current board in every model request, but that state lives in its REPL rather than in the durable node graph. The worker profile therefore uses a live user-prompt modifier:
 
 ```python
-def render_worker(runtime: Runtime, node: Node) -> list[dict[str, str]]:
-    messages = default_render(runtime, node)
-    content = board_prompt(runtime, node.parent_agent, simple=simple_moves)
+def add_worker_board(user_prompt, flow: Flow, node: Node) -> None:
+    content = board_prompt(flow.runtime, node.parent_agent, simple=simple_moves)
     if content:
-        messages.append({"role": "user", "content": content})
-    return messages
+        user_prompt.add_section("turn.board", content, order=1050)
 
 
 flow = Flow(
     client,
     prompt_profiles={
-        "worker": PromptProfile(render_fn=render_worker),
+        "worker": PromptProfile(user_modifiers=add_worker_board),
     },
 )
 ```
 
-`Node.render()` remains canonical and runtime-independent, while this renderer can read the live REPL `ENV` for the node currently being sent. The runtime argument makes that transient dependency explicit without coupling the node graph to `Flow`. `board_prompt` also stamps the upcoming turn in `ENV` so the game's one-push guard applies to the next live action; replay does not need that live-turn guard.
+The modifier receives Flow explicitly and can read the live REPL `ENV` for the node currently being sent. `board_prompt` also stamps the upcoming turn in `ENV` so the game's one-push guard applies to the next live action; replay does not need that live-turn guard.
 
 This run starts jammed on purpose: the worker shoves `B1` right eight times until it sits flat against the wall, where nothing can stand behind it.
 
 <p align="center">
   <img
     src="static/shepherd/jam.gif"
-    alt="The worker pushes one box right eight times until it is pinned against the far wall"
-    width="520"
+    alt="The worker pushes one box right until it is pinned against the wall, then holds on the unrecoverable board before looping."
+    width="384"
   />
 </p>
 
@@ -169,18 +167,24 @@ from (7,7). The routes are yours to work out.
 
 From there the subagents make their moves, all eight at once:
 
-<table align="center">
+<table class="branch-grid" style="width:100%;table-layout:fixed;border-collapse:separate;border-spacing:12px 16px">
+  <colgroup>
+    <col style="width:25%" />
+    <col style="width:25%" />
+    <col style="width:25%" />
+    <col style="width:25%" />
+  </colgroup>
   <tr>
-    <td align="center"><img src="static/shepherd/branch0.gif" alt="branch0 reverted 6 pushes and got stuck" width="220" /><br /><sub>branch0 · reverted 6 · stuck, 14 pushes</sub></td>
-    <td align="center"><img src="static/shepherd/branch1.gif" alt="branch1 reverted all 8 pushes and solved the board" width="220" /><br /><sub>branch1 · reverted 8 · solved, 14 pushes</sub></td>
-    <td align="center"><img src="static/shepherd/branch2.gif" alt="branch2 reverted 7 pushes and solved the board in 11 pushes" width="220" /><br /><sub>branch2 · reverted 7 · <b>selected, solved in 11 pushes</b></sub></td>
-    <td align="center"><img src="static/shepherd/branch3.gif" alt="branch3 reverted 6 pushes and solved the board" width="220" /><br /><sub>branch3 · reverted 6 · solved, 12 pushes</sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch0.gif" alt="branch0 reverted 6 pushes and got stuck" style="width:100%;height:auto" /><br /><sub>branch0 · reverted 6 · stuck, 14 pushes</sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch1.gif" alt="branch1 reverted all 8 pushes and solved the board" style="width:100%;height:auto" /><br /><sub>branch1 · reverted 8 · solved, 14 pushes</sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch2.gif" alt="branch2 reverted 7 pushes and solved the board in 11 pushes" style="width:100%;height:auto" /><br /><sub>branch2 · reverted 7 · <b>selected, solved in 11 pushes</b></sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch3.gif" alt="branch3 reverted 6 pushes and solved the board" style="width:100%;height:auto" /><br /><sub>branch3 · reverted 6 · solved, 12 pushes</sub></td>
   </tr>
   <tr>
-    <td align="center"><img src="static/shepherd/branch4.gif" alt="branch4 reverted 5 pushes and solved the board" width="220" /><br /><sub>branch4 · reverted 5 · solved, 12 pushes</sub></td>
-    <td align="center"><img src="static/shepherd/branch5.gif" alt="branch5 reverted 4 pushes and solved the board" width="220" /><br /><sub>branch5 · reverted 4 · solved, 34 pushes</sub></td>
-    <td align="center"><img src="static/shepherd/branch6.gif" alt="branch6 reverted all 8 pushes and got stuck" width="220" /><br /><sub>branch6 · reverted 8 · stuck, 8 pushes</sub></td>
-    <td align="center"><img src="static/shepherd/branch7.gif" alt="branch7 reverted 5 pushes and solved the board" width="220" /><br /><sub>branch7 · reverted 5 · solved, 23 pushes</sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch4.gif" alt="branch4 reverted 5 pushes and solved the board" style="width:100%;height:auto" /><br /><sub>branch4 · reverted 5 · solved, 12 pushes</sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch5.gif" alt="branch5 reverted 4 pushes and solved the board" style="width:100%;height:auto" /><br /><sub>branch5 · reverted 4 · solved, 34 pushes</sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch6.gif" alt="branch6 reverted all 8 pushes and got stuck" style="width:100%;height:auto" /><br /><sub>branch6 · reverted 8 · stuck, 8 pushes</sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch7.gif" alt="branch7 reverted 5 pushes and solved the board" style="width:100%;height:auto" /><br /><sub>branch7 · reverted 5 · solved, 23 pushes</sub></td>
   </tr>
 </table>
 

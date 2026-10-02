@@ -2,7 +2,7 @@
 
 Two variants of the same search task:
 
-- [`haystack.py`](haystack.py) — one massive in-memory `INPUTS["haystack"]` string; the agent must chunk and delegate.
+- [`haystack.py`](haystack.py) — one massive in-memory `haystack` argument; the agent must chunk and delegate.
 - [`filesystem.py`](filesystem.py) — hundreds of files under `haystack/`; uses `FILE_TOOLS`.
 
 The canonical showcase is the million-line in-memory variant. It gives the root the value through its REPL rather than placing a million lines in the model prompt; the useful behavior to inspect is how the root partitions that value, launches fresh-context workers, and combines their answers.

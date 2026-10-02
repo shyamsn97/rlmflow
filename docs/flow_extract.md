@@ -1,5 +1,7 @@
 # `Flow` is the facade
 
+> Historical design note. The `Flow` tool shims (`finish_tool`, `launch_tool`, wait / observe), `call_stream`, `submit_child`, `new_child`, and `ensure_replayed` listed below were later extracted into `tools/builtins.py`, `tools/namespace.py`, `engine/delegation.py`, and `engine/restore.py`. `Flow.resolve_child` stays as the per-child override hook. The `BuiltIns` class, its `inject=False` prompt stubs, `@toolset`, and `_bind_toolset` were removed too. Built-ins are now ordinary node-bound decorated callables in `Flow.build_tools(node)`.
+
 Implemented. `flow.py` is the constructor, the stream loop, and wrappers. Restore, builtin factories, child launch, and prompt assembly are `(flow, ...)` functions.
 
 `flow.py` was 900 lines because the REPL builtins, restore, child launch, prompt assembly, and tool registry still lived as methods. The step table already left: producers are `(flow, node)` functions in `engine/steps.py`. Do the same for the rest. `Flow` keeps the public names. The bodies move.
@@ -12,17 +14,20 @@ Approximate, by block:
 
 | Block                | Lines | What it is                                                       |
 | -------------------- | ----- | ---------------------------------------------------------------- |
-| constructor / wiring | ~80   | llm, runtime, pool, flags, `BuiltIns()`, `WrappedRuntime`        |
+| constructor / wiring | ~80   | llm, runtime, pool, flags, `WrappedRuntime`                      |
 | prompts              | ~160  | `profile`, `build_messages`, `render_tools`, `transition_footer` |
 | llm pool             | ~60   | `llm_for_step`, `call_stream`, `call_chat`                       |
 | step / `_drive`      | ~50   | already the thin driver                                          |
-| tool registry        | ~70   | `add_tool`, `inject`, `_bind_toolset`, `build_tools`             |
+| tool registry        | ~70   | `add_tool`, `inject`, `build_tools`                              |
 | builtin closures     | ~100  | `finish_tool`, `transition_tool`, `launch_tool`, wait / observe  |
 | child launch         | ~110  | `resolve_child`, `new_child`, `submit_child`                     |
 | restore              | ~55   | `replay`, `ensure_replayed`                                      |
 | stream loop          | ~120  | `run_streaming`, `arun`, `run`, `aclose`                         |
 
-`BuiltIns` already owns the prompt text (`inject=False` stubs). The real closures are still hand-written on `Flow`. `llm_query` already lives as `llm_query(flow)` in `tools/llm_query.py`. Finish and launch should look like that.
+The real closures are no longer hand-written on `Flow`. `finish` and
+`llm_query` now live together as ordinary node-bound tools in
+`tools/builtins.py`; launch follows the same interface from
+`engine/delegation.py`. Concurrent queries use `asyncio.gather`.
 
 `view/replay.py` is animation. Restore of REPL namespaces is a different word.
 
@@ -33,9 +38,8 @@ rlmflow/flow.py                 constructor, public wrappers, llm pool, stream l
 rlmflow/engine/steps.py         producers (done)
 rlmflow/engine/restore.py       replay(flow, root), ensure_replayed(flow, agent)
 rlmflow/engine/delegation.py    resolve_child, new_child, submit_child, launch_tool
-rlmflow/tools/namespace.py      as_tool_items, bind, build_namespace, finish / transition / wait / observe
+rlmflow/tools/namespace.py      as_tool_items, tools_for, build_namespace, finish / wait / observe
 rlmflow/prompts/messages.py     build_messages(flow, node), transition_footer(flow, node)
-rlmflow/tools/builtins.py       prompt source only (already)
 ```
 
 Functions take `flow`. They read `flow.queue`, `flow.runtime`, `flow.transitions`. They do not grow a parallel type.
@@ -70,7 +74,6 @@ def build_namespace(flow, node) -> dict[str, Any]:
         "transition": transition_tool(flow, node),
         "launch_subagent": launch_tool(flow, node),
         "asyncio": asyncio,
-        "INPUTS": node.parent_agent.config.inputs,
         AGENTS_BINDING: agents,
         AGENT_OBSERVE_TOOL: observe_agent_tool(flow, node),
         AGENT_WAIT_TOOL: wait_agent_tool(flow, node),
@@ -119,7 +122,7 @@ class Flow:
 ## What we do not do
 
 - **Do not resurrect `MessageBuilder` / `FlowMessages`.** `build_messages(flow, node)` is a function in `prompts/messages.py`.
-- **Do not put implementations on `BuiltIns`.** That class is the prompt. `inject=False` stays. The factories live in `tools/namespace.py`.
+- **Do not keep a second copy of the tool docs.** The prompt renders from `Flow.build_tools(node)`, and execution extends that same map with non-tool namespace bindings.
 - **Do not name restore `replay` on disk.** `rlmflow.view.replay` already means frames. The module is `engine/restore.py`. The method on `Flow` can stay `replay` — that is the public word for "rebuild namespaces from recorded code."
 - **Do not extract `__init__`.** Construction stays on the class.
 - **Do not add a `ToolBag` or `RestoreState` object** unless a function would otherwise close over four private fields. `_restored_agents` and `_restore_lock` can move with `ensure_replayed` as a small helper, or stay as `Flow` attributes the function reads. Prefer attributes on `Flow` for now.
@@ -128,14 +131,14 @@ class Flow:
 ## Order
 
 1. **Restore.** `replay` / `ensure_replayed` have one caller (`run_streaming`) and no decorator table. `engine/restore.py`, wrappers on `Flow`.
-1. **Builtin factories + `build_namespace`.** `finish_tool` through `observe_agent_tool`, `as_tool_items`, `add_tool` / `_bind_toolset` if they come along for free. `launch_tool` stays a factory here; `resolve_child` / `new_child` / `submit_child` can move in the same pass or the next.
+1. **Builtin factories + `build_namespace`.** `finish_tool` through `observe_agent_tool`, `as_tool_items` and `add_tool` if they come along for free. `launch_tool` stays a factory here; `resolve_child` / `new_child` / `submit_child` can move in the same pass or the next.
 1. **Delegation.** `resolve_child`, `new_child`, `submit_child` next to `launch_tool` in `engine/delegation.py`. They mutate the tree and the queue. They are not prompt code.
 1. **Prompt assembly.** `build_messages`, `transition_footer`, `render_tools` into `prompts/messages.py`. `profile` and `build_system_prompt` can stay one-liners on `Flow` or move with them. No new type.
 1. Stop. `run_streaming` only if the file is still fat after 1–4.
 
 Each step is a move. Public method names do not change.
 
-Extract-by-kind (producers vs guards vs graph accessors) is a different cut, and it is the wrong one for a default row. At the time of this extract, named transitions still hopped through staged request state; the historical follow-up is [`colocate.md`](colocate.md). The current path resolves `.choices(...)` directly in `run_repl`.
+Extract-by-kind (producers vs guards vs graph accessors) is a different cut, and it is the wrong one for a default row. At the time of this extract, named transitions still hopped through staged request state; the historical follow-up is [`colocate.md`](colocate.md). Named choices were later removed entirely in 0.7.0; `run_repl` now only maps a REPL run to its output node.
 
 ## Who imports whom
 
@@ -151,12 +154,12 @@ engine.steps / restore / delegation / tools.namespace
   -> Flow only as a type / argument
 ```
 
-Same cycle as steps: `flow.py` finishes, then the modules that decorate or that `Flow` wraps. `tools.namespace` must not import `engine.steps`. `BuiltIns` stays import-light.
+Same cycle as steps: `flow.py` finishes, then the modules that decorate or that `Flow` wraps. `tools.namespace` must not import `engine.steps`.
 
 ## Acceptance
 
 - `flow.py` is the constructor, the stream loop, and one-line wrappers. Restore, builtin factories, and child launch are not defined in it.
 - `await flow.replay(root)` and `flow.build_tools(node)` still work.
-- `BuiltIns.description` is unchanged. The stubs still raise if someone calls them.
+- The prompt's tool list comes from `Flow.build_tools(node)`; `Flow.build_namespace(node)` adds only non-tool execution bindings.
 - `from rlmflow.engine.restore import replay` is the function. `from rlmflow.view.replay import ...` is still frames.
 - No new public type. Callers keep importing `Flow`.

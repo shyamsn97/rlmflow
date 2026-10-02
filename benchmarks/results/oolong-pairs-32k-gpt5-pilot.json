@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "run_id": "20260902_203156_openai-gpt-5_oolong_pairs_rlmflow-local-official-rlm",
+  "recorded_at": "2026-09-02",
+  "dataset": "oolong_pairs",
+  "context_length": 32768,
+  "model": "openai/gpt-5",
+  "seed": 0,
+  "samples_per_runner": 20,
+  "metric": "mean_pair_f1",
+  "source_artifact": "benchmarks/eval/runs/20260902_203156_openai-gpt-5_oolong_pairs_rlmflow-local-official-rlm/summary.json",
+  "claim_boundary": "Recorded pilot evidence only; not a release gate or a statistical superiority claim.",
+  "runners": {
+    "official-rlm": {
+      "mean_pair_f1": 0.33646256932156166,
+      "errors": 11,
+      "average_input_tokens": 17578.35,
+      "average_output_tokens": 15415.15,
+      "average_total_tokens": 32993.5,
+      "average_time_seconds": 565.9665014216619
+    },
+    "rlmflow-local": {
+      "mean_pair_f1": 0.508159644923786,
+      "errors": 6,
+      "average_input_tokens": 13550.5,
+      "average_output_tokens": 5998.8,
+      "average_total_tokens": 19549.3,
+      "average_time_seconds": 649.4552886395483
+    }
+  }
+}

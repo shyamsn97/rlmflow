@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import os
 import sys
 import threading
 from collections.abc import Sequence
 from concurrent.futures import Future
-from pathlib import Path
 from typing import TextIO, cast
 
 from pydantic import ValidationError
 
+from rlmflow.engine import verification
 from rlmflow.runtime.protocol import (
     InjectProxyRequest,
     InjectRequest,
@@ -25,6 +26,7 @@ from rlmflow.runtime.protocol import (
     ReplResponse,
     RetrieveRequest,
     RunRequest,
+    VerifyRequest,
     WireModel,
     dump_message,
     parse_host_message,
@@ -34,33 +36,31 @@ from rlmflow.runtime.repl import (
     DoneSignal,
     LocalRepl,
     ReplStatus,
-    TransitionSignal,
     base_namespace,
     current_binding,
 )
-from rlmflow.structured import as_finish_value
+from rlmflow.structured import DEFAULT_OUTPUT_CODEC, as_finish_value
 from rlmflow.tools.agents import AGENT_OBSERVE_TOOL, AGENT_WAIT_TOOL, encode_agent_references
 from rlmflow.utils.serial import decode_host_value
 
 
 class ReplServer:
-    """One worker process with a shared heap and concurrent agent tenants."""
+    """One worker process with isolated, concurrent agent namespaces."""
 
     def __init__(
         self,
         *,
-        workdir: str | Path | None = None,
         protocol_in: TextIO | None = None,
         protocol_out: TextIO | None = None,
         preimports: Sequence[str] | None = None,
     ) -> None:
         self._in = protocol_in or sys.stdin
         self._out = protocol_out or sys.stdout
-        self._workdir = workdir
-        # Tenants share this namespace, so preimports are paid for once per worker.
+        # Preimports are paid for once, then shallow-copied into each tenant namespace.
         self._namespace: dict[str, object] = base_namespace(preimports)
         self._tenants: dict[str, LocalRepl] = {}
         self._pending: dict[str, Future[ProxyResponse]] = {}
+        self._verifiers: dict[tuple[str, str], object] = {}
         self._send_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._proxy_counter = 0
@@ -69,7 +69,7 @@ class ReplServer:
         with self._state_lock:
             tenant = self._tenants.get(tenant_id)
             if tenant is None:
-                tenant = LocalRepl(self._workdir, namespace=self._namespace)
+                tenant = LocalRepl(namespace=dict(self._namespace))
                 self._tenants[tenant_id] = tenant
             return tenant
 
@@ -94,6 +94,21 @@ class ReplServer:
             counts = binding.setdefault("_rpc_counts", {})
             call_id = counts.get(name, 0)
             counts[name] = call_id + 1
+            if name == "launch_subagent":
+                schema = kwargs.get("schema")
+                if schema is not None:
+                    kwargs["schema"] = DEFAULT_OUTPUT_CODEC.normalize(schema)
+                verifier = kwargs.get("verify")
+                if verifier is not None:
+                    if not callable(verifier):
+                        raise TypeError("launch_subagent verify must be callable")
+                    verifier_id = f"{binding['step_id']}:{call_id}"
+                    with self._state_lock:
+                        self._verifiers[(binding["tenant_id"], verifier_id)] = verifier
+                    kwargs["verify"] = {
+                        "$rlmflow_verifier": verifier_id,
+                        "fingerprint": verification.fingerprint(verifier),
+                    }
             request_id = self._next_proxy_id(name)
             future: Future[ProxyResponse] = Future()
             with self._state_lock:
@@ -114,16 +129,13 @@ class ReplServer:
             )
             return request_id, future
 
-        def finish(request_id: str, future: Future[ProxyResponse]) -> object:
-            try:
-                response = future.result()
-            finally:
-                with self._state_lock:
-                    self._pending.pop(request_id, None)
+        def forget(request_id: str) -> None:
+            with self._state_lock:
+                self._pending.pop(request_id, None)
+
+        def unwrap(response: ProxyResponse) -> object:
             if response.done:
                 raise DoneSignal()
-            if response.transition is not None:
-                raise TransitionSignal(response.transition)
             if not response.ok or response.error is not None:
                 raise RuntimeError(response.error or f"{name} failed")
             return decode_host_value(response.value) if response.value is not None else None
@@ -135,20 +147,18 @@ class ReplServer:
                 try:
                     response = await asyncio.wrap_future(future)
                 finally:
-                    with self._state_lock:
-                        self._pending.pop(request_id, None)
-                if response.done:
-                    raise DoneSignal()
-                if response.transition is not None:
-                    raise TransitionSignal(response.transition)
-                if not response.ok or response.error is not None:
-                    raise RuntimeError(response.error or f"{name} failed")
-                return decode_host_value(response.value) if response.value is not None else None
+                    forget(request_id)
+                return unwrap(response)
 
             return async_proxy
 
         def proxy(*args: object, **kwargs: object) -> object:
-            return finish(*begin(args, kwargs))
+            request_id, future = begin(args, kwargs)
+            try:
+                response = future.result()
+            finally:
+                forget(request_id)
+            return unwrap(response)
 
         return proxy
 
@@ -165,11 +175,12 @@ class ReplServer:
             ).start()
             return
         try:
+            tenant = self._tenant(message.tenant_id)
             if isinstance(message, InjectRequest):
-                self._namespace[message.name] = decode_host_value(message.value)
+                tenant.inject(message.name, decode_host_value(message.value))
                 response = ReplResponse(id=message.id)
             elif isinstance(message, RetrieveRequest):
-                if message.name not in self._namespace:
+                if message.name not in tenant.namespace:
                     response = ReplResponse(
                         id=message.id,
                         ok=False,
@@ -178,17 +189,32 @@ class ReplServer:
                 else:
                     response = ReplResponse(
                         id=message.id,
-                        value=self._namespace[message.name],
+                        value=tenant.namespace[message.name],
                     )
             elif isinstance(message, RemoveRequest):
-                self._namespace.pop(message.name, None)
+                tenant.remove_tool(message.name)
                 response = ReplResponse(id=message.id)
             elif isinstance(message, InjectProxyRequest):
-                self._namespace[message.name] = self.make_proxy(
+                tenant.inject(
                     message.name,
-                    is_async=message.is_async,
+                    self.make_proxy(message.name, is_async=message.is_async),
                 )
                 response = ReplResponse(id=message.id)
+            elif isinstance(message, VerifyRequest):
+                with self._state_lock:
+                    verifier = self._verifiers.get(
+                        (message.tenant_id, message.verifier_id)
+                    )
+                if verifier is None:
+                    raise RuntimeError(
+                        f"verifier {message.verifier_id!r} is not registered"
+                    )
+                feedback = verifier(message.candidate)
+                if inspect.isawaitable(feedback):
+                    feedback = asyncio.run(feedback)
+                if feedback is not None and not isinstance(feedback, str):
+                    raise TypeError("verify must return str or None")
+                response = ReplResponse(id=message.id, value=feedback)
             else:
                 response = ReplResponse(id=message.id, ok=False, error="unknown command")
         except BaseException as exc:  # noqa: BLE001 - control errors cross the wire
@@ -202,16 +228,16 @@ class ReplServer:
     def _run(self, message: RunRequest) -> None:
         tenant = self._tenant(message.tenant_id)
         binding = decode_host_value(message.binding)
-        tenant.inputs = binding["inputs"]
+        tenant.seed({}, binding["args"])
         tenant.env = binding["env"]
-        wait_agent = self._namespace.get(AGENT_WAIT_TOOL)
+        wait_agent = tenant.namespace.get(AGENT_WAIT_TOOL)
         if wait_agent is not None:
             binding["wait_agent"] = wait_agent
-        observe_agent = self._namespace.get(AGENT_OBSERVE_TOOL)
+        observe_agent = tenant.namespace.get(AGENT_OBSERVE_TOOL)
         if observe_agent is not None:
             binding["observe_agent"] = observe_agent
         if binding.get("expose_agents"):
-            self._namespace.setdefault("AGENTS", CurrentObject("agents"))
+            tenant.namespace.setdefault("AGENTS", CurrentObject("agents"))
         try:
             run = asyncio.run(tenant.run(message.code, binding=binding))
             self.send(
@@ -220,7 +246,6 @@ class ReplServer:
                     output=run.output,
                     errored=run.status is ReplStatus.ERROR,
                     env=binding["env"],
-                    transition=run.transition,
                 )
             )
         except BaseException as exc:  # noqa: BLE001 - keep the worker dispatcher alive
@@ -258,7 +283,6 @@ class ReplServer:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="rlmflow Python worker")
-    parser.add_argument("--workdir")
     parser.add_argument(
         "--preimport",
         help=(
@@ -285,7 +309,6 @@ def main() -> None:
     os.dup2(2, 1)
     sys.stdout = sys.stderr
     ReplServer(
-        workdir=args.workdir,
         protocol_in=wire_in,
         protocol_out=wire_out,
         preimports=preimports,

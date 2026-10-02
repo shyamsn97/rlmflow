@@ -108,6 +108,9 @@ class SuiteConfig:
     parallelism: int = 1
     best_of_n: int = 1
     attempt_timeout: int = 900
+    docker_image: str = "rlmflow-eval:local"
+    docker_cpus: float = 2.0
+    docker_memory: str = "4g"
     modal_app_name: str = "rlmflow-benchmarks"
     modal_cpu: float = 1.0
     modal_timeout: int = 3600
@@ -132,6 +135,9 @@ class SuiteConfig:
             "parallelism": self.parallelism,
             "best_of_n": self.best_of_n,
             "attempt_timeout": self.attempt_timeout,
+            "docker_image": self.docker_image,
+            "docker_cpus": self.docker_cpus,
+            "docker_memory": self.docker_memory,
             "modal_app_name": self.modal_app_name,
             "modal_cpu": self.modal_cpu,
             "modal_timeout": self.modal_timeout,

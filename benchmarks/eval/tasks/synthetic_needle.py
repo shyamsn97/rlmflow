@@ -16,7 +16,7 @@ def _normalize(text: str) -> str:
     return text.strip().strip("`'\"").strip()
 
 
-@dataset("synthetic_needle", aliases=["needle"], tags=["synthetic", "long-context"])
+@dataset("synthetic_needle", aliases=["needle"], tags=["smoke", "synthetic"])
 class SyntheticNeedleDataset(Dataset):
     """Single synthetic needle retrieval with deterministic generation."""
 
@@ -75,7 +75,8 @@ class SyntheticNeedleDataset(Dataset):
         prompt = (
             "Find the record whose marker is exactly "
             f"`{marker}`. Return only that record's `secret` value, with no "
-            "explanation and no extra text. The records are in INPUTS['haystack']."
+            "explanation and no extra text. Parse the canonical observation JSON; "
+            "the records are plain text in its `haystack` string field."
         )
         return Example(
             id=f"synthetic_needle_{seed:04d}",

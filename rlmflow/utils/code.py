@@ -4,32 +4,51 @@ from __future__ import annotations
 
 import re
 
-# Accept ```repl, ```python, and bare ``` fences when reading model replies.
+# Generic readers accept ```repl, ```python, and bare ``` fences.
 _OPEN = re.compile(r"```(?:repl|python)?[ \t]*\n")
+_REPL_OPEN = re.compile(r"```repl[ \t]*\n")
 _CLOSE = re.compile(r"\n?```[ \t]*(?:\n|$)")
 
 
-def find_code_blocks(text: str) -> list[str]:
-    """Extract fenced code blocks from a model reply.
+def _find_blocks(
+    text: str,
+    opening_pattern: re.Pattern[str],
+    *,
+    greedy_close: bool = True,
+) -> list[str]:
+    """Extract blocks opened by ``opening_pattern`` from a model reply.
 
-    The closing fence is chosen greedily within each block so markdown fences
-    inside Python strings do not prematurely truncate the action.
+    Generic readers may choose the closing fence greedily so markdown fences
+    inside Python strings do not prematurely truncate the block. Strict REPL
+    parsing uses the first close so multiple action blocks remain detectable.
     """
     blocks: list[str] = []
     pos = 0
     while True:
-        opening = _OPEN.search(text, pos)
+        opening = opening_pattern.search(text, pos)
         if not opening:
             break
         start = opening.end()
-        last = None
+        closing = None
         for match in _CLOSE.finditer(text, start):
-            last = match
-        if last is None:
+            closing = match
+            if not greedy_close:
+                break
+        if closing is None:
             break
-        blocks.append(text[start : last.start()].strip())
-        pos = last.end()
+        blocks.append(text[start : closing.start()].strip())
+        pos = closing.end()
     return blocks
 
 
-__all__ = ["find_code_blocks"]
+def find_code_blocks(text: str) -> list[str]:
+    """Extract generic fenced Python/code blocks from text."""
+    return _find_blocks(text, _OPEN)
+
+
+def find_repl_blocks(text: str) -> list[str]:
+    """Extract only explicit ``repl`` blocks used as executable agent actions."""
+    return _find_blocks(text, _REPL_OPEN, greedy_close=False)
+
+
+__all__ = ["find_code_blocks", "find_repl_blocks"]

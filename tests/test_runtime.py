@@ -63,20 +63,14 @@ def test_process_runtimes_propagate_execution_timeout(runtime):
 
 
 @pytest.mark.parametrize(
-    ("session_class", "runtime"),
+    "runtime",
     [
-        (
-            "rlmflow.runtime.docker.WorkerSession",
-            DockerRuntime("rlmflow:test", repl_timeout=19, execution_timeout=17),
-        ),
-        (
-            "rlmflow.runtime.modal.WorkerSession",
-            ModalRuntime(repl_timeout=19, execution_timeout=17),
-        ),
+        DockerRuntime("rlmflow:test", repl_timeout=19, execution_timeout=17),
+        ModalRuntime(repl_timeout=19, execution_timeout=17),
     ],
 )
-def test_sandbox_runtimes_propagate_execution_timeout(monkeypatch, session_class, runtime):
-    monkeypatch.setattr(session_class, RecordingWorkerSession)
+def test_sandbox_runtimes_propagate_execution_timeout(monkeypatch, runtime):
+    monkeypatch.setattr("rlmflow.runtime.repl_client.WorkerSession", RecordingWorkerSession)
 
     repl = runtime.open(start("q"))
     try:
@@ -156,9 +150,8 @@ def test_subprocess_runtime_supports_subagent_handles():
     def reply(messages):
         if first_user(messages) == "parent":
             return block(
-                "child = await launch_subagent("
-                '"child", model="default", name="c")\n'
-                "finish(await child.wait_for_result())"
+                'child = launch_subagent(task="child")\n'
+                "finish(await child)"
             )
         return block('finish("child-done")')
 
@@ -212,7 +205,7 @@ def test_empty_iterator_reports_stopiteration_not_coroutine_wrapper():
 
     async def run():
         repl.seed({}, {})
-        return await repl.run("print(next(iter(INPUTS.values()))[:500])")
+        return await repl.run("print(next(iter(())))")
 
     try:
         result = asyncio.run(run())

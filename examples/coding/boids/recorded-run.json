@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-09-22",
+  "task_sha256": "f98aa3badd7b1d7e187a5f4c80d44fcec3f4cab4776e5a5e07c33225b865a01f",
+  "model": "gpt-5",
+  "max_depth": 1,
+  "max_iters": 30,
+  "max_concurrency": 8,
+  "claim_boundary": "A single showcase run, not a benchmark or general runtime-quality claim.",
+  "runners": {
+    "rlmflow": {
+      "fast_model": "gpt-5-mini",
+      "elapsed_seconds": 282.378,
+      "completed": true,
+      "child_agents": 6,
+      "initial_parallel_children": 5,
+      "followup_repair_children": 1,
+      "child_roles": [
+        "HTML shell",
+        "CSS shell",
+        "spatial grid",
+        "boid behavior",
+        "browser entrypoint",
+        "browser entrypoint repair"
+      ],
+      "input_tokens": 54066,
+      "output_tokens": 30584,
+      "reasoning_tokens": 19200,
+      "application_files_written": 5,
+      "chosen_files": [
+        "index.html",
+        "styles.css",
+        "grid.js",
+        "boid.js",
+        "main.js"
+      ],
+      "static_validation_passed": true,
+      "browser_smoke_passed": true,
+      "nonblank_render_passed": true
+    }
+  }
+}

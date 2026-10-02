@@ -5,11 +5,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib
+import io
 import json
 import multiprocessing as mp
 import os
 import queue
 import signal
+import subprocess
+import tarfile
 import threading
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -21,8 +24,8 @@ from typing import Any
 from benchmarks.eval import DATASETS, LOGGERS, MODELS, RUNNERS
 from benchmarks.eval.loggers import MultiLogger
 from benchmarks.eval.loggers.jsonl import load_rows, write_json
-from benchmarks.eval.metrics import summarize
-from benchmarks.eval.suite import SUITES, format_suites_help, runners_for
+from benchmarks.eval.runners.shared import benchmark_task_contract
+from benchmarks.eval.suite import SUITES, runners_for
 from benchmarks.eval.types import (
     ComponentSpec,
     Example,
@@ -138,6 +141,8 @@ def _build_jobs(config: SuiteConfig, *, seen: set[tuple]) -> list[dict[str, Any]
 
 
 def _job_root(config: SuiteConfig) -> Path:
+    if config.executor == "docker":
+        return Path("/results") / config.run_id
     if config.executor == "modal":
         return Path("/tmp/rlmflow-benchmarks") / config.run_id
     return config.root
@@ -147,10 +152,12 @@ def _run_jobs(config: SuiteConfig, jobs: list[dict[str, Any]]) -> Iterable[Row]:
     if not jobs:
         return []
     payloads = [payload for job in jobs for payload in job["payloads"]]
+    if config.executor == "docker":
+        return _stream_best_rows_from_results(jobs, _run_jobs_docker(config, payloads))
     if config.executor == "modal":
         return _stream_best_rows_from_results(jobs, _run_jobs_modal(config, payloads))
     if config.executor != "local":
-        raise ValueError("executor must be 'local' or 'modal'")
+        raise ValueError("executor must be 'local', 'docker', or 'modal'")
     if config.parallelism <= 1:
         return _stream_best_rows_from_results(
             jobs,
@@ -228,7 +235,7 @@ def _run_job_payload_inner(payload: dict[str, Any]) -> dict[str, Any]:
     model_spec = ModelSpec(**payload["model"])
     dataset_name = str(payload["dataset_name"])
     runner_name = runner_spec.name
-    example = Example(**payload["example"])
+    example = _example_from_payload(payload)
     seed = payload["seed"]
     attempt = int(payload.get("attempt", 0))
     best_of_n = int(payload.get("best_of_n", 1))
@@ -264,6 +271,7 @@ def _run_job_payload_inner(payload: dict[str, Any]) -> dict[str, Any]:
                 },
             )
             prediction = runner.run(example, model, ctx)
+            prediction = _with_task_contract(prediction, example)
         finally:
             model.close()
         return {
@@ -291,10 +299,27 @@ def _error_payload_result(
 ) -> dict[str, Any]:
     runner_spec = ComponentSpec(**payload["runner"])
     model_spec = ModelSpec(**payload["model"])
-    example = Example(**payload["example"])
+    example = (
+        Example(**payload["example"])
+        if "example" in payload
+        else Example(
+            id=str(payload["environment_id"]),
+            prompt="",
+            metadata={
+                "benchmark": str(payload["benchmark_name"]),
+                "environment_id": str(payload["environment_id"]),
+            },
+        )
+    )
     prediction = Prediction(
         answer="",
-        metrics={"time_seconds": time_seconds, "iterations": 0},
+        metrics={
+            "time_seconds": time_seconds,
+            "iterations": 0,
+            **(
+                {"benchmark_task": benchmark_task_contract(example)} if "example" in payload else {}
+            ),
+        },
         error=error,
     )
     return {
@@ -310,6 +335,41 @@ def _error_payload_result(
         "attempt": int(payload.get("attempt", 0)),
         "best_of_n": int(payload.get("best_of_n", 1)),
     }
+
+
+def _example_from_payload(payload: dict[str, Any]) -> Example:
+    if "example" in payload:
+        return Example(**payload["example"])
+    from benchmarks.eval.benchmark import example_for_environment
+    from benchmarks.eval.benchmarks import environment_by_id
+
+    benchmark_name = str(payload["benchmark_name"])
+    environment_id = str(payload["environment_id"])
+    environment = environment_by_id(
+        benchmark_name,
+        environment_id,
+        seed=int(payload["seed"]),
+        artifact_dir=Path(payload["root"]) / "environment-source" / environment_id,
+    )
+    observation = environment.start(f"delivery-{environment_id}")
+    return example_for_environment(
+        benchmark_name=benchmark_name,
+        environment=environment,
+        observation=observation,
+    )
+
+
+def _with_task_contract(prediction: Prediction, example: Example) -> Prediction:
+    return Prediction(
+        answer=prediction.answer,
+        usage=prediction.usage,
+        metrics={
+            **prediction.metrics,
+            "benchmark_task": benchmark_task_contract(example),
+        },
+        artifacts=prediction.artifacts,
+        error=prediction.error,
+    )
 
 
 def _log_worker_start(
@@ -447,6 +507,10 @@ def _run_jobs_modal(config: SuiteConfig, payloads: list[dict[str, Any]]):
     app = modal.App(config.modal_app_name)
     image = _modal_image(modal)
     secrets = _modal_secrets(modal)
+    repo_root = Path(__file__).resolve().parents[2]
+    remote_payloads = [
+        _replace_path_prefixes(payload, {str(repo_root): "/workspace"}) for payload in payloads
+    ]
 
     @app.function(
         image=image,
@@ -457,25 +521,230 @@ def _run_jobs_modal(config: SuiteConfig, payloads: list[dict[str, Any]]):
         serialized=True,
     )
     def run_benchmark_row(payload: dict[str, Any]) -> dict[str, Any]:
-        return _run_job_payload(payload)
+        result = _run_job_payload(payload)
+        result["_artifact_bundle"] = _bundle_row_artifacts(payload)
+        return result
 
     with modal.enable_output():
         with app.run():
-            yield from run_benchmark_row.map(
-                payloads,
+            results = run_benchmark_row.map(
+                remote_payloads,
                 order_outputs=False,
                 return_exceptions=False,
             )
+            for result in results:
+                bundle = result.pop("_artifact_bundle", b"")
+                _extract_artifact_bundle(bundle, config.root)
+                yield _replace_path_prefixes(
+                    result,
+                    {
+                        str(Path("/tmp/rlmflow-benchmarks") / config.run_id): str(
+                            config.root.resolve()
+                        ),
+                        "/workspace": str(repo_root),
+                    },
+                )
+
+
+def _bundle_row_artifacts(payload: dict[str, Any]) -> bytes:
+    runner = ComponentSpec(**payload["runner"])
+    example = Example(**payload["example"])
+    artifact_dir = (
+        Path(payload["root"])
+        / "artifacts"
+        / str(payload["dataset_name"])
+        / example.id
+        / runner.name
+    )
+    if int(payload.get("best_of_n", 1)) > 1:
+        artifact_dir = artifact_dir / f"attempt_{int(payload.get('attempt', 0)):02d}"
+    if not artifact_dir.exists():
+        return b""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        archive.add(artifact_dir, arcname=artifact_dir.relative_to(Path(payload["root"])))
+    return buffer.getvalue()
+
+
+def _extract_artifact_bundle(bundle: bytes, destination: Path) -> None:
+    if not bundle:
+        return
+    destination.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(fileobj=io.BytesIO(bundle), mode="r:gz") as archive:
+        archive.extractall(destination, filter="data")
+
+
+_DOCKER_RESULT_PREFIX = "__RLMFLOW_BENCHMARK_RESULT__="
+
+
+def _run_jobs_docker(config: SuiteConfig, payloads: list[dict[str, Any]]):
+    try:
+        subprocess.run(
+            ["docker", "image", "inspect", config.docker_image],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("Docker execution requires the `docker` CLI.") from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"Docker image {config.docker_image!r} is unavailable; run `make eval-image` first."
+        ) from exc
+
+    if config.parallelism <= 1:
+        for payload in payloads:
+            yield _run_job_docker(config, payload)
+        return
+
+    with ThreadPoolExecutor(max_workers=config.parallelism) as pool:
+        futures = [pool.submit(_run_job_docker, config, payload) for payload in payloads]
+        for future in as_completed(futures):
+            yield future.result()
+
+
+def _run_job_docker(config: SuiteConfig, payload: dict[str, Any]) -> dict[str, Any]:
+    repo_root = Path(__file__).resolve().parents[2]
+    host_root = config.root.resolve()
+    container_root = Path("/results") / config.run_id
+    host_hf_home = (
+        Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+        .expanduser()
+        .resolve()
+    )
+    cache_mount = ["-v", f"{host_hf_home}:/tmp/.cache/huggingface"] if host_hf_home.is_dir() else []
+    host_root.mkdir(parents=True, exist_ok=True)
+    root_replacements = {
+        str(config.root): str(container_root),
+        str(config.root.absolute()): str(container_root),
+        str(host_root): str(container_root),
+    }
+    container_payload = _replace_path_prefixes(
+        payload,
+        {
+            str(repo_root): "/workspace",
+            **root_replacements,
+        },
+    )
+    digest = hashlib.sha256(json.dumps(container_payload, sort_keys=True).encode()).hexdigest()[:12]
+    container_name = f"rlmflow-eval-{os.getpid()}-{digest}"
+    command = [
+        "docker",
+        "run",
+        "--rm",
+        "-i",
+        "--name",
+        container_name,
+        "--cpus",
+        str(config.docker_cpus),
+        "--memory",
+        config.docker_memory,
+        "--pids-limit",
+        "512",
+        "--security-opt",
+        "no-new-privileges",
+        "--cap-drop",
+        "ALL",
+        "--user",
+        f"{os.getuid()}:{os.getgid()}",
+        "-e",
+        "HOME=/tmp",
+        "-e",
+        "HF_HOME=/tmp/.cache/huggingface",
+        *cache_mount,
+        "-v",
+        f"{repo_root}:/workspace:ro",
+        "-v",
+        f"{host_root}:{container_root}",
+        "-w",
+        "/workspace",
+    ]
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "HUGGING_FACE_HUB_TOKEN", "HF_TOKEN"):
+        if os.environ.get(name):
+            command += ["-e", name]
+    command += [
+        config.docker_image,
+        "python",
+        "-u",
+        "-m",
+        "benchmarks.eval.docker_worker",
+    ]
+    timeout = max(int(payload.get("attempt_timeout") or 0), 1) + 30
+    try:
+        completed = subprocess.run(
+            command,
+            input=json.dumps(container_payload),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        subprocess.run(
+            ["docker", "rm", "-f", container_name],
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+        return _error_payload_result(
+            payload,
+            error=f"TimeoutError: Docker attempt exceeded {timeout - 30}s",
+            time_seconds=float(timeout - 30),
+        )
+    if completed.returncode != 0:
+        error = (completed.stderr or completed.stdout).strip()
+        return _error_payload_result(
+            payload,
+            error=f"DockerError: container exited with code {completed.returncode}"
+            + (f": {error[-2000:]}" if error else ""),
+        )
+    result_line = next(
+        (
+            line.removeprefix(_DOCKER_RESULT_PREFIX)
+            for line in reversed(completed.stdout.splitlines())
+            if line.startswith(_DOCKER_RESULT_PREFIX)
+        ),
+        None,
+    )
+    if result_line is None:
+        return _error_payload_result(
+            payload,
+            error="DockerError: benchmark worker returned no result payload",
+        )
+    result = json.loads(result_line)
+    return _replace_path_prefixes(
+        result,
+        {
+            str(container_root): str(host_root),
+            "/workspace": str(repo_root),
+        },
+    )
+
+
+def _replace_path_prefixes(value: Any, replacements: dict[str, str]) -> Any:
+    if isinstance(value, dict):
+        return {key: _replace_path_prefixes(item, replacements) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_path_prefixes(item, replacements) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_replace_path_prefixes(item, replacements) for item in value)
+    if not isinstance(value, str):
+        return value
+    for source, target in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
+        if value == source or value.startswith(source + os.sep):
+            return target + value[len(source) :]
+    return value
 
 
 def _modal_image(modal):
     repo_root = Path(__file__).resolve().parents[2]
-    remote_repo = "/opt/rlmflow"
     return (
-        modal.Image.debian_slim()
+        modal.Image.from_dockerfile(
+            repo_root / "benchmarks" / "Dockerfile",
+            context_dir=repo_root,
+        )
         .add_local_dir(
             repo_root,
-            remote_path=remote_repo,
+            remote_path="/workspace",
             copy=True,
             ignore=[
                 ".git",
@@ -489,10 +758,12 @@ def _modal_image(modal):
                 "media",
             ],
         )
+        # Modal's legacy runtime layer pins Pydantic 1 and cloudpickle 2.
+        # Reinstalling the project last restores the benchmark's requirements.
         .run_commands(
-            "apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*",
-            f"python -m pip install -e '{remote_repo}[eval,openai,anthropic]'",
-            "python -m pip install 'git+https://github.com/alexzhang13/rlm'",
+            "python -m pip install -e "
+            "'/workspace[eval,eval-environments,official-rlm,openai,anthropic]'",
+            "python -c 'from pydantic import JsonValue, TypeAdapter; import cloudpickle'",
         )
     )
 
@@ -527,7 +798,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--list-suites",
         action="store_true",
-        help="Print the four evaluation suites and exit.",
+        help="Print the evaluation suites and exit.",
     )
     parser.add_argument(
         "--dataset",
@@ -576,9 +847,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wandb-entity")
     parser.add_argument(
         "--executor",
-        choices=["local", "modal"],
+        choices=["local", "docker", "modal"],
         default="local",
-        help="Where to run row jobs. `modal` maps each row to a Modal function.",
+        help="Where to run row jobs. Paid suite recipes default to Docker.",
     )
     parser.add_argument("--modal", action="store_true", help="Shortcut for --executor modal.")
     parser.add_argument(
@@ -599,6 +870,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=900,
         help="Hard timeout in seconds for one runner attempt before recording an error row.",
     )
+    parser.add_argument("--docker-image", default="rlmflow-eval:local")
+    parser.add_argument("--docker-cpus", type=float, default=2.0)
+    parser.add_argument("--docker-memory", default="4g")
     parser.add_argument("--modal-app-name", default="rlmflow-benchmarks")
     parser.add_argument("--modal-cpu", type=float, default=1.0)
     parser.add_argument("--modal-timeout", type=int, default=3600)
@@ -653,6 +927,9 @@ def config_from_args(args: argparse.Namespace) -> SuiteConfig:
         parallelism=parallelism,
         best_of_n=best_of_n,
         attempt_timeout=attempt_timeout,
+        docker_image=args.docker_image,
+        docker_cpus=args.docker_cpus,
+        docker_memory=args.docker_memory,
         modal_app_name=args.modal_app_name,
         modal_cpu=args.modal_cpu,
         modal_timeout=args.modal_timeout,
@@ -705,17 +982,12 @@ def make_run_id(*, datasets: list[str], runners: list[str], model: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    if args.list_suites:
-        print(format_suites_help(), end="")
-        return 0
-    config = config_from_args(args)
-    rows = run_suite(config)
-    summary = summarize(rows)
-    overall = summary.get("overall", {})
-    print(json.dumps(overall, indent=2, sort_keys=True))
-    print(f"Saved results to {config.root}")
-    return 1 if overall.get("errors", 0) else 0
+    from benchmarks.run_benchmark import main as run_benchmark
+
+    if argv is not None:
+        raise ValueError("use benchmarks.run_benchmark.parser() for explicit argv")
+    run_benchmark()
+    return 0
 
 
 def _flatten(values: list[str] | tuple[str, ...] | None) -> list[str]:
@@ -749,13 +1021,6 @@ if __name__ == "__main__":
 
 
 __all__ = [
-    "build_logger",
-    "build_parser",
-    "config_from_args",
     "main",
-    "make_run_id",
     "parse_model_spec",
-    "parse_params",
-    "parse_seed_spec",
-    "run_suite",
 ]

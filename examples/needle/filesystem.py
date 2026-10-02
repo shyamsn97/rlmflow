@@ -22,7 +22,6 @@ import tempfile
 from pathlib import Path
 
 from rlmflow import (
-    FILE_TOOLS,
     AgentConfig,
     DockerRuntime,
     Flow,
@@ -31,20 +30,21 @@ from rlmflow import (
 )
 from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
 from rlmflow.llm import client_for
+from rlmflow.tools.filesystem import (
+    append_file,
+    edit_file,
+    line_count,
+    ls,
+    read_file,
+    read_lines,
+    write_file,
+)
 
 examples_dir = next(path for path in Path(__file__).resolve().parents if path.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-NEEDLE_FILE_TOOLS = [
-    FILE_TOOLS.read_file,
-    FILE_TOOLS.write_file,
-    FILE_TOOLS.append_file,
-    FILE_TOOLS.edit_file,
-    FILE_TOOLS.ls,
-    FILE_TOOLS.read_lines,
-    FILE_TOOLS.line_count,
-]
+NEEDLE_FILE_TOOLS = [read_file, write_file, append_file, edit_file, ls, read_lines, line_count]
 
 
 def generate_haystack(directory: Path, num_files: int = 500, lines_per_file: int = 200) -> str:

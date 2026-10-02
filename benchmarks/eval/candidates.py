@@ -80,23 +80,15 @@ class CandidateLedger:
     def selected(self) -> CandidateRecord | None:
         return self._by_id.get(self._selected_id) if self._selected_id else None
 
-    def submit(
+    def validate_submission(
         self,
         *,
-        owner_id: str,
         owner_path: str,
-        owner_depth: int,
-        instance_id: str,
         label: str,
-        proposal: Any,
         parent_candidate_id: str | None,
-        environment_prefix: Any = None,
-        state_material: Any,
-        score: float,
-        public_summary: Mapping[str, Any],
         evaluation_cost: int = 1,
-        replay_artifacts: Mapping[str, str] | None = None,
-    ) -> CandidateRecord:
+    ) -> None:
+        """Validate a candidate request before an environment snapshot is created."""
         with self._lock:
             if (
                 isinstance(evaluation_cost, bool)
@@ -121,6 +113,31 @@ class CandidateLedger:
                     raise PermissionError(
                         "candidate parent must belong to the owner or an ancestor branch"
                     )
+
+    def submit(
+        self,
+        *,
+        owner_id: str,
+        owner_path: str,
+        owner_depth: int,
+        instance_id: str,
+        label: str,
+        proposal: Any,
+        parent_candidate_id: str | None,
+        environment_prefix: Any = None,
+        state_material: Any,
+        score: float,
+        public_summary: Mapping[str, Any],
+        evaluation_cost: int = 1,
+        replay_artifacts: Mapping[str, str] | None = None,
+    ) -> CandidateRecord:
+        with self._lock:
+            self.validate_submission(
+                owner_path=owner_path,
+                label=label,
+                parent_candidate_id=parent_candidate_id,
+                evaluation_cost=evaluation_cost,
+            )
             index = len(self._records)
             canonical = json.dumps(
                 _json_value(state_material),

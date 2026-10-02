@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from rlmflow.engine import handoff
 from rlmflow.graph.nodes import AgentStart, ExecAction
 from rlmflow.runtime.env import RLMFLOW_REPLAY
 
@@ -11,7 +12,7 @@ from rlmflow.runtime.env import RLMFLOW_REPLAY
 def _replay_root(flow: Any, agent: AgentStart) -> AgentStart:
     """Return the highest missing worker owner required by ``agent``."""
     root = agent
-    while root.config.reuse_repl and root.parent is not None:
+    while root.config.reuse_worker and root.parent is not None:
         parent = root.parent.parent_agent
         if parent is None or flow.runtime.get(parent) is not None:
             break
@@ -24,7 +25,7 @@ def _required_agents(root: AgentStart) -> tuple[list[AgentStart], set[int]]:
     agents = [node for node in root.walk() if isinstance(node, AgentStart)]
 
     def owner(agent: AgentStart) -> AgentStart:
-        while agent.config.reuse_repl and agent.parent is not None:
+        while agent.config.reuse_worker and agent.parent is not None:
             parent = agent.parent.parent_agent
             if parent is None:
                 break
@@ -45,7 +46,9 @@ async def replay(flow: Any, root: AgentStart) -> None:
     bindings, which is why output and errors are discarded.
 
     Terminal agents are normally skipped, but a terminal worker owner is replayed
-    when an unfinished ``reuse_repl`` descendant still needs its session and heap.
+    when an unfinished ``reuse_worker`` descendant still needs its worker session.
+    ``execution_guard`` is a live admission policy, so replay intentionally calls
+    the underlying runtime after preparing the same namespace and environment.
     """
     root = _replay_root(flow, root)
     agents, required = _required_agents(root)
@@ -70,10 +73,7 @@ async def replay(flow: Any, root: AgentStart) -> None:
         )
     )
     for node in actions:
-        agent = node.parent_agent
-        repl = flow.runtime.repl_for(agent)
-        repl.structured_output = agent.config.output_schema is not None
-        repl.seed(flow.build_tools(node), agent.resolved_inputs())
+        repl = flow.wrapped_runtime.prepare(node)
         repl.update_env({RLMFLOW_REPLAY: "1"})
         try:
             await flow.runtime.execute(node, node.code)
@@ -93,10 +93,32 @@ async def ensure_replayed(flow: Any, agent: AgentStart) -> None:
             return
 
         root = _replay_root(flow, agent)
-        await flow.replay(root)
+        await replay(flow, root)
         flow._restored_agents.update(
             id(node) for node in root.walk() if isinstance(node, AgentStart)
         )
 
 
-__all__ = ["ensure_replayed", "replay"]
+async def resume(flow: Any, roots: list[AgentStart]) -> None:
+    """Make graphs ready to drive: live namespaces, fresh scheduling, mailboxes."""
+    for root in roots:
+        if flow.runtime.get(root) is None:  # a graph this Flow has not run
+            if flow.restore == "replay":
+                await replay(flow, root)
+        else:
+            flow._restored_agents.add(id(root))
+            if flow.restore == "replay":
+                for node in root.walk():
+                    if (
+                        isinstance(node, AgentStart)
+                        and not node.terminal
+                        and flow.runtime.get(node) is None
+                    ):
+                        await replay(flow, node)
+        for node in root.walk():
+            if isinstance(node, AgentStart):
+                node.dependency_scheduled = False
+        handoff.rebuild_mailboxes(root)
+
+
+__all__ = ["ensure_replayed", "replay", "resume"]

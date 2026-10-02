@@ -3,18 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from pathlib import Path
 
 from benchmarks.eval import dataset
-from benchmarks.eval.environments.base import EnvironmentEpisode
 from benchmarks.eval.environments.minimaze import (
     SCORE_WEIGHTS,
-    MiniMazeAdapter,
-    MiniMazeConfig,
     MiniMazeSpec,
 )
-from benchmarks.eval.tasks.environment import grade_environment
-from benchmarks.eval.types import Dataset, Example, Prediction, Score
+from benchmarks.eval.types import Dataset, Example
 
 TASK_PROMPT = """\
 Navigate the deterministic fog-of-war ASCII MiniMaze and collect every gem (*).
@@ -159,7 +154,7 @@ _SPECS = {spec.id: spec for spec in FROZEN_MINIMAZE_MANIFEST}
 
 @dataset(
     "minimaze",
-    tags=["conformance", "environment", "visual"],
+    tags=["interactive", "environment", "visual"],
 )
 class MiniMazeDataset(Dataset):
     """Offline MiniMaze corpus selected by the suite split."""
@@ -189,66 +184,18 @@ class MiniMazeDataset(Dataset):
         selected = task_ids if limit is None else task_ids[: max(0, limit)]
         return [self._example(_SPECS[task_id]) for task_id in selected]
 
-    def score(self, example: Example, prediction: Prediction) -> Score:
-        del example
-        grade = grade_environment(prediction, native_keys=("score",))
-        primary = grade.view.primary
-        completed = bool(primary.get("completed")) and grade.selected
-        return Score(
-            value=grade.value,
-            correct=completed,
-            details=grade.details(
-                error=prediction.error,
-                completed=completed,
-                gems_collected=_nonnegative_int(primary.get("gems_collected")),
-                total_gems=_nonnegative_int(primary.get("total_gems")),
-                gem_completion=grade.view.native_float("gem_completion", bounded=True),
-                coverage=grade.view.native_float("coverage", bounded=True),
-                path_efficiency=grade.view.native_float("path_efficiency", bounded=True),
-            ),
-        )
-
-    def make_episode(
-        self,
-        example: Example,
-        *,
-        artifact_dir: str | Path | None = None,
-        role: str = "primary",
-    ) -> EnvironmentEpisode:
-        """Create the shared candidate-aware episode represented by ``example``."""
-
-        del role
-        environment = example.metadata.get("environment", {})
-        if not isinstance(environment, dict) or environment.get("kind") != "minimaze":
-            raise ValueError("example is not a MiniMaze environment task")
-        task_id = str(environment.get("task_id", ""))
-        try:
-            base_spec = _SPECS[task_id]
-        except KeyError as exc:
-            raise ValueError(f"unknown frozen MiniMaze task {task_id!r}") from exc
-        spec = MiniMazeSpec(
-            id=base_spec.id,
-            rows=base_spec.rows,
-            fog_radius=int(environment["fog_radius"]),
-            action_budget=int(environment["action_budget"]),
-            candidate_budget=int(environment["candidate_budget"]),
-        )
-        return EnvironmentEpisode(
-            MiniMazeAdapter(MiniMazeConfig(spec=spec, artifact_dir=artifact_dir)),
-            max_actions=spec.action_budget,
-            episode_id=example.id,
-            candidate_budget=spec.candidate_budget,
-        )
-
-    create_episode = make_episode
-    episode = make_episode
-
     def _example(self, base_spec: MiniMazeSpec) -> Example:
         action_budget = self.action_budget or base_spec.action_budget
         candidate_budget = self.candidate_budget or base_spec.candidate_budget
+        prompt = (
+            f"{TASK_PROMPT}\n"
+            f"Task ID: {base_spec.id}\n"
+            f"Shared environment action budget: {action_budget}.\n"
+            f"Candidate submission budget: {candidate_budget}.\n"
+        )
         return Example(
             id=f"minimaze_{base_spec.id}",
-            prompt=TASK_PROMPT,
+            prompt=prompt,
             expected={"completed": True, "total_gems": "".join(base_spec.rows).count("*")},
             context={
                 "task_id": base_spec.id,
@@ -313,13 +260,6 @@ def _optional_positive_int(name: str, value: int | None) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"{name} must be a positive integer")
     return value
-
-
-def _nonnegative_int(value: object) -> int:
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
 
 
 __all__ = [

@@ -25,31 +25,25 @@ Gradio (``rlmflow[viewer]``), and ``save_frames``/``save_gif`` want a rasteriser
 from typing import TYPE_CHECKING, Any
 
 from rlmflow.view.figure import (
-    NODE_COLORS,
-    NODE_SHAPES,
     figure_title,
     graph_svg,
     node_color,
-    node_shape,
 )
 from rlmflow.view.html import render_html, save_html, save_svg, step_svg
 from rlmflow.view.replay import as_root, render_steps, replay, snapshot
-from rlmflow.view.steps import Step, node_detail, steps, summarize, timeline
+from rlmflow.view.steps import Step, node_detail, steps, timeline
 
 if TYPE_CHECKING:  # the two that carry dependencies, typed but not imported
     from rlmflow.view.app import open_viewer
     from rlmflow.view.images import save_frames, save_gif
 
 __all__ = [
-    "NODE_COLORS",
-    "NODE_SHAPES",
     "Step",
     "as_root",
     "figure_title",
     "graph_svg",
     "node_color",
     "node_detail",
-    "node_shape",
     "open_viewer",
     "render_html",
     "render_steps",
@@ -61,7 +55,6 @@ __all__ = [
     "snapshot",
     "step_svg",
     "steps",
-    "summarize",
     "timeline",
 ]
 

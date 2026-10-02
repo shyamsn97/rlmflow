@@ -1,256 +1,143 @@
-"""Generate machine-readable and Markdown comparisons between benchmark runs."""
+"""Compare normalized environment reports from benchmark runs."""
 
 from __future__ import annotations
 
 import argparse
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from statistics import fmean
 from typing import Any
 
-from benchmarks.eval.loggers.jsonl import load_rows, write_json
-from benchmarks.eval.telemetry import RowTelemetry
-from benchmarks.eval.types import Row
+from benchmarks.eval.reporting import EnvironmentReport, load_environment_reports
 
 
-def compare_runs(runs: Mapping[str, list[Row]]) -> dict[str, Any]:
+def compare_runs(
+    runs: Mapping[str, list[EnvironmentReport]],
+) -> dict[str, Any]:
     if len(runs) < 2:
         raise ValueError("comparison requires at least two runs")
 
-    pair_by_runner = any(
-        len({(row.dataset, row.example_id, row.model, row.seed) for row in rows}) < len(rows)
-        for rows in runs.values()
-    )
+    def key(report: EnvironmentReport) -> tuple:
+        return (
+            report.benchmark,
+            report.environment_id,
+            report.runner,
+            report.model,
+            report.seed,
+        )
 
-    def row_key(row: Row) -> tuple:
-        base = (row.dataset, row.example_id, row.model, row.seed)
-        return (base[0], base[1], row.runner if pair_by_runner else None, base[2], base[3])
-
-    keyed = {label: {row_key(row): row for row in rows} for label, rows in runs.items()}
-    keys = sorted(set().union(*(rows.keys() for rows in keyed.values())))
+    indexed = {label: {key(report): report for report in reports} for label, reports in runs.items()}
+    keys = sorted(set().union(*(reports.keys() for reports in indexed.values())))
     labels = list(runs)
-    tasks = []
-    for key in keys:
-        task_runs = {label: _row_metrics(rows[key]) for label, rows in keyed.items() if key in rows}
-        task = {
-            "dataset": key[0],
-            "example_id": key[1],
-            "runner": key[2] or sorted({item["runner"] for item in task_runs.values()}),
-            "model": key[3],
-            "seed": key[4],
-            "runs": task_runs,
+    environments = []
+    for report_key in keys:
+        values = {
+            label: _metrics(reports[report_key])
+            for label, reports in indexed.items()
+            if report_key in reports
         }
-        if len(labels) == 2 and all(label in task_runs for label in labels):
-            task["score_delta"] = task_runs[labels[1]]["score"] - task_runs[labels[0]]["score"]
-        tasks.append(task)
-
+        item: dict[str, Any] = {
+            "benchmark": report_key[0],
+            "environment_id": report_key[1],
+            "runner": report_key[2],
+            "model": report_key[3],
+            "seed": report_key[4],
+            "runs": values,
+        }
+        if len(labels) == 2 and all(label in values for label in labels):
+            item["score_delta"] = values[labels[1]]["score"] - values[labels[0]]["score"]
+        environments.append(item)
     return {
         "labels": labels,
-        "paired_by_runner_arm": pair_by_runner,
-        "summary": {label: _run_summary(rows) for label, rows in runs.items()},
-        "by_route": {label: _route_summary(rows) for label, rows in runs.items()},
-        "paired_tasks": sum(len(task["runs"]) == len(labels) for task in tasks),
-        "tasks": tasks,
+        "summary": {label: _summary(reports) for label, reports in runs.items()},
+        "paired_environments": sum(
+            len(item["runs"]) == len(labels) for item in environments
+        ),
+        "environments": environments,
     }
 
 
 def render_markdown(comparison: Mapping[str, Any]) -> str:
     labels = list(comparison["labels"])
+    columns = ["benchmark", "environment", "runner", *labels]
+    if len(labels) == 2:
+        columns.append("delta")
     lines = [
         "# Benchmark comparison",
         "",
-        "## Summary",
-        "",
-        "| Run | Tasks | Accuracy | Mean score | Errors | Input tokens | Output tokens | Time (s) | Recursive tasks | Subcall tasks | Subcalls |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| " + " | ".join(columns) + " |",
+        "|" + "|".join("---" for _ in columns) + "|",
     ]
-    for label in labels:
-        item = comparison["summary"][label]
-        lines.append(
-            f"| {_cell(label)} | {item['count']} | {item['accuracy']:.1%} | "
-            f"{item['mean_score']:.4f} | {item['errors']} | "
-            f"{item['input_tokens']} | {item['output_tokens']} | "
-            f"{item['time_seconds']:.1f} | {item['delegated_tasks']} | "
-            f"{item['subcall_tasks']} | {item['subcalls']} |"
-        )
-
-    lines.extend(
-        [
-            "",
-            "## Per-problem results",
-            "",
-            _task_header(labels),
-            _task_rule(labels),
-        ]
-    )
-    for task in comparison["tasks"]:
-        cells = [
-            _cell(task["dataset"]),
-            _cell(task["example_id"]),
-        ]
-        for label in labels:
-            result = task["runs"].get(label)
-            if result is None:
-                cells.extend(["—", "—", "—", "—", "—", "—"])
-                continue
-            cells.extend(
-                [
-                    f"{result['score']:.4f}",
-                    "yes" if result["correct"] else "no",
-                    str(result["agents"]),
-                    str(result["subcalls"]),
-                    str(result["input_tokens"] + result["output_tokens"]),
-                    f"{result['time_seconds']:.1f}",
-                ]
+    for item in comparison["environments"]:
+        values = [item["benchmark"], item["environment_id"], item["runner"]]
+        values.extend(
+            (
+                f"{item['runs'][label]['score']:.4f}"
+                if label in item["runs"]
+                else "—"
             )
+            for label in labels
+        )
         if len(labels) == 2:
-            delta = task.get("score_delta")
-            cells.append("—" if delta is None else f"{delta:+.4f}")
-        lines.append("| " + " | ".join(cells) + " |")
+            delta = item.get("score_delta")
+            values.append("—" if delta is None else f"{delta:+.4f}")
+        lines.append("| " + " | ".join(str(value) for value in values) + " |")
     return "\n".join(lines) + "\n"
 
 
 def write_comparison(
-    runs: Mapping[str, list[Row]],
+    runs: Mapping[str, list[EnvironmentReport]],
     output_dir: Path,
 ) -> tuple[Path, Path]:
     comparison = compare_runs(runs)
     output_dir.mkdir(parents=True, exist_ok=True)
     json_path = output_dir / "comparison.json"
     markdown_path = output_dir / "comparison.md"
-    write_json(json_path, comparison)
+    json_path.write_text(json.dumps(comparison, indent=2, sort_keys=True) + "\n")
     markdown_path.write_text(render_markdown(comparison), encoding="utf-8")
     return json_path, markdown_path
 
 
-def _row_metrics(row: Row) -> dict[str, Any]:
-    telemetry = RowTelemetry.from_row(row)
-    graph = telemetry.graph
-    delegation = telemetry.delegation
-    environment = telemetry.environment
-    candidates = environment.candidate_search
+def _metrics(report: EnvironmentReport) -> dict[str, Any]:
     return {
-        "runner": telemetry.runner,
-        "score": telemetry.score,
-        "correct": telemetry.correct,
-        "error": telemetry.error,
-        "input_tokens": telemetry.input_tokens,
-        "output_tokens": telemetry.output_tokens,
-        "time_seconds": telemetry.time_seconds,
-        "agents": graph.get("agents", 0),
-        "max_depth": graph.get("max_depth", 0),
-        "subcalls": delegation.get("children", 0),
-        "dependency_edges": delegation.get("dependency_edge_count", 0),
-        "dependency_chain_depth": delegation.get("dependency_chain_depth", 0),
-        "recursive_launches": delegation.get(
-            "recursive_launch_count",
-            0,
-        ),
-        "max_launch_batch": delegation.get("max_launch_batch", 0),
-        "max_ready_launch_batch": delegation.get("max_ready_launch_batch", 0),
-        "retrieval_ratio": delegation.get("retrieval_ratio", 0.0),
-        "retrieved_results": delegation.get("retrieved_child_results", 0),
-        "model_turns": graph.get("llm_turns", 0),
-        "environment_actions": environment.accepted_actions,
-        "primary_actions": environment.primary_actions,
-        "probe_actions": environment.probe_actions,
-        "environment_instances": environment.instances_forked,
-        "candidate_count": candidates.get("evaluations_used", 0),
-        "candidate_oracle_best_score": candidates.get("oracle_best_score"),
-        "selected_candidate_score": candidates.get("selected_score"),
-        "selection_regret": candidates.get("selection_regret"),
-        "artifacts": telemetry.artifacts,
+        "score": report.score.value,
+        "correct": report.score.correct,
+        "error": report.error,
+        "input_tokens": report.runtime.input_tokens,
+        "output_tokens": report.runtime.output_tokens,
+        "reasoning_tokens": report.runtime.reasoning_tokens,
+        "time_seconds": report.runtime.wall_time_seconds,
+        "agents": report.runtime.agents,
+        "nodes": report.runtime.nodes,
     }
 
 
-def _run_summary(rows: list[Row]) -> dict[str, Any]:
-    graded = [row for row in rows if row.score.correct is not None]
-    telemetry = [RowTelemetry.from_row(row) for row in rows]
+def _summary(reports: list[EnvironmentReport]) -> dict[str, Any]:
     return {
-        "count": len(rows),
-        "accuracy": (
-            sum(row.score.correct is True for row in graded) / len(graded) if graded else 0.0
-        ),
-        "mean_score": fmean(row.score.value for row in rows) if rows else 0.0,
-        "errors": sum(bool(item.error) for item in telemetry),
-        "input_tokens": sum(item.input_tokens for item in telemetry),
-        "output_tokens": sum(item.output_tokens for item in telemetry),
-        "time_seconds": sum(item.time_seconds for item in telemetry),
-        "delegated_tasks": sum(item.graph.get("agents", 0) > 1 for item in telemetry),
-        "subcall_tasks": sum(item.delegation.get("children", 0) > 0 for item in telemetry),
-        "subcalls": sum(item.delegation.get("children", 0) for item in telemetry),
+        "count": len(reports),
+        "mean_score": fmean(report.score.value for report in reports) if reports else 0.0,
+        "correct": sum(report.score.correct is True for report in reports),
+        "errors": sum(report.error is not None for report in reports),
+        "input_tokens": sum(report.runtime.input_tokens for report in reports),
+        "output_tokens": sum(report.runtime.output_tokens for report in reports),
+        "reasoning_tokens": sum(report.runtime.reasoning_tokens for report in reports),
+        "time_seconds": sum(report.runtime.wall_time_seconds for report in reports),
     }
-
-
-def _route_summary(rows: list[Row]) -> dict[str, Any]:
-    routes = sorted(
-        {
-            str(row.metadata.get("route_hypothesis"))
-            for row in rows
-            if row.metadata.get("route_hypothesis")
-        }
-    )
-    return {
-        route: _run_summary([row for row in rows if row.metadata.get("route_hypothesis") == route])
-        for route in routes
-    }
-
-
-def _task_header(labels: list[str]) -> str:
-    columns = ["Dataset", "Problem"]
-    for label in labels:
-        columns.extend(
-            [
-                f"{label} score",
-                f"{label} correct",
-                f"{label} agents",
-                f"{label} subcalls",
-                f"{label} tokens",
-                f"{label} time (s)",
-            ]
-        )
-    if len(labels) == 2:
-        columns.append(f"Score delta ({labels[1]} − {labels[0]})")
-    return "| " + " | ".join(_cell(column) for column in columns) + " |"
-
-
-def _task_rule(labels: list[str]) -> str:
-    count = 2 + 6 * len(labels) + int(len(labels) == 2)
-    return "|" + "|".join(["---"] * count) + "|"
-
-
-def _cell(value: object) -> str:
-    return str(value).replace("|", "\\|").replace("\n", " ")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--run",
-        action="append",
-        required=True,
-        metavar="LABEL=RUN_DIR",
-        help="Labeled run directory containing rows.jsonl; repeat at least twice.",
-    )
+    parser.add_argument("--run", action="append", required=True, metavar="LABEL=RUN_DIR")
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args(argv)
-
-    runs: dict[str, list[Row]] = {}
+    runs: dict[str, list[EnvironmentReport]] = {}
     for value in args.run:
         if "=" not in value:
             parser.error("--run must use LABEL=RUN_DIR")
-        label, raw_path = value.split("=", 1)
-        if not label or label in runs:
-            parser.error(f"run label must be non-empty and unique: {label!r}")
-        path = Path(raw_path).expanduser()
-        rows_path = path if path.name == "rows.jsonl" else path / "rows.jsonl"
-        runs[label] = load_rows(rows_path)
-        if not runs[label]:
-            parser.error(f"run has no rows: {rows_path}")
-
-    json_path, markdown_path = write_comparison(runs, args.output_dir)
-    print(json_path)
-    print(markdown_path)
+        label, directory = value.split("=", 1)
+        runs[label] = load_environment_reports(Path(directory) / "rows.jsonl")
+    write_comparison(runs, args.output_dir)
     return 0
 
 

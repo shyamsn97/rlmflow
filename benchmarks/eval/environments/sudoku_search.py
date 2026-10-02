@@ -7,7 +7,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from benchmarks.eval.environments.base import EnvironmentAdapter, EnvironmentResult
+from pydantic import JsonValue
+
+from benchmarks.eval.environments.environment import Environment, Observation
+from benchmarks.eval.reporting import EnvironmentReport, RuntimeMetrics
+from benchmarks.eval.telemetry import EnvironmentMetricsView
+from benchmarks.eval.types import Prediction, Score
 
 MAX_SEQUENCE_LENGTH = 256
 
@@ -88,16 +93,88 @@ class _SudokuInstance:
     replay_actions: int = 0
 
 
-class SudokuSearchAdapter(EnvironmentAdapter):
+@dataclass(frozen=True, slots=True)
+class SudokuObservation(Observation):
+    puzzle_id: str
+    size: int
+    box_rows: int
+    box_columns: int
+    grid: tuple[tuple[int, ...], ...]
+    clue_mask: tuple[tuple[bool, ...], ...]
+    visual_grid: str
+    filled_count: int
+    empty_count: int
+    constraint_violations: tuple[dict[str, Any], ...]
+    consistent: bool
+    complete: bool
+    legal_operations: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, JsonValue]:
+        return {
+            "puzzle_id": self.puzzle_id,
+            "size": self.size,
+            "box_rows": self.box_rows,
+            "box_columns": self.box_columns,
+            "coordinate_system": "zero_based",
+            "symbols": list(range(1, self.size + 1)),
+            "grid": [list(row) for row in self.grid],
+            "clue_mask": [list(row) for row in self.clue_mask],
+            "visual_grid": self.visual_grid,
+            "filled_count": self.filled_count,
+            "empty_count": self.empty_count,
+            "total_cells": self.size**2,
+            "constraint_violations": list(self.constraint_violations),
+            "violation_count": len(self.constraint_violations),
+            "consistent": self.consistent,
+            "complete": self.complete,
+            "legal_operations": list(self.legal_operations),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class SudokuMetrics:
+    values: dict[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self.values)
+
+
+class SudokuEnvironment(Environment[SudokuObservation, SudokuMetrics]):
     """In-memory private-branch Sudoku implementation."""
 
     kind = "sudoku_search"
+    tool_operations = (
+        ("observe", "observe", "Observe the private Sudoku grid.", ()),
+        (
+            "place",
+            "place",
+            "Place one value at zero-based coordinates.",
+            (("row", int), ("column", int), ("value", int)),
+        ),
+        (
+            "erase",
+            "erase",
+            "Erase one editable cell.",
+            (("row", int), ("column", int)),
+        ),
+        (
+            "place_sequence",
+            "place_sequence",
+            "Apply a bounded placement list.",
+            (("placements", list[dict[str, int]]),),
+        ),
+        ("check", "check", "Report visible violations and fill progress.", ()),
+    )
 
     def __init__(
         self,
         config: SudokuSearchConfig | SudokuSearchPuzzle,
         *,
         artifact_dir: str | Path | None = None,
+        description: str | None = None,
+        environment_id: str | None = None,
+        action_budget: int = 192,
+        candidate_budget: int = 8,
     ) -> None:
         if isinstance(config, SudokuSearchPuzzle):
             config = SudokuSearchConfig(
@@ -108,9 +185,15 @@ class SudokuSearchAdapter(EnvironmentAdapter):
             raise ValueError("artifact_dir belongs in SudokuSearchConfig when config is supplied")
         self.config = config
         self.puzzle = config.puzzle
+        self.id = environment_id or f"sudoku_search_{self.puzzle.id}"
+        self.action_budget = action_budget
+        self.candidate_budget = candidate_budget
+        self.description = description or (
+            "Solve the Sudoku using observe, place, erase, place_sequence, and check."
+        )
         self._instances: dict[str, _SudokuInstance] = {}
 
-    def start(self, instance_id: str) -> EnvironmentResult:
+    def start(self, instance_id: str) -> SudokuObservation:
         if instance_id in self._instances:
             raise ValueError(f"Sudoku instance {instance_id!r} already exists")
         instance = _SudokuInstance(grid=self.puzzle.initial_grid)
@@ -119,7 +202,10 @@ class SudokuSearchAdapter(EnvironmentAdapter):
         )
         self._instances[instance_id] = instance
         observation = self._observation(instance)
-        return EnvironmentResult(observation, observation_summary=self._summary(instance))
+        return observation
+
+    def observe(self, instance_id: str) -> SudokuObservation:
+        return self._observation(self._instance(instance_id))
 
     def fork(
         self,
@@ -127,7 +213,7 @@ class SudokuSearchAdapter(EnvironmentAdapter):
         *,
         parent_instance_id: str,
         command_prefix: tuple[str, ...],
-    ) -> EnvironmentResult:
+    ) -> SudokuObservation:
         self._instance(parent_instance_id)
         self.start(instance_id)
         child = self._instance(instance_id)
@@ -135,7 +221,7 @@ class SudokuSearchAdapter(EnvironmentAdapter):
             operation, payload = _decode_command(encoded)
             self._apply(child, operation, payload, replay=True)
         observation = self._observation(child)
-        return EnvironmentResult(observation, observation_summary=self._summary(child))
+        return observation
 
     def execute(
         self,
@@ -144,29 +230,18 @@ class SudokuSearchAdapter(EnvironmentAdapter):
         payload: dict[str, Any],
         *,
         max_actions: int,
-    ) -> EnvironmentResult:
+    ) -> SudokuObservation:
         instance = self._instance(instance_id)
         if operation == "observe":
-            observation = self._observation(instance)
-            return EnvironmentResult(observation, observation_summary=self._summary(instance))
+            return self._observation(instance)
         if operation == "check":
-            report = self._check(instance)
-            return EnvironmentResult(report, observation_summary=self._summary(instance))
+            return self._observation(instance)
         if operation in {"place", "erase"}:
             if max_actions < 1:
                 raise RuntimeError("the shared environment action budget is exhausted")
             normalized = self._normalize_action(operation, payload)
-            command = self._apply(instance, operation, normalized, replay=False)
-            return EnvironmentResult(
-                {
-                    "accepted": True,
-                    "action": normalized,
-                    "observation": self._observation(instance),
-                    "actions_remaining": max_actions - 1,
-                },
-                accepted_actions=(command,),
-                observation_summary=self._summary(instance),
-            )
+            self._apply(instance, operation, normalized, replay=False)
+            return self._observation(instance)
         if operation == "place_sequence":
             requested = payload.get("placements")
             if not isinstance(requested, list) or not requested:
@@ -180,28 +255,15 @@ class SudokuSearchAdapter(EnvironmentAdapter):
             selected = normalized[:max_actions]
             if not selected:
                 raise RuntimeError("the shared environment action budget is exhausted")
-            commands = tuple(
-                self._apply(instance, "place", item, replay=False) for item in selected
-            )
-            return EnvironmentResult(
-                {
-                    "requested_count": len(normalized),
-                    "completed_count": len(commands),
-                    "stopped_early": len(commands) < len(normalized),
-                    "stop_reason": (
-                        "shared_budget_exhausted"
-                        if len(commands) < len(normalized)
-                        else "completed"
-                    ),
-                    "observation": self._observation(instance),
-                    "actions_remaining": max(0, max_actions - len(commands)),
-                },
-                accepted_actions=commands,
-                observation_summary=self._summary(instance),
-            )
+            for item in selected:
+                self._apply(instance, "place", item, replay=False)
+            return self._observation(instance)
         raise ValueError(f"unknown Sudoku operation {operation!r}")
 
-    def primary_metrics(self, instance_id: str) -> dict[str, Any]:
+    def accepted_prefix(self, instance_id: str) -> tuple[str, ...]:
+        return tuple(self._instance(instance_id).commands)
+
+    def metrics(self, instance_id: str) -> SudokuMetrics:
         instance = self._instance(instance_id)
         solution = self.puzzle.solution_grid
         editable = [
@@ -221,7 +283,7 @@ class SudokuSearchAdapter(EnvironmentAdapter):
         )
         exact = instance.grid == solution
         score = 0.6 * placement_score + 0.4 * float(exact)
-        return {
+        return SudokuMetrics({
             "puzzle_id": self.puzzle.id,
             "score": score,
             "placement_score": placement_score,
@@ -231,16 +293,54 @@ class SudokuSearchAdapter(EnvironmentAdapter):
             "violation_count": len(violations),
             "accepted_actions": len(instance.commands) - instance.replay_actions,
             "replay_actions": instance.replay_actions,
-        }
+        })
 
     def candidate_metrics(self, instance_id: str) -> tuple[float, dict[str, Any]]:
         instance = self._instance(instance_id)
-        hidden_score = float(self.primary_metrics(instance_id)["score"])
+        hidden_score = float(self.metrics(instance_id).to_dict()["score"])
         # Deliberately omit exactness, placement score, and correct-cell counts.
         return hidden_score, {
             "puzzle_id": self.puzzle.id,
             **self._summary(instance),
         }
+
+    def report(
+        self,
+        prediction: Prediction,
+        runtime: RuntimeMetrics,
+    ) -> EnvironmentReport[SudokuMetrics]:
+        view = EnvironmentMetricsView.from_prediction(prediction)
+        raw_environment = prediction.metrics.get("environment", {})
+        if not isinstance(raw_environment, dict):
+            raw_environment = {}
+        native = view.native_float("score", "placement_score", bounded=True)
+        selected = not view.selection_required or view.selection_made
+        primary = view.primary
+        score = Score(
+            value=native if selected else 0.0,
+            correct=bool(primary.get("exact") and selected),
+            details={
+                **view.common_details(),
+                "native_progress_score": native,
+                "placement_score": view.native_float("placement_score", bounded=True),
+                "exact": bool(primary.get("exact")),
+            },
+        )
+        return EnvironmentReport(
+            benchmark="",
+            environment_id=self.id,
+            runner="",
+            model="",
+            seed=None,
+            answer=prediction.answer,
+            score=score,
+            description_sha256="",
+            observation_sha256="",
+            runtime=runtime,
+            environment=SudokuMetrics(dict(raw_environment)),
+            artifacts=prediction.artifacts,
+            error=prediction.error,
+        )
 
     def artifacts(self, instance_id: str) -> dict[str, str]:
         if self.config.artifact_dir is None:
@@ -265,7 +365,7 @@ class SudokuSearchAdapter(EnvironmentAdapter):
                     "selected": current_id == instance_id,
                     "grid_evolution": current.evolution,
                     "final_grid": _copy_grid(current.grid),
-                    "metrics": self.primary_metrics(current_id),
+                    "metrics": self.metrics(current_id).to_dict(),
                 }
                 for current_id, current in self._instances.items()
             },
@@ -328,23 +428,29 @@ class SudokuSearchAdapter(EnvironmentAdapter):
         )
         return command
 
-    def _observation(self, instance: _SudokuInstance) -> dict[str, Any]:
-        return {
-            "puzzle_id": self.puzzle.id,
-            "size": self.puzzle.size,
-            "box_rows": self.puzzle.box_rows,
-            "box_columns": self.puzzle.box_columns,
-            "coordinate_system": "zero_based",
-            "symbols": list(range(1, self.puzzle.size + 1)),
-            "grid": _copy_grid(instance.grid),
-            "clue_mask": [[cell != "." for cell in row] for row in self.puzzle.clues],
-            "visual_grid": render_grid(
+    def _observation(self, instance: _SudokuInstance) -> SudokuObservation:
+        check = self._check(instance)
+        return SudokuObservation(
+            puzzle_id=self.puzzle.id,
+            size=self.puzzle.size,
+            box_rows=self.puzzle.box_rows,
+            box_columns=self.puzzle.box_columns,
+            grid=tuple(tuple(row) for row in instance.grid),
+            clue_mask=tuple(
+                tuple(cell != "." for cell in row) for row in self.puzzle.clues
+            ),
+            visual_grid=render_grid(
                 instance.grid,
                 box_rows=self.puzzle.box_rows,
                 box_columns=self.puzzle.box_columns,
             ),
-            **self._check(instance),
-        }
+            filled_count=check["filled_count"],
+            empty_count=check["empty_count"],
+            constraint_violations=tuple(check["constraint_violations"]),
+            consistent=check["consistent"],
+            complete=check["complete"],
+            legal_operations=("observe", "place", "erase", "place_sequence", "check"),
+        )
 
     def _check(self, instance: _SudokuInstance) -> dict[str, Any]:
         violations = _constraint_violations(
@@ -486,10 +592,14 @@ def _constraint_violations(
     return violations
 
 
-SudokuSearchEnvironmentAdapter = SudokuSearchAdapter
+SudokuSearchAdapter = SudokuEnvironment
+SudokuSearchEnvironmentAdapter = SudokuEnvironment
 
 __all__ = [
     "MAX_SEQUENCE_LENGTH",
+    "SudokuEnvironment",
+    "SudokuMetrics",
+    "SudokuObservation",
     "SudokuSearchAdapter",
     "SudokuSearchConfig",
     "SudokuSearchEnvironmentAdapter",

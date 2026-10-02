@@ -122,13 +122,11 @@ class PooledLLMClient:
         pool: Pool,
         *,
         timeout: float | None = None,
-        key: object | None = None,
         request_kwargs: dict[str, Any] | None = None,
     ) -> None:
         self.client = client
         self.pool = pool
         self.timeout = timeout
-        self.key = key
         self.request_kwargs = dict(request_kwargs or {})
 
     def _request_kwargs(
@@ -159,7 +157,6 @@ class PooledLLMClient:
             call = self.pool.call(
                 self.client.chat,
                 messages,
-                key=self.key,
                 **request_kwargs,
             )
             reply = (
@@ -177,7 +174,6 @@ class PooledLLMClient:
             async for item in self.pool.stream(
                 stream_fn,
                 messages,
-                key=self.key,
                 **request_kwargs,
             ):
                 yield as_chunk(item)

@@ -139,23 +139,59 @@ def data_uri(board_text: str, tile: int = 32) -> str | None:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def save_gif(frames, path, *, tile: int = 32, ms: int = 450) -> bool:
+def _captioned(img, caption: str | None):
+    """Board plus the same caption bar rewind.gif uses, so a held last frame can say why it stopped."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    bar_h = 28
+    canvas = Image.new("RGB", (img.width, img.height + bar_h), (24, 26, 32))
+    canvas.paste(img, (0, 0))
+    if not caption:
+        return canvas
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle([0, img.height, 4, img.height + bar_h], fill=(217, 59, 48))
+    font = ImageFont.load_default(size=14)
+    draw.text((12, img.height + bar_h / 2), caption, font=font, fill=(236, 239, 244), anchor="lm")
+    return canvas
+
+
+def save_gif(
+    frames,
+    path,
+    *,
+    tile: int = 32,
+    ms: int = 450,
+    loop: int | None = 0,
+    hold_last_ms: int | None = None,
+    end_caption: str | None = None,
+) -> bool:
     """Write an animated GIF, one board frame per sub-step, so the play-by-play
     (the man walking around before each shove) animates. ``frames`` is a list of
-    board-render strings (see ``Sokoban.step_frames``). Returns ``False`` (writes
-    nothing) if Pillow/tiles are missing or no frame is renderable."""
+    board-render strings (see ``Sokoban.step_frames``).
+
+    ``loop=0`` repeats forever. ``loop=None`` omits the Netscape loop extension,
+    so the clip plays once and stops on the last frame. ``hold_last_ms`` keeps
+    that frame on screen after the motion. ``end_caption`` is drawn on that
+    frame only. Returns ``False`` (writes nothing) if Pillow/tiles are missing
+    or no frame is renderable."""
     if not available():
         return False
     imgs = [im for im in (render_image(f, tile) for f in frames) if im is not None]
     if not imgs:
         return False
+    if end_caption:
+        imgs = [_captioned(im, end_caption if i == len(imgs) - 1 else None) for i, im in enumerate(imgs)]
+    duration: int | list[int] = ms
+    if hold_last_ms is not None:
+        duration = [ms] * (len(imgs) - 1) + [hold_last_ms]
+    kwargs = {"loop": loop} if loop is not None else {}
     imgs[0].save(
         path,
         format="GIF",
         save_all=True,
         append_images=imgs[1:],
-        duration=ms,
-        loop=0,
+        duration=duration,
+        **kwargs,
     )
     return True
 

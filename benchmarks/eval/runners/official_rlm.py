@@ -12,12 +12,17 @@ import time
 from pathlib import Path
 
 from benchmarks.eval import runner
+from benchmarks.eval.delegation.fanout import official_trace
 from benchmarks.eval.delegation.parity import comparison_contract
 from benchmarks.eval.runners.shared import (
     FACT_LOOKUP_DESCRIPTION,
     canonical_delegation_metrics,
+    fanout_payloads_from_example,
+    fanout_shards_from_payloads,
     prepare_run,
+    runtime_prompt,
 )
+from benchmarks.eval.tasks.swarm_fanout import fanout_payloads
 from benchmarks.eval.types import Example, Model, Prediction, RunContext, Runner
 
 
@@ -51,8 +56,20 @@ class OfficialRLMRunner(Runner):
         log_dir = artifact_dir / "official_rlm_logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         prepared = prepare_run(example, ctx, runtime="official-rlm")
-        context_file = _write_temp(json.dumps(prepared.inputs, ensure_ascii=False))
-        task_file = _write_temp(example.prompt)
+        prompt = _runtime_prompt(example)
+        fanout_shards = _fanout_shards(example)
+        context = dict(prepared.inputs)
+        canonical_payloads = fanout_payloads_from_example(example)
+        fanout_shards = fanout_shards or fanout_shards_from_payloads(canonical_payloads)
+        if canonical_payloads is not None:
+            context["fanout_payloads"] = canonical_payloads
+        elif fanout_shards is not None:
+            context["fanout_payloads"] = fanout_payloads(
+                fanout_shards,
+                prepared.work_dir / "shards",
+            )
+        context_file = _write_temp(json.dumps(context, ensure_ascii=False))
+        task_file = _write_temp(prompt)
         environment = prepared.environment
         try:
             proc = subprocess.run(
@@ -72,13 +89,26 @@ class OfficialRLMRunner(Runner):
                         environment=environment,
                         environment_artifact_dir=artifact_dir / "environment",
                         episode_id=prepared.episode_id,
+                        fanout_shards=fanout_shards,
                     ),
                 ],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_seconds,
                 cwd=prepared.work_dir,
-                env={**os.environ, "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", "")},
+                env={
+                    **os.environ,
+                    "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", ""),
+                    "PYTHONPATH": os.pathsep.join(
+                        filter(
+                            None,
+                            [
+                                str(Path(__file__).resolve().parents[3]),
+                                os.environ.get("PYTHONPATH", ""),
+                            ],
+                        )
+                    ),
+                },
             )
             if proc.returncode != 0:
                 return Prediction(
@@ -98,8 +128,9 @@ class OfficialRLMRunner(Runner):
                 "iterations": int(data.get("iterations") or 1),
                 "comparison_contract": comparison_contract(
                     runtime="official-rlm",
-                    prompt=example.prompt,
-                    inputs=prepared.inputs,
+                    task_prompt=example.prompt,
+                    delivered_prompt=prompt,
+                    inputs=context,
                     root_model=model.name,
                     worker_model=self.worker_model,
                     recursive_levels=max(0, self.max_depth - 1),
@@ -114,6 +145,11 @@ class OfficialRLMRunner(Runner):
                     runtime_metrics=rlm_metrics,
                 ),
             }
+            if fanout_shards is not None:
+                metrics["fanout"] = official_trace(
+                    fanout_shards,
+                    list(data.get("fanout_calls") or []),
+                )
             if data.get("environment"):
                 metrics["environment"] = data["environment"]
             return Prediction(
@@ -158,6 +194,7 @@ def _official_script(
     environment: dict[str, object] | None,
     environment_artifact_dir: Path,
     episode_id: str,
+    fanout_shards: list[dict] | None,
 ) -> str:
     other_backends = ["openai"] if worker_model is not None else None
     other_backend_kwargs = [{"model_name": worker_model}] if worker_model is not None else None
@@ -331,6 +368,25 @@ def _official_script(
 
         trajectory = getattr(result, "metadata", None) or logger.get_trajectory()
         rlm_metrics = summarize_trajectory(trajectory)
+        def collect_fanout_calls(raw):
+            calls = []
+            if not isinstance(raw, dict):
+                return calls
+            for iteration_index, iteration in enumerate(raw.get("iterations") or []):
+                for block_index, block in enumerate(iteration.get("code_blocks") or []):
+                    result = block.get("result") or {{}}
+                    for call in result.get("rlm_calls") or []:
+                        if isinstance(call, dict):
+                            calls.append({{
+                                **call,
+                                "batch_id": f"{{iteration_index}}:{{block_index}}",
+                            }})
+            return calls
+        fanout_calls = (
+            collect_fanout_calls(trajectory)
+            if {fanout_shards is not None!r}
+            else []
+        )
         if token_limit_stop is not None:
             rlm_metrics["token_limit_stop"] = token_limit_stop
         graph_metrics = {{
@@ -360,6 +416,7 @@ def _official_script(
             "log_file_path": getattr(logger, "log_file_path", None),
             "graph": graph_metrics,
             "rlm": rlm_metrics,
+            "fanout_calls": fanout_calls,
             "environment": (
                 environment_episode.metrics() if environment_episode is not None else None
             ),
@@ -367,6 +424,20 @@ def _official_script(
         }}))
         """
     )
+
+
+def _fanout_shards(example: Example) -> list[dict] | None:
+    shards = example.metadata.get("shards")
+    return list(shards) if example.metadata.get("fixture") and isinstance(shards, list) else None
+
+
+def _runtime_prompt(example: Example) -> str:
+    shards = _fanout_shards(example)
+    if shards is None and example.metadata.get("environment_family") != "fanout":
+        return example.prompt
+    from benchmarks.eval.tasks.swarm_fanout import fanout_runtime_guidance
+
+    return runtime_prompt(example.prompt, fanout_runtime_guidance("official-rlm"))
 
 
 def _parse_result(stdout: str) -> dict[str, object]:

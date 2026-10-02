@@ -7,8 +7,6 @@ from helpers import first_user
 from rlmflow import (
     AppendChild,
     Flow,
-    Node,
-    Runtime,
     SequentialPool,
     SubprocessRuntime,
     UserQuery,
@@ -18,16 +16,16 @@ from rlmflow.prompts import PromptProfile
 
 
 def block(code):
-    return f"```python\n{code}\n```"
+    return f"```repl\n{code}\n```"
 
 
 def fanout(*names):
     calls = "\n".join(
-        f"    await launch_subagent({name!r}, model='default', name={name!r})," for name in names
+        f"    launch_subagent(task={name!r})," for name in names
     )
     return block(
         f"handles = [\n{calls}\n]\n"
-        "answers = [await h.wait_for_result() for h in handles]\n"
+        "answers = [await h for h in handles]\n"
         "finish(','.join(answers))"
     )
 
@@ -103,10 +101,10 @@ def test_prebuilt_subtrees_get_a_thread_each():
     action = root.frontier
     action.code = (
         "handles = [\n"
-        "    await launch_subagent('', model='default', name='a'),\n"
-        "    await launch_subagent('', model='default', name='b'),\n"
+        "    launch_subagent(task=''),\n"
+        "    launch_subagent(task=''),\n"
         "]\n"
-        "answers = [await h.wait_for_result() for h in handles]\n"
+        "answers = [await h for h in handles]\n"
         "finish(','.join(answers))"
     )
 
@@ -118,17 +116,14 @@ def test_prebuilt_subtrees_get_a_thread_each():
 def test_prebuilt_children_are_not_submitted_twice():
     calls = 0
 
-    def render_board(_runtime: Runtime, node: Node) -> list[dict[str, str]]:
-        return [
-            *node.render(),
-            {"role": "user", "content": "current board"},
-        ]
+    def add_board(user_prompt, _flow, _node):
+        user_prompt.add_section("turn.board", "current board", order=1050)
 
     class LLM:
         async def chat(self, messages):
             nonlocal calls
             calls += 1
-            assert messages[-1]["content"].startswith("current board")
+            assert messages[-1]["content"].endswith("current board")
             await asyncio.sleep(0.05)
             return block("finish('ok')")
 
@@ -141,16 +136,16 @@ def test_prebuilt_children_are_not_submitted_twice():
     root.append_child(second, name="second")
     root.frontier.code = (
         "handles = [\n"
-        "    await launch_subagent('', model='default', name='first'),\n"
-        "    await launch_subagent('', model='default', name='second'),\n"
+        "    launch_subagent(task=''),\n"
+        "    launch_subagent(task=''),\n"
         "]\n"
-        "answers = [await h.wait_for_result() for h in handles]\n"
+        "answers = [await h for h in handles]\n"
         "finish(','.join(answers))"
     )
     flow = Flow(
         LLM(),
         prompt_profiles={
-            "worker": PromptProfile(render_fn=render_board),
+            "worker": PromptProfile(user_modifiers=add_board),
         },
     )
 

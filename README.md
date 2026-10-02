@@ -11,7 +11,7 @@ Read the blog post: [rlmflow](https://shyamsn97.github.io/blog/rlmflow/).
 
 It gives an LLM a stateful Python REPL and a graph-native way to spawn agents with fresh context.
 
-The release has two flagship demonstrations: **Shepherd** is the primary product story — rewind, fork, recover, and select from a retained execution graph — while **Needle** is the compact proof of recursive decomposition. Everything else is an API tour or supporting benchmark evidence.
+The release has three complementary flagship demonstrations: **Shepherd** recovers a failed execution graph, **Needle** proves recursive parallel decomposition, and **Boids** applies the same model to building a complete browser application. Everything else is an API tour or supporting benchmark evidence.
 
 ## Flagship examples
 
@@ -39,7 +39,7 @@ In the checked-in run, six of eight recoveries solved; Shepherd selected `branch
 
 ### Needle: decompose a million-line value
 
-The root receives one million lines through `INPUTS["haystack"]`, partitions the value in its REPL, delegates chunks to GPT-5-nano workers with fresh contexts, and checks their combined answer against the generated secret.
+The root receives one million lines as the direct `haystack` argument, partitions the value in its REPL, delegates chunks to GPT-5-nano workers with fresh contexts, and checks their combined answer against the generated secret.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/shyamsn97/rlmflow/main/docs/static/needle-haystack.gif" alt="The million-line Needle run growing from one root into parallel search workers and returning the generated magic number" width="900" />
@@ -54,9 +54,40 @@ uv run --locked --python 3.12 --extra openai \
 
 The checked-in run generated `5335239` at line 466,831 and returned the same value in 3m 26s using 13 child workers, with peak concurrency of 10. Its saved graph at `examples/_runs/needle-haystack/` renders directly to a steppable HTML trace, static graph, and level-synchronized parallel animation; `make showcase-needle-assets` reproduces the checked-in assets. See the [Needle example](examples/needle/).
 
+### Boids: let the agent design a browser simulation
+
+A root coding agent turns product-level constraints into a dependency-free browser simulation: 2,000 boids, four species, spatially indexed neighbor search, steering rules, rendering, and a full-viewport shell. The prompt names no files, module boundaries, or delegation plan; the agent chooses the architecture and execution graph before verifying the result.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/shyamsn97/rlmflow/main/docs/static/boids/simulation.gif" alt="The generated browser simulation rendering 2,000 colored boids over a dark canvas" width="820" />
+</p>
+<p align="center"><em>A live browser application produced from one product-level specification. <a href="https://raw.githubusercontent.com/shyamsn97/rlmflow/main/docs/static/boids/simulation.mp4">MP4 recording</a>.</em></p>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/shyamsn97/rlmflow/main/docs/static/boids/graph.gif" alt="The model-chosen Boids coding graph growing from the root into five concurrent file owners and a follow-up repair" width="900" />
+</p>
+<p align="center"><em>Graph replay of the model-chosen implementation: five independent file owners run concurrently, then the root launches one focused repair.</em></p>
+
+```bash
+uv run --locked --python 3.12 --extra openai --extra image \
+  python examples/coding/boids/boids.py \
+  --runner rlmflow --model gpt-5 --fast-model gpt-5-mini --force
+```
+
+In the recorded run, the root chose a five-file app and launched five GPT-5-mini file owners concurrently, followed by one focused integration repair. It completed in 4m 42s using 84,650 input-plus-output tokens. Local-reference checks, JavaScript syntax checks, a console-error-aware headless-browser load, and a nonblank-frame check all passed. The run writes the application and retained graph under `examples/_runs/coding/boids-rlmflow/`; `make showcase-boids-assets` reproduces the checked-in poster, continuous browser GIF/MP4, and graph animation. See the [run record](examples/coding/boids/recorded-run.json) and [coding example instructions](examples/coding/).
+
 ### Benchmarks: long context and visual interaction
 
-The evaluation harness compares the original `official-rlm` runtime with rlmflow at depths 0, 1, and 2 under one contract. OOLONG-Pairs 32K and OOLONG Yahoo 128K are the primary long-context tasks. MazeBench is the official interactive benchmark: agents explore a persistent ASCII world, collect gems, and produce replay artifacts under a shared action budget. See [Evaluation suites](docs/benchmarks.md).
+The evaluation harness compares the original `official-rlm` runtime with rlmflow at depths 0, 1, and 2 under one contract. Its default long-context benchmark is a fixed OOLONG TREC-coarse 128K slice: two questions for pilot runs and ten for full runs. MazeBench is the official interactive benchmark, while swarm-fanout compares pinned PrimeAgent, Official RLM, JAZ, and rlmflow through normalized delegation evidence. Paid rows run in Docker by default, with Modal as an optional remote executor. See [Evaluation suites](docs/benchmarks.md).
+
+A saved GPT-5 OOLONG-Pairs 32K pilot provides a small two-runner reference:
+
+| Runner          | Mean pair F1 | Errors | Avg. tokens |
+| --------------- | -----------: | -----: | ----------: |
+| `official-rlm`  |        0.336 |  11/20 |      32,994 |
+| `rlmflow-local` |        0.508 |   6/20 |      19,549 |
+
+These are descriptive results from one 20-example-per-runner pilot recorded on 2026-09-02, including errored rows in the mean. They are not a release gate, significance test, or general superiority claim. The exact aggregate and provenance are checked in at [`benchmarks/results/oolong-pairs-32k-gpt5-pilot.json`](benchmarks/results/oolong-pairs-32k-gpt5-pilot.json).
 
 ## Recursive agents as graphs
 
@@ -66,39 +97,23 @@ For example, the root agent can split a haystack into chunks. Every launch retur
 
 ```python
 handles = [
-    await launch_subagent(
-        "scan first third", model="default", name="chunk_0", inputs={"chunk": chunk_0}
-    ),
-    await launch_subagent(
-        "scan middle third", model="default", name="chunk_1", inputs={"chunk": chunk_1}
-    ),
-    await launch_subagent(
-        "scan final third", model="default", name="chunk_2", inputs={"chunk": chunk_2}
-    ),
+    launch_subagent(task="scan first third", chunk=chunk_0),
+    launch_subagent(task="scan middle third", chunk=chunk_1),
+    launch_subagent(task="scan final third", chunk=chunk_2),
 ]
-results = [await handle.wait_for_result() for handle in handles]
+results = await asyncio.gather(*handles)
 finish(extract_answer(results))
 ```
 
 Then `chunk_2` can recursively delegate again:
 
 ```python
-hits = find_candidate_windows(INPUTS["chunk"])
+hits = find_candidate_windows(chunk)
 handles = [
-    await launch_subagent(
-        "inspect window A",
-        model="default",
-        name="candidate_a",
-        inputs={"window": hits[0]},
-    ),
-    await launch_subagent(
-        "inspect window B",
-        model="default",
-        name="candidate_b",
-        inputs={"window": hits[1]},
-    ),
+    launch_subagent(task="inspect window A", window=hits[0]),
+    launch_subagent(task="inspect window B", window=hits[1]),
 ]
-results = [await handle.wait_for_result() for handle in handles]
+results = await asyncio.gather(*handles)
 finish(select_candidate(results))
 ```
 
@@ -106,11 +121,11 @@ That code creates an agent graph:
 
 ```text
 root  "Find the code in the haystack"
-├── chunk_0      "scan first third"   -> "not found"
-├── chunk_1      "scan middle third"  -> "decoy, no code"
-└── chunk_2      "scan final third"   -> "candidate code 84721"
-    ├── candidate_a  "inspect window A" -> "decoy"
-    └── candidate_b  "inspect window B" -> "code 84721"
+├── child0      "scan first third"   -> "not found"
+├── child1      "scan middle third"  -> "decoy, no code"
+└── child2      "scan final third"   -> "candidate code 84721"
+    ├── child0  "inspect window A" -> "decoy"
+    └── child1  "inspect window B" -> "code 84721"
 ```
 
 That parent API is useful: children return simple values the parent can compose. The problem is when those return values are the only surviving record of the work:
@@ -165,7 +180,7 @@ git clone https://github.com/shyamsn97/rlmflow && cd rlmflow
 pip install -e .
 ```
 
-For local development, `make install` runs cleanup, formatting/lint checks including `ruff check .`, then installs the package.
+For local development, `make install` runs cleanup and `ruff check .`, then installs the package.
 
 > **Security warning — `LocalRuntime` is not a sandbox.** Agent code runs as full Python in a separate worker process, but with the same filesystem, network, environment, and subprocess privileges as the host. LLM-generated code can be wrong or malicious (prompt injection, model errors, supply-chain risk). **Use `LocalRuntime` only for code you would run yourself.** For untrusted agents or anything exposed to the internet, use [`DockerRuntime`](docs/runtimes.md) or a remote sandbox ([`ModalRuntime`](docs/runtimes.md)). See [`docs/security.md`](docs/security.md). **Use at your own risk.**
 
@@ -297,12 +312,12 @@ async for node in flow.run_streaming(root, until="done"):
 print(root.result())
 ```
 
-Every transition follows the same obs → action → obs shape:
+Every assistant turn emits exactly one REPL action:
 
 ```text
-LLMOutput  -> ExecAction -> ExecOutput    (REPL output, normal continuation)
-                         -> DoneOutput    (code called finish())
-                         -> ErrorOutput   (code raised, or the REPL died)
+LLMOutput -> ExecAction -> ExecOutput    (normal continuation)
+                        -> DoneOutput    (REPL code called finish())
+                        -> ErrorOutput   (invalid response, code error, or dead REPL)
 ```
 
 A turn that delegates hangs its children off the `ExecAction` that launched them, and lands one `ExecOutput` when the block finishes — so a parent's transcript stays a single chain whether or not it spawned anyone.
@@ -320,7 +335,7 @@ root.usage                              # O(1) whole-run usage
 root.stats                              # immutable counts and usage snapshot
 
 from rlmflow import persistence
-persistence.to_document(root)           # flat JSON-serializable v3 document
+persistence.to_document(root)           # flat JSON-serializable v5 document
 ```
 
 ## Inject controller Nodes
@@ -499,60 +514,32 @@ See [`docs/skills.md`](docs/skills.md) for examples of always-on skills, query-s
 
 ## Examples
 
-Run the offline smoke suite with `python examples/run_examples.py`. Every run writes a pass/fail/skip report to `examples/_runs/examples_report.md`. Add `--include-optional`, `--include-live`, `--include-sandbox`, `--include-manual`, or `--include-slow` as needed. Most live examples share flags like `--docker-image rlmflow:local`, `--max-depth`, and `--max-iters`; see [`examples/README.md`](examples/README.md).
-
-| Example                                                       | What it shows                                                                                    |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| [`showcase.py`](examples/showcase.py)                         | Stepping to boundaries, save/load, and forking a run.                                            |
-| [`coding/agent.py`](examples/coding/agent.py)                 | Coding agent over a working directory with `FILE_TOOLS`.                                         |
-| [`structured_output.py`](examples/structured_output.py)       | Root and child results validated with JSON Schema / Pydantic.                                    |
-| [`drop_in_llm.py`](examples/drop_in_llm.py)                   | Minimal `FlowLLM` adapter, including nested flows.                                               |
-| [`skills.py`](examples/skills.py)                             | On-disk skill files loaded through a dynamic prompt section.                                     |
-| [`llm_query_batched.py`](examples/llm_query_batched.py)       | Fan out one-shot model calls from agent code without spawning children.                          |
-| [`dspy_drop_in.py`](examples/providers/dspy_drop_in.py)       | Use a `Flow` agent as the LM behind a DSPy program.                                              |
-| [`mcp_weather.py`](examples/providers/mcp_weather.py)         | Start a local MCP weather server, delegate city forecasts, and combine advice.                   |
-| [`tinker_agent.py`](examples/providers/tinker_agent.py)       | Run an agent against `TinkerClient` inference.                                                   |
-| [`sandboxes/`](examples/sandboxes/)                           | Build a small web app while Python code runs inside Docker or Modal.                             |
-| [`needle/haystack.py`](examples/needle/haystack.py)           | Needle-in-a-haystack over a massive in-memory `INPUTS["haystack"]`.                              |
-| [`needle/filesystem.py`](examples/needle/filesystem.py)       | Needle-in-a-haystack across many files with `FILE_TOOLS` and runtime working directories.        |
-| [`summarizer.py`](examples/summarizer.py)                     | Recursive map-reduce summarization over a long document.                                         |
-| [`step_until.py`](examples/control/delegation/step_until.py)  | Minimal `Flow.run_streaming(..., until=...)` boundaries while delegated child work fans out.     |
-| [`control/injection/`](examples/control/injection/)           | Generate a baseline run, append controller Nodes to copies of it, and continue the variants.     |
-| [`fork_repair.py`](examples/control/branching/fork_repair.py) | Fork graph/workdir snapshots into independent repair branches and compare results.               |
-| [`best_of_n.py`](examples/control/branching/best_of_n.py)     | Run N independent branches and pick the best result.                                             |
-| [`shepherd/`](examples/shepherd/)                             | Rewind a jammed Sokoban worker to several depths, race the recovery branches, and keep the best. |
-| [`autoresearch/`](examples/autoresearch/)                     | TinyStories autoresearch loop with custom `@tool`s, delegation, and Modal GPU trials.            |
-| [`graph/`](examples/graph/)                                   | Offline tour of the Node API: query, navigate, save/load, timing, fork.                          |
-| [`run_examples.py`](examples/run_examples.py)                 | Manifest-driven smoke runner for offline, optional, live, sandbox, manual, and slow examples.    |
+Shepherd, Needle, and Boids are the release showcases. The smaller scripts, API tours, provider integrations, sandbox examples, and offline smoke runner live in the [`examples/` guide](examples/README.md).
 
 ## Benchmarks (research beta)
 
-Eval is organized around four public **suites** — one question each, not a mixed average.
+Evaluation is organized around four environment collections.
 
 ```bash
-make -f benchmarks/Makefile eval-smoke
-make -f benchmarks/Makefile eval-conformance
-make -f benchmarks/Makefile eval-core
-make -f benchmarks/Makefile eval-interactive
-python -m benchmarks.eval --list-suites
+make -f benchmarks/Makefile smoke
+make -f benchmarks/Makefile image
+make -f benchmarks/Makefile delegation
+make -f benchmarks/Makefile long-context
+make -f benchmarks/Makefile interactive
+python benchmarks/run_benchmark.py --list
 ```
 
-| Suite         | Question                                                       |
-| ------------- | -------------------------------------------------------------- |
-| `smoke`       | Does the pipeline run end to end without network access?       |
-| `conformance` | Do runtimes obey the same offline environment/search contract? |
-| `core`        | How do harnesses manage paper-aligned long-context tasks?      |
-| `interactive` | How do harnesses scale on persistent visual environments?      |
+| Suite          | Question                                                  |
+| -------------- | --------------------------------------------------------- |
+| `smoke`        | Can the pipeline recover a needle from a synthetic haystack? |
+| `delegation`   | Can fan-out avoid fabricated, duplicate, or dropped work? |
+| `long-context` | How do harnesses manage paper-aligned OOLONG tasks?        |
+| `interactive`  | How do harnesses search and act in persistent environments? |
 
-See [docs/benchmarks.md](docs/benchmarks.md) for the fixed runner matrix, pilot/full splits, the bounded ARC visual showcase, and result artifacts. The repository does not claim comparative quality, cost, or latency beyond checked-in or reproducibly generated run evidence.
-
-## Roadmap
-
-- [~] Four public eval suites (`smoke`, `conformance`, `core`, `interactive`) [benchmarks](docs/benchmarks.md)
-- [ ] Additional remote sandbox providers (E2B, Daytona)
-- [x] Data-only worker-to-host protocol; `LocalRuntime` remains trusted-code only
-- [~] [Experimental RAO utilities](docs/research/rao_implementation_plan.md): rollout collection, per-node rewards, leave-one-out advantages, depth weighting, and trainer export exist; validation results do not
-- [ ] [DeLM-style coordination](docs/research/delm_vs_rlmflow.md): verified shared context and multi-worker coordination over Node trees
+Use `--split pilot` for bring-up and `--split full` for complete frozen manifests.
+See [docs/benchmarks.md](docs/benchmarks.md) for runner matrices and result
+artifacts. The repository does not claim comparative quality, cost, or latency
+beyond checked-in or reproducibly generated run evidence.
 
 ## Docs
 
@@ -560,19 +547,20 @@ The top-level docs are short, user-facing guides. The deep dive lives in [`docs/
 
 - [**Upgrading to 0.6**](UPGRADING.md): breaking API and persistence changes.
 - [**Internals**](docs/internals.md): Node structure, Flow transitions, the task queue and pools, Runtime identity, replay, forks, and persistence.
+- [**Structured outputs**](docs/structured_outputs.md): output codecs, chat, Instructor, Jev, and explicit retry/fallback composition.
 - [Blog post](https://shyamsn97.github.io/blog/rlmflow/): long-form pitch — recursive agents, why graphs beat flat traces, and walkthroughs.
 - [Positioning](docs/positioning.md): when to use rlmflow vs rlm-minimal, ypi, LangGraph, CrewAI, AutoGen, SWE-agent, Aider.
 - [Command line](docs/cli.md): `rlmflow tui` for a coding agent in the dashboard, `run print` headless, `view` / `render` for a saved run, and how settings resolve.
-- [Control](docs/control.md): streaming loop, per-agent limits, multi-turn runs, save/load resume, forks, `INPUTS`, `launch_subagent`, custom tools.
+- [Control](docs/control.md): streaming loop, per-agent limits, multi-turn runs, save/load resume, forks, direct arguments, `launch_subagent`, custom tools.
 - [Streaming and scheduling](docs/streaming.md): `run_streaming(..., until=...)`, `TaskQueue`, transition diagrams, delegation, parallel roots, boundaries, cancellation, and Pool/Runtime placement.
 - [Node model](docs/node_model.md): the typed node hierarchy, the transitions between them, and how delegation is recorded.
 - [Skills](docs/skills.md): workspace `SKILL.md` files, query-selected skills, child-only skills, and run-memory skills.
 - [Node injection](docs/injections.md): append controller Nodes between streaming calls and continue the same root.
 - [Observability](docs/observability.md): querying the Node tree, run layout, stream consumers, reading a saved run, and stepping through one with `rlmflow view`.
 - [Runtimes](docs/runtimes.md): `Runtime` protocol, shipped runtimes (Local / subprocess / Docker / Modal), writing your own.
-- [Prompt customization](docs/prompt_customization.md): `PromptBuilder`, `Flow.build_system_prompt`, `UserQuery.build_system_prompt`, `PromptProfile` / `prompt_profile` / `prompt_router`.
+- [Prompt customization](docs/prompt_customization.md): `Prompt`, Flow default factories, node prompt/message hooks, and `PromptProfile` / `prompt_profile` / `prompt_router`.
 - [Security](docs/security.md): trust model, Docker isolation knobs, engine-level caps, proxied tools, approval gates.
-- [Benchmarks](docs/benchmarks.md): the `smoke`, `conformance`, `core`, and `interactive` suites, with OOLONG as the primary long-context evidence and MazeBench as the visual environment.
+- [Benchmarks](docs/benchmarks.md): the five evaluation suites, with OOLONG as the primary long-context evidence, MazeBench as the visual environment, and swarm-fanout for delegation.
 - [Changelog](CHANGELOG.md): release-by-release changes.
 
 ## References

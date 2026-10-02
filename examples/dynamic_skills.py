@@ -1,9 +1,9 @@
-"""Dynamically add skills to a running agent via a PromptBuilder subclass.
+"""Dynamically add skills to a running agent via a live prompt modifier.
 
 Two pieces work together here:
 
-1. A **``PromptBuilder`` subclass**. ``Flow`` resolves ``flow.system_prompt``
-   every turn, so a builder that reads a mutable ``SkillLibrary`` is always live.
+1. A **system prompt modifier**. ``Flow`` applies it every turn, so a modifier
+   that reads a mutable ``SkillLibrary`` is always live.
 2. An **``add_skill`` tool**. A plain ``@tool``-decorated function passed via
    ``tools=[...]`` lands in the REPL namespace and auto-documents itself in the
    prompt. Because it closes over the same ``SkillLibrary``, the agent can
@@ -31,7 +31,6 @@ from rlmflow import (
     AgentConfig,
     Flow,
     LLMUsage,
-    PromptBuilder,
 )
 from rlmflow.llm import client_for
 from rlmflow.tools import tool
@@ -150,14 +149,18 @@ class ScriptedLLM:
         )
 
 
-class SkillsPrompt(PromptBuilder):
-    def __init__(self, library: SkillLibrary) -> None:
-        self.library = library
+def skills_prompt_modifier(library: SkillLibrary):
+    def modify(prompt, flow=None, node=None):
+        extra = library.render()
+        if extra:
+            prompt.add_section(
+                "skills.dynamic",
+                extra,
+                order=800,
+                source="skills_prompt_modifier",
+            )
 
-    def __call__(self, flow=None, node=None) -> str:
-        extra = self.library.render()
-        text = super().__call__(flow, node)
-        return f"{text}\n\n{extra}" if extra else text
+    return modify
 
 
 def build_flow(library: SkillLibrary, llm, *, max_iters: int) -> Flow:
@@ -165,7 +168,7 @@ def build_flow(library: SkillLibrary, llm, *, max_iters: int) -> Flow:
         llm,
         root_config=AgentConfig(max_iters=max_iters),
         tools=[make_add_skill(library)],
-        system_prompt=SkillsPrompt(library),
+        system_prompt_modifiers=skills_prompt_modifier(library),
     )
 
 

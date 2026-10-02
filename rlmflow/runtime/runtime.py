@@ -8,12 +8,15 @@ import sys
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rlmflow.graph.nodes import AgentStart, ExecAction, Node
-from rlmflow.runtime.connections import DEFAULT_REPL_TIMEOUT
+from rlmflow.runtime.connections import DEFAULT_REPL_TIMEOUT, PopenConnection
 from rlmflow.runtime.env import agent_process_env
 from rlmflow.runtime.repl import Repl, ReplRun, ReplStatus
+
+if TYPE_CHECKING:
+    from rlmflow.runtime.repl_client import ReplConnection
 
 ExecutionGuard = Callable[[ExecAction], str | None | Awaitable[str | None]]
 
@@ -27,9 +30,13 @@ def _agent(value: AgentStart | Node) -> AgentStart:
 class Runtime:
     """Own one logical REPL tenant per agent.
 
-    Tenants own isolated workers by default. ``reuse_repl=True`` explicitly places
-    a child tenant in its parent's worker and shared Python heap.
+    Tenants own isolated workers by default. ``reuse_worker=True`` explicitly places
+    a child tenant in its parent's worker with an isolated Python namespace. Worker runtimes
+    implement ``connect()``; ``open`` wraps that connection in a session.
     """
+
+    repl_timeout: float = DEFAULT_REPL_TIMEOUT
+    execution_timeout: float | None = None
 
     def __init__(
         self,
@@ -53,8 +60,22 @@ class Runtime:
             command += ["--preimport", ",".join(self.preimports)]
         return command
 
-    def open(self, agent: AgentStart) -> Repl:
+    def connect(self) -> ReplConnection:
+        """A fresh, unstarted connection to one worker process."""
         raise NotImplementedError
+
+    def open(self, agent: AgentStart) -> Repl:
+        from rlmflow.runtime.repl_client import WorkerRepl, WorkerSession
+
+        reused = self.reused_worker_repl(agent)
+        if reused is not None:
+            return reused
+        session = WorkerSession(
+            self.connect(),
+            timeout=self.repl_timeout,
+            execution_timeout=self.execution_timeout,
+        )
+        return WorkerRepl(session, tenant_id=agent.id)
 
     def get(self, value: AgentStart | Node) -> Repl | None:
         return self.repls.get(_agent(value).id)
@@ -67,6 +88,18 @@ class Runtime:
             self.repls[agent.id] = repl
             self.refresh_env(agent)
         return repl
+
+    def reused_worker_repl(self, agent: AgentStart) -> Repl | None:
+        """Return a child tenant in its parent's worker when explicitly requested."""
+        if not agent.config.reuse_worker or agent.parent is None:
+            return None
+        from rlmflow.runtime.repl_client import WorkerRepl
+
+        parent = agent.parent.parent_agent
+        parent_repl = self.repls.get(parent.id)
+        if not isinstance(parent_repl, WorkerRepl):
+            raise RuntimeError("reuse_worker requires a live parent worker")
+        return WorkerRepl(parent_repl.session, tenant_id=agent.id)
 
     def refresh_env(self, value: AgentStart | Node) -> None:
         """Refresh public metadata for an agent's live REPL."""
@@ -111,10 +144,6 @@ class Runtime:
     def close(self) -> None:
         self.close_repls()
 
-    def namespace_for(self, value: AgentStart | Node) -> dict[str, Any] | None:
-        repl = self.get(value)
-        return repl.namespace if repl is not None else None
-
     def get_var(self, value: AgentStart | Node, name: str) -> Any:
         return self.repl_for(value).get_var(name)
 
@@ -140,11 +169,11 @@ class WrappedRuntime:
     def __init__(
         self,
         runtime: Runtime,
-        build_tools: Callable[[Node], dict[str, Any]],
+        build_namespace: Callable[[Node], dict[str, Any]],
         execution_guard: ExecutionGuard | None = None,
     ) -> None:
         self.runtime = runtime
-        self.build_tools = build_tools
+        self.build_namespace = build_namespace
         self.execution_guard = execution_guard
 
     async def execute(self, node: ExecAction) -> ReplRun:
@@ -154,14 +183,18 @@ class WrappedRuntime:
                 reason = await reason
             if reason is not None:
                 return ReplRun(output=reason, status=ReplStatus.ERROR)
+        self.prepare(node)
+        return await self.runtime.execute(node, node.code)
+
+    def prepare(self, node: ExecAction) -> Repl:
+        """Seed the live or replayed action through one preparation path."""
         agent = node.parent_agent
         repl = self.runtime.repl_for(agent)
-        repl.structured_output = agent.config.output_schema is not None
         repl.seed(
-            self.build_tools(node),
-            agent.resolved_inputs(),
+            self.build_namespace(node),
+            agent.invocation_arguments(),
         )
-        return await self.runtime.execute(node, node.code)
+        return repl
 
 
 class LocalRuntime(Runtime):
@@ -177,28 +210,12 @@ class LocalRuntime(Runtime):
         self.repl_timeout = repl_timeout
         self.execution_timeout = execution_timeout
 
-    def open(self, agent: AgentStart) -> Repl:
-        from rlmflow.runtime.connections import PopenConnection
-        from rlmflow.runtime.repl_client import WorkerRepl, WorkerSession
-
-        working_dir = self.working_directory or Path.cwd()
-        if agent.config.reuse_repl and agent.parent is not None:
-            parent = agent.parent.parent_agent
-            parent_repl = self.repls.get(parent.id)
-            if not isinstance(parent_repl, WorkerRepl):
-                raise RuntimeError("reuse_repl requires a live parent worker")
-            return WorkerRepl(parent_repl.session, tenant_id=agent.id)
-        connection = PopenConnection(
+    def connect(self) -> PopenConnection:
+        return PopenConnection(
             self.worker_command(),
-            cwd=working_dir,
+            cwd=self.working_directory or Path.cwd(),
             label="Local REPL worker",
         )
-        session = WorkerSession(
-            connection,
-            timeout=self.repl_timeout,
-            execution_timeout=self.execution_timeout,
-        )
-        return WorkerRepl(session, tenant_id=agent.id)
 
 
 class SubprocessRuntime(Runtime):
@@ -215,33 +232,16 @@ class SubprocessRuntime(Runtime):
         super().__init__(working_directory=working_directory, preimports=preimports)
         self.python = str(python or sys.executable)
         self.env = env
-        self.repl_timeout = repl_timeout
+        self.repl_timeout = repl_timeout or DEFAULT_REPL_TIMEOUT
         self.execution_timeout = execution_timeout
 
-    def open(self, agent: AgentStart) -> Repl:
-        from rlmflow.runtime.connections import PopenConnection
-        from rlmflow.runtime.repl_client import WorkerRepl, WorkerSession
-
-        working_dir = self.working_directory or Path.cwd()
-        if agent.config.reuse_repl and agent.parent is not None:
-            parent = agent.parent.parent_agent
-            parent_repl = self.repls.get(parent.id)
-            if not isinstance(parent_repl, WorkerRepl):
-                raise RuntimeError("reuse_repl requires a live parent worker")
-            return WorkerRepl(parent_repl.session, tenant_id=agent.id)
-        env = None if self.env is None else {**os.environ, **self.env}
-        connection = PopenConnection(
+    def connect(self) -> PopenConnection:
+        return PopenConnection(
             self.worker_command(self.python),
-            cwd=working_dir,
-            env=env,
+            cwd=self.working_directory or Path.cwd(),
+            env=None if self.env is None else {**os.environ, **self.env},
             label="Subprocess REPL worker",
         )
-        session = WorkerSession(
-            connection,
-            timeout=self.repl_timeout or DEFAULT_REPL_TIMEOUT,
-            execution_timeout=self.execution_timeout,
-        )
-        return WorkerRepl(session, tenant_id=agent.id)
 
 
 __all__ = [

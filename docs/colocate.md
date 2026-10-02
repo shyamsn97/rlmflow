@@ -1,6 +1,6 @@
 # Historical review: a behavior lives in one file
 
-Status: historical design record. The requested-transition path described below was removed after this review exposed that its generic `ExecOutput` row preempted the guarded landing row.
+Status: historical design record. The requested-transition path described below was removed after this review exposed that its generic `ExecOutput` row preempted the guarded landing row. In 0.7.0 the successor `.choices(...)` / `transition("name")` feature was removed as well; every edge is now an automatic transition function. `PlanQuery`, `to_plan`, `child_returned`, and the synthetic turn message were subsequently removed; ordinary frontier nodes now call the model directly. `tools/builtins.py` was deleted; `graph.config.can_spawn` is the one spawn predicate. `graph/prompts.py` was merged with the protocol text into `prompts/text.py`, a leaf module both `graph` and `prompts` import. The remaining names and diagrams on this page are intentionally historical.
 
 The current design is smaller:
 
@@ -74,7 +74,8 @@ PLAN_SOURCES                 → to_plan          → PlanQuery
 UserQuery + child_returned    → to_plan          → PlanQuery
 ExecOutput + has_request     → apply_requested  → offered UserQuery
 UserQuery                    → complete        → LLMOutput | DoneOutput
-LLMOutput                    → to_action       → ExecAction
+LLMOutput + repl             → to_action       → ExecAction
+LLMOutput + invalid protocol → to_missing_action → ExecAction
 ExecAction                   → run_repl        → node_for_run(...)
 ```
 
@@ -86,9 +87,8 @@ ExecAction                   → run_repl        → node_for_run(...)
 engine/transitions.py   at_final, budget_nearly_spent, out_of_room
 flow.py                 budget_exceeded (hard stop; different predicate)
 engine/steps.py         to_final
-graph/prompts.py        FINAL_ANSWER_ACTION, LAST_TURN_ADDENDUM
-graph/nodes.py          FinalQuery
-prompts/messages.py     transition_footer(..., final=True)
+graph/prompts.py        FINAL_ANSWER_ACTION
+graph/nodes.py          FinalQuery.modify_prompt
 ```
 
 Two budget policies. `out_of_room` is the soft nudge: one more average turn would pass `max_budget`, or this is the last `max_iters` turn, so inject `FinalQuery`. `Flow.budget_exceeded` is the hard stop: tokens already spent, skip the model, land `[budget exceeded]`. They share a name-shaped concern and live in different files, so a reader of `to_final` never sees the hard gate.
@@ -98,12 +98,11 @@ Two budget policies. `out_of_room` is the soft nudge: one more average turn woul
 ```text
 engine/transitions.py  PLAN_SOURCES, child_returned
 engine/steps.py        to_plan
-graph/utils.py         working_instruction
-graph/prompts.py        USER_PROMPT, FIRST_TURN_SAFEGUARD
-graph/nodes.py          PlanQuery.instruction
+graph/prompts.py       USER_PROMPT
+graph/nodes.py         PlanQuery.modify_prompt
 ```
 
-`to_plan` is three lines. The user-visible text of that turn is `working_instruction`, which is not next to `PlanQuery`. `child_returned` is `type(node) is UserQuery and isinstance(node.prev, DoneOutput)` — a one-liner that exists only so the decorator does not say that.
+`to_plan` is three lines. `PlanQuery` now owns its compact user `Prompt` instruction directly. `child_returned` is `type(node) is UserQuery and isinstance(node.prev, DoneOutput)` — a one-liner that exists only so the decorator does not say that.
 
 ### Truncation — 5 files
 
@@ -277,7 +276,7 @@ A method is the better end state: the peek is graph navigation, and `graph/utils
 - **Do not put guards on `Flow`.** `@Flow.transitions.on(..., when=Flow.has_request)` is a second object with extra steps.
 - **Do not add `TransitionService` / `StepPolicy` / mixins.** `flow_extract.md` already forbade this. A behavior is a function.
 - **Do not merge REPL tools into the engine.** `transition()` raising `TransitionSignal` is the runtime contract. `node_for_run` interpreting that status is the engine contract. Two files is the right number for that layer pair.
-- **Do not merge `graph/prompts.py` into `rlmflow.prompts`.** Node-owned strings (`FINAL_ANSWER_ACTION`, `TRUNCATION_SUMMARY`) travel with the node type. The inherited protocol lives in `rlmflow.prompts`. That split is already the rule in `graph/prompts.py`'s module docstring.
+- **Do not merge `graph/prompts.py` into `rlmflow.prompts`.** (Later reversed: all prompt prose now lives in `prompts/text.py`.) Node-owned strings (`FINAL_ANSWER_ACTION`, `TRUNCATION_SUMMARY`) travel with the node type. The inherited protocol lives in `rlmflow.prompts`. That split is already the rule in `graph/prompts.py`'s module docstring.
 - **Do not keep `graph/utils.py` as a facade over the new homes.** If the file has no remaining bodies, delete it.
 - **Do not "document the hops" as the fix.** A map in `internals.md` is a courtesy after the move, not a substitute for colocating the guards.
 

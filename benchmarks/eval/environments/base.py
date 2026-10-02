@@ -3,73 +3,21 @@
 from __future__ import annotations
 
 import json
-from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
 from typing import Any
 
+from benchmarks.eval.environments.environment import Environment
+from benchmarks.eval.environments.episode import EpisodeCore
+from benchmarks.eval.environments.episode import (
+    EpisodeEvent as EnvironmentEvent,
+)
+from benchmarks.eval.environments.episode import (
+    EpisodeOwner as EnvironmentInstance,
+)
 from rlmflow import Flow
 from rlmflow.graph.nodes import AgentStart, ExecAction, Node
 from rlmflow.runtime.repl_client import current_rpc_call_id
 from rlmflow.tools import tool
-
-
-@dataclass(frozen=True, slots=True)
-class EnvironmentResult:
-    value: dict[str, Any]
-    accepted_actions: tuple[str, ...] = ()
-    observation_summary: dict[str, Any] = field(default_factory=dict)
-
-
-class EnvironmentAdapter(ABC):
-    """Host-owned deterministic environment implementation."""
-
-    kind = "environment"
-    toolset: object | None = None
-
-    @abstractmethod
-    def start(self, instance_id: str) -> EnvironmentResult:
-        """Create the root instance and return its initial observation."""
-
-    @abstractmethod
-    def fork(
-        self,
-        instance_id: str,
-        *,
-        parent_instance_id: str,
-        command_prefix: tuple[str, ...],
-    ) -> EnvironmentResult:
-        """Create a private child by replaying its parent's accepted prefix."""
-
-    @abstractmethod
-    def execute(
-        self,
-        instance_id: str,
-        operation: str,
-        payload: dict[str, Any],
-        *,
-        max_actions: int,
-    ) -> EnvironmentResult:
-        """Execute an operation within the remaining shared action budget."""
-
-    @abstractmethod
-    def primary_metrics(self, instance_id: str) -> dict[str, Any]:
-        """Return sanitized native metrics for the scored instance."""
-
-    def artifacts(self, instance_id: str) -> dict[str, str]:
-        del instance_id
-        return {}
-
-    def candidate_metrics(self, instance_id: str) -> tuple[float, dict[str, Any]]:
-        metrics = self.primary_metrics(instance_id)
-        score = metrics.get("score", 0.0)
-        return (
-            float(score) if isinstance(score, (int, float)) else 0.0,
-            dict(metrics),
-        )
-
-    def close(self) -> None:
-        return None
 
 
 def candidate_protocol_message(*, is_root: bool, selected: bool) -> str:
@@ -87,38 +35,29 @@ def candidate_protocol_message(*, is_root: bool, selected: bool) -> str:
     )
 
 
-# Imported after the adapter contract so episode.py can depend on it without a
-# second copy of the adapter/result interfaces.
-from benchmarks.eval.environments.episode import EpisodeCore  # noqa: E402
-from benchmarks.eval.environments.episode import (  # noqa: E402
-    EpisodeEvent as EnvironmentEvent,
-)
-from benchmarks.eval.environments.episode import (  # noqa: E402
-    EpisodeOwner as EnvironmentInstance,
-)
-
-
 class EnvironmentEpisode:
     """Bind graph agents to the runtime-neutral episode state machine."""
 
     def __init__(
         self,
-        adapter: EnvironmentAdapter,
+        adapter: Environment,
         *,
         max_actions: int,
         episode_id: str = "",
         candidate_budget: int = 0,
+        expected_observation_sha256: str | None = None,
     ) -> None:
         self.core = EpisodeCore(
             adapter,
             max_actions=max_actions,
             episode_id=episode_id,
             candidate_budget=candidate_budget,
+            expected_observation_sha256=expected_observation_sha256,
         )
         self._receipts: dict[tuple[str, int, str], dict[str, Any] | Exception] = {}
 
     @property
-    def adapter(self) -> EnvironmentAdapter:
+    def adapter(self) -> Environment:
         return self.core.adapter
 
     @property
@@ -230,7 +169,7 @@ class EnvironmentEpisode:
             raise
 
     def metrics(self) -> dict[str, Any]:
-        return self.core.metrics(parity_contract=_parity_contract(self.adapter.kind))
+        return self.core.metrics()
 
     def artifacts(self) -> dict[str, str]:
         return self.core.artifacts()
@@ -313,7 +252,7 @@ class EnvironmentFlow(Flow):
     def start(self, query: str = "", **overrides: Any) -> AgentStart:
         root = super().start(query, **overrides)
         self.environment.bind_root(root)
-        root.config.inputs["environment_observation"] = json.dumps(
+        root.args["environment_observation"] = json.dumps(
             self.environment.initial_observation,
             ensure_ascii=False,
             separators=(",", ":"),
@@ -363,7 +302,7 @@ class EnvironmentFlow(Flow):
         ]
         for agent in agents:
             self.environment.bind_root(agent)
-            agent.config.inputs["environment_observation"] = json.dumps(
+            agent.args["environment_observation"] = json.dumps(
                 self.environment.initial_observation,
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -377,22 +316,10 @@ class EnvironmentFlow(Flow):
         finally:
             self.environment.close()
 
-
-def _parity_contract(kind: str) -> dict[str, Any]:
-    from benchmarks.eval.environments.registry import environment_contract
-
-    try:
-        return environment_contract(kind)
-    except ValueError:
-        return {"version": "test-adapter", "kind": kind, "operations": []}
-
-
 __all__ = [
-    "EnvironmentAdapter",
     "EnvironmentEpisode",
     "EnvironmentEvent",
     "EnvironmentFlow",
     "EnvironmentInstance",
-    "EnvironmentResult",
     "candidate_protocol_message",
 ]

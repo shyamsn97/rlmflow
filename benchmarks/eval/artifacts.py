@@ -76,8 +76,8 @@ def _agent_graph_svg(root: AgentStart) -> str:
         if owner is not None:
             edges.append((owner.id, agent.id, "launch"))
         edges.extend(
-            (source_id, agent.id, f"input:{input_name}")
-            for input_name, source_id in agent.input_references
+            (source_id, agent.id, f"arg:{argument_name}")
+            for argument_name, source_id in agent.argument_references
         )
     return _graph_svg(nodes, edges)
 
