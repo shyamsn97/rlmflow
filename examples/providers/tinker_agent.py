@@ -45,7 +45,7 @@ def main() -> None:
     parser.add_argument("--max-iters", type=int, default=4)
     parser.add_argument(
         "--query",
-        default="Use Python to compute 17 * 23, then call finish() with the answer.",
+        default="Use Python to compute 17 * 23, then call submit() with the answer.",
     )
     args = parser.parse_args()
 

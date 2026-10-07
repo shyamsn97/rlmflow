@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from rlmflow.engine import handoff
-from rlmflow.graph.nodes import AgentStart, ExecAction
+from rlmflow.graph.nodes import AgentStart, ExecAction, running_step
 from rlmflow.runtime.env import RLMFLOW_REPLAY
 
 
@@ -76,7 +76,8 @@ async def replay(flow: Any, root: AgentStart) -> None:
         repl = flow.wrapped_runtime.prepare(node)
         repl.update_env({RLMFLOW_REPLAY: "1"})
         try:
-            await flow.runtime.execute(node, node.code)
+            with running_step(node):
+                await flow.runtime.execute(node, node.code)
         finally:
             repl.update_env({RLMFLOW_REPLAY: "0"})
 

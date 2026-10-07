@@ -4,27 +4,27 @@ All notable changes to **rlmflow** are recorded here. The format follows [Keep a
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-10-06
+
 ### Breaking
 
 - **Transitions are declarative and instance-owned.** Built-in producers use module-level `@transition(...)`; applications use `@flow.transition(...)`. Each decorated function is one `TransitionFunction`. Callable guards retain ordered deterministic resolution; eligible string guards are resolved together by one structured multiple-choice request. The public `Transitions` registry, `Flow.transitions`, constructor table injection, and subclass mutation hooks are removed.
 
 - **Model-selected named choices are removed.** `flow.choices(...)`, the REPL `transition("name")` tool, `TransitionSignal`, `ReplStatus.TRANSITION`, `InvalidTransitionError`, and the prompt transition footer are gone. Every edge is now an automatic transition function.
 
-- **Delegation is eager and Flow-owned.** Agent code calls `launch_subagent(task=..., schema=None, verify=None, **json_inputs)` and gets an awaitable handle immediately. Flow selects child model, prompt profile, and placement. The old `goal`, `model`, `name`, `inputs`, `output_schema`, `prompt_profile`, and `reuse_repl` launch arguments are removed.
+- **Delegation is eager and Flow-owned.** Agent code calls `launch_subagent(task=..., name=None, schema=None, verify=None, **json_inputs)` and gets an awaitable handle immediately. Flow selects child model, prompt profile, and placement. The optional `name=` now names only the child; the old `goal`, `model`, `inputs`, `output_schema`, `prompt_profile`, and `reuse_repl` launch arguments are removed.
 
 - **Structured model calls have one tool path.** Host code retains `Flow.structured_query`; REPL code uses `llm_query(..., schema=...)`. The model-facing `structured_query` tool and structured-output compatibility flags are removed.
 
-- **Node messages are durable snapshots and persistence is v6.** Node chat `render()` is removed. A query's `build_messages(user_prompt, flow)` runs once, stores its validated message list on the node, and all later history, save/load, and fork operations reuse that snapshot. Live child status remains a request-only Flow overlay. Persistence v6 records snapshots explicitly and rejects v5 runs.
+- **Node messages are durable snapshots and graph persistence is unversioned.** Node chat `render()` is removed. A query's `build_messages(user_prompt, flow)` runs once, stores its validated message list on the node, and all later history, save/load, and fork operations reuse that snapshot. Live child status remains a request-only Flow overlay. Saved graphs validate their actual fields and structure instead of carrying a format version.
 
-- **Model turns use one strict REPL protocol.** Every model response must contain exactly one non-empty fenced `repl` block, and only `finish(value)` completes an agent. Plain prose, ordinary code fences, empty blocks, and multiple REPL blocks now enter protocol-error recovery without executing partial content.
+- **Model turns use one strict REPL protocol.** Every model response must contain exactly one non-empty fenced `repl` block, and only `submit(value)` completes an agent. Plain prose, ordinary code fences, empty blocks, and multiple REPL blocks now enter protocol-error recovery without executing partial content.
 
 - **Flow owns fresh prompt defaults; nodes own specialization.** Use `Flow.default_system_prompt(node)` / `default_user_prompt(node)` for prepared `Prompt` instances, `Node.build_system_prompt(system_prompt, flow)` to customize the system prompt, and `Node.build_messages(user_prompt, flow)` to emit current-turn messages. `PromptBuilder`, `build_user_prompt`, `render_fn`, `RenderFn`, and `default_render` are removed. System/user modifiers remain the additive customization path, and `str(prompt)` renders a `Prompt`.
 
 ### Removed
 
-- **`llm_query_batched` is removed.** Use the ordinary `llm_query` tool with
-  `await asyncio.gather(*(llm_query(prompt) for prompt in prompts))`. The
-  duplicate tool, host method, constructor flag, and reserved name are gone.
+- **`llm_query_batched` is removed.** Use the ordinary `llm_query` tool with `await asyncio.gather(*(llm_query(prompt) for prompt in prompts))`. The duplicate tool, host method, constructor flag, and reserved name are gone.
 
 - **Dead core surface.** `graph_diff`, `GraphDiff`, `StructuralEdge`, `system_prompt_hint`, `StructuredResult.envelope`, `MissingReplError` (the protocol-error text still starts with `MissingReplError:`), `PromptProfile.description`, `MAX_STATIC_PROMPT_CHARS`, `AgentDirectory.all`, `utils.accepts_kwarg`, `utils.usage_from_client`, the `Flow` tool shims (`finish_tool`, `launch_tool`, `wait_agent_tool`, `observe_agent_tool`, `transition_tool`), `Flow.call_stream`, `Flow.execute_action`, `Flow.tool_namespace_for_prompt`, `Flow.submit_child`, `Flow.new_child`, `Flow.ensure_replayed`, `Flow.register_verifier`, `Flow.verify_candidate`, and the `rlmflow.view` exports `node_shape`, `NODE_COLORS`, `NODE_SHAPES`, and `summarize`. Worker runtimes now implement `Runtime.connect()`; the shared `Runtime.open` wraps it in a session. `Flow.resolve_child` remains the per-child override hook.
 
@@ -36,14 +36,16 @@ All notable changes to **rlmflow** are recorded here. The format follows [Keep a
 
 ### Changed
 
-- **Evidence-first guidance lives in the core protocol.** The pinned system prompt asks each turn to plan the immediate next action from observations already obtained, compute answers from the inputs rather than assumptions, finish in one block when code can derive the answer directly, and look first when the inputs' size, format, or contents are unknown. Before `finish`, agents check the candidate against the inputs. No turn is forced to observe-only, and `finish` is available from the first block.
-- **Root and child calls share one argument contract.** `Flow.run(task, **args)`, `Flow.start(task, **args)`, and `launch_subagent(task=..., **args)` all build agents through the same constructor. `task` and named JSON arguments are direct REPL variables; the model-facing `INPUTS` mapping is removed. Runtime controls belong in an explicit `AgentConfig`. Persisted graphs use v7 and store invocation `args` on each `AgentStart`.
+- **Evidence-first guidance lives in the core protocol.** The pinned system prompt asks each turn to plan the immediate next action from observations already obtained, compute answers from the inputs rather than assumptions, and look first when the inputs' size, format, or contents are unknown. A block that prints evidence ends so the model can read that observation before submitting in a later turn. Before `submit`, agents check the candidate against the inputs. No turn is forced to observe-only, and `submit` is available from the first block.
+- **Root and child calls share one argument contract.** `Flow.run(task, **args)`, `Flow.start(task, **args)`, and `launch_subagent(task=..., **args)` all build agents through the same constructor. `task` and named JSON arguments are direct REPL variables; the model-facing `INPUTS` mapping is removed. Runtime controls belong in an explicit `AgentConfig`. Persisted graphs store invocation `args` on each `AgentStart`.
+- **Arguments may carry caller-supplied descriptions.** `Input(value, description=...)` keeps the underlying root or child argument as a direct REPL variable while adding its known format or meaning to the argument manifest. Descriptions persist with the graph, work with handle-valued dependencies, and do not copy values into prompts.
 - **Worker reuse no longer shares agent globals.** `delegation_reuse_worker=True` colocates child tenants in the parent's process while retaining isolated namespaces. It replaces the misleading `delegation_reuse_repl` name and prevents concurrent children from overwriting one another's direct invocation variables.
 - **Benchmark task requirements are runner-neutral and auditable.** Every row fingerprints the same benchmark-owned task, named inputs, and fixture bytes. Framework-specific API guidance is appended separately and receives its own hash. The delegation suite now shares all scored root requirements across PrimeAgent, Official RLM, JAZ, and rlmflow, and scores PrimeAgent's final response directly instead of imposing a unique output-file requirement.
-- **Built-ins and application tools share one interface.** `Flow.build_tools(node)` returns the complete map of real decorated callables: Flow-owned built-ins, configured application tools, and subclass-provided environment tools. The prompt renders that map directly, while `Flow.build_namespace(node)` adds non-tool execution bindings. `llm_query` is node-bound like `finish` and `launch_subagent`, so its static description and default model match its calling agent. The old prompt-only stubs and callable descriptions are gone. The local-work example and `AGENTS` notes remain prompt sections (`guidance.local`, `capabilities.agents`).
+- **Built-ins and application tools share one interface.** `Flow.build_tools(node)` returns the complete map of real decorated callables: Flow-owned built-ins, configured application tools, and subclass-provided environment tools. The prompt renders that map directly, while `Flow.build_namespace(node)` adds non-tool execution bindings. `llm_query` is node-bound like `submit` and `launch_subagent`, so its static description and default model match its calling agent. The old prompt-only stubs and callable descriptions are gone. The local-work example and `AGENTS` notes remain prompt sections (`guidance.local`, `capabilities.agents`).
 - **All prompt prose lives in `rlmflow.prompts.text`.** `rlmflow.graph.prompts` is gone; its turn strings, execution policy, and `AGENTS_TEXT` sit with `CORE_PROTOCOL_TEXT` in one import-free module. `rlmflow.prompts` no longer re-exports `build_messages` / `render_tools` (use `rlmflow.prompts.messages`), and argument manifests live in `rlmflow.prompts.prompts`.
 - **`FILE_TOOLS` is a tuple of plain functions.** Import individual tools from `rlmflow.tools.filesystem` (`read_file`, `write_file`, …) instead of `FILE_TOOLS.<name>`.
 - **Persistence saves node fields generically.** `persistence.to_record(node)` writes every data field of a node, so node classes no longer carry hand-written `to_record` overrides, and loading finds node classes by their `type` name instead of a registry. `persistence.register_node_type` is removed: a custom node is just a dataclass subclass with its own `type`. Records no longer repeat `content` under a separate `output` key, and a base `ActionNode` now keeps its `code` across save and load. `ChatMessage` and `message_snapshot` live in `rlmflow.graph.nodes`.
+- **Proxied tools can restore saved results.** `@tool(..., restore="result")` records a successful JSON result on its `ExecAction`; a restore callable may rebuild a runtime object. Worker RPC and in-process execution share this path. `launch_subagent` restores its existing child handle, and `llm_query` no longer repeats model work while rebuilding a namespace.
 
 ### Fixed
 
@@ -53,9 +55,11 @@ All notable changes to **rlmflow** are recorded here. The format follows [Keep a
 
 ### Added
 
-- **Durable semantic choices and finish verification.** Source-compatible string transition guards are presented together to the Flow's configured structured engine, which selects one compact transition name or `continue` in a single request. One `TransitionDecision` persists the complete candidate set, selected durable rule ID, and read-set hash for replay. This path works with Chat, Instructor, Jev, retry, and fallback engines. Launch-local finish verifiers reject candidates into `VerificationFailure` and repair the same child.
+- **Candidate submission is graph-native.** `submit(value)` lands a durable `Submission` before a graph transition accepts it. Prompt guidance tells agents to read printed evidence in a later turn before submitting. `finish(value)` remains a hidden compatibility alias.
 
-- **Structured output contracts and producers are modular.** `OutputCodec` owns normalization, prompt guidance, parsing, and local validation. One `StructuredEngine` per Flow powers state-oriented `structured_query` calls and schema-backed `llm_query` calls. Chat is the default; optional Instructor and Jev engines are available, while retry, fallback, and confidence policies remain explicit wrappers. Agent `finish(value)` remains local and deterministic.
+- **Durable semantic choices and submission verification.** Source-compatible string transition guards are presented together to the Flow's configured structured engine, which selects one compact transition name or `continue` in a single request. One `TransitionDecision` persists the complete candidate set, selected durable rule ID, and read-set hash for replay. This path works with Chat, Instructor, Jev, retry, and fallback engines. Launch-local submission verifiers reject candidates into `VerificationFailure` and repair the same child.
+
+- **Structured output contracts and producers are modular.** `OutputCodec` owns normalization, prompt guidance, parsing, and local validation. One `StructuredEngine` per Flow powers state-oriented `structured_query` calls and schema-backed `llm_query` calls. Chat is the default; optional Instructor and Jev engines are available, while retry, fallback, and confidence policies remain explicit wrappers. Agent `submit(value)` remains locally validated.
 
 ## [0.6.0] — 2026-09-21
 
@@ -348,6 +352,7 @@ Initial release.
 [0.2.1]: https://github.com/shyamsn97/rlmflow/compare/v0.2.0...v0.2.1
 [0.3.2]: https://github.com/shyamsn97/rlmflow/compare/v0.2.1...v0.3.2
 [0.4.2]: https://github.com/shyamsn97/rlmflow/compare/v0.3.2...v0.4.2
-[0.5.0]: https://github.com/shyamsn97/rlmflow/compare/v0.4.2...v0.5.0
-[0.6.0]: https://github.com/shyamsn97/rlmflow/compare/v0.5.0...v0.6.0
-[unreleased]: https://github.com/shyamsn97/rlmflow/compare/v0.6.0...HEAD
+[0.5.0]: https://github.com/shyamsn97/rlmflow/compare/v0.4.2...db98cb7
+[0.6.0]: https://github.com/shyamsn97/rlmflow/compare/db98cb7...d7a1a7c
+[0.7.0]: https://github.com/shyamsn97/rlmflow/compare/d7a1a7c...v0.7.0
+[unreleased]: https://github.com/shyamsn97/rlmflow/compare/v0.7.0...HEAD

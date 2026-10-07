@@ -63,7 +63,7 @@ flow.remove_tool("escalate")
 
 `inject` takes any object, not just callables; `add_tool` is the same thing with the name read off the function. Both write into every open REPL as well as the flow's namespace, so a tool added mid-run is visible on the next step. Tools gated with `when=` are still filtered when that step builds its namespace.
 
-`finish`, `launch_subagent`, and invocation argument names are reserved and cannot be injected over.
+`submit`, its hidden `finish` compatibility alias, `launch_subagent`, `Input`, and invocation argument names are reserved and cannot be injected over.
 
 ## Reactive control
 

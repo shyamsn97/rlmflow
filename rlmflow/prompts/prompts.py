@@ -79,7 +79,10 @@ class PromptProfile:
     user_modifiers: PromptModifierSource | None = None
 
 
-def build_args_manifest(args: dict[str, object]) -> str:
+def build_args_manifest(
+    args: dict[str, object],
+    descriptions: dict[str, str] | None = None,
+) -> str:
     """List arguments by name and size without copying values into the prompt.
 
     Arguments are direct REPL variables. Large values stay outside the context
@@ -96,7 +99,13 @@ def build_args_manifest(args: dict[str, object]) -> str:
             return f"object, {len(value)} fields"
         return type(value).__name__
 
-    lines = [f"- `{name}`: {describe(value)}" for name, value in args.items()]
+    descriptions = descriptions or {}
+    lines = []
+    for name, value in args.items():
+        line = f"- `{name}`: {describe(value)}"
+        if description := descriptions.get(name):
+            line += f" — {' '.join(description.split())}"
+        lines.append(line)
     return "Your REPL has these task arguments as direct variables:\n" + "\n".join(lines)
 
 
@@ -105,7 +114,10 @@ def add_argument_sections(prompt: Prompt, flow: Any, node: Any) -> None:
     agent = node.parent_agent
     if agent is None:
         return
-    manifest = build_args_manifest(agent.resolved_args())
+    manifest = build_args_manifest(
+        agent.resolved_args(),
+        agent.argument_descriptions(),
+    )
     if manifest:
         prompt.add_section(
             "context.arguments",
@@ -118,7 +130,7 @@ def add_argument_sections(prompt: Prompt, flow: Any, node: Any) -> None:
         codec = getattr(flow, "output_codec", DEFAULT_OUTPUT_CODEC)
         prompt.add_section(
             "contract.output_schema",
-            codec.render_contract(schema, source="finish").strip(),
+            codec.render_contract(schema, source="submit").strip(),
             order=710,
             source="add_argument_sections",
             pinned=True,

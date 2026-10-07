@@ -38,7 +38,7 @@ Together they show practical recursive execution at three scales: decompose long
 - [`Node.append`](node_append.md) — `append` is inplace and returns `None`; the step returns the created node.
 - [Flow extract](flow_extract.md) — `Flow` stays the facade; restore, builtin factories, and child launch become `(flow, ...)` functions.
 - [Step table](step_table.md) — automatic transition functions and semantic guards.
-- [Historical colocation review](colocate.md) — the design audit that led to colocated default policy and direct named transitions.
+- [Historical colocation review](colocate.md) — the design audit that led to colocated default policy; its named-transition path was later removed.
 
 ## Historical and experimental research notes
 
@@ -46,7 +46,7 @@ These records explain experiments and design lineage. They are not API reference
 
 - [`AGENTS` tree discovery](research/inter_agent_communication.md) — opt-in REPL view for querying and rendering agent status and results.
 - [Persistent agents](research/persistent_agents.md) — reopening a finished child with a follow-up question, why peer messaging deadlocks, and the engine constraints either would have to survive.
-- [Colocated agents](runtimes.md#isolated-and-colocated-agents) — one worker for several agents with isolated namespaces and per-agent invocation arguments, `finish`, stdout, and errors.
+- [Colocated agents](runtimes.md#isolated-and-colocated-agents) — one worker for several agents with isolated namespaces and per-agent invocation arguments, `submit`, stdout, and errors.
 - [Historical REPL correctness and sharing plan](research/repl_plan.md) — the staged plan: the transport bugs found along the way, then local and remote co-tenancy.
 - [RAO implementation plan](research/rao_implementation_plan.md) — the design record behind the now-implemented but still experimental `rlmflow.rao` module.
 - [Speculative programmatic tool calling](research/spec_ptc.md) — implement Zhang's sPTC algorithm in `rlmflow.speculate` (shadow REPL, claim-or-run futures) without depending on the spec-ptc package.

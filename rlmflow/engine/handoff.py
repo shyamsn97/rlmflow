@@ -33,10 +33,7 @@ def marker(path: str) -> str:
 
 def supervisor(child: AgentStart) -> AgentStart | None:
     """The agent that launched ``child``, or ``None`` for a root."""
-    parent_node = child.parent
-    if parent_node is None:
-        return None
-    return parent_node.parent_agent
+    return child.supervisor
 
 
 def delivered(agent: AgentStart, child: AgentStart) -> bool:
@@ -119,7 +116,7 @@ def rebuild_mailboxes(root: AgentStart) -> None:
 
 
 def _render(items: list[Handoff], limit: int) -> str:
-    parts = ["Child results are ready. Each block is that child's finish() value."]
+    parts = ["Child results are ready. Each block is that child's submit() value."]
     for item in items:
         body = _format_result(item.result, limit)
         parts.append(f"{marker(item.path)}\nname: {item.name}\n{body}")

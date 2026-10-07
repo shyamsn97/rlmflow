@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Iterable
 from typing import Any
 
+from rlmflow.graph.config import Input
 from rlmflow.graph.nodes import ExecAction, Node
 from rlmflow.tools import RESERVED_TOOLS
 from rlmflow.tools.agents import (
@@ -116,11 +117,15 @@ def build_namespace(flow: Any, node: Node, tools: dict[str, Any]) -> dict[str, A
     agents = build_agent_directory(node.parent_agent, running_nodes=running)
     namespace = {
         **tools,
+        "Input": Input,
         "asyncio": asyncio,
         AGENTS_BINDING: agents,
         AGENT_OBSERVE_TOOL: observe_agent_tool(flow, node),
         AGENT_WAIT_TOOL: wait_agent_tool(flow, node),
     }
+    # Keep old REPL blocks executable without advertising the legacy name.
+    if "submit" in tools:
+        namespace["finish"] = tools["submit"]
     if flow.use_agent_tree:
         namespace["AGENTS"] = agents
     return namespace

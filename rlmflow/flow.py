@@ -26,6 +26,7 @@ from rlmflow.graph.nodes import (
     LLMOutput,
     LLMUsage,
     Node,
+    Submission,
     TurnMode,
     build_agent,
 )
@@ -451,10 +452,10 @@ class Flow:
     def budget_exceeded(self, node: Node) -> bool:
         """Whether this node must enter its agent's one final turn."""
         # Never discard a reply already paid for. The answer arrives in an LLMOutput
-        # and only lands once its ExecAction runs finish(), so stopping at either one
+        # and only lands once its ExecAction runs submit(), so stopping at either one
         # spends the tokens and throws the result away. FinalQuery itself must also
         # run even though the threshold has already been crossed.
-        if isinstance(node, (FinalQuery, LLMOutput, ExecAction)):
+        if isinstance(node, (FinalQuery, LLMOutput, ExecAction, Submission)):
             return False
         return self.budget_exhausted(node)
 

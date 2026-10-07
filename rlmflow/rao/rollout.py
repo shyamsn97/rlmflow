@@ -197,7 +197,7 @@ class RolloutFlow(Flow):
 
 def attached(action: ExecAction, spec: dict[str, Any], call_id: int) -> bool:
     """Whether this launch call already has its child, as ``Flow`` decides."""
-    if call_id in action.launched_agent_ids:
+    if call_id in action.launch_agent_ids():
         return True
     name = spec.get("name")
     root = action.root
@@ -206,7 +206,7 @@ def attached(action: ExecAction, spec: dict[str, Any], call_id: int) -> bool:
     return any(
         (child := root.find_agent(agent_id)) is not None
         and child.config.name == name
-        for agent_id in action.launched_agent_ids.values()
+        for agent_id in action.launch_agent_ids().values()
     )
 
 

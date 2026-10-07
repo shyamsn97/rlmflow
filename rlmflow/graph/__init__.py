@@ -1,6 +1,7 @@
 """The run itself: the node tree, and the format it is written to disk in."""
 
 from rlmflow.graph import persistence
+from rlmflow.graph.config import Input
 from rlmflow.graph.nodes import (
     DEFAULT_MAX_QUERY_CHARS,
     DEFAULT_QUERY,
@@ -20,6 +21,7 @@ from rlmflow.graph.nodes import (
     RepairQuery,
     ReplDead,
     RunStats,
+    Submission,
     TransitionDecision,
     TruncationSummary,
     UserQuery,
@@ -40,6 +42,7 @@ __all__ = [
     "ExecAction",
     "ExecOutput",
     "FinalQuery",
+    "Input",
     "LLMOutput",
     "LLMUsage",
     "Node",
@@ -47,6 +50,7 @@ __all__ = [
     "ReplDead",
     "RepairQuery",
     "RunStats",
+    "Submission",
     "TransitionDecision",
     "TruncationSummary",
     "UserQuery",

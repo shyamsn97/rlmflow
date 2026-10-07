@@ -1,6 +1,6 @@
 # Upgrading to 0.7
 
-Version 0.7 is a clean break. It removes the old transition registry, async launch admission, model-selected child policy, and model-facing `structured_query` surface. There are no compatibility aliases.
+Version 0.7 is a clean break. It removes the old transition registry, async launch admission, model-selected child policy, and model-facing `structured_query` surface. The old `finish(value)` completion name remains executable only as a hidden compatibility alias for persisted REPL code; new agent code and prompt documentation use `submit(value)`.
 
 ## Child launch
 
@@ -24,13 +24,13 @@ child = launch_subagent(task="task", context=context, schema=schema)
 result = await child
 ```
 
-Flow selects child policy with `delegation_model`, `delegation_prompt_profile`, and `delegation_reuse_worker`. Arguments are strict JSON values or nested `AgentHandle` references. Colocated children reuse the process but keep isolated namespaces. Use `verify=` for a worker-local `value -> str | None` finish verifier.
+Flow selects child policy with `delegation_model`, `delegation_prompt_profile`, and `delegation_reuse_worker`. Arguments are strict JSON values or nested `AgentHandle` references. Colocated children reuse the process but keep isolated namespaces. An optional `name=` gives the child a stable sibling-unique name; otherwise the Flow assigns `childN`. Use `verify=` for a worker-local `value -> str | None` submission verifier.
 
 ## Agent completion
 
-Agent code must call `finish(answer)`. The old `done(value)` name is not present in the REPL.
+Agent code must call `submit(answer)`. The old `done(value)` name is not present in the REPL, and `finish(value)` is retained only as the hidden compatibility alias described above.
 
-Without `output_schema`, `finish(answer)` accepts only strict JSON values: strings, finite numbers, booleans, `None`, lists, and dictionaries with string keys, recursively. Unsupported values such as tuples, sets, bytes, non-finite floats, arbitrary objects, and dictionaries with non-string keys now produce an execution error instead of being stringified. A string remains a string even when its contents happen to be JSON.
+Without `output_schema`, `submit(answer)` accepts only strict JSON values: strings, finite numbers, booleans, `None`, lists, and dictionaries with string keys, recursively. Unsupported values such as tuples, sets, bytes, non-finite floats, arbitrary objects, and dictionaries with non-string keys now produce an execution error instead of being stringified. A string remains a string even when its contents happen to be JSON.
 
 With an explicit `output_schema`, a JSON value or JSON-encoded string is parsed and validated, and `Flow.run()`, `agent.result()`, and `wait_for_result()` return the validated typed value.
 
@@ -38,7 +38,7 @@ With an explicit `output_schema`, a JSON value or JSON-encoded string is parsed 
 
 When a schema is supplied, pass a JSON Schema object with explicit `properties`, `required`, and `additionalProperties`. Without a schema, child and root results retain JSON-compatible Python values as described above.
 
-`AgentConfig.child_output_schema` is the default schema for launched children. The coding CLI (`rlmflow run` / `rlmflow tui`) and `examples/coding/agent.py` set it to `CODING_HANDOFF_SCHEMA`, so those children `finish` `{done, diff_summary, concerns, followups}` while the root stays untyped. Launch `schema=` overrides it.
+`AgentConfig.child_output_schema` is the default schema for launched children. The coding CLI (`rlmflow run` / `rlmflow tui`) and `examples/coding/agent.py` set it to `CODING_HANDOFF_SCHEMA`, so those children `submit` `{done, diff_summary, concerns, followups}` while the root stays untyped. Launch `schema=` overrides it.
 
 ## Multiple roots
 
@@ -84,7 +84,7 @@ Library runs are unbounded by default: `AgentConfig.max_iters` and `max_budget` 
 
 `max_output_length` and `max_query_chars` now default to 20,000 characters. `max_output_length` bounds one REPL observation; `max_query_chars` bounds a delegated child's goal. Set either field on `AgentConfig`, through `flow.start(...)`, or in `Flow(root_config=...)`.
 
-`resume_on_child_done` defaults to `True`. A parent that has already `finish()`ed still receives a child-handoff `UserQuery` and keeps driving. Pass `False` on scored evals that must stay terminal once the parent submits. Background children still deliver a `UserQuery` after the launcher's next `ExecOutput` either way. A mapping `finish()` value is listed as fields in that query; a scalar stays labeled JSON.
+`resume_on_child_done` defaults to `True`. A parent that has already submitted still receives a child-handoff `UserQuery` and keeps driving. Pass `False` on scored evals that must stay terminal once the parent submits. Background children still deliver a `UserQuery` after the launcher's next `ExecOutput` either way. A mapping submission value is listed as fields in that query; a scalar stays labeled JSON.
 
 A `UserQuery` appended after `ExecOutput` calls the model directly. Host injections and child handoffs are already real user messages; the engine does not insert another planning message between them and the model.
 
@@ -101,15 +101,17 @@ solution = launch_subagent(
 
 JSON and handle values may be mixed and nested. The downstream child waits for every referenced handle, then receives each validated result at the same path.
 
+Wrap a root or child argument with `Input(value, description=...)` when its caller already knows useful structure. The agent receives `value` directly under the original argument name; the description is added to the argument manifest and persisted with the graph. `Input` may wrap a handle without changing dependency scheduling.
+
 Dependency dataflow no longer changes ownership. All children stay beneath the agent action that launched them, and `max_depth` limits recursive spawning rather than dependency-chain length. `AgentDependency` is no longer exported.
 
 ## Persistence
 
-Persistence v7 stores one flat, parent-linked graph document, including each node's durable message snapshot and `AgentStart.args`. Handle-valued arguments retain their stable agent-reference markers, and every `ExecAction` retains launch receipts. Use `persistence.to_document()` and `persistence.from_document()`. Loading rejects v6 and older versions rather than migrating them. A custom Node type is a dataclass subclass with its own `type` name: every data field is saved, and loading finds the class once it has been imported. There is nothing to register and no `to_record` to write.
+Persistence stores one unversioned, flat, parent-linked graph document, including each node's durable message snapshot and `AgentStart.args`. Handle-valued arguments retain stable agent-reference markers, and every `ExecAction` retains its restorable tool results in `saved_tool_calls`. Use `persistence.to_document()` and `persistence.from_document()`. Loading validates the document's actual fields and graph structure. A custom Node type is a dataclass subclass with its own `type` name: every data field is saved, and loading finds the class once it has been imported. There is nothing to register and no `to_record` to write.
 
-Cold restore reconstructs required worker sessions, not just individually unfinished agents. If an unfinished `reuse_worker=True` child depends on a terminal parent's worker, eager and lazy replay rebuild that terminal owner first. Agent namespaces remain isolated.
+Cold restore reconstructs required worker sessions, not just individually unfinished agents. `launch_subagent` restores its existing child handle, and `llm_query` restores its saved result instead of repeating external work. If an unfinished `reuse_worker=True` child depends on a terminal parent's worker, eager and lazy replay rebuild that terminal owner first. Agent namespaces remain isolated.
 
-There is no in-process v2 migration path. Export or regenerate old development runs with the version that created them before upgrading.
+Regenerate development runs saved with older graph fields before upgrading.
 
 ## Checkpointing and TUI
 
@@ -138,18 +140,14 @@ Removed: `StepFunction`, `LLMRequestStep`, `LLMOutputStep`, `ExecActionStep`, `u
 
 ## Planning
 
-The legacy turn-counter `PlanQuery`, `to_plan`, `resume_after_child`,
-`child_returned`, and synthetic `Turn N/M:` message remain removed. `AgentStart`
-calls the model directly, and every response plans and executes its next step
-in one REPL block:
+The legacy turn-counter `PlanQuery`, `to_plan`, `resume_after_child`, `child_returned`, and synthetic `Turn N/M:` message remain removed. `AgentStart` calls the model directly, and every response plans and executes its next step in one REPL block:
 
 ```text
-AgentStart -> LLMOutput -> ExecAction -> ExecOutput | DoneOutput
+AgentStart -> LLMOutput -> ExecAction -> ExecOutput | Submission
+Submission -> DoneOutput
 ```
 
-`finish` is available from the first block. The pinned core protocol tells the
-model to finish immediately when code can derive the answer from its inputs, and
-to look at the inputs first when their size, format, or contents are unknown.
+`submit` is available from the first block. The pinned core protocol tells the model to plan and execute the immediate next action, to look first when the inputs' size, format, or contents are unknown, and to submit only after reading any printed evidence needed to support the answer.
 
 ## System prompts
 
@@ -157,11 +155,13 @@ to look at the inputs first when their size, format, or contents are unknown.
 
 Flow creates fresh defaults with `default_system_prompt(node)` and `default_user_prompt(node)`. Nodes customize them through `build_system_prompt(system_prompt, flow)` and `build_messages(user_prompt, flow)`. The latter returns current-turn messages only; `Flow.build_messages(node)` remains the complete request assembler. `render_fn` and `build_user_prompt` are removed.
 
-Node chat `render()` is also removed. `build_messages(user_prompt, flow)` is the only message customization hook; its result is snapshotted on the node and used for all later history projection. Persistence v6 stores those snapshots. Background-agent status and transition menus remain live request overlays and are not stored in history.
+Node chat `render()` is also removed. `build_messages(user_prompt, flow)` is the only message customization hook; its result is snapshotted on the node and used for all later history projection. Graph persistence stores those snapshots. Background-agent status remains a live request overlay and is not stored in history.
 
 ## Tools
 
 `@tool` is the only tool decorator; `@toolset`, `FileTools`, the `BuiltIns` class, and `@tool(inject=...)` are removed. `description` is a string. Replace a toolset class with module-level `@tool` functions grouped in a tuple; `Flow(tools=[...])` flattens one level of nesting.
+
+For proxied tools whose external work must not repeat during namespace reconstruction, use `@tool(..., restore="result")`. Successful JSON results are saved on the owning action. Pass a restore callable only when that JSON value must be rebuilt into a runtime object.
 
 `FILE_TOOLS` is now a tuple of functions. Replace `FILE_TOOLS.read_file` with `from rlmflow.tools.filesystem import read_file`.
 

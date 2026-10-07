@@ -1,6 +1,6 @@
 # `Flow` is the facade
 
-> Historical design note. The `Flow` tool shims (`finish_tool`, `launch_tool`, wait / observe), `call_stream`, `submit_child`, `new_child`, and `ensure_replayed` listed below were later extracted into `tools/builtins.py`, `tools/namespace.py`, `engine/delegation.py`, and `engine/restore.py`. `Flow.resolve_child` stays as the per-child override hook. The `BuiltIns` class, its `inject=False` prompt stubs, `@toolset`, and `_bind_toolset` were removed too. Built-ins are now ordinary node-bound decorated callables in `Flow.build_tools(node)`.
+> Historical design note. The `Flow` tool shims (`finish_tool`, `launch_tool`, wait / observe), `call_stream`, `submit_child`, `new_child`, and `ensure_replayed` listed below were later extracted into `tools/builtins.py`, `tools/namespace.py`, `engine/delegation.py`, and `engine/restore.py`. `Flow.resolve_child` stays as the per-child override hook. The `BuiltIns` class, its `inject=False` prompt stubs, `@toolset`, and `_bind_toolset` were removed too. Built-ins are now ordinary node-bound decorated callables in `Flow.build_tools(node)`. The current completion tool is `submit`; `finish` survives only as a hidden compatibility alias, so the older name in this note is intentional.
 
 Implemented. `flow.py` is the constructor, the stream loop, and wrappers. Restore, builtin factories, child launch, and prompt assembly are `(flow, ...)` functions.
 
@@ -24,10 +24,7 @@ Approximate, by block:
 | restore              | ~55   | `replay`, `ensure_replayed`                                      |
 | stream loop          | ~120  | `run_streaming`, `arun`, `run`, `aclose`                         |
 
-The real closures are no longer hand-written on `Flow`. `finish` and
-`llm_query` now live together as ordinary node-bound tools in
-`tools/builtins.py`; launch follows the same interface from
-`engine/delegation.py`. Concurrent queries use `asyncio.gather`.
+The real closures are no longer hand-written on `Flow`. `finish` and `llm_query` now live together as ordinary node-bound tools in `tools/builtins.py`; launch follows the same interface from `engine/delegation.py`. Concurrent queries use `asyncio.gather`.
 
 `view/replay.py` is animation. Restore of REPL namespaces is a different word.
 

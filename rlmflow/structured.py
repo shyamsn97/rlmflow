@@ -10,7 +10,7 @@ import jsonschema
 from pydantic import BaseModel, JsonValue, TypeAdapter, ValidationError
 
 Schema = type[BaseModel] | TypeAdapter[Any] | Mapping[str, Any] | str
-ContractSource = Literal["finish", "query"]
+ContractSource = Literal["submit", "query"]
 _JSON_VALUE = TypeAdapter(JsonValue)
 
 
@@ -67,7 +67,7 @@ class JsonSchemaCodec:
             return f"Return only JSON matching this schema:\n{schema_hint}"
         return (
             "This run requires structured output. When complete, call "
-            "`finish(value)` with a JSON-compatible Python value matching this "
+            "`submit(value)` with a JSON-compatible Python value matching this "
             "JSON Schema exactly — the value itself, not a status string:\n\n"
             f"```json\n{schema_hint}\n```"
         )
@@ -123,7 +123,7 @@ def as_finish_value(answer: object) -> JsonValue:
         json.dumps(value, allow_nan=False)
     except (TypeError, ValueError, ValidationError) as exc:
         raise TypeError(
-            "finish(answer) requires a JSON value: strings, finite numbers, "
+            "submit(answer) requires a JSON value: strings, finite numbers, "
             "booleans, None, lists, or dictionaries with string keys"
         ) from exc
     return value
@@ -163,7 +163,7 @@ def _format_error_message(content: str, schema: Schema, cause: Exception) -> str
     schema_text = json.dumps(json_schema_for(schema), indent=2)
     return (
         "Structured output is invalid.\n"
-        "Hint: call finish(value) with a JSON-compatible Python value that matches "
+        "Hint: call submit(value) with a JSON-compatible Python value that matches "
         "the expected schema. Do not pass prose, Markdown fences, or a JSON "
         "string containing JSON.\n\n"
         "Expected JSON Schema:\n"

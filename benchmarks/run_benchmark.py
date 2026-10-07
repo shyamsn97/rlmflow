@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from benchmarks.eval.benchmarks import BENCHMARKS
+from benchmarks.eval.types import ComponentSpec
 
 DEFAULT_RUNNERS = {
     "smoke": ["fake"],
@@ -23,6 +24,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--split", choices=("pilot", "full"), default="pilot")
     result.add_argument("--runners", action="append")
     result.add_argument("--model", default="openai:gpt-5-mini")
+    result.add_argument("--worker-model", help="model name for delegated children")
     result.add_argument("--seed", type=int, default=0)
     result.add_argument("--output", type=Path)
     result.add_argument("--executor", choices=("local", "docker", "modal"), default="local")
@@ -42,6 +44,18 @@ def main() -> None:
     if args.benchmark is None:
         parser().error("benchmark is required unless --list is used")
     runners = _runners(args.runners) or DEFAULT_RUNNERS[args.benchmark]
+    if args.worker_model:
+        params = {
+            key: value
+            for key, value in {
+                "worker_model": args.worker_model,
+            }.items()
+            if value is not None
+        }
+        runners = [
+            ComponentSpec(name=name, params=params)
+            for name in runners
+        ]
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     output_dir = args.output or (
         Path("benchmarks/runs") / f"{args.benchmark}-{args.split}-{stamp}"

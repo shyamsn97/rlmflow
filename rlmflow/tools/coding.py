@@ -1,7 +1,7 @@
-"""Coding-agent child finish schema.
+"""Coding-agent child submission schema.
 
-The engine renders whatever object a child ``finish()``es; this schema is the
-coding CLI's default for launched children, not a library-wide finish shape.
+The engine renders whatever object a child ``submit()``s; this schema is the
+coding CLI's default for launched children, not a library-wide submission shape.
 Needle, evals, and other ``Flow``s stay untyped unless they set
 ``AgentConfig.child_output_schema`` themselves.
 """

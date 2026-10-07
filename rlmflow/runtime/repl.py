@@ -27,7 +27,7 @@ class DoneSignal(BaseException):
 
 
 class VerificationSignal(BaseException):
-    """Internal control flow for a rejected finish candidate."""
+    """Internal control flow for a rejected submitted candidate."""
 
     def __init__(
         self,
@@ -53,7 +53,7 @@ class _CellStopIteration(Exception):
 #: Observation returned for an invalid action reply, so the retry knows what to fix.
 MISSING_REPL_NOTE = """MissingReplError: expected exactly one non-empty
 fenced ```repl``` block. Nothing ran and this turn produced no observation.
-Reply with one block that carries out the next step or calls finish(value)."""
+Reply with one block that carries out the next step or calls submit(value)."""
 
 
 class ReplStatus(StrEnum):

@@ -11,5 +11,6 @@ make -f benchmarks/Makefile interactive
 ```
 
 The default OOLONG benchmark is a fixed TREC-coarse 128K slice: two pilot
-questions and ten full questions. The interactive benchmark runs MiniMaze,
-Sudoku Search, and MazeBench through one environment report schema.
+questions and 25 full questions. Delegation uses 16 frozen fan-out tasks. The
+interactive benchmark runs MiniMaze, Sudoku Search, and MazeBench through one
+environment report schema.

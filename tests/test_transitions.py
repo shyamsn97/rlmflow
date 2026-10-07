@@ -15,6 +15,7 @@ from rlmflow import (
     ReplRun,
     ReplStatus,
     StructuredResult,
+    Submission,
     TransitionDecision,
     TransitionPolicyError,
     TruncationSummary,
@@ -104,7 +105,7 @@ def test_one_turn_budget_starts_on_the_final_turn():
     assert isinstance(result, FinalQuery)
 
 
-def test_startup_calls_the_model_with_finish_available():
+def test_startup_calls_the_model_with_submit_available():
     root = start("query", args={"context": "material"})
     requests = []
 
@@ -120,20 +121,20 @@ def test_startup_calls_the_model_with_finish_available():
     assert reply.prev is root
     assert [message["role"] for message in requests[0]] == ["system", "user"]
     assert requests[0][-1]["content"] == "query"
-    assert "finish" in flow.build_tools(root)
+    assert "submit" in flow.build_tools(root)
 
 
-def test_first_block_may_finish():
+def test_first_block_may_submit():
     root = start("query")
-    reply = LLMOutput(content="```repl\nfinish(42)\n```", code="finish(42)")
+    reply = LLMOutput(content="```repl\nsubmit(42)\n```", code="submit(42)")
     root.append(reply)
     action = ExecAction(code=reply.code)
     reply.append(action)
 
-    done = node_for_run(action, ReplRun(status=ReplStatus.DONE, answer=42))
+    submission = node_for_run(action, ReplRun(status=ReplStatus.DONE, answer=42))
 
-    assert isinstance(done, DoneOutput)
-    assert done.result == 42
+    assert isinstance(submission, Submission)
+    assert submission.result == 42
 
 
 def test_queries_and_observations_call_the_model_directly():

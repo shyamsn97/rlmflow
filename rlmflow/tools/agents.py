@@ -24,11 +24,6 @@ def _json_safe(value: object) -> object:
         return str(value)
 
 
-def _supervisor(agent: AgentStart) -> AgentStart | None:
-    """The agent whose action launched ``agent``, or ``None`` for a root."""
-    return agent.parent.parent_agent if agent.parent is not None else None
-
-
 def _record_result_access(agent_id: str) -> None:
     """Notify the host that this REPL action read an agent result."""
     from rlmflow.runtime.repl import current_binding
@@ -370,7 +365,7 @@ def build_agent_directory(
     info: list[AgentInfo] = []
 
     for agent in root.iter_agents():
-        parent = _supervisor(agent)
+        parent = agent.supervisor
         running = running_by_agent.get(agent.id)
         if agent.terminal:
             status: AgentStatus = "completed"

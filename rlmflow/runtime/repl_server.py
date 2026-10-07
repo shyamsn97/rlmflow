@@ -86,7 +86,7 @@ class ReplServer:
     def make_proxy(self, name: str, *, is_async: bool):
         def begin(args: tuple[object, ...], kwargs: dict[str, object]):
             binding = current_binding()
-            if name == "finish":
+            if name in {"finish", "submit"}:
                 if len(args) == 1 and not kwargs:
                     args = (as_finish_value(args[0]),)
                 elif not args and set(kwargs) == {"answer"}:
@@ -120,6 +120,7 @@ class ReplServer:
                     tenant_id=binding["tenant_id"],
                     proxy=name,
                     call_id=call_id,
+                    restoring=bool(binding.get("restoring")),
                     args=cast(list[object], encode_agent_references(list(args))),
                     kwargs=cast(
                         dict[str, object],
@@ -228,6 +229,7 @@ class ReplServer:
     def _run(self, message: RunRequest) -> None:
         tenant = self._tenant(message.tenant_id)
         binding = decode_host_value(message.binding)
+        binding["restoring"] = message.restoring
         tenant.seed({}, binding["args"])
         tenant.env = binding["env"]
         wait_agent = tenant.namespace.get(AGENT_WAIT_TOOL)

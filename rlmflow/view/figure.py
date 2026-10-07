@@ -36,7 +36,8 @@ NODE_COLORS: dict[str, str] = {
     "done_output": "#56d364",  # emerald    — terminal success
     "error_output": "#ff7b72",  # coral      — failure
     "transition_decision": "#d2a8ff",  # violet — semantic branch judgment
-    "verification_failure": "#f85149",  # red   — rejected finish candidate
+    "submission": "#f0c674",  # sand — submitted candidate
+    "verification_failure": "#f85149",  # red   — rejected submission
     "repair_query": "#ffa657",  # amber       — same-agent repair request
 }
 
@@ -52,6 +53,7 @@ NODE_SHAPES: dict[str, str] = {
     "done_output": "hexagon",
     "error_output": "x",
     "transition_decision": "diamond",
+    "submission": "hexagon-open",
     "verification_failure": "x",
     "repair_query": "circle-open",
 }

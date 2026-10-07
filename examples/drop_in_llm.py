@@ -61,7 +61,7 @@ def demo_flow_as_llm():
             root_config=AgentConfig(max_iters=5),
         )
     )
-    answer = ask(agent, "Compute 17 * 23 using a ```repl``` block, then call finish().")
+    answer = ask(agent, "Compute 17 * 23 using a ```repl``` block, then call submit().")
     print(answer, "\n")
     if agent.last_graph is not None:
         save_example_graph(

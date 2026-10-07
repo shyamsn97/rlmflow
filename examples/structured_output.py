@@ -105,7 +105,7 @@ def main() -> None:
 
     asyncio.run(drive())
 
-    # `finish(value)` parsed the answer against the schema, so the result is a
+    # `submit(value)` parsed the answer against the schema, so the result is a
     # dict; the Pydantic model is the typed view of that same value.
     plan = PackingPlan.model_validate(root.result())
 

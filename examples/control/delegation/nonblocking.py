@@ -21,7 +21,7 @@ WAIT_REPLY = """\
 ```repl
 alpha_result = await alpha
 beta_result = await beta
-finish(f"{alpha_result}, {beta_result}")
+submit(f"{alpha_result}, {beta_result}")
 ```"""
 
 
@@ -33,9 +33,9 @@ class ScriptedLLM:
             message["content"] for message in messages if message["role"] == "user"
         )
         if "Return alpha." in query:
-            return "```repl\nfinish('alpha finished')\n```"
+            return "```repl\nsubmit('alpha finished')\n```"
         if "Return beta." in query:
-            return "```repl\nfinish('beta finished')\n```"
+            return "```repl\nsubmit('beta finished')\n```"
         if "queued:" in query:
             return WAIT_REPLY
         return ROOT_REPLY

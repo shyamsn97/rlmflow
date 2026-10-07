@@ -41,7 +41,7 @@ QUERY = """\
 Show minimal `Flow.run_streaming(..., until=...)` boundaries with delegated child agents.
 
 In your first REPL block, launch two child handles before waiting for either,
-then collect both results and call finish. Use exactly these child names:
+then collect both results and call submit. Use exactly these child names:
 
 - `slow`: ask it to solve a tiny task after sleeping briefly with
   `await asyncio.sleep(1)`.

@@ -212,7 +212,7 @@ def test_mapping_result_renders_as_fields():
     root.pending_handoffs.append(handoff.Handoff("root.alpha", "alpha", {"n": 41, "note": "ok"}))
     assert handoff.flush(root)
     text = root.frontier.content
-    assert "Each block is that child's finish() value" in text
+    assert "Each block is that child's submit() value" in text
     assert "n: 41" in text
     assert 'note: "ok"' in text
     assert "result: {" not in text

@@ -42,9 +42,9 @@ class DemoLLM:
         self.last_usage = LLMUsage(input_tokens=80, output_tokens=20)
         convo = "\n".join(m["content"] for m in messages)
         if "Injected controller observation" in convo:
-            return '```repl\nfinish("used the injected controller observation")\n```'
+            return '```repl\nsubmit("used the injected controller observation")\n```'
         if "Controller stop request" in convo:
-            return '```repl\nfinish("controller stopped the run")\n```'
+            return '```repl\nsubmit("controller stopped the run")\n```'
         return '```repl\nprint("waiting for controller input")\n```'
 
 
@@ -73,7 +73,7 @@ def observation_injection() -> None:
 
     flow = Flow(DemoLLM())
     graph = flow.start(
-        "Wait for a controller note, then finish.",
+        "Wait for a controller note, then submit.",
         config=AgentConfig(max_depth=0, max_iters=4),
     )
     assert_types(graph, ["agent_start"])
@@ -138,7 +138,7 @@ def controller_stop_instruction() -> None:
 
     asyncio.run(run_with_controller_stop())
     assert graph.result() == "controller stopped the run"
-    print_states("after controller stop instruction: clean finish(...)", graph)
+    print_states("after controller stop instruction: clean submit(...)", graph)
     print(f"result={graph.result()!r}")
     save_example_graph(
         graph,

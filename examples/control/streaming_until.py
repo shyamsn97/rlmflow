@@ -87,7 +87,7 @@ async def demo_next_idle_and_resume() -> None:
     def reply(messages: list[dict[str, Any]]) -> str:
         text = "\n".join(message["content"] for message in messages)
         if "STOP NOW" in text:
-            return '```repl\nfinish("stopped")\n```'
+            return '```repl\nsubmit("stopped")\n```'
         return "```repl\nprint('working')\n```"
 
     flow = Flow(ScriptedLLM(reply))
@@ -115,7 +115,7 @@ async def demo_idle_heals_errors() -> None:
             scripted_replies(
                 "not a repl block",
                 "```repl\nprint('fixed')\n```",
-                "```repl\nfinish('ok')\n```",
+                "```repl\nsubmit('ok')\n```",
             )
         )
     )
@@ -133,10 +133,10 @@ async def demo_callable_boundary_with_child() -> None:
                 "```repl\n"
                 "child = launch_subagent(task='child')\n"
                 "result = await child\n"
-                "finish('parent saw ' + result)\n"
+                "submit('parent saw ' + result)\n"
                 "```"
             )
-        return "```repl\nfinish('child done')\n```"
+        return "```repl\nsubmit('child done')\n```"
 
     flow = Flow(ScriptedLLM(reply))
     graph = flow.start("parent", config=AgentConfig(max_depth=1))

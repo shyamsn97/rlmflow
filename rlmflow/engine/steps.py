@@ -7,6 +7,7 @@ these, and the first match wins.
 AgentStart|UserQuery|ErrorOutput|ExecOutput + out_of_room      → to_final           → FinalQuery
 AgentStart|UserQuery|ErrorOutput|ExecOutput + needs_truncation → to_summary         → TruncationSummary
 VerificationFailure                                            → to_repair          → RepairQuery
+Submission                                                     → accept_submission  → DoneOutput
 AgentStart|UserQuery|ErrorOutput|ExecOutput                    → complete           → LLMOutput | DoneOutput
 LLMOutput + one non-empty repl block                           → to_action          → ExecAction
 LLMOutput + invalid repl protocol                              → to_missing_action  → ExecAction
@@ -31,6 +32,7 @@ from rlmflow.graph.nodes import (
     Node,
     RepairQuery,
     ReplDead,
+    Submission,
     TruncationSummary,
     TurnMode,
     UserQuery,
@@ -101,10 +103,15 @@ async def to_summary(flow: Flow, node: Node) -> TruncationSummary:
 async def to_repair(flow: Flow, node: VerificationFailure) -> RepairQuery:
     return RepairQuery(
         content=(
-            "Your previous finish candidate was rejected. Repair it and call "
-            f"finish(...) again.\n\n{node.feedback}"
+            "Your previous submitted candidate was rejected. Repair it and call "
+            f"submit(...) again.\n\n{node.feedback}"
         )
     )
+
+
+@transition(source=Submission)
+async def accept_submission(flow: Flow, node: Submission) -> DoneOutput:
+    return DoneOutput.from_submission(node)
 
 
 @transition(source=(AgentStart, UserQuery, ErrorOutput, ExecOutput))
@@ -133,7 +140,7 @@ async def to_action(flow: Flow, node: LLMOutput) -> ExecAction:
 
 
 # Every invalid model response enters the runtime's established protocol-error
-# recovery path. Only finish(value) inside a valid REPL action can complete a run.
+# recovery path. Only submit(value) inside a valid REPL action can complete a run.
 @transition(source=LLMOutput)
 async def to_missing_action(flow: Flow, node: LLMOutput) -> ExecAction:
     return ExecAction(code="")
@@ -144,14 +151,17 @@ async def run_repl(flow: Flow, node: ExecAction) -> Node:
     return node_for_run(node, await flow.wrapped_runtime.execute(node))
 
 
-def node_for_run(node: ExecAction, run: ReplRun) -> Node:
+def node_for_run(
+    node: ExecAction,
+    run: ReplRun,
+) -> Node:
     output = truncate_output(
         run.output,
         node.parent_agent.config.max_output_length,
     )
     if run.status is ReplStatus.DONE:
         acceptance = run.acceptance or {}
-        return DoneOutput(
+        return Submission(
             content=output,
             result=run.answer,
             schema_hash=acceptance.get("schema_hash"),
@@ -173,7 +183,7 @@ def node_for_run(node: ExecAction, run: ReplRun) -> Node:
         )
     if run.status is ReplStatus.OK:
         if turn_mode_for(node) is TurnMode.FINAL:
-            raise TransitionProtocolError("a final action must call finish(answer)")
+            raise TransitionProtocolError("a final action must call submit(answer)")
         return ExecOutput(content=output or "(no output)")
     if run.status is ReplStatus.ERROR:
         return ErrorOutput(content=output)
@@ -187,6 +197,7 @@ DEFAULT_TRANSITIONS = (
     to_final,
     to_summary,
     to_repair,
+    accept_submission,
     complete,
     to_action,
     to_missing_action,

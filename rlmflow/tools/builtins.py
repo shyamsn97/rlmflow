@@ -68,7 +68,7 @@ def llm_query_tool(flow: Any, node: Node):
         + _model_help(flow, default_model)
     )
 
-    @tool(description, proxy=True)
+    @tool(description, proxy=True, restore="result")
     async def llm_query(
         prompt: str,
         *,
@@ -94,16 +94,17 @@ def llm_query_tool(flow: Any, node: Node):
     return llm_query
 
 
-def finish_tool(flow: Any, node: Node):
+def submit_tool(flow: Any, node: Node):
     agent = node.parent_agent
     schema = agent.config.output_schema
     schema_hash = verification.schema_hash(schema)
 
     @tool(
-        "Submit this agent's final answer as a string or strict JSON value and end its run.",
+        "Submit this agent's candidate answer as a string or strict JSON value. "
+        "A locally valid candidate is recorded durably before the agent completes.",
         proxy=True,
     )
-    def finish(answer: object) -> None:
+    def submit(answer: object) -> None:
         try:
             candidate = as_finish_value(answer)
             value = as_finish_value(
@@ -137,15 +138,15 @@ def finish_tool(flow: Any, node: Node):
             },
         )
 
-    return finish
+    return submit
 
 
 def builtin_tools(flow: Any, node: Node) -> dict[str, Any]:
     """Return Flow's ordinary tools for one node."""
     mode = turn_mode_for(node)
     if mode is TurnMode.FINAL:
-        return {"finish": finish_tool(flow, node)}
-    tools: dict[str, Any] = {"finish": finish_tool(flow, node)}
+        return {"submit": submit_tool(flow, node)}
+    tools: dict[str, Any] = {"submit": submit_tool(flow, node)}
     if can_spawn(node.parent_agent):
         tools["launch_subagent"] = launch_tool(flow, node)
     if flow.use_llm_query:
@@ -155,7 +156,7 @@ def builtin_tools(flow: Any, node: Node) -> dict[str, Any]:
 
 __all__ = [
     "builtin_tools",
-    "finish_tool",
     "llm_query_tool",
     "query",
+    "submit_tool",
 ]

@@ -9,10 +9,12 @@ import threading
 import uuid
 from collections.abc import Callable
 from contextvars import Context, ContextVar
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from rlmflow.graph.nodes import ExecAction, Node, active_step, running_step
+from rlmflow.runtime.env import RLMFLOW_REPLAY
 from rlmflow.runtime.protocol import (
     InjectProxyRequest,
     InjectRequest,
@@ -34,8 +36,9 @@ from rlmflow.runtime.repl import (
     ReplStatus,
     VerificationSignal,
 )
+from rlmflow.structured import as_finish_value
 from rlmflow.tools import get_tool_metadata
-from rlmflow.tools.agents import AGENTS_BINDING
+from rlmflow.tools.agents import AGENTS_BINDING, encode_agent_references
 from rlmflow.utils.serial import encode_host_value
 
 _NO_ANSWER = object()
@@ -45,6 +48,57 @@ _RPC_CALL_ID: ContextVar[int] = ContextVar("rlmflow_rpc_call_id", default=0)
 def current_rpc_call_id() -> int:
     """Ordinal of the current proxied call within one execution."""
     return _RPC_CALL_ID.get()
+
+
+def invoke_tool_call(
+    fn: Callable[..., object],
+    action: ExecAction | None,
+    call_id: int,
+    restoring: bool,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+) -> object:
+    """Invoke or restore one proxied tool call and save successful results."""
+    metadata = get_tool_metadata(fn)
+    restore = metadata.restore if metadata is not None else None
+    name = metadata.name if metadata is not None else getattr(fn, "__name__", "tool")
+    calls = action.tool_calls(name) if action is not None else {}
+    use_saved = call_id in calls if restoring else action is not None and call_id in calls
+
+    token = _RPC_CALL_ID.set(call_id)
+    try:
+        if restore is not None and use_saved:
+            saved = deepcopy(calls[call_id])
+            return saved if restore == "result" else restore(saved, *args, **kwargs)
+        value = fn(*args, **kwargs)
+    finally:
+        _RPC_CALL_ID.reset(token)
+
+    if restore is None:
+        return value
+    if action is None:
+        raise RuntimeError(f"cannot save {name} outside an ExecAction")
+
+    def save(result: object) -> object:
+        try:
+            stored = as_finish_value(encode_agent_references(result))
+        except TypeError as exc:
+            raise TypeError(
+                f"{name} returned a value that cannot be saved as strict JSON"
+            ) from exc
+        action.record_tool_call(name, call_id, deepcopy(stored))
+        return result
+
+    if bool(metadata and metadata.is_async) and inspect.isawaitable(value):
+        async def wait_and_save() -> object:
+            nested_token = _RPC_CALL_ID.set(call_id)
+            try:
+                return save(await value)
+            finally:
+                _RPC_CALL_ID.reset(nested_token)
+
+        return wait_and_save()
+    return save(value)
 
 
 class ReplConnection(Protocol):
@@ -206,16 +260,19 @@ class WorkerSession:
         try:
 
             def invoke() -> Any:
-                token = _RPC_CALL_ID.set(message.call_id)
-                try:
-                    fn = state.proxied[message.proxy]
-                    value = fn(*message.args, **message.kwargs)
-                    metadata = get_tool_metadata(fn)
-                    if inspect.isawaitable(value) and bool(metadata and metadata.is_async):
-                        value = self._await_host(value, state.loop)
-                    return value
-                finally:
-                    _RPC_CALL_ID.reset(token)
+                fn = state.proxied[message.proxy]
+                value = invoke_tool_call(
+                    fn,
+                    state.step if isinstance(state.step, ExecAction) else None,
+                    message.call_id,
+                    message.restoring,
+                    tuple(message.args),
+                    dict(message.kwargs),
+                )
+                metadata = get_tool_metadata(fn)
+                if inspect.isawaitable(value) and bool(metadata and metadata.is_async):
+                    value = self._await_host(value, state.loop)
+                return value
 
             def in_step() -> Any:
                 if state.step is None:
@@ -277,6 +334,7 @@ class WorkerSession:
             tenant_id=tenant.tenant_id,
             code=code,
             binding=encode_host_value(binding),
+            restoring=tenant.env.get(RLMFLOW_REPLAY) == "1",
         )
         try:
             response = self.request(request, timeout=self.execution_timeout)
@@ -345,7 +403,7 @@ class WorkerRepl(Repl):
     def inject(self, name: str, value: Any) -> None:
         self.namespace[name] = value
         metadata = get_tool_metadata(value) if callable(value) else None
-        if name == "finish" or (metadata is not None and metadata.proxy):
+        if name in {"finish", "submit"} or (metadata is not None and metadata.proxy):
             self.proxied[name] = value
             request: WireModel = InjectProxyRequest(
                 id=self.session._next_id("inject_proxy"),

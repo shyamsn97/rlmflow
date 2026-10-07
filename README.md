@@ -78,7 +78,7 @@ In the recorded run, the root chose a five-file app and launched five GPT-5-mini
 
 ### Benchmarks: long context and visual interaction
 
-The evaluation harness compares the original `official-rlm` runtime with rlmflow at depths 0, 1, and 2 under one contract. Its default long-context benchmark is a fixed OOLONG TREC-coarse 128K slice: two questions for pilot runs and ten for full runs. MazeBench is the official interactive benchmark, while swarm-fanout compares pinned PrimeAgent, Official RLM, JAZ, and rlmflow through normalized delegation evidence. Paid rows run in Docker by default, with Modal as an optional remote executor. See [Evaluation suites](docs/benchmarks.md).
+The evaluation harness compares the original `official-rlm` runtime with rlmflow at depths 0, 1, and 2 under one contract. Its default long-context benchmark is a fixed OOLONG TREC-coarse 128K slice: two questions for pilot runs and 25 for full runs. MazeBench is the official interactive benchmark, while a 16-task frozen swarm-fanout matrix compares pinned PrimeAgent, Official RLM, JAZ, and rlmflow through normalized delegation evidence. Paid rows run in Docker by default, with Modal as an optional remote executor. See [Evaluation suites](docs/benchmarks.md).
 
 A saved GPT-5 OOLONG-Pairs 32K pilot provides a small two-runner reference:
 
@@ -102,8 +102,21 @@ handles = [
     launch_subagent(task="scan final third", chunk=chunk_2),
 ]
 results = await asyncio.gather(*handles)
-finish(extract_answer(results))
+submit(extract_answer(results))
 ```
+
+When the caller knows an input's structure, it can pass that knowledge without copying the value into the child's prompt:
+
+```python
+from rlmflow import Input
+
+child = launch_subagent(
+    task="Analyze these records.",
+    rows=Input(rows, description="List of {user_id, label, text} records."),
+)
+```
+
+The child receives the raw value as `rows`; its argument manifest includes the description. `Input(...)` also works on root arguments.
 
 Then `chunk_2` can recursively delegate again:
 
@@ -114,7 +127,7 @@ handles = [
     launch_subagent(task="inspect window B", window=hits[1]),
 ]
 results = await asyncio.gather(*handles)
-finish(select_candidate(results))
+submit(select_candidate(results))
 ```
 
 That code creates an agent graph:
@@ -315,9 +328,9 @@ print(root.result())
 Every assistant turn emits exactly one REPL action:
 
 ```text
-LLMOutput -> ExecAction -> ExecOutput    (normal continuation)
-                        -> DoneOutput    (REPL code called finish())
-                        -> ErrorOutput   (invalid response, code error, or dead REPL)
+LLMOutput -> ExecAction -> ExecOutput          (normal continuation)
+                        -> Submission -> DoneOutput
+                        -> ErrorOutput         (invalid response, code error, or dead REPL)
 ```
 
 A turn that delegates hangs its children off the `ExecAction` that launched them, and lands one `ExecOutput` when the block finishes — so a parent's transcript stays a single chain whether or not it spawned anyone.
@@ -335,7 +348,7 @@ root.usage                              # O(1) whole-run usage
 root.stats                              # immutable counts and usage snapshot
 
 from rlmflow import persistence
-persistence.to_document(root)           # flat JSON-serializable v5 document
+persistence.to_document(root)           # flat JSON-serializable v7 document
 ```
 
 ## Inject controller Nodes
@@ -529,23 +542,20 @@ make -f benchmarks/Makefile interactive
 python benchmarks/run_benchmark.py --list
 ```
 
-| Suite          | Question                                                  |
-| -------------- | --------------------------------------------------------- |
+| Suite          | Question                                                     |
+| -------------- | ------------------------------------------------------------ |
 | `smoke`        | Can the pipeline recover a needle from a synthetic haystack? |
-| `delegation`   | Can fan-out avoid fabricated, duplicate, or dropped work? |
-| `long-context` | How do harnesses manage paper-aligned OOLONG tasks?        |
-| `interactive`  | How do harnesses search and act in persistent environments? |
+| `delegation`   | Can fan-out avoid fabricated, duplicate, or dropped work?    |
+| `long-context` | How do harnesses manage paper-aligned OOLONG tasks?          |
+| `interactive`  | How do harnesses search and act in persistent environments?  |
 
-Use `--split pilot` for bring-up and `--split full` for complete frozen manifests.
-See [docs/benchmarks.md](docs/benchmarks.md) for runner matrices and result
-artifacts. The repository does not claim comparative quality, cost, or latency
-beyond checked-in or reproducibly generated run evidence.
+Use `--split pilot` for bring-up and `--split full` for complete frozen manifests. See [docs/benchmarks.md](docs/benchmarks.md) for runner matrices and result artifacts. The repository does not claim comparative quality, cost, or latency beyond checked-in or reproducibly generated run evidence.
 
 ## Docs
 
 The top-level docs are short, user-facing guides. The deep dive lives in [`docs/internals.md`](docs/internals.md). Research notes live under [`docs/research/`](docs/research/).
 
-- [**Upgrading to 0.6**](UPGRADING.md): breaking API and persistence changes.
+- [**Upgrading to 0.7**](UPGRADING.md): breaking API and persistence changes.
 - [**Internals**](docs/internals.md): Node structure, Flow transitions, the task queue and pools, Runtime identity, replay, forks, and persistence.
 - [**Structured outputs**](docs/structured_outputs.md): output codecs, chat, Instructor, Jev, and explicit retry/fallback composition.
 - [Blog post](https://shyamsn97.github.io/blog/rlmflow/): long-form pitch — recursive agents, why graphs beat flat traces, and walkthroughs.

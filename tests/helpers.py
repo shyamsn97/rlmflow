@@ -2,12 +2,37 @@
 
 from __future__ import annotations
 
-from rlmflow import AgentStart, LLMUsage
-from rlmflow.graph.nodes import Node
+import inspect
+
+from rlmflow import AgentStart
+from rlmflow.graph.nodes import ExecAction, Node
+from rlmflow.runtime.env import RLMFLOW_REPLAY
 from rlmflow.runtime.repl import LocalRepl, base_namespace
-from rlmflow.runtime.repl_client import _RPC_CALL_ID
+from rlmflow.runtime.repl_client import invoke_tool_call
 from rlmflow.runtime.runtime import Runtime
 from rlmflow.tools.agents import AGENT_OBSERVE_TOOL, AGENT_WAIT_TOOL, AGENTS_BINDING
+from rlmflow.tools.tools import get_tool_metadata
+
+
+def repl(code: str, *, preamble: str | None = None) -> str:
+    """Wrap executable test code in the model's strict REPL protocol."""
+    prefix = f"{preamble}\n" if preamble else ""
+    return f"{prefix}```repl\n{code}\n```"
+
+
+def reasoning_repl(code: str) -> str:
+    """Build the historical flow-test response with a prose preamble."""
+    return repl(code, preamble="thinking")
+
+
+def trailing_user_text(messages) -> str:
+    """Join the consecutive user messages at the end of a request."""
+    trailing = []
+    for message in reversed(messages):
+        if message["role"] != "user":
+            break
+        trailing.append(message["content"])
+    return "\n\n".join(reversed(trailing))
 
 
 class TestRuntime(Runtime):
@@ -25,20 +50,36 @@ class TestRuntime(Runtime):
 
     async def execute(self, value: AgentStart | Node, code: str):
         repl = self.repl_for(value)
-        launch = repl.namespace.get("launch_subagent")
-        if launch is not None:
-            call_id = 0
+        if not isinstance(value, ExecAction):
+            raise TypeError("tool execution requires an ExecAction")
+        restoring = repl.env.get(RLMFLOW_REPLAY) == "1"
+        counts: dict[str, int] = {}
 
-            def launch_with_call_id(*args, **kwargs):
-                nonlocal call_id
-                token = _RPC_CALL_ID.set(call_id)
-                call_id += 1
-                try:
-                    return launch(*args, **kwargs)
-                finally:
-                    _RPC_CALL_ID.reset(token)
+        for name, original in tuple(repl.namespace.items()):
+            metadata = get_tool_metadata(original) if callable(original) else None
+            if metadata is None or not metadata.proxy:
+                continue
 
-            repl.namespace["launch_subagent"] = launch_with_call_id
+            def invoke(*args, _fn=original, _name=name, **kwargs):
+                call_id = counts.get(_name, 0)
+                counts[_name] = call_id + 1
+                return invoke_tool_call(
+                    _fn,
+                    value,
+                    call_id,
+                    restoring,
+                    args,
+                    kwargs,
+                )
+
+            if inspect.iscoroutinefunction(original):
+                async def async_invoke(*args, _invoke=invoke, **kwargs):
+                    result = _invoke(*args, **kwargs)
+                    return await result if inspect.isawaitable(result) else result
+
+                repl.namespace[name] = async_invoke
+            else:
+                repl.namespace[name] = invoke
 
         binding = {
             "args": repl.args,
@@ -58,21 +99,11 @@ class TestRuntime(Runtime):
 class StubLLM:
     def __init__(self, fn):
         self.fn = fn
+        self.calls = []
 
-    def chat(self, messages, **_kwargs):
+    def chat(self, messages, **kwargs):
+        self.calls.append(kwargs)
         return self.fn(messages)
-
-
-class UsageLLM:
-    def __init__(self, reply, input_tokens=0, output_tokens=0):
-        self.reply = reply
-        self.last_usage = None
-        self.input_tokens = input_tokens
-        self.output_tokens = output_tokens
-
-    def chat(self, messages, **_kwargs):
-        self.last_usage = LLMUsage(self.input_tokens, self.output_tokens)
-        return self.reply(messages) if callable(self.reply) else self.reply
 
 
 def first_user(messages):

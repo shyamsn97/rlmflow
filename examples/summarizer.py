@@ -102,7 +102,7 @@ it with a map-reduce strategy instead of reading it all at once:
    does not serialize their execution.
 3. Combine the child summaries into a single coherent summary of the whole
    document (a short intro paragraph plus bullet points), then call
-   finish(final_summary).
+   submit(final_summary).
 """
 
 

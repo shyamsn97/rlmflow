@@ -13,7 +13,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from rlmflow.graph.config import AGENT_REF_KEY, AgentConfig, agent_ref_id
+from rlmflow.graph.arguments import RECURSE, transform_argument, visit_argument
+from rlmflow.graph.config import (
+    AGENT_REF_KEY,
+    AgentConfig,
+    Input,
+    agent_ref_id,
+    input_parts,
+)
 from rlmflow.graph.nodes import (
     AgentStart,
     ExecAction,
@@ -27,19 +34,10 @@ from rlmflow.graph.nodes import (
     new_agent_id,
     new_node_id,
 )
+from rlmflow.structured import as_finish_value
 
-VERSION = 7
 ARG_BLOB_THRESHOLD_BYTES = 64 * 1024
 ARG_BLOB_REF_KEY = "$rlmflow_arg_blob"
-
-
-class UnsupportedGraphVersion(ValueError):
-    """Raised when a run uses a persistence format this runtime does not read."""
-
-    def __init__(self, found: object) -> None:
-        super().__init__(f"unsupported graph version {found!r}; this runtime requires v{VERSION}")
-        self.found = found
-        self.supported = VERSION
 
 
 #: Node fields that are the tree itself; the record's envelope carries them.
@@ -57,6 +55,23 @@ _TREE_FIELDS = frozenset(
         "_messages",
     }
 )
+_PERSISTED_CONFIG_FIELDS = (
+    "model",
+    "prompt_profile",
+    "output_schema",
+    "child_output_schema",
+    "verifier_id",
+    "verifier_hash",
+    "reuse_worker",
+    "max_depth",
+    "max_iters",
+    "max_budget",
+    "keep_n_messages",
+    "max_output_length",
+    "max_query_chars",
+    "resume_on_child_done",
+)
+_BOOLEAN_CONFIG_FIELDS = frozenset({"reuse_worker", "resume_on_child_done"})
 
 
 def agent_payload(agent: AgentStart | None) -> dict[str, Any]:
@@ -64,20 +79,7 @@ def agent_payload(agent: AgentStart | None) -> dict[str, Any]:
     config = agent.config if agent is not None else AgentConfig()
     return {
         "args": dict(agent.args) if agent is not None else {},
-        "model": config.model,
-        "prompt_profile": config.prompt_profile,
-        "output_schema": config.output_schema,
-        "child_output_schema": config.child_output_schema,
-        "verifier_id": config.verifier_id,
-        "verifier_hash": config.verifier_hash,
-        "reuse_worker": config.reuse_worker,
-        "max_depth": config.max_depth,
-        "max_iters": config.max_iters,
-        "max_budget": config.max_budget,
-        "keep_n_messages": config.keep_n_messages,
-        "max_output_length": config.max_output_length,
-        "max_query_chars": config.max_query_chars,
-        "resume_on_child_done": config.resume_on_child_done,
+        **{name: getattr(config, name) for name in _PERSISTED_CONFIG_FIELDS},
     }
 
 
@@ -156,13 +158,12 @@ def _node_types() -> dict[str, type[Node]]:
 
 
 def to_document(root: AgentStart) -> dict[str, Any]:
-    """Return one complete v7 run document."""
+    """Return one complete run document."""
     if root.root is not root or root.parent is not None:
         raise ValueError("a persisted run must be a standalone root")
     _validate_graph(root)
     records = [node.to_record() for node in root.walk()]
     return {
-        "version": VERSION,
         "graph_id": root.id,
         "root_id": root.id,
         "node_count": len(records),
@@ -172,11 +173,7 @@ def to_document(root: AgentStart) -> dict[str, Any]:
 
 
 def from_document(data: dict[str, Any]) -> AgentStart:
-    """Strictly rebuild a v7 run in one parent-before-child pass."""
-    version = data.get("version")
-    if version != VERSION:
-        raise UnsupportedGraphVersion(version)
-
+    """Strictly rebuild a run in one parent-before-child pass."""
     records = data.get("nodes")
     if not isinstance(records, list):
         raise ValueError("run document field 'nodes' must be a list")
@@ -245,7 +242,7 @@ def from_document(data: dict[str, Any]) -> AgentStart:
 
 
 def _validate_graph(root: AgentStart) -> None:
-    """Reject invalid JSON arguments, dependencies, and launch receipts."""
+    """Reject invalid JSON arguments, dependencies, and saved tool calls."""
     edges: dict[str, tuple[str, ...]] = {}
     for agent in root.iter_agents():
         sources: list[str] = []
@@ -310,53 +307,84 @@ def _validate_graph(root: AgentStart) -> None:
                 if state.get(source_id) != 2:
                     stack.append((source_id, False))
 
-    receipts: dict[str, tuple[str, int]] = {}
+    launches: dict[str, tuple[str, int]] = {}
     for node in root.walk():
         if not isinstance(node, ExecAction):
             continue
-        for call_id, agent_id in node.launched_agent_ids.items():
-            if not isinstance(call_id, int) or call_id < 0:
-                raise ValueError(f"action {node.id!r} has invalid launch call id {call_id!r}")
+        if not isinstance(node.saved_tool_calls, dict):
+            raise TypeError(f"action {node.id!r} saved tool calls must be an object")
+        for tool_name, calls in node.saved_tool_calls.items():
+            if not isinstance(tool_name, str) or not tool_name:
+                raise ValueError(f"action {node.id!r} has an invalid saved tool name")
+            if not isinstance(calls, dict):
+                raise TypeError(
+                    f"action {node.id!r} saved {tool_name!r} calls must be an object"
+                )
+            for call_id, result in calls.items():
+                if not isinstance(call_id, int) or call_id < 0:
+                    raise ValueError(
+                        f"action {node.id!r} has invalid {tool_name!r} call id {call_id!r}"
+                    )
+                try:
+                    as_finish_value(result)
+                except TypeError as exc:
+                    raise TypeError(
+                        f"action {node.id!r} saved {tool_name!r} call {call_id} "
+                        "must be strict JSON"
+                    ) from exc
+                if tool_name == "launch_subagent" and agent_ref_id(result) is None:
+                    raise ValueError(
+                        f"action {node.id!r} saved launch call {call_id} "
+                        "must be an exact agent reference"
+                    )
+        for call_id, agent_id in node.launch_agent_ids().items():
             if root.find_agent(agent_id) is None:
                 raise ValueError(
-                    f"action {node.id!r} launch receipt points to missing agent {agent_id!r}"
+                    f"action {node.id!r} launch call points to missing agent {agent_id!r}"
                 )
-            existing = receipts.get(agent_id)
+            existing = launches.get(agent_id)
             if existing is not None and existing[0] != node.id:
                 raise ValueError(
-                    f"agent {agent_id!r} has launch receipts from {existing[0]!r} and {node.id!r}"
+                    f"agent {agent_id!r} has launch calls from {existing[0]!r} and {node.id!r}"
                 )
-            receipts[agent_id] = (node.id, call_id)
+            launches[agent_id] = (node.id, call_id)
 
 
 def _validate_arg_value(path: str, value: object) -> list[tuple[str, str]]:
     """Validate one persisted JSON value and return nested agent references."""
-    source_id = agent_ref_id(value)
-    if source_id is not None:
-        return [(path, source_id)]
-    if value is None or isinstance(value, (str, bool, int)):
-        return []
-    if isinstance(value, float):
-        try:
-            json.dumps(value, allow_nan=False)
-        except ValueError as exc:
-            raise TypeError(f"argument {path!r} must contain a finite float") from exc
-        return []
-    if isinstance(value, list):
-        references: list[tuple[str, str]] = []
-        for index, item in enumerate(value):
-            references.extend(_validate_arg_value(f"{path}[{index}]", item))
-        return references
-    if isinstance(value, dict):
-        if AGENT_REF_KEY in value:
-            raise TypeError(f"argument {path!r} must contain an exact agent reference")
-        references = []
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError(f"argument {path!r} contains a non-string object key")
-            references.extend(_validate_arg_value(f"{path}.{key}", item))
-        return references
-    raise TypeError(f"argument {path!r} must be JSON-compatible or an exact agent reference")
+    references: list[tuple[str, str]] = []
+
+    def validate(item_path: str, item: object) -> object:
+        wrapped = input_parts(item)
+        if wrapped is not None:
+            visit_argument(wrapped[0], validate, path=item_path)
+            return item
+        source_id = agent_ref_id(item)
+        if source_id is not None:
+            references.append((item_path, source_id))
+            return item
+        if item is None or isinstance(item, (str, bool, int)):
+            return item
+        if isinstance(item, float):
+            try:
+                json.dumps(item, allow_nan=False)
+            except ValueError as exc:
+                raise TypeError(f"argument {item_path!r} must contain a finite float") from exc
+            return item
+        if isinstance(item, dict):
+            if AGENT_REF_KEY in item:
+                raise TypeError(
+                    f"argument {item_path!r} must contain an exact agent reference"
+                )
+            return RECURSE
+        if isinstance(item, list):
+            return RECURSE
+        raise TypeError(
+            f"argument {item_path!r} must be JSON-compatible or an exact agent reference"
+        )
+
+    visit_argument(value, validate, path=path)
+    return references
 
 
 def save(root: AgentStart, path: str | Path) -> Path:
@@ -372,7 +400,7 @@ def save(root: AgentStart, path: str | Path) -> Path:
 
 
 def load(path: str | Path) -> AgentStart:
-    """Load a strict v6 run directory."""
+    """Load and validate a strict run directory."""
     run = Path(path)
     graph_path = run / "graph.json"
     try:
@@ -417,25 +445,43 @@ def clone_until(stop: Node) -> AgentStart:
         if isinstance(payload, dict):
             args = payload.get("args")
             if isinstance(args, dict):
-                remapped_args: dict[str, Any] = {}
-                for name, value in args.items():
-                    source_id = agent_ref_id(value)
-                    if source_id is None:
-                        remapped_args[name] = value
-                        continue
-                    if source_id not in id_map:
-                        raise ValueError(
-                            f"fork at {stop.id!r} is not closed over argument dependency {source_id!r}"
+                def remap_argument(path: str, value: Any) -> Any:
+                    wrapped = input_parts(value)
+                    if wrapped is not None:
+                        raw, description = wrapped
+                        return Input(
+                            transform_argument(raw, remap_argument, path=path),
+                            description=description,
                         )
-                    remapped_args[name] = {AGENT_REF_KEY: id_map[source_id]}
-                payload["args"] = remapped_args
-            launched = payload.get("launched_agent_ids")
-            if isinstance(launched, dict):
-                payload["launched_agent_ids"] = {
-                    str(call_id): id_map[agent_id]
-                    for call_id, agent_id in launched.items()
-                    if agent_id in id_map
+                    source_id = agent_ref_id(value)
+                    if source_id is not None:
+                        if source_id not in id_map:
+                            raise ValueError(
+                                f"fork at {stop.id!r} is not closed over "
+                                f"argument dependency {source_id!r}"
+                            )
+                        return {AGENT_REF_KEY: id_map[source_id]}
+                    return RECURSE
+
+                payload["args"] = {
+                    name: transform_argument(value, remap_argument, path=name)
+                    for name, value in args.items()
                 }
+            saved = payload.get("saved_tool_calls")
+            if isinstance(saved, dict):
+                if old_id == stop.id and record.get("type") in {
+                    ExecAction.type,
+                    "append_child",
+                }:
+                    payload["saved_tool_calls"] = {}
+                else:
+                    launches = saved.get("launch_subagent")
+                    if isinstance(launches, dict):
+                        saved["launch_subagent"] = {
+                            str(call_id): {AGENT_REF_KEY: id_map[agent_id]}
+                            for call_id, result in launches.items()
+                            if (agent_id := agent_ref_id(result)) in id_map
+                        }
             retrieved = payload.get("retrieved_agent_ids")
             if isinstance(retrieved, list):
                 payload["retrieved_agent_ids"] = [
@@ -454,7 +500,6 @@ def clone_until(stop: Node) -> AgentStart:
     new_root_id = source[0]["id"]
     return from_document(
         {
-            "version": VERSION,
             "graph_id": new_root_id,
             "root_id": new_root_id,
             "node_count": len(source),
@@ -482,7 +527,6 @@ def _agent_document(agent: AgentStart) -> dict[str, Any]:
 def _summary_document(root: AgentStart) -> dict[str, Any]:
     stats = root.stats
     return {
-        "version": VERSION,
         "graph_id": root.id,
         "root_id": root.id,
         "root_agent_id": root.config.path,
@@ -526,21 +570,24 @@ class _ArgBlobStore:
         return {name: self.encode(value) for name, value in args.items()}
 
     def encode(self, value: Any) -> Any:
-        if not isinstance(value, str):
-            return value
-        encoded = value.encode("utf-8")
-        if len(encoded) < ARG_BLOB_THRESHOLD_BYTES:
-            return value
-        digest = hashlib.sha256(encoded).hexdigest()
-        self.path.mkdir(parents=True, exist_ok=True)
-        blob_path = self.path / f"{digest}.txt"
-        if not blob_path.exists():
-            _write_text(blob_path, value)
-        return {
-            ARG_BLOB_REF_KEY: digest,
-            "encoding": "utf-8",
-            "bytes": len(encoded),
-        }
+        def encode_string(_path: str, item: Any) -> Any:
+            if not isinstance(item, str):
+                return RECURSE
+            encoded = item.encode("utf-8")
+            if len(encoded) < ARG_BLOB_THRESHOLD_BYTES:
+                return item
+            digest = hashlib.sha256(encoded).hexdigest()
+            self.path.mkdir(parents=True, exist_ok=True)
+            blob_path = self.path / f"{digest}.txt"
+            if not blob_path.exists():
+                _write_text(blob_path, item)
+            return {
+                ARG_BLOB_REF_KEY: digest,
+                "encoding": "utf-8",
+                "bytes": len(encoded),
+            }
+
+        return transform_argument(value, encode_string, path="")
 
 
 def _encode_document(data: dict[str, Any], blobs: _ArgBlobStore) -> dict[str, Any]:
@@ -572,24 +619,26 @@ def _resolve_document(data: dict[str, Any], blob_path: Path) -> dict[str, Any]:
 
 
 def _resolve_arg(value: Any, blob_path: Path) -> Any:
-    if not isinstance(value, dict) or set(value) != {
-        ARG_BLOB_REF_KEY,
-        "encoding",
-        "bytes",
-    }:
-        return value
-    digest = value.get(ARG_BLOB_REF_KEY)
-    if not isinstance(digest, str) or len(digest) != 64:
-        raise ValueError(f"invalid argument blob digest {digest!r}")
-    path = blob_path / f"{digest}.txt"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise ValueError(f"missing argument blob {digest}") from exc
-    encoded = text.encode("utf-8")
-    if len(encoded) != value.get("bytes") or hashlib.sha256(encoded).hexdigest() != digest:
-        raise ValueError(f"argument blob {digest} failed integrity validation")
-    return text
+    def resolve_blob(_path: str, item: Any) -> Any:
+        if isinstance(item, dict) and set(item) == {ARG_BLOB_REF_KEY, "encoding", "bytes"}:
+            digest = item.get(ARG_BLOB_REF_KEY)
+            if not isinstance(digest, str) or len(digest) != 64:
+                raise ValueError(f"invalid argument blob digest {digest!r}")
+            path = blob_path / f"{digest}.txt"
+            try:
+                text = path.read_text(encoding="utf-8")
+            except FileNotFoundError as exc:
+                raise ValueError(f"missing argument blob {digest}") from exc
+            encoded = text.encode("utf-8")
+            if (
+                len(encoded) != item.get("bytes")
+                or hashlib.sha256(encoded).hexdigest() != digest
+            ):
+                raise ValueError(f"argument blob {digest} failed integrity validation")
+            return text
+        return RECURSE
+
+    return transform_argument(value, resolve_blob, path="")
 
 
 def _prune(path: Path, keep: set[str]) -> None:
@@ -640,13 +689,24 @@ def _new_node(data: dict[str, Any]) -> Node:
             **ran,
         )
     values = {name: value for name, value in payload.items() if name in cls.__dataclass_fields__}
-    if issubclass(cls, ExecAction) and "launched_agent_ids" in values:
-        launched = values["launched_agent_ids"]
-        if not isinstance(launched, dict):
-            raise TypeError(f"node {data.get('id')!r} launch receipts must be an object")
-        values["launched_agent_ids"] = {
-            int(call_id): agent_id for call_id, agent_id in launched.items()
-        }
+    if issubclass(cls, ExecAction) and "saved_tool_calls" in values:
+        saved = values["saved_tool_calls"]
+        if not isinstance(saved, dict):
+            raise TypeError(f"node {data.get('id')!r} saved tool calls must be an object")
+        values["saved_tool_calls"] = {}
+        for tool_name, calls in saved.items():
+            if not isinstance(calls, dict):
+                raise TypeError(
+                    f"node {data.get('id')!r} saved {tool_name!r} calls must be an object"
+                )
+            try:
+                values["saved_tool_calls"][tool_name] = {
+                    int(call_id): result for call_id, result in calls.items()
+                }
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"node {data.get('id')!r} has an invalid saved call id"
+                ) from exc
     if cls in {LLMOutput, TransitionDecision}:
         values["usage"] = LLMUsage(**(metadata.get("usage") or {}))
     if cls is LLMOutput:
@@ -661,26 +721,17 @@ def _epoch(stamp: str | None) -> float | None:
 def _config(path: str, payload: dict[str, Any]) -> AgentConfig:
     """Reconstruct the complete persisted agent configuration."""
     defaults = AgentConfig()
+    values = {
+        name: payload.get(name, getattr(defaults, name))
+        for name in _PERSISTED_CONFIG_FIELDS
+    }
+    for name in _BOOLEAN_CONFIG_FIELDS:
+        values[name] = bool(values[name])
     return AgentConfig(
         name=path.rpartition(".")[2],
         path=path,
         depth=path.count("."),
-        model=payload.get("model", "default"),
-        prompt_profile=payload.get("prompt_profile", "default"),
-        output_schema=payload.get("output_schema"),
-        child_output_schema=payload.get("child_output_schema"),
-        verifier_id=payload.get("verifier_id"),
-        verifier_hash=payload.get("verifier_hash"),
-        reuse_worker=bool(payload.get("reuse_worker", False)),
-        max_depth=payload.get("max_depth", 1),
-        max_iters=payload.get("max_iters", defaults.max_iters),
-        max_budget=payload.get("max_budget", defaults.max_budget),
-        keep_n_messages=payload.get("keep_n_messages"),
-        max_output_length=payload.get("max_output_length", defaults.max_output_length),
-        max_query_chars=payload.get("max_query_chars", defaults.max_query_chars),
-        resume_on_child_done=bool(
-            payload.get("resume_on_child_done", defaults.resume_on_child_done)
-        ),
+        **values,
     )
 
 
@@ -705,8 +756,6 @@ def _write_text(path: Path, text: str) -> None:
 
 __all__ = [
     "ARG_BLOB_THRESHOLD_BYTES",
-    "VERSION",
-    "UnsupportedGraphVersion",
     "from_document",
     "load",
     "to_record",

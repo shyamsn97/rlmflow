@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from rlmflow.graph.nodes import (
     AgentStart,
     Node,
+    Submission,
     TransitionDecision,
     VerificationFailure,
 )
@@ -54,6 +55,8 @@ def summarize(node: Node, limit: int = 96) -> str:
         text = f"selected {choice}"
     elif isinstance(node, VerificationFailure):
         text = f"{node.kind} rejected: {node.feedback}"
+    elif isinstance(node, Submission):
+        text = f"submission {_stringify(node.result)}"
     elif node.type == "done_output":
         text = f"done {_stringify(getattr(node, 'result', None) or node.content)}"
     elif node.type == "error_output":

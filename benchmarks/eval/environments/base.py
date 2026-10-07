@@ -238,7 +238,7 @@ class EnvironmentEpisode:
             raise RuntimeError("environment child has no launch action")
         call_id = agent.parent.launch_call_id_for(agent.id)
         if call_id is None:
-            raise RuntimeError(f"agent {agent.config.path!r} has no launch receipt")
+            raise RuntimeError(f"agent {agent.config.path!r} has no saved launch call")
         return self.fork_child(agent.parent, agent, call_id)
 
 

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from pydantic import JsonValue
@@ -15,7 +14,7 @@ from benchmarks.eval.environments.environment import Environment, Observation
 from benchmarks.eval.reporting import EnvironmentReport, RuntimeMetrics
 from benchmarks.eval.tasks.swarm_fanout import (
     SwarmFanoutDataset,
-    fanout_payloads,
+    fanout_payloads_for_example,
 )
 from benchmarks.eval.types import Example, Prediction, Score
 
@@ -35,9 +34,8 @@ class FanoutEnvironment(Environment[FanoutObservation, dict]):
         self.id = example.id
         self.description = example.prompt
         self._shards = tuple(dict(shard) for shard in example.metadata["shards"])
-        shard_dir = Path(example.metadata["fixture_paths"][0])
         self._observation = FanoutObservation(
-            payloads=fanout_payloads(list(self._shards), shard_dir)
+            payloads=fanout_payloads_for_example(example)
         )
 
     def start(self, instance_id: str) -> FanoutObservation:

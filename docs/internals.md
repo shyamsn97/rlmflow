@@ -62,6 +62,8 @@ AgentStart   -> complete (LLMOutput)
 UserQuery    -> complete (LLMOutput)
 ExecOutput   -> complete (LLMOutput)
 ErrorOutput  -> complete (LLMOutput)
+VerificationFailure -> to_repair (RepairQuery)
+Submission   -> accept_submission (DoneOutput)
 LLMOutput    -> to_action (ExecAction), or to_missing_action (empty ExecAction)
 ExecAction   -> run_repl (output node)
 DoneOutput   -> terminal, never stepped
@@ -88,11 +90,14 @@ Delegation submits each new child to the same queue. A driver-scoped condition w
 `run_repl` calls `WrappedRuntime.execute`, which seeds the agent's REPL with the current tool namespace and direct invocation variables, delegates to the original runtime, and turns the resulting `ReplRun` into exactly one node:
 
 ```text
-ReplStatus.DONE   -> DoneOutput(result=run.answer)
-ReplStatus.OK     -> ExecOutput
-ReplStatus.ERROR  -> ErrorOutput(error="exec")
-ReplStatus.DEAD   -> ReplDead
+ReplStatus.DONE      -> Submission(result=run.answer)
+ReplStatus.REJECTED  -> VerificationFailure
+ReplStatus.OK        -> ExecOutput
+ReplStatus.ERROR     -> ErrorOutput(error="exec")
+ReplStatus.DEAD      -> ReplDead
 ```
+
+The next automatic transition accepts a `Submission` as `DoneOutput`; a `VerificationFailure` produces a `RepairQuery` for the same agent.
 
 Synchronous streams run through the shared pool; async streams run directly on the event loop under the same pool policy. `Flow(llm_request_timeout=...)` bounds the stream's full lifetime and also passes `timeout=` to clients that accept one, since cancelling a blocking call frees the caller but not its thread.
 
@@ -102,7 +107,9 @@ Synchronous streams run through the shared pool; async streams run directly on t
 
 A child failure is a value, not an exception: the crash is recorded as that child's `DoneOutput` so siblings settle and the parent reads an explicit failure string.
 
-Loading a saved tree opens no REPL. A graph handed to a `Flow` that has none for it — loaded, forked, or from another process — reconstructs required worker sessions by re-running recorded `ExecAction`s in execution order. `Flow(restore="replay")` performs that reconstruction before streaming starts; `Flow(restore="lazy")` waits until immediately before an agent's first new `ExecAction`. Sessions containing only terminal agents are skipped. If any shared tenant is unfinished, its worker owner and terminal shared tenants are replayed too, because their session and heap mutations remain dependencies of unfinished work. `RLMFLOW_REPLAY` is `"1"` during reconstruction. A replayed launch first reads its action's launch receipt and returns the existing agent without revalidating inputs or submitting work. Replay appends nothing and discards output.
+Loading a saved tree opens no REPL. A graph handed to a `Flow` that has none for it — loaded, forked, or from another process — reconstructs required worker sessions by re-running recorded `ExecAction`s in execution order. `Flow(restore="replay")` performs that reconstruction before streaming starts; `Flow(restore="lazy")` waits until immediately before an agent's first new `ExecAction`. Sessions containing only terminal agents are skipped. If any shared tenant is unfinished, its worker owner and terminal shared tenants are replayed too, because their session and heap mutations remain dependencies of unfinished work. `RLMFLOW_REPLAY` is `"1"` during reconstruction.
+
+Each action keeps successful restorable calls in `saved_tool_calls`, grouped by tool name and that tool's call index. The same host invocation path handles worker RPC and in-process execution. `restore="result"` returns the saved JSON value; a restore callable may rebuild a runtime object. `launch_subagent` saves the child reference and resolves it back to the existing handle, while `llm_query` returns its original value without another model request. Replay appends nothing and discards output.
 
 ## Runtime identity
 
@@ -122,7 +129,7 @@ Merge is intentionally unsupported. Callers select a branch to continue and disc
 
 ## Persistence
 
-`rlmflow.graph.persistence` writes the strict v7 flat JSON shape: one shallow record per Node with `parent_id`, in parent-before-child order. Dependencies use stable agent IDs, handle-valued input references are durable, and each `ExecAction` persists its launch receipts. Loading validates the format version, node count, identities, ordering, parent links, receipt targets, dependency cycles, agent ownership, and registered node types, then rebuilds the tree through normal appends. Older formats are rejected rather than guessed.
+`rlmflow.graph.persistence` writes an unversioned flat JSON graph: one shallow record per Node with `parent_id`, in parent-before-child order. Dependencies use stable agent IDs, handle-valued input references are durable, and each `ExecAction` persists its saved tool calls. Loading validates the actual structure—node count, identities, ordering, parent links, saved values, launch targets, dependency cycles, agent ownership, and imported node classes resolved by their `type` strings—then rebuilds the tree through normal appends.
 
 The format records each agent's complete effective `AgentConfig`, including depth, iteration, budget, truncation, output, and query limits. A resumed run therefore keeps its recorded continuation contract. `Flow(root_config=...)` supplies defaults only to roots the flow creates itself; changing a loaded config is an explicit caller override.
 

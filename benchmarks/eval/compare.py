@@ -50,7 +50,13 @@ def compare_runs(
         environments.append(item)
     return {
         "labels": labels,
-        "summary": {label: _summary(reports) for label, reports in runs.items()},
+        "summary": {
+            label: {
+                runner: _summary([report for report in reports if report.runner == runner])
+                for runner in sorted({report.runner for report in reports})
+            }
+            for label, reports in runs.items()
+        },
         "paired_environments": sum(
             len(item["runs"]) == len(labels) for item in environments
         ),
@@ -63,8 +69,38 @@ def render_markdown(comparison: Mapping[str, Any]) -> str:
     columns = ["benchmark", "environment", "runner", *labels]
     if len(labels) == 2:
         columns.append("delta")
+    summary_columns = [
+        "run",
+        "runner",
+        "mean score",
+        "correct",
+        "errors",
+        "input tokens",
+        "output tokens",
+        "reasoning tokens",
+        "seconds",
+    ]
     lines = [
         "# Benchmark comparison",
+        "",
+        "| " + " | ".join(summary_columns) + " |",
+        "|" + "|".join("---" for _ in summary_columns) + "|",
+    ]
+    for label in labels:
+        for runner, summary in comparison["summary"][label].items():
+            values = [
+                label,
+                runner,
+                f"{summary['mean_score']:.3f}",
+                f"{summary['correct']}/{summary['count']}",
+                summary["errors"],
+                f"{summary['input_tokens']:,}",
+                f"{summary['output_tokens']:,}",
+                f"{summary['reasoning_tokens']:,}",
+                f"{summary['time_seconds']:.0f}",
+            ]
+            lines.append("| " + " | ".join(str(value) for value in values) + " |")
+    lines += [
         "",
         "| " + " | ".join(columns) + " |",
         "|" + "|".join("---" for _ in columns) + "|",

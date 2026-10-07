@@ -63,16 +63,16 @@ class DemoLLM:
                 "    await hello,\n"
                 "    await goodbye,\n"
                 "]\n"
-                'finish("\\n".join(results))\n'
+                'submit("\\n".join(results))\n'
                 "```"
             )
         if "hello.py" in prompt:
-            return '```repl\nwrite_file("hello.py", "print(\\"hello\\")\\n")\nfinish("hello.py")\n```'
+            return '```repl\nwrite_file("hello.py", "print(\\"hello\\")\\n")\nsubmit("hello.py")\n```'
         if "goodbye.py" in prompt:
-            return '```repl\nwrite_file("goodbye.py", "print(\\"goodbye\\")\\n")\nfinish("goodbye.py")\n```'
+            return '```repl\nwrite_file("goodbye.py", "print(\\"goodbye\\")\\n")\nsubmit("goodbye.py")\n```'
         if "haiku" in prompt:
-            return '```repl\nwrite_file("haiku.txt", "Calls fold into calls\\nNodes branch, wait, and then resume\\nFlow returns a leaf\\n")\nfinish("wrote haiku.txt")\n```'
-        return '```repl\nfinish("ok")\n```'
+            return '```repl\nwrite_file("haiku.txt", "Calls fold into calls\\nNodes branch, wait, and then resume\\nFlow returns a leaf\\n")\nsubmit("wrote haiku.txt")\n```'
+        return '```repl\nsubmit("ok")\n```'
 
 
 def file_flow(workdir: Path, config: AgentConfig) -> Flow:

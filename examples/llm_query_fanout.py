@@ -67,7 +67,7 @@ def root_repl_block() -> str:
         "]\n"
         "labels = await asyncio.gather(*(llm_query(prompt) for prompt in prompts))\n"
         "print('llm_query returned:', labels)\n"
-        "finish('\\n'.join(f'{label}: {review}' for label, review in zip(labels, reviews)))\n"
+        "submit('\\n'.join(f'{label}: {review}' for label, review in zip(labels, reviews)))\n"
         "```"
     )
 
@@ -83,7 +83,7 @@ def main() -> None:
 
     root = flow.start(
         "Classify the reviews. Fan out `llm_query(prompt)` with "
-        "`await asyncio.gather(...)`, then call finish(...) with one line per review."
+        "`await asyncio.gather(...)`, then call submit(...) with one line per review."
     )
     out_dir = example_run_dir("llm-query-fanout")
 

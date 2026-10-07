@@ -3,6 +3,7 @@ import sys
 
 import pytest
 from helpers import StubLLM, first_user
+from helpers import repl as block
 
 from rlmflow import (
     DockerRuntime,
@@ -14,18 +15,58 @@ from rlmflow import (
     WorkerRepl,
     start,
 )
+from rlmflow.graph.nodes import ExecAction
 from rlmflow.runtime import DEFAULT_PREIMPORTS, base_namespace, build_docker_argv
-
-
-def block(code):
-    return f"```repl\n{code}\n```"
-
+from rlmflow.runtime.repl_client import invoke_tool_call
+from rlmflow.tools import get_tool_metadata, tool
 
 WRITE_A_NOTE = block(
     "from pathlib import Path\n"
     'Path("note.txt").write_text("hello")\n'
     'finish(Path("note.txt").read_text())'
 )
+
+
+def test_tool_restore_metadata_and_saved_calls_are_generic():
+    root = start("root")
+    action = ExecAction(code="")
+    root.append(action)
+    calls: list[tuple[str, str]] = []
+
+    @tool("First tool.", proxy=True, restore="result")
+    def first(value):
+        calls.append(("first", value))
+        return {"value": value}
+
+    @tool("Second tool.", proxy=True, restore="result")
+    def second(value):
+        calls.append(("second", value))
+        return value.upper()
+
+    @tool("Custom restore.", proxy=True, restore=lambda saved, prefix: (prefix, saved))
+    def custom(prefix):
+        return prefix.lower()
+
+    assert get_tool_metadata(first).restore == "result"
+    assert invoke_tool_call(first, action, 0, False, ("a",), {}) == {"value": "a"}
+    assert invoke_tool_call(second, action, 0, False, ("b",), {}) == "B"
+    assert invoke_tool_call(first, action, 0, True, ("ignored",), {}) == {"value": "a"}
+    assert invoke_tool_call(custom, action, 0, False, ("VALUE",), {}) == "value"
+    assert invoke_tool_call(custom, action, 0, True, ("restored",), {}) == (
+        "restored",
+        "value",
+    )
+    assert action.saved_tool_calls == {
+        "first": {0: {"value": "a"}},
+        "second": {0: "B"},
+        "custom": {0: "value"},
+    }
+    assert calls == [("first", "a"), ("second", "b")]
+
+    with pytest.raises(TypeError, match="restore"):
+        tool("Invalid.", restore="again")
+    with pytest.raises(ValueError, match="proxy=True"):
+        tool("Local.", restore="result")
 
 
 class RecordingWorkerSession:

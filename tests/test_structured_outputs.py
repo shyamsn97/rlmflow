@@ -63,16 +63,16 @@ class FakeEngine:
         return self.result
 
 
-def test_flow_normalizes_root_contract_and_codec_owns_prompt_and_finish():
+def test_flow_normalizes_root_contract_and_codec_owns_prompt_and_submit():
     codec = RecordingCodec()
     flow = Flow(
-        StubLLM(lambda _messages: "```repl\nfinish({'label': 'yes'})\n```"),
+        StubLLM(lambda _messages: "```repl\nsubmit({'label': 'yes'})\n```"),
         output_codec=codec,
     )
     root = flow.start("classify", config=AgentConfig(output_schema=Label))
 
     assert root.config.output_schema["type"] == "object"
-    assert "CUSTOM finish" in flow.build_system_prompt(root).render()
+    assert "CUSTOM submit" in flow.build_system_prompt(root).render()
     assert flow.run(root) == {"label": "yes"}
     assert codec.validated == [{"label": "yes"}]
 

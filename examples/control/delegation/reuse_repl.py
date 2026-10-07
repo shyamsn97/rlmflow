@@ -21,12 +21,12 @@ worker_child = launch_subagent(
 )
 report = await worker_child
 
-finish(f"{report}; parent_values={shared}")
+submit(f"{report}; parent_values={shared}")
 ```"""
 
 SHARED_REPLY = """\
 ```repl
-finish(
+submit(
     f"same_worker={os.getpid() == parent_pid}; "
     f"isolated={'shared' not in globals()}"
 )

@@ -8,7 +8,14 @@ import threading
 from typing import Any
 
 from rlmflow.engine import verification
-from rlmflow.graph.config import AGENT_REF_KEY, agent_ref_id
+from rlmflow.graph.arguments import RECURSE, transform_argument
+from rlmflow.graph.config import (
+    AGENT_REF_KEY,
+    Input,
+    agent_ref_id,
+    input_parts,
+    validate_argument_name,
+)
 from rlmflow.graph.nodes import (
     AgentStart,
     DoneOutput,
@@ -24,7 +31,8 @@ from rlmflow.tools.tools import tool
 LAUNCH_DESCRIPTION = """\
 Launch a recursive agent immediately. Pass `name=` for a stable child name, JSON \
 keyword arguments or child handles, `schema=` for a validated result, and `verify=` \
-for repair feedback.
+for repair feedback. Wrap a known input as `Input(value, description="...")` to \
+give the child its format or meaning without copying the value into its prompt.
 
 Example — launch ready independent work together:
 ```repl
@@ -43,7 +51,44 @@ print(await review)
 def launch_tool(flow: Any, node: Node):
     mutation_lock = threading.Lock()
 
-    @tool(LAUNCH_DESCRIPTION, proxy=True, is_async=False)
+    def restore_launch(
+        saved_result: object,
+        *,
+        task: str,
+        name: str | None = None,
+        schema: Any = None,
+        verify: Any = None,
+        **json_args: Any,
+    ) -> AgentHandle:
+        del task, schema, json_args
+        if not isinstance(node, ExecAction):
+            raise TypeError("launch_subagent requires an ExecAction")
+        call_id = current_rpc_call_id()
+        verifier_id, verifier_hash = _register_verifier(flow, node, call_id, verify)
+        agent_id = agent_ref_id(saved_result)
+        root = node.root
+        existing = root.find_agent(agent_id) if root is not None and agent_id is not None else None
+        if existing is None:
+            raise ValueError(
+                f"saved launch call {node.id}:{call_id} points to missing agent "
+                f"{agent_id!r}"
+            )
+        if existing.config.verifier_id != verifier_id:
+            raise ValueError(f"restored launch verifier changed for {existing.config.path!r}")
+        if existing.config.verifier_hash != verifier_hash:
+            raise ValueError(f"restored launch verifier changed for {existing.config.path!r}")
+        if name is not None and name != existing.config.name:
+            raise ValueError(
+                f"restored launch name changed for {existing.config.path!r}: {name!r}"
+            )
+        return _handle(existing)
+
+    @tool(
+        LAUNCH_DESCRIPTION,
+        proxy=True,
+        is_async=False,
+        restore=restore_launch,
+    )
     def launch_subagent(
         *,
         task: str,
@@ -104,26 +149,6 @@ def _attach(
         call_id,
         verify,
     )
-    existing_id = node.launched_agent_ids.get(call_id)
-    if existing_id is not None:
-        root = node.root
-        existing = root.find_agent(existing_id) if root is not None else None
-        if existing is None:
-            raise ValueError(
-                f"launch receipt {node.id}:{call_id} points to missing "
-                f"agent {existing_id!r}"
-            )
-        if existing.config.verifier_hash != verifier_hash:
-            raise ValueError(
-                f"replayed launch verifier changed for {existing.config.path!r}"
-            )
-        if name is not None and name != existing.config.name:
-            raise ValueError(
-                f"replayed launch name changed for {existing.config.path!r}: {name!r}"
-            )
-        return _handle(existing)
-    if flow.queue is None:
-        raise ValueError(f"replayed launch call {node.id}:{call_id} has no launch receipt")
 
     if not isinstance(task, str):
         raise TypeError("launch_subagent task must be a string")
@@ -140,7 +165,7 @@ def _attach(
         "verifier_hash": verifier_hash,
     }
     resolved = flow.resolve_child(node, spec, call_id)
-    node.record_agent_launch(call_id, resolved)
+    node.record_tool_call("launch_subagent", call_id, {AGENT_REF_KEY: resolved.id})
     _sort_launched_children(node)
     submit_child(flow, resolved)
     return _handle(resolved)
@@ -192,7 +217,14 @@ def resolve_args(
     resolved: dict[str, Any] = {}
     sources: set[str] = set()
 
-    def resolve(value: Any, path: str) -> Any:
+    def resolve(path: str, value: Any) -> Any:
+        wrapped = input_parts(value)
+        if wrapped is not None:
+            raw, description = wrapped
+            return Input(
+                transform_argument(raw, resolve, path=path),
+                description=description,
+            )
         agent_id = value.agent_id if isinstance(value, AgentHandle) else agent_ref_id(value)
         if agent_id is not None:
             source = root.find_agent(agent_id)
@@ -214,21 +246,17 @@ def resolve_args(
         if isinstance(value, float):
             json.dumps(value, allow_nan=False)
             return value
-        if isinstance(value, list):
-            return [resolve(item, f"{path}[{index}]") for index, item in enumerate(value)]
         if isinstance(value, dict):
-            nested: dict[str, Any] = {}
-            for key, item in value.items():
-                if not isinstance(key, str):
-                    raise TypeError(f"argument {path!r} contains a non-string object key")
-                nested[key] = resolve(item, f"{path}.{key}")
-            return nested
+            if AGENT_REF_KEY in value:
+                raise TypeError(f"argument {path!r} must contain an exact agent reference")
+            return RECURSE
+        if isinstance(value, list):
+            return RECURSE
         raise TypeError(f"argument {path!r} must be JSON-compatible or an AgentHandle")
 
     for argument_name, value in args.items():
-        if not isinstance(argument_name, str) or not argument_name:
-            raise ValueError("argument names must be non-empty strings")
-        resolved[argument_name] = resolve(value, argument_name)
+        validate_argument_name(argument_name)
+        resolved[argument_name] = transform_argument(value, resolve, path=argument_name)
     return resolved
 
 

@@ -38,7 +38,7 @@ def schema_hash(schema: object) -> str | None:
 
 
 def check(flow: Any, agent: Any, candidate: object) -> str | None:
-    """Route a finish candidate to the verifier owned by its launching agent."""
+    """Route a submitted candidate to the verifier owned by its launching agent."""
     verifier_id = agent.config.verifier_id
     if verifier_id is None:
         return None
@@ -62,7 +62,7 @@ def check(flow: Any, agent: Any, candidate: object) -> str | None:
 
 
 def _run(awaitable: Any) -> Any:
-    """Run an async verifier behind the synchronous ``finish`` API."""
+    """Run an async verifier behind the synchronous ``submit`` API."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:

@@ -18,7 +18,7 @@ from rlmflow.engine import boundaries
 from rlmflow.engine.execution import Pool, SequentialPool, StepResult, TaskQueue, ThreadPool
 from rlmflow.engine.transitions import TransitionPolicyError, TransitionProtocolError
 from rlmflow.graph import persistence
-from rlmflow.graph.config import at_leaf, can_spawn
+from rlmflow.graph.config import Input, at_leaf, can_spawn
 from rlmflow.graph.nodes import (
     DEFAULT_MAX_QUERY_CHARS,
     DEFAULT_QUERY,
@@ -38,6 +38,7 @@ from rlmflow.graph.nodes import (
     RepairQuery,
     ReplDead,
     RunStats,
+    Submission,
     TransitionDecision,
     TruncationSummary,
     TurnMode,
@@ -210,6 +211,7 @@ __all__ = [
     "ReplDead",
     "RepairQuery",
     "RunStats",
+    "Submission",
     "TransitionDecision",
     "ReplRun",
     "ReplStatus",
@@ -232,6 +234,7 @@ __all__ = [
     "TransitionPolicyError",
     "TransitionProtocolError",
     "InstructorEngine",
+    "Input",
     "TruncationSummary",
     "TurnMode",
     "WorkerRepl",

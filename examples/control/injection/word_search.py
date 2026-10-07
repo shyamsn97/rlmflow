@@ -153,7 +153,7 @@ def run(model: str, out_dir: Path) -> None:
     print("=== TREE ===")
     print_tree(graph)
 
-    # With an output_schema, finish(...) records the parsed value, not raw text.
+    # With an output_schema, submit(...) records the parsed value, not raw text.
     result = WordSearchResult.model_validate(graph.result())
     actual = {_hit_key(hit) for hit in result.found}
     missing = set(result.missing)

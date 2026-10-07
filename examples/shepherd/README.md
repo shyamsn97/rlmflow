@@ -43,7 +43,7 @@ uv run --locked --python 3.12 --extra openai --extra image --extra viewer \
 The run writes:
 
 - `worker/`: the standalone failed worker graph;
-- `shepherd/`: the complete persistence-v5 recovery tree, including the selected branch;
+- `shepherd/`: the complete v7 recovery tree, including the selected branch;
 - `traces/worker.{json,gif}`: the deliberate jam;
 - `traces/branch0..branch7.{json,gif}`: each recovery trajectory.
 

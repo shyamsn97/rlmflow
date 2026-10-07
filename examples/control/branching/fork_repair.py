@@ -81,7 +81,7 @@ class RepairLLM:
     def chat(self, messages, *args, **kwargs):
         self.last_usage = LLMUsage(input_tokens=100, output_tokens=50)
         return (
-            f"```repl\nwrite_file('slugify.py', {self.implementation!r})\nfinish({self.label!r})\n```"
+            f"```repl\nwrite_file('slugify.py', {self.implementation!r})\nsubmit({self.label!r})\n```"
         )
 
 

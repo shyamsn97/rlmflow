@@ -25,6 +25,7 @@ class RunRequest(BaseRequest):
     cmd: Literal["run"] = "run"
     code: str
     binding: str
+    restoring: bool = False
 
 
 class InjectRequest(BaseRequest):
@@ -83,6 +84,7 @@ class ProxyCall(WireModel):
     tenant_id: str
     proxy: str
     call_id: int
+    restoring: bool = False
     args: list[JsonValue]
     kwargs: dict[str, JsonValue]
 

@@ -3,6 +3,7 @@ import threading
 
 import pytest
 from helpers import first_user
+from helpers import repl as block
 
 from rlmflow import (
     AppendChild,
@@ -13,10 +14,6 @@ from rlmflow import (
     start,
 )
 from rlmflow.prompts import PromptProfile
-
-
-def block(code):
-    return f"```repl\n{code}\n```"
 
 
 def fanout(*names):

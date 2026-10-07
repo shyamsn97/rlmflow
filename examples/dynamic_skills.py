@@ -117,7 +117,7 @@ class ScriptedLLM:
 
     It keys its reply on the *incoming system prompt*: turn one has an empty
     Skills section, so it installs the skill; turn two sees that skill now in
-    the prompt (proof the section grew), so it solves and calls ``finish``.
+    the prompt (proof the section grew), so it solves and calls ``submit``.
     """
 
     def chat(self, messages, *args, **kwargs) -> str:
@@ -144,7 +144,7 @@ class ScriptedLLM:
             ")\n"
             "assert best == brute, (best, brute)\n"
             'print("kadane =", best, "brute =", brute)\n'
-            "finish(str(best))\n"
+            "submit(str(best))\n"
             "```"
         )
 

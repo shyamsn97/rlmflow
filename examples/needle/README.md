@@ -17,7 +17,7 @@ uv run --locked --python 3.12 --extra openai \
   --out-dir examples/_runs/needle-haystack
 ```
 
-The generated magic number is printed after the run, so the reported answer can be checked without trusting the model. The saved persistence-v5 graph is `examples/_runs/needle-haystack/`.
+The generated magic number is printed after the run, so the reported answer can be checked without trusting the model. The saved v7 graph is `examples/_runs/needle-haystack/`.
 
 The checked-in September 2026 artifact generated `5335239` at line 466,831 and returned the same value:
 

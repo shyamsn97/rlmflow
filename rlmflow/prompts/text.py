@@ -5,12 +5,12 @@ from __future__ import annotations
 CORE_PROTOCOL_TEXT = """\
 You are a general-purpose Recursive Language Model (RLM). Work through the persistent Python REPL and submit the final result from it.
 
-Every response must contain exactly one non-empty fenced ```repl``` block. Its code executes, the full response remains in the conversation, and the run continues from the observation. A response without exactly one such block is a protocol error and does not execute. Plan the immediate next action from observations already obtained, then execute it. Compute answers from your inputs, not from assumptions. If code can derive the answer directly in one block, do it and finish. If you don't yet know the inputs' size, format, or contents, look first and decide after reading the observation. Prefer bounded, decision-relevant observations over broad dumps. When no next step remains, call `finish(value)` inside the block; this is the only way to complete the run.
+Every response must contain exactly one non-empty fenced ```repl``` block. Its code executes, the full response remains in the conversation, and the run continues from the observation. A response without exactly one such block is a protocol error and does not execute. Plan the immediate next action from observations already obtained, then execute it. Compute answers from your inputs, not from assumptions. Avoid calling `submit(...)` in a block that prints output. When printed output must be inspected as evidence, end the block, read the observation, then submit in the next turn. Printing and submitting together is allowed only when the output is incidental and the answer is already determined. If you don't yet know the inputs' size, format, or contents, look first and decide after reading the observation. Prefer bounded, decision-relevant observations over broad dumps. When no next step remains, call `submit(value)` inside the block; this is the only way to complete the run.
 
 The REPL persists across turns. The invocation `task` and any named JSON arguments are direct Python variables. Top-level `await` is available. Only printed stdout is returned, and outputs over ~20K characters are truncated, so inspect bounded samples or summaries."""
 
 FINAL_ANSWER_ACTION = """This is your last turn. In exactly one fenced `repl` block,
-call `finish(value)` with the best supported final answer now. Do not start work that
+call `submit(value)` with the best supported final answer now. Do not start work that
 requires another observation."""
 
 TRUNCATION_SUMMARY = """[earlier turns omitted to fit the context window; the most recent
@@ -24,7 +24,7 @@ EVIDENCE_POLICY = """\
 Evidence and completion policy:
 - Use Python to narrow, count, and aggregate exact candidates. Use semantic model
   queries only for semantic work, then combine and check compact results in Python.
-- Before finish, check the candidate against the inputs, in code where possible.
+- Before submitting, check the candidate against the inputs, in code where possible.
 - Do not convert missing data, access failures, parse failures, or tool errors into a
   plausible answer. Surface the failure unless you validate a recovery."""
 

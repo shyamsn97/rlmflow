@@ -85,7 +85,7 @@ def trace_line(node: Node, labels: dict[str, str]) -> str:
     if isinstance(node, LLMOutput):
         detail = node.code
     elif isinstance(node, DoneOutput):
-        detail = f"finish({node.result!r})"
+        detail = f"submit({node.result!r})"
     else:
         detail = node.content
     head = next((line for line in (detail or "").splitlines() if line.strip()), "")

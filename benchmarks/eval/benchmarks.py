@@ -12,6 +12,7 @@ from benchmarks.eval.environments.fanout import fanout_environments
 from benchmarks.eval.environments.needle import needle_environments
 from benchmarks.eval.environments.oolong import oolong_environments
 from benchmarks.eval.reporting import EnvironmentReport
+from benchmarks.eval.types import ComponentSpec
 
 
 class Split(StrEnum):
@@ -32,7 +33,7 @@ RUNNER_CAPABILITIES = {
 
 def smoke(
     *,
-    runners: list[str],
+    runners: list[str | ComponentSpec],
     model: str,
     output_dir: str | Path,
     split: Split | str = Split.PILOT,
@@ -55,7 +56,7 @@ def smoke(
 
 def delegation(
     *,
-    runners: list[str],
+    runners: list[str | ComponentSpec],
     model: str,
     output_dir: str | Path,
     split: Split | str = Split.PILOT,
@@ -78,7 +79,7 @@ def delegation(
 
 def long_context(
     *,
-    runners: list[str],
+    runners: list[str | ComponentSpec],
     model: str,
     output_dir: str | Path,
     split: Split | str = Split.PILOT,
@@ -101,7 +102,7 @@ def long_context(
 
 def interactive(
     *,
-    runners: list[str],
+    runners: list[str | ComponentSpec],
     model: str,
     output_dir: str | Path,
     split: Split | str = Split.PILOT,
@@ -174,7 +175,8 @@ def environment_by_id(
         ) from exc
 
 
-def _validate_runners(benchmark_name: str, runners: list[str]) -> None:
+def _validate_runners(benchmark_name: str, runners: list[str | ComponentSpec]) -> None:
+    runners = [runner if isinstance(runner, str) else runner.name for runner in runners]
     unknown = [runner for runner in runners if runner not in RUNNER_CAPABILITIES]
     if unknown:
         raise ValueError(f"unknown runner(s): {', '.join(unknown)}")

@@ -11,7 +11,7 @@ from benchmarks.eval.reporting import EnvironmentReport, RuntimeMetrics
 from benchmarks.eval.tasks.oolong import OolongTrecCoarse128KDataset, _synth_score
 from benchmarks.eval.types import Example, Prediction, Score
 
-SPLIT_SIZES = {"pilot": 2, "full": 10}
+SPLIT_SIZES = {"pilot": 2, "full": 25}
 
 
 @dataclass(frozen=True, slots=True)

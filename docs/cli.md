@@ -15,7 +15,7 @@ rlmflow version                               # version, Python, installed extra
 
 ## `rlmflow tui` and `rlmflow run`
 
-Both drive a coding agent with `FILE_TOOLS` over `--workdir` (the current directory by default), checkpointing the graph to `<workdir>/graph`. Launched children finish against `CODING_HANDOFF_SCHEMA` (`done`, `diff_summary`, `concerns`, `followups`) so the parent sees a memo rather than `"done"`; the root itself stays untyped. The dashboard needs `pip install "rlmflow[tui]"`.
+Both drive a coding agent with `FILE_TOOLS` over `--workdir` (the current directory by default), checkpointing the graph to `<workdir>/graph`. Launched children submit against `CODING_HANDOFF_SCHEMA` (`done`, `diff_summary`, `concerns`, `followups`) so the parent sees a memo rather than `"done"`; the root itself stays untyped. The dashboard needs `pip install "rlmflow[tui]"`.
 
 ```bash
 rlmflow tui                                     # dashboard, waiting for a query

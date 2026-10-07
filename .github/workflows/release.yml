@@ -209,7 +209,7 @@ jobs:
 
           class SmokeLLM:
               def chat(self, _messages):
-                  return "```repl\nfinish('docker-ok')\n```"
+                  return "```repl\nsubmit('docker-ok')\n```"
 
           flow = Flow(SmokeLLM(), runtime=DockerRuntime("rlmflow:release-smoke"))
           try:

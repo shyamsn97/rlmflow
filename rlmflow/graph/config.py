@@ -8,12 +8,54 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any
 
+from rlmflow.graph.arguments import RECURSE, visit_argument
+
 DEFAULT_QUERY = "Complete the requested task."
 AGENT_REF_KEY = "$rlmflow_agent"
+INPUT_VALUE_KEY = "$rlmflow_input"
+INPUT_DESCRIPTION_KEY = "$rlmflow_description"
+_INPUT_MARKER_KEY = "$rlmflow_input_marker"
+_INPUT_MARKER_VALUE = "v1"
 AgentArgValue = Any
 #: Official RLM truncates each REPL block at 20K characters (`format_iteration`).
 DEFAULT_MAX_OUTPUT_CHARS = 20_000
 DEFAULT_MAX_QUERY_CHARS = 20_000
+
+
+class Input(dict[str, Any]):
+    """A task argument paired with caller-supplied model context."""
+
+    def __init__(self, value: Any, *, description: str) -> None:
+        if not isinstance(description, str) or not description.strip():
+            raise ValueError("Input description must be a non-empty string")
+        super().__init__(
+            {
+                _INPUT_MARKER_KEY: _INPUT_MARKER_VALUE,
+                INPUT_VALUE_KEY: value,
+                INPUT_DESCRIPTION_KEY: description.strip(),
+            }
+        )
+
+    @property
+    def value(self) -> Any:
+        return self[INPUT_VALUE_KEY]
+
+    @property
+    def description(self) -> str:
+        return self[INPUT_DESCRIPTION_KEY]
+
+
+def input_parts(value: object) -> tuple[Any, str] | None:
+    """Return an Input marker's value and description."""
+    if (
+        isinstance(value, dict)
+        and set(value) == {_INPUT_MARKER_KEY, INPUT_VALUE_KEY, INPUT_DESCRIPTION_KEY}
+        and value.get(_INPUT_MARKER_KEY) == _INPUT_MARKER_VALUE
+        and isinstance(value.get(INPUT_DESCRIPTION_KEY), str)
+        and value[INPUT_DESCRIPTION_KEY].strip()
+    ):
+        return value[INPUT_VALUE_KEY], value[INPUT_DESCRIPTION_KEY]
+    return None
 
 
 def agent_ref_id(value: object) -> str | None:
@@ -32,19 +74,19 @@ def argument_references(args: Mapping[str, object]) -> tuple[tuple[str, str], ..
     """Return ``(argument_path, agent_id)`` pairs from nested JSON arguments."""
     references: list[tuple[str, str]] = []
 
-    def visit(path: str, value: object) -> None:
+    def visit(path: str, value: object) -> object:
+        wrapped = input_parts(value)
+        if wrapped is not None:
+            visit_argument(wrapped[0], visit, path=path)
+            return value
         agent_id = agent_ref_id(value)
         if agent_id is not None:
             references.append((path, agent_id))
-        elif isinstance(value, dict):
-            for key, item in value.items():
-                visit(f"{path}.{key}" if path else str(key), item)
-        elif isinstance(value, list):
-            for index, item in enumerate(value):
-                visit(f"{path}[{index}]", item)
+            return value
+        return RECURSE
 
     for name, value in args.items():
-        visit(name, value)
+        visit_argument(value, visit, path=name)
     return tuple(references)
 
 
@@ -74,7 +116,7 @@ class AgentConfig:
     model: str = "default"
     prompt_profile: str = "default"
     output_schema: dict[str, Any] | None = None
-    #: Default ``output_schema`` for launched children. Launch ``output_schema=``
+    #: Default ``output_schema`` for launched children. Launch ``schema=``
     #: still wins. The root's own ``output_schema`` is independent.
     child_output_schema: dict[str, Any] | None = None
     #: Durable identity of a launch verifier whose callable remains in the parent worker.
@@ -93,7 +135,7 @@ class AgentConfig:
     keep_n_messages: int | None = None
     max_output_length: int = DEFAULT_MAX_OUTPUT_CHARS
     max_query_chars: int = DEFAULT_MAX_QUERY_CHARS
-    #: When a child ``finish()``es after this agent has already ``finish()``ed,
+    #: When a child ``submit()``s after this agent has already ``submit()``ed,
     #: append the child's result as a ``UserQuery`` and keep driving. Pass
     #: ``False`` on scored evals that must stay terminal once the parent submits.
     resume_on_child_done: bool = True
@@ -140,6 +182,7 @@ __all__ = [
     "DEFAULT_QUERY",
     "AgentConfig",
     "AgentArgValue",
+    "Input",
     "agent_ref_id",
     "at_leaf",
     "can_spawn",

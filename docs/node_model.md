@@ -15,6 +15,7 @@ Every action is followed by exactly one output (or a `DoneOutput`). This makes e
 ```text
 Node
 ├── AgentStart      (an agent's opening query; also the root of a run)
+├── TransitionDecision
 ├── UserQuery
 │   ├── RepairQuery
 │   ├── FinalQuery
@@ -27,6 +28,8 @@ Node
 │   ├── ExecOutput
 │   ├── ErrorOutput
 │   │   └── ReplDead
+│   ├── VerificationFailure
+│   ├── Submission
 │   └── DoneOutput
 ```
 
@@ -49,21 +52,24 @@ All nodes share:
 
 The concrete payloads are:
 
-| Class               | `type`               | Key payload                                               |
-| ------------------- | -------------------- | --------------------------------------------------------- |
-| `AgentStart`        | `agent_start`        | `content` (the agent's query), `config`, `system_prompts` |
-| `UserQuery`         | `user_query`         | `content`                                                 |
-| `RepairQuery`       | `repair_query`       | rejected finish feedback                                  |
-| `FinalQuery`        | `final_query`        | last-iter prompt (default)                                |
-| `TruncationSummary` | `truncation_summary` | keep_n notice (default)                                   |
-| `LLMOutput`         | `llm_output`         | `content` (the reply), `code`, `usage`, `prompt_id`       |
-| `ExecAction`        | `exec_action`        | `code`                                                    |
-| `ExecOutput`        | `exec_output`        | `content` (the REPL's stdout)                             |
-| `ErrorOutput`       | `error_output`       | execution error text, `error="exec"`                      |
-| `ReplDead`          | `repl_dead`          | crash text plus the cold-REPL note, `error="repl"`        |
-| `DoneOutput`        | `done_output`        | `result`, `content`                                       |
+| Class                 | `type`                 | Key payload                                               |
+| --------------------- | ---------------------- | --------------------------------------------------------- |
+| `AgentStart`          | `agent_start`          | `content` (the agent's query), `config`, `system_prompts` |
+| `UserQuery`           | `user_query`           | `content`                                                 |
+| `RepairQuery`         | `repair_query`         | rejected submission feedback                              |
+| `FinalQuery`          | `final_query`          | last-iter prompt (default)                                |
+| `TruncationSummary`   | `truncation_summary`   | keep_n notice (default)                                   |
+| `TransitionDecision`  | `transition_decision`  | semantic guard candidates and selected durable rule       |
+| `LLMOutput`           | `llm_output`           | `content` (the reply), `code`, `usage`, `prompt_id`       |
+| `ExecAction`          | `exec_action`          | `code`                                                    |
+| `ExecOutput`          | `exec_output`          | `content` (the REPL's stdout)                             |
+| `ErrorOutput`         | `error_output`         | execution error text, `error="exec"`                      |
+| `ReplDead`            | `repl_dead`            | crash text plus the cold-REPL note, `error="repl"`        |
+| `VerificationFailure` | `verification_failure` | rejected candidate and validation feedback                |
+| `Submission`          | `submission`           | locally valid candidate awaiting graph acceptance         |
+| `DoneOutput`          | `done_output`          | `result`, `content`                                       |
 
-`LLMOutput.code` is the sole non-empty explicit `repl` block extracted from the reply; `ExecAction.code` is what the engine actually ran. Plain text, ordinary Markdown code fences, empty blocks, and multiple `repl` blocks are non-executable protocol errors. `LLMOutput.prompt_id` keys into `agent.system_prompts`, so the exact system prompt a turn ran under is recoverable with `agent.system_prompt_for(node)`. `DoneOutput` is the only terminal node: an agent is finished when `agent.terminal` is true, which means its frontier is a `DoneOutput`. Model-driven completion always comes from `finish(value)` inside the REPL; an `output_schema` validates that value.
+`LLMOutput.code` is the sole non-empty explicit `repl` block extracted from the reply; `ExecAction.code` is what the engine actually ran. Plain text, ordinary Markdown code fences, empty blocks, and multiple `repl` blocks are non-executable protocol errors. `LLMOutput.prompt_id` keys into `agent.system_prompts`, so the exact system prompt a turn ran under is recoverable with `agent.system_prompt_for(node)`. `DoneOutput` is the only terminal node: an agent is finished when `agent.terminal` is true, which means its frontier is a `DoneOutput`. Model-driven completion comes from `submit(value)` inside the REPL. Local schema and launch verifier checks happen before a `Submission` lands; the automatic acceptance transition then produces `DoneOutput`.
 
 ## Navigating
 
@@ -88,24 +94,24 @@ Each node carries an immutable message snapshot. Model-facing query nodes build 
 
 `node.project(keep=...)` walks `prev`, flattens stored snapshots, and stops after `keep` messages. It never rebuilds a historical prompt or consults live runtime state. A custom query may return several messages from `build_messages`; those exact messages remain in later context and survive save/load and fork.
 
-Background-agent status and named transitions are request-only Flow overlays. They are appended to a copy of the current snapshot, so they stay fresh without accumulating in history.
+Background-agent status is a request-only Flow overlay. It is appended to a copy of the current snapshot, so it stays fresh without accumulating in history.
 
 ## Normal Flow
 
-`AgentStart` calls the model directly. An agent may finish in its first block,
-or observe its inputs and decide from the printed result:
+`AgentStart` calls the model directly. An agent may submit in its first block, or observe its inputs and decide from the printed result:
 
 ```text
 AgentStart
   -> LLMOutput(code="x = compute(task); print(x)")
   -> ExecAction
   -> ExecOutput(content="...")
-  -> LLMOutput(code="finish({'answer': x})")
+  -> LLMOutput(code="submit({'answer': x})")
   -> ExecAction
+  -> Submission(result={"answer": ...})
   -> DoneOutput(result={"answer": ...})
 ```
 
-Without `output_schema`, `DoneOutput.result`, `Flow.run()`, and child result handles keep the strict JSON value passed to `finish` (strings stay strings; dictionaries with string keys, lists, finite numbers, booleans, and `None` stay typed). Tuples, sets, bytes, non-finite floats, arbitrary objects, dictionaries with non-string keys, and nested occurrences of those values produce an execution error rather than being stringified. With an explicit schema, a JSON value or JSON-encoded string is parsed and stored as the validated typed value.
+Without `output_schema`, `DoneOutput.result`, `Flow.run()`, and child result handles keep the strict JSON value passed to `submit` (strings stay strings; dictionaries with string keys, lists, finite numbers, booleans, and `None` stay typed). Tuples, sets, bytes, non-finite floats, arbitrary objects, dictionaries with non-string keys, and nested occurrences of those values produce an execution error rather than being stringified. With an explicit schema, a JSON value or JSON-encoded string is parsed and stored as the validated typed value.
 
 Errors are observations too. The next LLM turn sees the traceback and can recover:
 
@@ -113,12 +119,12 @@ Errors are observations too. The next LLM turn sees the traceback and can recove
 LLMOutput(code="1 / 0")
   -> ExecAction
   -> ErrorOutput(error="exec", content="ZeroDivisionError: ...")
-  -> LLMOutput(code="finish(...)")
+  -> LLMOutput(code="submit(...)")
 ```
 
 An `ErrorOutput` means the agent's own code raised. A `ReplDead` means the REPL itself died and took the namespace with it; the agent is told that its variables are gone before the next model request.
 
-`AgentStart`, `UserQuery`, `ExecOutput`, and `ErrorOutput` call the model after final-turn and truncation guards. The invariant system protocol asks each turn to plan and execute the immediate next step, and to look at the inputs first when their size, format, or contents are unknown. `Flow.build_system_prompt(node)` uses the spawn-capable execution policy when the agent can spawn and the worker policy when it cannot. `FinalQuery` supplies one last-turn instruction, `RepairQuery` carries rejected-finish feedback, `TruncationSummary` records a `keep_n` overflow, and application code may append a generic `UserQuery` explicitly.
+`AgentStart`, `UserQuery`, `ExecOutput`, and `ErrorOutput` call the model after final-turn and truncation guards. The invariant system protocol asks each turn to plan and execute the immediate next step, and to look at the inputs first when their size, format, or contents are unknown. `Flow.build_system_prompt(node)` uses the spawn-capable execution policy when the agent can spawn and the worker policy when it cannot. `FinalQuery` supplies one last-turn instruction, `RepairQuery` carries rejected-submission feedback, `TruncationSummary` records a `keep_n` overflow, and application code may append a generic `UserQuery` explicitly.
 
 ## Delegation
 
@@ -151,14 +157,14 @@ ExecAction
 
 `node.next` skips the sub-agent branches, so the parent's transcript reads as one chain whether or not it delegated. Every child remains beneath the `ExecAction` that launched it. Handle-valued inputs add dataflow edges between those agents without changing ownership. Independent children run concurrently when their calls are passed to `asyncio.gather`. Each child's answer is its `DoneOutput.result`; a child that crashes has the failure recorded as its answer, so its siblings still settle. A result not routed through another agent's inputs also reaches its parent as a `[handoff]` `UserQuery`: a mapping is listed as fields, a scalar as labeled JSON.
 
-A host can set `AgentConfig.child_output_schema` so launched children get a schema without the parent passing `output_schema=` on each call. Launch `output_schema=` still wins. The coding CLI uses `CODING_HANDOFF_SCHEMA` this way; evals do not.
+A host can set `AgentConfig.child_output_schema` so launched children get a schema without the parent passing `schema=` on each call. Launch `schema=` still wins. The coding CLI uses `CODING_HANDOFF_SCHEMA` this way; evals do not.
 
 ## Streaming Semantics
 
 `flow.run_streaming(root, until=...)` advances the run and yields each node as it lands; the tree is mutated in place. One logical reasoning turn is usually several node transitions:
 
 1. LLM half: `AgentStart | UserQuery | ExecOutput | ErrorOutput -> LLMOutput`.
-1. Resolution: exactly one non-empty `repl` block goes through `ExecAction -> <observation>`; any other model response becomes a protocol `ErrorOutput`.
+1. Resolution: exactly one non-empty `repl` block goes through `ExecAction -> <observation | Submission | VerificationFailure>`; any other model response becomes a protocol `ErrorOutput`. A `Submission` then transitions to `DoneOutput`.
 
 Each pass, the engine steps every leaf in the tree — the frontier of every agent that has not answered and is not already being stepped — so the parent and its children advance together:
 

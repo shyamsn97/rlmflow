@@ -5,7 +5,8 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from helpers import TestRuntime, first_user
+from helpers import StubLLM, TestRuntime, first_user, trailing_user_text
+from helpers import reasoning_repl as block
 
 from rlmflow import (
     AgentConfig,
@@ -18,6 +19,7 @@ from rlmflow import (
     ExecOutput,
     FinalQuery,
     Flow,
+    Input,
     LLMChunk,
     LLMOutput,
     LLMUsage,
@@ -45,23 +47,13 @@ class ScriptedLLM:
 
     def chat(self, messages):
         self.calls.append(messages)
-        trailing = []
-        for message in reversed(messages):
-            if message["role"] != "user":
-                break
-            trailing.append(message["content"])
-        last = "\n\n".join(reversed(trailing))
+        last = trailing_user_text(messages)
         for needle, reply in self.script:
             if needle in last:
                 if isinstance(reply, Exception):
                     raise reply
                 return reply
         raise AssertionError(f"no scripted reply for {last!r}")
-
-
-def block(code):
-    return f"thinking\n```repl\n{code}\n```"
-
 
 def test_truncate_output_preserves_traceback_tail():
     output = "printed preview data\n" + "x" * 100 + "\nValueError: boxes has no items"
@@ -73,8 +65,8 @@ def test_truncate_output_preserves_traceback_tail():
     assert truncated.endswith("boxes has no items")
 
 
-def test_finish():
-    llm = ScriptedLLM([("count", block("x = 2\nprint(x)")), ("2", block("finish(x * 3)"))])
+def test_submit():
+    llm = ScriptedLLM([("count", block("x = 2\nprint(x)")), ("2", block("submit(x * 3)"))])
     flow = Flow(llm)
     assert flow.run("count for me") == 6
     assert llm.calls[0][0]["role"] == "system"
@@ -91,11 +83,14 @@ def test_spawn_capable_prompt_explains_delegation_economics():
     assert "reduce token cost and wall-clock time" in prompt
 
 
-def test_system_prompt_requires_repl_and_finish_protocol():
+def test_system_prompt_requires_repl_and_submit_protocol():
     prompt = Flow(ScriptedLLM([])).build_system_prompt(start("write a poem")).render()
 
     assert "Every response must contain exactly one non-empty fenced ```repl``` block" in prompt
-    assert "call `finish(value)` inside the block" in prompt
+    assert "call `submit(value)` inside the block" in prompt
+    assert "Avoid calling `submit(...)` in a block that prints output" in prompt
+    assert "Printing and submitting together is allowed" in prompt
+    assert "read the observation, then submit in the next turn" in prompt
     assert "the only way to complete the run" in prompt
     assert "submitted as the final answer" not in prompt
 
@@ -182,6 +177,32 @@ def test_iters_and_budget_are_unbounded_unless_set():
 def test_direct_arguments():
     llm = ScriptedLLM([("", block("finish(doc.upper())"))])
     assert Flow(llm).run("shout", doc="hi") == "HI"
+
+
+def test_described_direct_argument_is_unwrapped_in_the_repl():
+    llm = ScriptedLLM([("", block("finish(doc.upper())"))])
+
+    result = Flow(llm).run(
+        "shout",
+        doc=Input("hi", description="A short lowercase document."),
+    )
+
+    assert result == "HI"
+
+
+def test_described_large_argument_survives_save_and_load(tmp_path):
+    document = "x" * 70_000
+    root = start(
+        "read",
+        args={"document": Input(document, description="A large source document.")},
+    )
+
+    run = root.save(tmp_path / "described-input")
+    loaded = AgentStart.load(run)
+
+    assert loaded.resolved_args() == {"document": document}
+    assert loaded.argument_descriptions() == {"document": "A large source document."}
+    assert len(list((run / "arg_blobs").glob("*.txt"))) == 1
 
 
 def test_flow_start_carries_the_flow_defaults():
@@ -289,7 +310,10 @@ def test_handle_valued_args_build_a_flat_dependency_graph(tmp_path):
         "parser = launch_subagent(task='parse-source')\n"
         "fixtures = launch_subagent(task='inspect-fixtures')\n"
         "reconciler = launch_subagent(\n"
-        "    task='reconcile-inputs', parsed=parser, fixtures=fixtures)\n"
+        "    task='reconcile-inputs',\n"
+        "    parsed=Input(parser, description='Parsed source counts.'),\n"
+        "    fixtures=fixtures,\n"
+        ")\n"
         "critic = launch_subagent(\n"
         "    task='critique-answer', reconciler=reconciler)\n"
         "print(await critic)"
@@ -326,10 +350,14 @@ def test_handle_valued_args_build_a_flat_dependency_graph(tmp_path):
     )
     assert critic.argument_references == (("reconciler", reconciler.id),)
     assert reconciler.args == {
-        "parsed": {"$rlmflow_agent": parser.id},
+        "parsed": Input(
+            {"$rlmflow_agent": parser.id},
+            description="Parsed source counts.",
+        ),
         "fixtures": {"$rlmflow_agent": fixtures.id},
     }
     assert reconciler.resolved_args() == {"parsed": {"count": 2}, "fixtures": "F"}
+    assert reconciler.argument_descriptions() == {"parsed": "Parsed source counts."}
     assert critic.resolved_args() == {"reconciler": "2:F"}
 
     tasks = [first_user(messages) for messages in llm.calls]
@@ -380,9 +408,9 @@ def test_shared_source_feeds_multiple_flat_consumers():
     action = next(
         node
         for node in root.transcript()
-        if isinstance(node, ExecAction) and node.launched_agent_ids
+        if isinstance(node, ExecAction) and node.launch_agent_ids()
     )
-    assert set(action.launched_agent_ids.values()) == {
+    assert set(action.launch_agent_ids().values()) == {
         source.id,
         solver.id,
         reviewer.id,
@@ -395,7 +423,7 @@ def test_launch_args_accept_mixed_strings_and_top_level_handles():
     root.append(action)
     source = AgentStart(content="source", config=root.config.child("source"))
     action.append(source)
-    action.record_agent_launch(0, source)
+    action.record_tool_call("launch_subagent", 0, {"$rlmflow_agent": source.id})
     handle = AgentHandle(source.id, "source", "root.source")
 
     assert resolve_args(
@@ -433,13 +461,23 @@ def test_launch_args_reject_non_json_values(value):
         resolve_args(action, {"value": value})
 
 
+@pytest.mark.parametrize("name", ["bad-name", "class", "task"])
+def test_launch_args_require_python_variable_names(name):
+    root = start("root")
+    action = ExecAction(code="launch")
+    root.append(action)
+
+    with pytest.raises(ValueError, match="invalid invocation|'task' is the invocation"):
+        resolve_args(action, {name: "value"})
+
+
 def test_launch_args_reject_unknown_duplicate_and_out_of_scope_handles():
     root = start("root", max_depth=2)
     action = ExecAction(code="launch")
     root.append(action)
     source = AgentStart(content="source", config=root.config.child("source"))
     action.append(source)
-    action.record_agent_launch(0, source)
+    action.record_tool_call("launch_subagent", 0, {"$rlmflow_agent": source.id})
     source_handle = AgentHandle(source.id, "source", "root.source")
 
     with pytest.raises(ValueError, match="unknown agent"):
@@ -546,19 +584,21 @@ def test_save_writes_a_run_directory(tmp_path):
 
     run = root.save(tmp_path / "run")
     graph = json.loads((run / "graph.json").read_text())
-    assert (graph["version"], graph["node_count"], graph["metadata"]) == (7, 12, {})
+    assert "version" not in graph
+    assert (graph["node_count"], graph["metadata"]) == (14, {})
     assert graph["nodes"][0]["payload"]["args"] == {"doc": "hi"}
     assert graph["nodes"][0]["parent_id"] is None
 
     summary = json.loads((run / "latest.json").read_text())
+    assert "version" not in summary
     assert summary["agent_ids"] == ["root", "root.child0"]
-    assert (summary["root_agent_id"], summary["node_count"]) == ("root", 12)
+    assert (summary["root_agent_id"], summary["node_count"]) == ("root", 14)
     assert (summary["finished"], summary["result"]) == (True, "AB")
 
     action = next(
         n
         for n in root.transcript()
-        if isinstance(n, ExecAction) and n.launched_agent_ids
+        if isinstance(n, ExecAction) and n.launch_agent_ids()
     )
     children = [node for node in graph["nodes"] if node["parent_id"] == action.id]
     assert [node["type"] for node in children] == ["agent_start", "exec_output"]
@@ -633,18 +673,18 @@ def test_appending_off_the_frontier_is_refused():
 
 def test_structured_output_is_stored_parsed():
     schema = {"type": "object", "properties": {"n": {"type": "number"}}, "required": ["n"]}
-    llm = ScriptedLLM([("count", block("finish({'n': 41})"))])
+    llm = ScriptedLLM([("count", block("submit({'n': 41})"))])
     root = start("count", output_schema=schema)
     assert Flow(llm).run(root) == {"n": 41}
     assert root.frontier.to_record()["payload"]["result"] == {"n": 41}
 
 
-def test_structured_output_still_requires_explicit_finish():
+def test_structured_output_still_requires_explicit_submission():
     schema = {"type": "object", "properties": {"n": {"type": "number"}}, "required": ["n"]}
     llm = ScriptedLLM(
         [
             ("count", '{"n": 41}'),
-            ("MissingReplError", block("finish({'n': 41})")),
+            ("MissingReplError", block("submit({'n': 41})")),
         ]
     )
     root = start("count", output_schema=schema)
@@ -653,20 +693,20 @@ def test_structured_output_still_requires_explicit_finish():
     assert any(isinstance(node, ErrorOutput) for node in root.walk())
 
 
-def test_unstructured_finish_keeps_json_values():
+def test_unstructured_submission_keeps_json_values():
     expected = {"n": [41, True, None, "é"]}
-    llm = ScriptedLLM([("value", block(f"finish({expected!r})"))])
+    llm = ScriptedLLM([("value", block(f"submit({expected!r})"))])
     root = start("return value")
 
     assert Flow(llm).run(root) == expected
     assert root.frontier.to_record()["payload"]["result"] == expected
 
 
-def test_unstructured_finish_rejects_non_json_values():
+def test_unstructured_submission_rejects_non_json_values():
     llm = ScriptedLLM(
         [
-            ("return value", block("finish((1, 2))")),
-            ("requires a JSON value", block("finish('recovered')")),
+            ("return value", block("submit((1, 2))")),
+            ("requires a JSON value", block("submit('recovered')")),
         ]
     )
     root = start("return value")
@@ -679,23 +719,23 @@ def test_unstructured_finish_rejects_non_json_values():
     )
 
 
-def test_json_finish_crosses_worker_and_persistence_boundary(tmp_path):
+def test_json_submission_crosses_worker_and_persistence_boundary(tmp_path):
     root = start("return value")
     flow = Flow(
-        ScriptedLLM([("return value", block("finish({'n': [1, True, None]})"))]),
+        ScriptedLLM([("return value", block("submit({'n': [1, True, None]})"))]),
         runtime=LocalRuntime(repl_timeout=10),
     )
 
     assert flow.run(root, close_repls=True) == {"n": [1, True, None]}
-    loaded = AgentStart.load(root.save(tmp_path / "json-finish"))
+    loaded = AgentStart.load(root.save(tmp_path / "json-submission"))
     assert loaded.result() == {"n": [1, True, None]}
 
 
-def test_worker_finish_rejects_non_json_values_and_recovers():
+def test_worker_submission_rejects_non_json_values_and_recovers():
     llm = ScriptedLLM(
         [
-            ("return value", block("finish((1, 2))")),
-            ("requires a JSON value", block("finish({'ok': True})")),
+            ("return value", block("submit((1, 2))")),
+            ("requires a JSON value", block("submit({'ok': True})")),
         ]
     )
     flow = Flow(llm, runtime=LocalRuntime(repl_timeout=10))
@@ -704,11 +744,11 @@ def test_worker_finish_rejects_non_json_values_and_recovers():
     assert flow.run(root, close_repls=True) == {"ok": True}
 
 
-def test_plain_reply_is_a_protocol_error_and_recovers_through_finish():
+def test_plain_reply_is_a_protocol_error_and_recovers_through_submission():
     llm = ScriptedLLM(
         [
             ("poem", "The moon writes silver on the sea."),
-            ("MissingReplError", block("finish('The moon writes silver on the sea.')")),
+            ("MissingReplError", block("submit('The moon writes silver on the sea.')")),
         ]
     )
     root = start("write a poem")
@@ -731,7 +771,7 @@ def test_invalid_repl_reply_executes_nothing_and_recovers(invalid_reply):
             ("bad response", invalid_reply),
             (
                 "MissingReplError",
-                block("finish('clean' if 'unclosed' not in globals() else 'dirty')"),
+                block("submit('clean' if 'unclosed' not in globals() else 'dirty')"),
             ),
         ]
     )
@@ -783,7 +823,7 @@ def test_empty_reply_uses_missing_repl_recovery():
 
     note = next(node for node in root.walk() if isinstance(node, ErrorOutput)).content
     assert "exactly one non-empty" in note
-    assert "calls finish(value)" in note
+    assert "calls submit(value)" in note
 
 
 def test_plain_reply_on_final_turn_does_not_complete_the_run():
@@ -943,6 +983,36 @@ def test_replay_reads_recorded_child_answers_instead_of_relaunching(tmp_path):
     assert Flow(resumed).run(loaded) == "parent saw 20"
     # The child ran once, when it was recorded: no second launch, no second model call.
     assert [child.config.name for child in loaded.sub_agents] == ["child0"]
+    assert len(resumed.calls) == 1
+
+
+def test_replay_restores_llm_query_result_without_another_model_call(tmp_path):
+    setup = ScriptedLLM(
+        [
+            ("delegate", block("answer = await llm_query('extract')\nprint(answer)")),
+            ("extract", "recorded"),
+        ]
+    )
+    root = start("delegate")
+
+    def query_finished(node, _root):
+        return type(node) is ExecOutput
+
+    setup_flow = Flow(
+        setup,
+        runtime=LocalRuntime(repl_timeout=10),
+        use_llm_query=True,
+    )
+    asyncio.run(stream(setup_flow, root, query_finished))
+    asyncio.run(setup_flow.aclose())
+    loaded = AgentStart.load(root.save(tmp_path / "llm-query-run"))
+    resumed = ScriptedLLM([("recorded", block("finish(answer)"))])
+
+    assert Flow(
+        resumed,
+        runtime=LocalRuntime(repl_timeout=10),
+        use_llm_query=True,
+    ).run(loaded, close_repls=True) == "recorded"
     assert len(resumed.calls) == 1
 
 
@@ -1224,12 +1294,7 @@ class BarrierLLM:
         self.replies = replies
 
     async def chat(self, messages):
-        trailing = []
-        for message in reversed(messages):
-            if message["role"] != "user":
-                break
-            trailing.append(message["content"])
-        last = "\n\n".join(reversed(trailing))
+        last = trailing_user_text(messages)
         for needle, reply in self.replies:
             if needle in last:
                 if needle.startswith("child"):
@@ -1385,6 +1450,38 @@ def test_launch_subagent_binds_task_and_json_arguments_directly():
 
     assert Flow(llm).run(root) == "recovered"
     assert root.sub_agents[0].resolved_args() == {"wait": False}
+
+
+def test_launch_subagent_accepts_described_inputs():
+    class InputLLM:
+        def __init__(self):
+            self.child_system_prompt = ""
+
+        def chat(self, messages):
+            if first_user(messages) == "child":
+                self.child_system_prompt = messages[0]["content"]
+                return block("finish(rows[0]['label'])")
+            return block(
+                "child = launch_subagent(\n"
+                "    task='child',\n"
+                "    rows=Input(rows, description='Records with label fields.'),\n"
+                ")\n"
+                "finish(await child)"
+            )
+
+    llm = InputLLM()
+    root = start(
+        "delegate",
+        args={"rows": [{"label": "private-marker-7"}]},
+        max_depth=1,
+    )
+
+    assert Flow(llm).run(root) == "private-marker-7"
+    child = root.sub_agents[0]
+    assert child.resolved_args() == {"rows": [{"label": "private-marker-7"}]}
+    assert child.argument_descriptions() == {"rows": "Records with label fields."}
+    assert "Records with label fields." in llm.child_system_prompt
+    assert "private-marker-7" not in llm.child_system_prompt
 
 
 def test_agents_result_matches_a_collected_child():
@@ -1793,18 +1890,6 @@ def test_one_flow_rejects_competing_stream_drivers():
     asyncio.run(both())
 
 
-class ReplyLLM:
-    """Answers from a function of the messages, and records the kwargs it got."""
-
-    def __init__(self, fn):
-        self.fn = fn
-        self.calls = []
-
-    def chat(self, messages, **kwargs):
-        self.calls.append(kwargs)
-        return self.fn(messages)
-
-
 def peaked(delay=0.02):
     """A blocking reply, plus the most calls it ever saw running at once."""
     lock = threading.Lock()
@@ -1826,7 +1911,7 @@ def peaked(delay=0.02):
 
 def test_workers_bounds_blocking_model_calls():
     reply, seen = peaked()
-    flow = Flow(ReplyLLM(reply), workers=2)
+    flow = Flow(StubLLM(reply), workers=2)
 
     async def query_all():
         return await asyncio.gather(*(flow.llm_query(value) for value in ("a", "b", "c", "d")))
@@ -1837,7 +1922,7 @@ def test_workers_bounds_blocking_model_calls():
 
 def test_a_pool_replaces_the_one_workers_would_have_built():
     reply, seen = peaked()
-    flow = Flow(ReplyLLM(reply), pool=SequentialPool())
+    flow = Flow(StubLLM(reply), pool=SequentialPool())
 
     async def query_all():
         return await asyncio.gather(*(flow.llm_query(value) for value in ("a", "b", "c")))
@@ -1846,7 +1931,7 @@ def test_a_pool_replaces_the_one_workers_would_have_built():
     assert seen["peak"] == 1
 
     with pytest.raises(ValueError, match="not both"):
-        Flow(ReplyLLM(reply), workers=2, pool=SequentialPool())
+        Flow(StubLLM(reply), workers=2, pool=SequentialPool())
 
 
 def test_llm_request_timeout_gives_up_on_a_slow_call():
@@ -1859,7 +1944,7 @@ def test_llm_request_timeout_gives_up_on_a_slow_call():
 
 
 def test_llm_request_timeout_is_handed_to_clients_that_take_one():
-    llm = ReplyLLM(lambda _messages: block("finish('ok')"))
+    llm = StubLLM(lambda _messages: block("finish('ok')"))
     assert Flow(llm, llm_request_timeout=5).run("go") == "ok"
     assert [call["timeout"] for call in llm.calls] == [5]
 

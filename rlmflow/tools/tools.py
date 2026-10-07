@@ -5,7 +5,9 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
+
+ToolRestore = Literal["result"] | Callable[..., Any] | None
 
 
 @dataclass(frozen=True)
@@ -17,6 +19,9 @@ class ToolMetadata:
     #: ``(flow, node) -> bool``. ``None`` means always visible. Evaluated for
     #: both the prompt and the REPL binding.
     when: Callable[..., bool] | None = None
+    #: Namespace restoration policy. ``"result"`` returns the saved value;
+    #: a callable rebuilds a tool-specific value from it.
+    restore: ToolRestore = None
 
 
 def _default_tool_name(name: str) -> str:
@@ -30,6 +35,7 @@ def tool(
     proxy: bool = False,
     is_async: bool | None = None,
     when: Callable[..., bool] | None = None,
+    restore: ToolRestore = None,
 ) -> Callable:
     """Attach tool metadata to ``fn``.
 
@@ -40,7 +46,15 @@ def tool(
 
     ``when`` is ``(flow, node) -> bool``. When it returns false, the tool is
     omitted from both the prompt and the REPL for that agent.
+
+    ``restore="result"`` saves the result of a successful call and returns it
+    while rebuilding a REPL namespace. A callable receives the saved result
+    followed by the original arguments and may rebuild a richer runtime value.
     """
+    if restore is not None and restore != "result" and not callable(restore):
+        raise TypeError("tool restore must be None, 'result', or a callable")
+    if restore is not None and not proxy:
+        raise ValueError("tool restore requires proxy=True")
 
     def decorator(fn):
         resolved = inspect.iscoroutinefunction(fn) if is_async is None else is_async
@@ -50,6 +64,7 @@ def tool(
             proxy=proxy,
             is_async=resolved,
             when=when,
+            restore=restore,
         )
         return fn
 

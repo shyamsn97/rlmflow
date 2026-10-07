@@ -107,7 +107,7 @@ class PrimeAgentRunner(Runner):
         elapsed = time.perf_counter() - started
 
         ledger_text = _read_ledger(agent_home, sessions_dir)
-        records = _parse_records(ledger_text)
+        records = _with_spawn_tasks(_parse_records(ledger_text))
         transcript = _parent_transcript(sessions_dir, records)
         persisted = {
             str(record["childId"])
@@ -261,6 +261,39 @@ def _parse_records(text: str) -> list[dict[str, Any]]:
         if isinstance(record, dict):
             records.append(record)
     return records
+
+
+def _with_spawn_tasks(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Recover exact child task text from Prime's persisted child sessions."""
+    hydrated = []
+    for record in records:
+        item = dict(record)
+        child_path = item.get("child")
+        if item.get("op") == "spawn" and isinstance(child_path, str):
+            task = _spawn_task(Path(child_path))
+            if task is not None:
+                item["task"] = task
+        hydrated.append(item)
+    return hydrated
+
+
+def _spawn_task(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    for line in path.read_text(errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("customType") != "agent_message":
+            continue
+        details = event.get("details")
+        if not isinstance(details, dict) or not str(details.get("id", "")).startswith("spawn:"):
+            continue
+        message = details.get("message")
+        if isinstance(message, str):
+            return message
+    return None
 
 
 def _parent_transcript(sessions_dir: Path, records: list[dict[str, Any]]) -> str:

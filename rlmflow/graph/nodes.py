@@ -17,12 +17,15 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import uuid4
 
+from rlmflow.graph.arguments import RECURSE, transform_argument
 from rlmflow.graph.config import (
+    AGENT_REF_KEY,
     DEFAULT_MAX_QUERY_CHARS,
     DEFAULT_QUERY,
     AgentConfig,
     agent_ref_id,
     argument_references,
+    input_parts,
     validate_agent_name,
     validate_argument_name,
 )
@@ -180,10 +183,10 @@ class RunIndex:
         if isinstance(node, ErrorOutput):
             self.errors.append(node)
         if isinstance(node, ExecAction):
-            for agent_id in node.launched_agent_ids.values():
+            for agent_id in node.launch_agent_ids().values():
                 existing = self.launch_actions_by_agent_id.get(agent_id)
                 if existing is not None and existing is not node:
-                    raise ValueError(f"agent {agent_id!r} has multiple launch receipts")
+                    raise ValueError(f"agent {agent_id!r} has multiple launch calls")
                 self.launch_actions_by_agent_id[agent_id] = node
 
     def snapshot(self) -> RunStats:
@@ -504,6 +507,11 @@ class AgentStart(Node):
     def terminal(self) -> bool:
         return isinstance(self.frontier, DoneOutput)
 
+    @property
+    def supervisor(self) -> AgentStart | None:
+        """The agent whose action launched this agent, or ``None`` for a root."""
+        return self.parent.parent_agent if self.parent is not None else None
+
     def result(self) -> Any:
         node = self.frontier
         return node.result if isinstance(node, DoneOutput) else None
@@ -531,7 +539,10 @@ class AgentStart(Node):
         if root is None:
             raise RuntimeError("cannot resolve inputs for a detached agent")
 
-        def resolve(value: Any, path: str) -> Any:
+        def resolve(path: str, value: Any) -> Any:
+            wrapped = input_parts(value)
+            if wrapped is not None:
+                return transform_argument(wrapped[0], resolve, path=path)
             source_id = agent_ref_id(value)
             if source_id is not None:
                 source = root.find_agent(source_id)
@@ -542,13 +553,20 @@ class AgentStart(Node):
                         f"input {path!r} source {source.config.path!r} is not complete"
                     )
                 return source.result()
-            if isinstance(value, dict):
-                return {key: resolve(item, f"{path}.{key}") for key, item in value.items()}
-            if isinstance(value, list):
-                return [resolve(item, f"{path}[{index}]") for index, item in enumerate(value)]
-            return value
+            return RECURSE
 
-        return {name: resolve(value, name) for name, value in self.args.items()}
+        return {
+            name: transform_argument(value, resolve, path=name)
+            for name, value in self.args.items()
+        }
+
+    def argument_descriptions(self) -> dict[str, str]:
+        """Return caller-supplied descriptions for direct arguments."""
+        return {
+            name: wrapped[1]
+            for name, value in self.args.items()
+            if (wrapped := input_parts(value)) is not None
+        }
 
     def invocation_arguments(self) -> dict[str, Any]:
         """Return this invocation's task and resolved JSON arguments."""
@@ -687,7 +705,7 @@ class UserQuery(Node):
 
 @dataclass
 class RepairQuery(UserQuery):
-    """Ask the same agent to repair a rejected finish candidate."""
+    """Ask the same agent to repair a rejected submitted candidate."""
 
     type: ClassVar[str] = "repair_query"
 
@@ -720,34 +738,59 @@ class ExecAction(ActionNode):
     repl_execution_order: int | None = None
     #: Agent results explicitly read during this action, in first-read order.
     retrieved_agent_ids: list[str] = field(default_factory=list)
-    #: Stable proxy-call receipt: launch call ordinal -> created agent id.
-    launched_agent_ids: dict[int, str] = field(default_factory=dict)
+    #: Successful restorable tool results, grouped by tool and per-tool call index.
+    saved_tool_calls: dict[str, dict[int, Any]] = field(default_factory=dict)
 
     def mark_agent_retrieved(self, agent_id: str) -> None:
         """Record one result access idempotently."""
         if agent_id not in self.retrieved_agent_ids:
             self.retrieved_agent_ids.append(agent_id)
 
-    def record_agent_launch(self, call_id: int, agent: AgentStart) -> None:
-        """Bind one launch call to its child without changing ownership."""
-        existing_id = self.launched_agent_ids.get(call_id)
-        if existing_id is not None and existing_id != agent.id:
-            raise ValueError(f"launch call {call_id} already points to agent {existing_id!r}")
+    def record_tool_call(self, tool_name: str, call_id: int, result: Any) -> None:
+        """Save one successful tool result and update derived launch indexes."""
+        if not isinstance(tool_name, str) or not tool_name:
+            raise ValueError("saved tool name must be a non-empty string")
+        if not isinstance(call_id, int) or call_id < 0:
+            raise ValueError("saved tool call id must be a non-negative integer")
+        calls = self.saved_tool_calls.setdefault(tool_name, {})
+        if call_id in calls and calls[call_id] != result:
+            raise ValueError(
+                f"{tool_name} call {call_id} already saved {calls[call_id]!r}, "
+                f"not {result!r}"
+            )
+        calls[call_id] = result
+        if tool_name != "launch_subagent":
+            return
+        agent_id = agent_ref_id(result)
+        if agent_id is None:
+            raise ValueError("saved launch_subagent result must be an agent reference")
         root = self.root
         if root is None:
-            raise RuntimeError("cannot record a launch on a detached action")
-        existing_action = root._index.launch_actions_by_agent_id.get(agent.id)
+            raise RuntimeError("cannot record a tool call on a detached action")
+        existing_action = root._index.launch_actions_by_agent_id.get(agent_id)
         if existing_action is not None and existing_action is not self:
-            raise ValueError(f"agent {agent.id!r} already has a launch receipt")
-        self.launched_agent_ids[call_id] = agent.id
-        root._index.launch_actions_by_agent_id[agent.id] = self
+            raise ValueError(f"agent {agent_id!r} already has a launch call")
+        root._index.launch_actions_by_agent_id[agent_id] = self
+
+    def tool_calls(self, tool_name: str) -> dict[int, Any]:
+        """Return saved calls for one tool."""
+        return self.saved_tool_calls.get(tool_name, {})
+
+    def launch_agent_ids(self) -> dict[int, str]:
+        """Return launch call indexes mapped to child IDs."""
+        launched: dict[int, str] = {}
+        for call_id, result in self.tool_calls("launch_subagent").items():
+            agent_id = agent_ref_id(result)
+            if agent_id is not None:
+                launched[call_id] = agent_id
+        return launched
 
     def launch_call_id_for(self, agent_id: str) -> int | None:
         """Return the first call on this action that produced ``agent_id``."""
         return min(
             (
                 call_id
-                for call_id, launched_id in self.launched_agent_ids.items()
+                for call_id, launched_id in self.launch_agent_ids().items()
                 if launched_id == agent_id
             ),
             default=None,
@@ -811,7 +854,11 @@ class AppendChild(ExecAction):
     def _refresh_code(self) -> None:
         calls = ["launch_subagent(task='')" for _child in self.child_agents]
         for call_id, child in enumerate(self.child_agents):
-            self.record_agent_launch(call_id, child)
+            self.record_tool_call(
+                "launch_subagent",
+                call_id,
+                {AGENT_REF_KEY: child.id},
+            )
         if len(calls) == 1:
             self.code = f"_handle = {calls[0]}\nprint(await _handle)"
             return
@@ -887,7 +934,7 @@ class ReplDead(ErrorOutput):
 
 @dataclass
 class VerificationFailure(OutputNode):
-    """One schema or verifier rejection of a finish candidate."""
+    """One schema or verifier rejection of a submitted candidate."""
 
     type: ClassVar[str] = "verification_failure"
     turn_mode: ClassVar[TurnMode] = TurnMode.ACTION
@@ -911,6 +958,17 @@ class VerificationFailure(OutputNode):
 
 
 @dataclass
+class Submission(OutputNode):
+    """A locally valid answer candidate awaiting graph acceptance policy."""
+
+    type: ClassVar[str] = "submission"
+    result: Any = None
+    schema_hash: str | None = None
+    verifier_hash: str | None = None
+    verified: bool = False
+
+
+@dataclass
 class DoneOutput(OutputNode):
     type: ClassVar[str] = "done_output"
     result: Any = None
@@ -918,10 +976,21 @@ class DoneOutput(OutputNode):
     verifier_hash: str | None = None
     verified: bool = False
 
+    @classmethod
+    def from_submission(cls, submission: Submission) -> DoneOutput:
+        """Accept a submission without duplicating its completion payload."""
+        return cls(
+            content=submission.content,
+            result=submission.result,
+            schema_hash=submission.schema_hash,
+            verifier_hash=submission.verifier_hash,
+            verified=submission.verified,
+        )
+
 
 def turn_mode_for(node: Node) -> TurnMode:
     """Return the model-turn mode governing a query, reply, action, or result."""
-    if isinstance(node, (ExecOutput, ErrorOutput, DoneOutput)):
+    if isinstance(node, (ExecOutput, ErrorOutput, Submission, DoneOutput)):
         action = node.prev
         return turn_mode_for(action) if isinstance(action, ExecAction) else TurnMode.NONE
     if isinstance(node, ExecAction):
@@ -991,6 +1060,7 @@ __all__ = [
     "OutputNode",
     "ReplDead",
     "RepairQuery",
+    "Submission",
     "RunStats",
     "TransitionDecision",
     "TruncationSummary",

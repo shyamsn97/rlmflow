@@ -6,8 +6,30 @@ from rlmflow import (
     DoneOutput,
     ExecAction,
     ExecOutput,
+    Input,
+    persistence,
     start,
 )
+
+
+@pytest.mark.parametrize("description", ["", "   ", None])
+def test_input_requires_a_description(description):
+    with pytest.raises(ValueError, match="non-empty"):
+        Input("value", description=description)
+
+
+def test_input_like_user_dictionary_remains_plain_data_after_roundtrip():
+    value = {
+        "$rlmflow_input": {"nested": "value"},
+        "$rlmflow_description": "ordinary user data",
+    }
+    root = start("query", args={"payload": value})
+
+    loaded = persistence.from_document(persistence.to_document(root))
+
+    assert root.resolved_args() == {"payload": value}
+    assert loaded.resolved_args() == {"payload": value}
+    assert loaded.argument_descriptions() == {}
 
 
 def test_agent_owns_an_ordered_transcript():
@@ -53,27 +75,27 @@ def test_duplicate_child_names_are_rejected():
         root.append(AgentStart(config=root.config.child("worker")))
 
 
-def test_fork_remaps_and_prunes_launch_receipts():
+def test_fork_remaps_and_prunes_saved_launch_calls():
     root = start("parent")
     action = ExecAction(code="launch")
     root.append(action)
     child = AgentStart(content="child", config=root.config.child("child"))
     action.append(child)
-    action.record_agent_launch(0, child)
+    action.record_tool_call("launch_subagent", 0, {"$rlmflow_agent": child.id})
     action.mark_agent_retrieved(child.id)
     child.append(DoneOutput(result="done"))
 
     complete = child.frontier.fork()
     copied_action = next(node for node in complete.walk() if isinstance(node, ExecAction))
     copied_child = complete.sub_agents[0]
-    assert copied_action.launched_agent_ids == {0: copied_child.id}
+    assert copied_action.launch_agent_ids() == {0: copied_child.id}
     assert copied_action.retrieved_agent_ids == [copied_child.id]
     assert copied_child.id != child.id
 
     pruned = action.fork()
     pruned_action = next(node for node in pruned.walk() if isinstance(node, ExecAction))
     assert pruned.sub_agents == []
-    assert pruned_action.launched_agent_ids == {}
+    assert pruned_action.launch_agent_ids() == {}
     assert pruned_action.retrieved_agent_ids == []
 
 
@@ -83,21 +105,34 @@ def test_fork_remaps_dependency_agent_ids():
     root.append(action)
     source = AgentStart(content="source", config=root.config.child("source"))
     action.append(source)
-    action.record_agent_launch(0, source)
+    action.record_tool_call("launch_subagent", 0, {"$rlmflow_agent": source.id})
     source.append(DoneOutput(result="source"))
     consumer = AgentStart(
         content="consumer",
-        args={"source": {"$rlmflow_agent": source.id}},
+        args={
+            "source": Input(
+                {"$rlmflow_agent": source.id},
+                description="The completed source artifact.",
+            )
+        },
         config=root.config.child("consumer"),
     )
     action.append(consumer)
-    action.record_agent_launch(1, consumer)
+    action.record_tool_call("launch_subagent", 1, {"$rlmflow_agent": consumer.id})
 
     copied = consumer.fork()
     copied_source, copied_consumer = copied.sub_agents
 
-    assert copied_consumer.args == {"source": {"$rlmflow_agent": copied_source.id}}
+    assert copied_consumer.args == {
+        "source": Input(
+            {"$rlmflow_agent": copied_source.id},
+            description="The completed source artifact.",
+        )
+    }
     assert copied_consumer.argument_references == (("source", copied_source.id),)
+    assert copied_consumer.argument_descriptions() == {
+        "source": "The completed source artifact."
+    }
 
 
 def test_append_child_rehomes_a_complete_subtree():

@@ -102,8 +102,8 @@ misread square, not a lost position — so read the board, take your position fr
 and pick a push from the list it gives you. A refused turn is the one turn you must
 not give up on.
 
-The board is the only authority on how the game is going. Call finish("solved") only
-when it printed SOLVED, and finish("stuck") only when its list of possible pushes says
+The board is the only authority on how the game is going. Call submit("solved") only
+when it printed SOLVED, and submit("stuck") only when its list of possible pushes says
 none. While it lists even one push you have something to do, and a false claim
 scores the same as failing, while another turn costs almost nothing."""
 
@@ -204,7 +204,7 @@ There are more goals than boxes, so some goals stay empty and no box is owed the
 goal sharing its number. Two plans that pair the same boxes with the same goals
 are one plan however you sequence them, so spend the {n} slots on different
 pairings — including the goals an obvious plan would leave out.
-Do not call finish() or launch_subagent().
+Do not call submit() or launch_subagent().
 """
 
 
@@ -246,15 +246,15 @@ def board_prompt(runtime: Runtime, agent: AgentStart, *, simple: bool = False) -
     here = state.get("pushes_here", [])
     doomed = state.get("doomed", [])
     if state.get("solved"):
-        action = 'Call finish("solved").'
+        action = 'Call submit("solved").'
     elif not legal:
-        action = 'Call finish("stuck").'
+        action = 'Call submit("stuck").'
     elif doomed:
         # Other boxes can still be shoved around for another twenty turns, so without
         # being told, a branch spends its whole budget on a board it has already lost.
         action = (
             f"This board can no longer be solved: {', '.join(doomed)} can never reach "
-            'any goal from where it sits. Call finish("stuck") now — pushing the other '
+            'any goal from where it sits. Call submit("stuck") now — pushing the other '
             "boxes cannot undo it, and only a rewind can."
         )
     elif simple:
@@ -279,7 +279,7 @@ def board_prompt(runtime: Runtime, agent: AgentStart, *, simple: bool = False) -
     # count of what is still legal goes next to the refusal every turn.
     if legal and not state.get("solved") and not doomed:
         action += (
-            f' {len(legal)} pushes are still legal, listed above, so do not call finish("stuck").'
+            f' {len(legal)} pushes are still legal, listed above, so do not call submit("stuck").'
         )
     if state.get("blocked") and not state.get("solved"):
         action = (

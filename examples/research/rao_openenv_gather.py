@@ -108,7 +108,7 @@ takes one action and returns {{"observation", "reward", "done"}}; the observatio
 lists what you still need. You are scored on the reward your own actions earn,
 plus a bonus for what your subagents earn, so delegate one item per subagent
 with `launch_subagent(...)` rather than gathering everything yourself.
-Call `finish(...)` with a short summary when the recipe is complete."""
+Call `submit(...)` with a short summary when the recipe is complete."""
 
 
 async def main() -> None:

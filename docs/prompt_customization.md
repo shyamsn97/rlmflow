@@ -31,7 +31,7 @@ The default system `Prompt` contains independently variable concerns:
 - `policy.evidence`: evidence acquisition, validation, and failure transparency;
 - `policy.execution`: spawn-capable or assigned-work policy;
 - `capabilities.tools`: active REPL tools, when present;
-- `context.arguments`: direct argument names and sizes, when present;
+- `context.arguments`: direct argument names, sizes, and optional caller-supplied `Input(..., description=...)` context, when present;
 - `contract.output_schema`: the pinned structured-output contract, when required;
 - `capabilities.depth`: recursion information, when recursion is enabled.
 
@@ -238,7 +238,7 @@ flow = rlmflow.Flow(
     system_prompt="""
 Use the persistent REPL for every turn.
 
-Include exactly one non-empty fenced ```repl``` block. Call finish(value)
+Include exactly one non-empty fenced ```repl``` block. Call submit(value)
 inside that block to complete the run.
 """,
 )
@@ -270,7 +270,7 @@ Flow.default_user_prompt(node)
 
 Flow.build_messages(node)
 → copy durable current messages
-→ append live background-agent state and named transitions
+→ append live background-agent state
 ```
 
 Adding the same non-pinned key updates it without duplicating text. Pinned runtime and schema sections reject conflicting updates.
@@ -292,7 +292,7 @@ The supplied `user_prompt` already contains configured/profile modifiers. The re
 
 ## Arguments and tools
 
-Argument values are not copied into the system prompt. The prompt contains names and sizes; the values are direct variables in the persistent REPL.
+Argument values are not copied into the system prompt. The prompt contains names and sizes plus any caller-supplied `Input(..., description=...)` text; the underlying values are direct variables in the persistent REPL.
 
 Tool documentation is rendered directly from `Flow.build_tools(node)`, the complete map of Flow-owned, application, and dynamically bound environment tools. `Flow.build_namespace(node)` adds non-tool execution bindings afterward. `when=` predicates hide application tools from both the prompt and execution.
 
@@ -303,15 +303,10 @@ The prompt architecture does not override runtime routing:
 ```text
 exactly one non-empty repl → execute block
 anything else             → protocol error; execute nothing
-finish(value)             → submit the final JSON-compatible value
+submit(value)             → submit the final JSON-compatible value
 ```
 
-`finish` is available from an agent's first block. The pinned `protocol.core`
-asks the model to finish immediately when code can derive the answer from its
-inputs and to look first when their size, format, or contents are unknown.
-Prompt modifiers can refine the replaceable evidence policy, but cannot remove
-the pinned protocol or make an unavailable tool appear in the rendered tool
-list.
+`submit` is available from an agent's first block. The pinned `protocol.core` asks the model to look first when the inputs' size, format, or contents are unknown, and to read any printed evidence in a later turn before submitting. Prompt modifiers can refine the replaceable evidence policy, but cannot remove the pinned protocol or make an unavailable tool appear in the rendered tool list.
 
 System and user prompts use the same `Prompt` class, but their message roles and owners remain distinct:
 

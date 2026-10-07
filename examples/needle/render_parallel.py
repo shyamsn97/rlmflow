@@ -31,7 +31,7 @@ def _launch_action(root_nodes: Sequence[Node]) -> ExecAction:
     launches = [
         node
         for node in root_nodes
-        if isinstance(node, ExecAction) and node.launched_agent_ids
+        if isinstance(node, ExecAction) and node.launch_agent_ids()
     ]
     if len(launches) != 1:
         raise ValueError(f"expected one fan-out action, found {len(launches)}")

@@ -10,6 +10,7 @@ from rlmflow import (
     ExecOutput,
     FinalQuery,
     Flow,
+    Input,
     LLMOutput,
     PinnedPromptSectionError,
     Prompt,
@@ -68,7 +69,7 @@ def test_system_and_user_prompts_use_the_same_prompt_class():
     assert user.get("turn.instruction").content == "query"
 
 
-def test_first_turn_prompt_keeps_one_task_message_and_offers_finish():
+def test_first_turn_prompt_keeps_one_task_message_and_offers_submit():
     flow = Flow(StubLLM(lambda _messages: "done"))
     root = start("query", args={"document": "large input"}, max_iters=4)
 
@@ -77,7 +78,27 @@ def test_first_turn_prompt_keeps_one_task_message_and_offers_finish():
     assert [message["role"] for message in messages] == ["system", "user"]
     assert messages[-1]["content"] == "query"
     assert "Compute answers from your inputs" in messages[0]["content"]
-    assert "finish" in flow.build_tools(root)
+    assert "submit" in flow.build_tools(root)
+
+
+def test_input_description_appears_without_copying_the_value_into_the_prompt():
+    root = start(
+        "query",
+        args={
+            "rows": Input(
+                [{"private": "secret-value"}],
+                description="Parsed records with user_id and label fields.",
+            )
+        },
+    )
+    flow = Flow(StubLLM(lambda _messages: "done"))
+
+    manifest = flow.build_system_prompt(root).get("context.arguments").content
+
+    assert root.resolved_args() == {"rows": [{"private": "secret-value"}]}
+    assert "list, 1 items" in manifest
+    assert "Parsed records with user_id and label fields." in manifest
+    assert "secret-value" not in manifest
 
 
 def test_prompt_documents_tools_added_by_a_flow_subclass():

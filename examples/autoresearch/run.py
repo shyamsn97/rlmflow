@@ -120,20 +120,20 @@ Build on what worked; never repeat a trial:
   of an idea already tried — that is wasted budget.
 
 Spend the WHOLE budget — a plateau means pivot, not stop:
-- The ONLY reason to call `finish(...)` is `submission_status()["remaining_submissions"]
+- The ONLY reason to call `submit(...)` is `submission_status()["remaining_submissions"]
   == 0`. While it is > 0 you are NOT finished, no matter how the last wave went.
   A flat wave is not a stopping signal — it is a signal to change direction.
 - Plan ONE wave per turn, then FINISH the turn (print your results and stop the
   code block) so your NEXT turn can reason about the newest results and invent
   fresh hypotheses. Do NOT write a single script with a `while` loop that
-  pre-enumerates many waves from a fixed candidate list and calls `finish()` at
+  pre-enumerates many waves from a fixed candidate list and calls `submit()` at
   the end — that hardcodes a finite menu and quits the moment it is drained.
   Returning between waves is NOT stopping; the run continues on your next turn.
 - Running out of ideas is NOT a stop condition. If your candidate list dedups to
   empty, that means you must BRAINSTORM genuinely new hypotheses, not quit:
   reach for an untried knob, a larger/opposite perturbation, an architecture
   change (attention/normalization/activation/weight-tying/init), or a fresh
-  COMBINATION of two prior winners. NEVER break out of planning or call `finish()`
+  COMBINATION of two prior winners. NEVER break out of planning or call `submit()`
   with the reasoning "no new ideas / only duplicates left" while budget remains
   — there is always another untried direction within the task Constraints.
 - Keep waves wide: launch up to your `parallel` limit and up to
@@ -165,7 +165,7 @@ run_baseline()
 status = submission_status()
 remaining = status["remaining_submissions"]
 if remaining == 0:
-    finish(str({"status": "complete", "best": best_run(), "runs": list_runs()}))
+    submit(str({"status": "complete", "best": best_run(), "runs": list_runs()}))
 runs = list_runs()                 # everything already tried (slug, hypothesis, val_bpb)
 print(get_run(0))                  # cite a number from a log in each hypothesis
 best, sample = best_run(), sample_valid_run()   # exploit the leader; diversify from a random winner
@@ -196,7 +196,7 @@ results = await asyncio.gather(*handles)
 # in a `while` loop over a fixed candidate list; finishing the turn lets your
 # NEXT turn reason about `results` and brainstorm genuinely new hypotheses. If
 # submission_status()["remaining_submissions"] > 0 you are not done; plan another
-# wave next turn (pivot to a new/untried direction). Only call finish() at 0.
+# wave next turn (pivot to a new/untried direction). Only call submit() at 0.
 print(results, list_runs(), best_run(), submission_status())
 ```
 """
@@ -671,7 +671,7 @@ several trials at once, not one at a time. Collect those handles and plan the
 next wave from their results.
 
 Keep launching waves until submission_status()["remaining_submissions"] == 0.
-That is the ONLY stop condition — do NOT call finish() while submissions remain,
+That is the ONLY stop condition — do NOT call submit() while submissions remain,
 even if the last wave did not improve on the best (a plateau means pivot to a
 new direction, not stop). After each wave, re-check submission_status() and
 launch the next one.

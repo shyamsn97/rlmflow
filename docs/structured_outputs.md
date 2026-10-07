@@ -12,10 +12,10 @@ Keeping them separate means agent completion remains deterministic while one-sho
 `output_schema` is a durable JSON Schema contract. The model still completes through the normal strict REPL protocol:
 
 ```repl
-finish({"label": "relevant"})
+submit({"label": "relevant"})
 ```
 
-`finish(value)` validates locally through the Flow's `OutputCodec`. It never calls another model. `DoneOutput.result`, child handoffs, and persisted results remain strict JSON values.
+`submit(value)` validates locally through the Flow's `OutputCodec`. It never calls another model. A valid candidate lands as a durable `Submission`; the normal graph transition then accepts it as a `DoneOutput`. `DoneOutput.result`, child handoffs, and persisted results remain strict JSON values.
 
 Pydantic models and `TypeAdapter` instances are accepted at live API boundaries and normalized to JSON Schema before entering `AgentConfig`.
 

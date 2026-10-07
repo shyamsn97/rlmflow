@@ -9,6 +9,7 @@ from rlmflow import (
     AgentStart,
     ErrorOutput,
     ExecAction,
+    ExecOutput,
     LLMOutput,
     LLMUsage,
     Node,
@@ -123,17 +124,14 @@ def test_run_index_tracks_counts_usage_agents_and_errors():
         root.stats.node_counts["node"] = 1  # type: ignore[index]
 
 
-def test_v7_is_flat_strict_and_rejects_v6():
+def test_graph_document_is_flat_strict_and_unversioned():
     root, _ = chain(4)
     document = persistence.to_document(root)
 
-    assert document["version"] == 7
+    assert "version" not in document
     assert "root" not in document
     assert all("children" not in record for record in document["nodes"])
     assert persistence.to_document(persistence.from_document(document)) == document
-
-    with pytest.raises(persistence.UnsupportedGraphVersion, match="requires v7"):
-        persistence.from_document({"version": 6, "nodes": []})
 
     missing_snapshot = json.loads(json.dumps(document))
     del missing_snapshot["nodes"][0]["payload"]["messages"]
@@ -180,9 +178,9 @@ def test_persistence_rejects_invalid_argument_references_and_cycles():
     left = AgentStart(content="left", config=root.config.child("left"))
     right = AgentStart(content="right", config=root.config.child("right"))
     action.append(left)
-    action.record_agent_launch(0, left)
+    action.record_tool_call("launch_subagent", 0, {"$rlmflow_agent": left.id})
     action.append(right)
-    action.record_agent_launch(1, right)
+    action.record_tool_call("launch_subagent", 1, {"$rlmflow_agent": right.id})
 
     left.args["files"] = ["a.txt", "b.txt"]
     loaded = persistence.from_document(persistence.to_document(root))
@@ -208,6 +206,22 @@ def test_persistence_rejects_invalid_argument_references_and_cycles():
         persistence.to_document(root)
 
 
+def test_persistence_validates_and_round_trips_saved_tool_calls():
+    root = start("root")
+    action = ExecAction(code="query")
+    root.append(action)
+    action.record_tool_call("llm_query", 0, {"answer": 42})
+    action.append(ExecOutput(content="done"))
+
+    loaded = persistence.from_document(persistence.to_document(root))
+    loaded_action = next(node for node in loaded.walk() if isinstance(node, ExecAction))
+    assert loaded_action.saved_tool_calls == {"llm_query": {0: {"answer": 42}}}
+
+    action.saved_tool_calls["llm_query"][1] = object()
+    with pytest.raises(TypeError, match="must be strict JSON"):
+        persistence.to_document(root)
+
+
 def test_persistence_rejects_out_of_scope_input_reference():
     root = start("root", max_depth=2)
     root_action = ExecAction(code="launch siblings")
@@ -215,9 +229,9 @@ def test_persistence_rejects_out_of_scope_input_reference():
     owner = AgentStart(content="owner", config=root.config.child("owner"))
     source = AgentStart(content="source", config=root.config.child("source"))
     root_action.append(owner)
-    root_action.record_agent_launch(0, owner)
+    root_action.record_tool_call("launch_subagent", 0, {"$rlmflow_agent": owner.id})
     root_action.append(source)
-    root_action.record_agent_launch(1, source)
+    root_action.record_tool_call("launch_subagent", 1, {"$rlmflow_agent": source.id})
 
     owner_action = ExecAction(code="launch consumer")
     owner.append(owner_action)
@@ -227,7 +241,7 @@ def test_persistence_rejects_out_of_scope_input_reference():
         config=owner.config.child("consumer"),
     )
     owner_action.append(consumer)
-    owner_action.record_agent_launch(0, consumer)
+    owner_action.record_tool_call("launch_subagent", 0, {"$rlmflow_agent": consumer.id})
 
     with pytest.raises(ValueError, match="outside its launch scope"):
         persistence.to_document(root)

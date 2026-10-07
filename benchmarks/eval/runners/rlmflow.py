@@ -84,14 +84,14 @@ class RLMFlowLocalRunner(Runner):
         max_budget = self.max_budget
         if self.divide_budget_by_best_of_n and max_budget is not None:
             max_budget = max(1, max_budget // max(1, best_of_n))
-        llm_clients = (
-            {"worker": OpenAIClient(self.worker_model)} if self.worker_model is not None else None
-        )
+        llm_clients = {}
+        if self.worker_model is not None:
+            llm_clients["worker"] = OpenAIClient(self.worker_model)
         flow_kwargs = dict(
             runtime=LocalRuntime(working_directory=prepared.work_dir),
             tools=_example_tools(example),
-            llm_clients=llm_clients,
-            delegation_model="worker" if llm_clients is not None else None,
+            llm_clients=llm_clients or None,
+            delegation_model="worker" if self.worker_model is not None else None,
             use_llm_query=self.use_llm_query,
             use_agent_tree=self.use_agent_tree,
         )

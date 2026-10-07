@@ -82,7 +82,7 @@ run/
         ...
 ```
 
-`graph.json` is the complete v3 run as a flat, parent-linked `nodes` list, and is what `load` reads. Its JSON nesting depth does not grow with transcript depth. The per-agent files are stable projections for tools and external readers: `agent.json` is that agent's identity, query, inputs, and system prompts, `session.jsonl` is its own transcript one node per line, and `latest.json` is its frontier. `latest.json` at the top is the run summary — agent ids, node count, whether it finished, and its result.
+`graph.json` is the complete v7 run as a flat, parent-linked `nodes` list, and is what `load` reads. Its JSON nesting depth does not grow with transcript depth. The per-agent files are stable projections for tools and external readers: `agent.json` is that agent's identity, query, inputs, and system prompts, `session.jsonl` is its own transcript one node per line, and `latest.json` is its frontier. `latest.json` at the top is the run summary — agent ids, node count, whether it finished, and its result.
 
 `graph.json` is also the save commit point. Each file is flushed and atomically replaced on the same filesystem; derived projections are written first and the authoritative graph last. If a save is interrupted, `load` therefore sees the previous complete graph rather than a partial new one. Readers must not treat the projection files as a transaction boundary.
 
@@ -201,7 +201,7 @@ for node in loaded.walk():
     print(node.seq, node.type, node.timing().get("duration_ms", ""))
 ```
 
-For anything else — a diff between two runs, an export — `persistence.to_document(root)` returns the complete flat, JSON-serializable v3 run document. `root.stats` is the lightweight runtime summary.
+For anything else — a diff between two runs, an export — `persistence.to_document(root)` returns the complete flat, JSON-serializable v7 run document. `root.stats` is the lightweight runtime summary.
 
 ## Stepping through a run
 
