@@ -2,7 +2,13 @@
 
 > **Status:** The `rlmflow.rao` utilities are implemented but experimental. This is their original design record, not evidence of a validated RAO reproduction or training improvement.
 >
-> **Current API:** `Flow` drives a recursive Node tree. Active task settings live on `AgentConfig`, supplied via `flow.start(...)` or `Flow(root_config=...)`. Agent code reads its inputs through `INPUTS` (`AgentConfig.inputs`). Cold spawn uses `launch_subagent`; prepared host branches use `node.fork()` plus `append_child`. See `docs/control.md` and `docs/internals.md`.
+> **Current API:** `Flow` drives a recursive Node tree. Active task settings live on `AgentConfig`, supplied via `flow.create_agent(...)` or `Flow(root_config=...)`. Agent code reads its inputs through `INPUTS` (`AgentConfig.inputs`). Cold spawn uses `launch_subagent`; prepared host branches use `node.fork()` plus `append_child`. See `docs/control.md` and `docs/internals.md`.
+>
+> **Runnable experiment:** `examples/research/rao_textcraft.py` now provides
+> Gymnasium TextCraft-Synth collection, Tinker CISPO training, and held-out
+> evaluation. Its generated dataset and full protocol are documented in
+> `examples/research/textcraft/README.md`. This remains an experimental
+> reproduction until training curves are recorded.
 
 This note sketches how to implement Recursive Agent Optimization (RAO) on top of `rlmflow`.
 
@@ -22,7 +28,7 @@ RAO is a natural fit for this repo, but it should be implemented as a first-clas
 - `launch_subagent(...)` and `AgentHandle` for background recursive delegation;
 - a durable tree of per-agent trajectories via recursive `Node.children`;
 - per-agent task payloads through `AgentConfig.inputs` / `INPUTS`;
-- depth and iteration controls on `AgentConfig`, via `flow.start(...)` or `Flow(root_config=...)`;
+- depth and iteration controls on `AgentConfig`, via `flow.create_agent(...)` or `Flow(root_config=...)`;
 - the Node tree plus `AgentStart.save` / `AgentStart.load` and `Flow(restore=...)` for replay, inspection, forking, and dataset export.
 
 The missing RAO pieces are training-specific:
@@ -122,9 +128,19 @@ from typing import Protocol
 
 
 class RewardFn(Protocol):
-    def score(self, task: TaskSpec, node: rlmflow.Node) -> float:
-        """Return this agent trajectory's local success/proxy score."""
+    def __call__(
+        self,
+        root: rlmflow.AgentStart,
+    ) -> Mapping[str, float]:
+        """Return local rewards keyed by agent path."""
 ```
+
+Environment tools persist action, observation, reward, terminal state, and
+actor under `environment.steps` node metadata. A benchmark reward function can
+therefore score a saved/forked graph without retaining its live environment.
+Grouped leave-one-out advantages and depth weights remain a separate credit
+assignment stage; CISPO, RLOO, PPO, or another optimizer then consumes the same
+scored trajectories.
 
 For benchmark tasks where child tasks have no gold label, use proxy reward:
 

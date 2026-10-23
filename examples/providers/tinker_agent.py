@@ -14,14 +14,14 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import AgentConfig, Flow
-from rlmflow.llm import TinkerClient
+from rlmflow import AgentConfig, Flow, Graph, reads
+from rlmflow.llm.tinker import TinkerClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import checkpoint_stream, example_run_dir, save_example_graph  # noqa: E402
+from common import example_run_dir, print_run, save_example_graph  # noqa: E402
 
 
 def main() -> None:
@@ -55,18 +55,16 @@ def main() -> None:
         renderer=args.renderer,
         max_tokens=args.max_tokens,
     )
-    flow = Flow(llm, root_config=AgentConfig(max_iters=args.max_iters))
+    flow = Flow(
+        llm,
+    )
     print(f"Query: {args.query}\n")
-    root = flow.start(args.query)
+    g = Graph()
+    root = g.create_agent(args.query, config=AgentConfig(max_iters=args.max_iters))
     out_dir = example_run_dir("tinker-agent")
-
-    async def drive() -> None:
-        async for node in checkpoint_stream(flow.run_streaming(root), out_dir):
-            print(f"{node.parent_agent.config.path}  {node.type}")
-
-    asyncio.run(drive())
-    print(root.result())
-    save_example_graph(root, "tinker-agent")
+    asyncio.run(print_run(flow, g, out_dir))
+    print(reads.result(g, root))
+    save_example_graph(g, "tinker-agent")
     flow.runtime.close_repls()
 
 

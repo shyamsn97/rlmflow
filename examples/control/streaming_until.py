@@ -15,9 +15,10 @@ from rlmflow import (
     AgentConfig,
     AgentStart,
     Flow,
+    Graph,
     Node,
-    UserQuery,
-    persistence,
+    ops,
+    reads,
 )
 
 RUN_DIR = Path(__file__).resolve().parents[1] / "_runs" / "streaming-until"
@@ -48,39 +49,41 @@ def first_user(messages: list[dict[str, Any]]) -> str:
     return next(message["content"] for message in messages if message["role"] == "user")
 
 
-async def collect(flow: Flow, root: Node, **kwargs: Any) -> list[Node]:
-    return [node async for node in flow.run_streaming(root, **kwargs)]
+async def collect(flow: Flow, g: Graph, **kwargs: Any) -> list[Node]:
+    """The nodes a run lands; the edges streamed alongside them are left out."""
+    return [item async for item in flow.run_streaming(g, **kwargs) if isinstance(item, Node)]
 
 
 def after_appends(count: int):
-    """Halt once ``count`` nodes have landed; every node in the stream is an append."""
+    """Halt once ``count`` nodes have landed."""
     seen = 0
 
-    def halt(_node: Node, _root: Node) -> bool:
+    def halt(item, _g: Graph) -> bool:
         nonlocal seen
-        seen += 1
+        if isinstance(item, Node):
+            seen += 1
         return seen >= count
 
     return halt
 
 
-def node_label(node: Node) -> str:
-    return f"{node.parent_agent.config.path}: {node.type}"
+def node_label(g: Graph, node: Node) -> str:
+    return f"{reads.path(g, g.node(node.agent_id))}: {node.type}"
 
 
-def print_tree(node: Node, depth: int = 0) -> None:
-    """One indented line per node, from ``node`` down."""
-    label = f"{node.type} [{node.config.path}]" if isinstance(node, AgentStart) else node.type
-    print(f"{'  ' * depth}{label}")
-    for child in node.children:
-        print_tree(child, depth + 1)
+def print_tree(g: Graph, agent: AgentStart, depth: int = 0) -> None:
+    """Each agent's history on one line, with its children indented below."""
+    history = " -> ".join(node.type for node in reads.history(g, agent))
+    print(f"{'  ' * depth}[{reads.path(g, agent)}] {history}")
+    for child in reads.children(g, agent):
+        print_tree(g, child, depth + 1)
 
 
-def print_nodes(title: str, nodes: list[Node], graph: Node) -> None:
+def print_nodes(title: str, nodes: list[Node], g: Graph, root: AgentStart) -> None:
     print(f"\n=== {title} ===")
     for node in nodes:
-        print(f"- {node_label(node)}")
-    print_tree(graph)
+        print(f"- {node_label(g, node)}")
+    print_tree(g, root)
 
 
 async def demo_next_idle_and_resume() -> None:
@@ -91,22 +94,23 @@ async def demo_next_idle_and_resume() -> None:
         return "```repl\nprint('working')\n```"
 
     flow = Flow(ScriptedLLM(reply))
-    graph = flow.start(
+    g = Graph()
+    root = g.create_agent(
         "work until I inject a stop instruction",
         config=AgentConfig(max_iters=8),
     )
 
-    events = await collect(flow, graph, until=after_appends(3))
-    print_nodes("callable boundary: exactly three appended nodes", events, graph)
+    events = await collect(flow, g, until=after_appends(3))
+    print_nodes("callable boundary: exactly three appended nodes", events, g, root)
 
-    events = await collect(flow, graph, until="idle")
-    print_nodes("until='idle': settle at a clean exec_output", events, graph)
+    events = await collect(flow, g, until="idle")
+    print_nodes("until='idle': settle at a clean exec_output", events, g, root)
 
-    # Injecting a turn is appending a node to the agent's frontier yourself.
-    graph.frontier.append(UserQuery(content="STOP NOW"))
-    events = await collect(flow, graph, until="done")
-    print_nodes("resume after injection, until='done'", events, graph)
-    persistence.save(graph, RUN_DIR / "next-idle-and-resume")
+    # Injecting a turn is sending the agent a message; it lands at the next turn.
+    ops.send(g, root, "STOP NOW")
+    events = await collect(flow, g, until="done")
+    print_nodes("resume after injection, until='done'", events, g, root)
+    g.save(RUN_DIR / "next-idle-and-resume")
 
 
 async def demo_idle_heals_errors() -> None:
@@ -119,11 +123,12 @@ async def demo_idle_heals_errors() -> None:
             )
         )
     )
-    graph = flow.start("recover from a bad response")
+    g = Graph()
+    root = g.create_agent("recover from a bad response")
 
-    events = await collect(flow, graph, until="idle")
-    print_nodes("until='idle': pass through error_output to exec_output", events, graph)
-    persistence.save(graph, RUN_DIR / "idle-heals-errors")
+    events = await collect(flow, g, until="idle")
+    print_nodes("until='idle': pass through error_output to exec_output", events, g, root)
+    g.save(RUN_DIR / "idle-heals-errors")
 
 
 async def demo_callable_boundary_with_child() -> None:
@@ -139,14 +144,15 @@ async def demo_callable_boundary_with_child() -> None:
         return "```repl\nsubmit('child done')\n```"
 
     flow = Flow(ScriptedLLM(reply))
-    graph = flow.start("parent", config=AgentConfig(max_depth=1))
+    g = Graph()
+    root = g.create_agent("parent", config=AgentConfig(max_depth=1))
 
-    def child_done(node: Node, root: Node) -> bool:
-        return node.parent_agent is not root and node.type == "done_output"
+    def child_done(item, _g: Graph) -> bool:
+        return isinstance(item, Node) and item.agent_id != root.id and item.type == "done_output"
 
-    events = await collect(flow, graph, until=child_done)
-    print_nodes("until=<callable>: observe child done_output", events, graph)
-    persistence.save(graph, RUN_DIR / "callable-boundary-with-child")
+    events = await collect(flow, g, until=child_done)
+    print_nodes("until=<callable>: observe child done_output", events, g, root)
+    g.save(RUN_DIR / "callable-boundary-with-child")
 
 
 async def main() -> None:

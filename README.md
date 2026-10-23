@@ -11,6 +11,11 @@ Read the blog post: [rlmflow](https://shyamsn97.github.io/blog/rlmflow/).
 
 It gives an LLM a stateful Python REPL and a graph-native way to spawn agents with fresh context.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/shyamsn97/rlmflow/main/docs/static/rlmflow-overview.svg" alt="rlmflow architecture: a root model works in a Python REPL, launches recursive agents with fresh contexts in parallel, composes a validated result, and records every step in one durable typed graph" width="1100" />
+</p>
+<p align="center"><em>Recursive execution above; durable, inspectable state underneath.</em></p>
+
 The release has three complementary flagship demonstrations: **Shepherd** recovers a failed execution graph, **Needle** proves recursive parallel decomposition, and **Boids** applies the same model to building a complete browser application. Everything else is an API tour or supporting benchmark evidence.
 
 ## Flagship examples
@@ -80,6 +85,21 @@ In the recorded run, the root chose a five-file app and launched five GPT-5-mini
 
 The evaluation harness compares the original `official-rlm` runtime with rlmflow at depths 0, 1, and 2 under one contract. Its default long-context benchmark is a fixed OOLONG TREC-coarse 128K slice: two questions for pilot runs and 25 for full runs. MazeBench is the official interactive benchmark, while a 16-task frozen swarm-fanout matrix compares pinned PrimeAgent, Official RLM, JAZ, and rlmflow through normalized delegation evidence. Paid rows run in Docker by default, with Modal as an optional remote executor. See [Evaluation suites](docs/benchmarks.md).
 
+| Suite          | What it tests                                                            | Frozen workload                                                                           | Compared runners                                  |
+| -------------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `smoke`        | End-to-end infrastructure                                                | Deterministic synthetic needle                                                            | Official RLM, rlmflow depths 0–2                  |
+| `delegation`   | Complete fan-out without fabricated, duplicate, or dropped work          | 16 tasks; 4–16 shards across JSON, CSV, JSONL, TSV, logs, Markdown, nested JSON, and text | PrimeAgent, Official RLM, JAZ, rlmflow depths 1–2 |
+| `long-context` | Extraction and reasoning over large inputs                               | OOLONG TREC-coarse 128K; 25-question full split                                           | Official RLM, rlmflow depths 0–2                  |
+| `interactive`  | Search, branching, actions, candidate submission, and explicit selection | MiniMaze, Sudoku Search, and MazeBench                                                    | Official RLM, rlmflow depths 0–2                  |
+
+The comparison contract is intentionally auditable:
+
+- every runner receives the same benchmark-owned task and canonical observation bytes;
+- task, observation, and framework-specific guidance hashes are recorded separately;
+- hidden answers and simulator state stay inside the environment;
+- every row records score, errors, token use, wall time, turns, agents, nodes, and native environment metrics;
+- interactive runs retain action, fork, candidate, and selection evidence instead of grading only the final prose.
+
 A saved GPT-5 OOLONG-Pairs 32K pilot provides a small two-runner reference:
 
 | Runner          | Mean pair F1 | Errors | Avg. tokens |
@@ -117,6 +137,27 @@ child = launch_subagent(
 ```
 
 The child receives the raw value as `rows`; its argument manifest includes the description. `Input(...)` also works on root arguments.
+
+The host can run every delegated child through Claude Code without changing
+that agent-facing API:
+
+```python
+from rlmflow import AgentConfig, ClaudeCodeBackend, Flow
+
+flow = Flow(
+    llm,
+    backends={"claude-code": ClaudeCodeBackend(permission_mode="acceptEdits")},
+)
+root = g.create_agent(task, config=AgentConfig(max_depth=1, child_config={"backend": "claude-code"}))
+```
+
+The root remains an rlmflow agent; its `launch_subagent(...)` calls become
+Claude Code jobs in the Flow working directory. Native rlmflow children remain
+the default when `child_config` names no backend. Any agent, including a
+top-level one, can also name a backend directly with
+`AgentConfig(backend="claude-code")`. See the runnable
+[`claude_code_delegation.py`](examples/providers/claude_code_delegation.py)
+example for parallel structured children editing one shared demo workspace.
 
 Then `chunk_2` can recursively delegate again:
 
@@ -158,18 +199,23 @@ If `chunk_2` launched `candidate_a` and `candidate_b` internally, the parent can
 The graph is the run itself:
 
 ```python
-from rlmflow import Flow
+from rlmflow import Flow, Graph, Node, reads
+
+g = Graph()
+root = g.create_agent(query)          # only writes to the graph; nothing runs yet
 
 flow = Flow(client)
-root = flow.start(query)
-
-async for node in flow.run_streaming(root):
-    print(node.parent_agent.config.path, node.type)
+async for item in flow.run_streaming(g):
+    if isinstance(item, Node):
+        print(reads.path(g, g.node(item.agent_id)), item.type)
 ```
 
-`run_streaming` mutates the root in place and yields each node as it lands, so the live tree is always just `root`. The Node tree *is* the durable state: you can inspect a branch, save a checkpoint, fork from an old node, append controller feedback, and continue from the edited graph.
+`run_streaming(g)` appends to the graph and yields each node and edge as it lands. The graph *is* the durable state: you can edit it freely with `rlmflow.ops` (spawn, append, send, fork, attach) with no `Flow` around, save it, load it elsewhere, and hand it to any `Flow`. The flow creates each agent's REPL the first time that agent steps, replaying its recorded code if it already has history.
 
-See [`docs/internals.md`](docs/internals.md), [`docs/node_model.md`](docs/node_model.md), and [`docs/control.md`](docs/control.md) for the full engine and graph API.
+Start with the runnable [graph-manipulation tour](examples/graph/) for append,
+fork, subtree attachment, persistence, and traversal. See
+[`docs/internals.md`](docs/internals.md), [`docs/node_model.md`](docs/node_model.md),
+and [`docs/control.md`](docs/control.md) for the full engine and graph API.
 
 ## Install
 
@@ -178,6 +224,8 @@ pip install rlmflow               # core
 pip install rlmflow[openai]       # + OpenAI client
 pip install rlmflow[anthropic]    # + Anthropic client
 pip install rlmflow[tinker]       # + Tinker inference client
+pip install rlmflow[textcraft]    # + Gymnasium TextCraft environment example
+pip install rlmflow[rao]          # + TextCraft and Tinker RAO training
 pip install rlmflow[dspy]         # + DSPy adapter
 pip install rlmflow[modal]        # + Modal runtime
 pip install rlmflow[tui]          # + full-screen TUI
@@ -205,7 +253,7 @@ This example builds a simple coding agent with file tools in a local working dir
 from pathlib import Path
 
 from rlmflow.llm import OpenAIClient
-from rlmflow import FILE_TOOLS, AgentConfig, Flow, LocalRuntime
+from rlmflow import FILE_TOOLS, AgentConfig, Flow, Graph, LocalRuntime, Node, reads
 
 workdir = Path("examples/_runs/quickstart")
 
@@ -213,23 +261,24 @@ flow = Flow(
     OpenAIClient(model="gpt-5"),
     runtime=LocalRuntime(working_directory=workdir),
     tools=[FILE_TOOLS],
-    root_config=AgentConfig(max_depth=2, max_iters=20),
     llm_clients={"fast": OpenAIClient(model="gpt-5-mini")},
 )
 
+g = Graph()
 query = "Build a Python text-based adventure game with combat and inventory."
-root = flow.start(query)
+root = g.create_agent(query, config=AgentConfig(max_depth=2, max_iters=20))
 
-async for node in flow.run_streaming(root):
-    print(node.parent_agent.config.path, node.type)
+async for item in flow.run_streaming(g):
+    if isinstance(item, Node):
+        print(reads.path(g, g.node(item.agent_id)), item.type)
 
-print(root.result())
-root.save(workdir / "graph")
+print(reads.result(g, root))
+g.save(workdir / "graph")
 ```
 
 Delegated children fan out as ordinary asyncio tasks that step alongside their parent. See [`examples/control/delegation/step_until.py`](./examples/control/delegation/step_until.py) for a deterministic demo of `Flow.run_streaming(..., until=...)` boundaries while child work runs concurrently.
 
-A saved run is a directory rooted at `graph.json` plus `agents/` logs. Reopen it later with `AgentStart.load(path)` and keep running it.
+A saved run is a directory holding the graph's item log. Reopen it later with `Graph.load(path)` and keep running it.
 
 ## Command line
 
@@ -289,7 +338,7 @@ A finished run is what `rlmflow view` and `rlmflow render` read — the tree and
 ```python
 import rlmflow
 from rlmflow.llm import LLMClient, OpenAIClient
-from rlmflow.adapters import FlowLLM
+from rlmflow.flow import FlowLLM
 
 def ask(llm: LLMClient, q: str) -> str:
     return llm.chat([{"role": "user", "content": q}])
@@ -302,34 +351,35 @@ Nest agents by passing one `FlowLLM(inner_flow)` as another flow's `llm`. See [`
 
 ## Stream and inspect
 
-`Flow` gives you three ways to drive the same durable Node tree:
+`Flow` gives you three ways to drive the same durable graph:
 
-- `flow.run(query)` — run to completion and return the result.
-- `await flow.arun(root)` — async completion.
-- `async for node in flow.run_streaming(root, until=...)` — stream landed Nodes to a boundary.
+- `flow.run("task")` — run a new agent to completion and return its result; `flow.run(g)` runs a graph and returns it.
+- `await flow.arun(...)` — the same, async.
+- `async for item in flow.run_streaming(g, until=...)` — stream landed nodes and edges to a boundary.
 
 ```python
-root = flow.start(query)
+g = Graph()
+root = g.create_agent(query)
 seen = 0
 
-def two_steps(node, _root):
+def two_steps(item, _g):
     global seen
-    seen += 1
+    seen += isinstance(item, Node)
     return seen == 2
 
-async for node in flow.run_streaming(root, until=two_steps):
+async for item in flow.run_streaming(g, until=two_steps):
     pass
-print(root.frontier.type)             # ...inspect...
-async for node in flow.run_streaming(root, until="done"):
+print(reads.frontier(g, root).type)   # ...inspect...
+async for item in flow.run_streaming(g, until="done"):
     pass                              # ...then run to completion
-print(root.result())
+print(reads.result(g, root))
 ```
 
 Every assistant turn emits exactly one REPL action:
 
 ```text
 LLMOutput -> ExecAction -> ExecOutput          (normal continuation)
-                        -> Submission -> DoneOutput
+                        -> DoneOutput           (submitted result)
                         -> ErrorOutput         (invalid response, code error, or dead REPL)
 ```
 
@@ -346,48 +396,54 @@ list(root.walk())                       # every Node, preorder
 root.result()                           # root DoneOutput result
 root.usage                              # O(1) whole-run usage
 root.stats                              # immutable counts and usage snapshot
+root.frontier.metadata                  # open JSON telemetry for consumers/tools
 
 from rlmflow import persistence
-persistence.to_document(root)           # flat JSON-serializable v7 document
+persistence.to_document(root)           # flat, unversioned JSON document
 ```
+
+Every node's `metadata` is durable through save/load/fork. Built-in telemetry
+records LLM usage and timing; proxy tools record call receipts; custom host
+tools can call `record_metadata(...)`; benchmark layers can attach rewards and
+verdicts without changing the core node schema.
 
 ## Inject controller Nodes
 
 Because the Node tree is the control surface, an external controller can append to any agent's frontier — as its node lands, or between streaming calls — and let the run continue. This is useful for human feedback, budget nudges, and forced finalization without losing traceability:
 
 ```python
-from rlmflow import ExecOutput, UserQuery
+from rlmflow import ExecOutput, ops
 
 # nudge a worker the moment it comes up for air, then let the run continue
-async for node in flow.run_streaming(root):
-    agent = node.parent_agent
-    if agent is not root and isinstance(node, ExecOutput):
-        agent.frontier.append(UserQuery(content="Answer with the best evidence."))
+async for item in flow.run_streaming(g):
+    if isinstance(item, ExecOutput) and item.agent_id != root.id:
+        ops.send(g, g.node(item.agent_id), "Answer with the best evidence.")
 ```
 
 Injected nodes become ordinary graph nodes with the same shape as organic ones. An append lands on an agent's frontier or it raises, so history stays append-only, and forking is how you change what an agent already did. See [`docs/injections.md`](docs/injections.md) and [`examples/control/injection/`](examples/control/injection/).
 
 ## Save, load, and fork
 
-The Node tree is the durable run:
+The graph is the durable run:
 
 ```python
-root = flow.start(query)
-flow.run(root)
-run_dir = root.save("runs/shepherd")
+g = Graph()
+root = g.create_agent(query)
+flow.run(g)
+run_dir = g.save("runs/shepherd")
 
-latest = rlmflow.AgentStart.load(run_dir)
+latest = Graph.load(run_dir)
 ```
 
 Fork an independent branch from any node and continue it with a `Flow`:
 
 ```python
-branch = node.fork()
-flow.run(branch)
-branch.save("runs/shepherd_repair")
+branch = ops.fork(latest, node, name="repair")   # a new agent sharing history up to node
+flow.run(latest)
+latest.save("runs/shepherd_repair")
 ```
 
-A `Flow` that has not run a tree — loaded, forked, or from another process — rebuilds each unfinished agent's REPL from its recorded code before stepping it, or with `Flow(restore="lazy")` tells the agent its variables are gone instead. See [`examples/showcase.py`](examples/showcase.py), [`docs/control.md`](docs/control.md), and [`docs/injections.md`](docs/injections.md).
+A `Flow` that has not run a tree — loaded, forked, or from another process — rebuilds each unfinished agent's REPL from its recorded code before stepping it. `Flow(restore="lazy")` defers that reconstruction until the agent first needs its REPL. Restorable tools reuse saved results, so child launches and `llm_query` calls do not repeat external work. See [`examples/showcase.py`](examples/showcase.py), [`docs/control.md`](docs/control.md), and [`docs/injections.md`](docs/injections.md).
 
 ## Visualization
 
@@ -505,7 +561,8 @@ import dspy
 import rlmflow
 from rlmflow import AgentConfig
 from rlmflow.llm import OpenAIClient
-from rlmflow.adapters import DSPyFlow, FlowLLM
+from rlmflow.flow import FlowLLM
+from rlmflow.integrations.dspy import DSPyFlow
 
 flow = rlmflow.Flow(
     OpenAIClient(model="gpt-4o-mini"),
@@ -531,7 +588,7 @@ Shepherd, Needle, and Boids are the release showcases. The smaller scripts, API 
 
 ## Benchmarks (research beta)
 
-Evaluation is organized around four environment collections.
+Evaluation is organized around four environment collections. The full report is not just a leaderboard: it preserves the evidence needed to tell whether an agent actually delegated, explored, forked, selected, or merely guessed.
 
 ```bash
 make -f benchmarks/Makefile smoke
@@ -542,12 +599,12 @@ make -f benchmarks/Makefile interactive
 python benchmarks/run_benchmark.py --list
 ```
 
-| Suite          | Question                                                     |
-| -------------- | ------------------------------------------------------------ |
-| `smoke`        | Can the pipeline recover a needle from a synthetic haystack? |
-| `delegation`   | Can fan-out avoid fabricated, duplicate, or dropped work?    |
-| `long-context` | How do harnesses manage paper-aligned OOLONG tasks?          |
-| `interactive`  | How do harnesses search and act in persistent environments?  |
+| Suite          | Question                                                             |
+| -------------- | -------------------------------------------------------------------- |
+| `smoke`        | Can the pipeline recover a needle from a synthetic haystack?         |
+| `delegation`   | Can fan-out avoid fabricated, duplicate, or dropped work?            |
+| `long-context` | How do harnesses manage paper-aligned OOLONG tasks?                  |
+| `interactive`  | How do harnesses search, branch, and act in persistent environments? |
 
 Use `--split pilot` for bring-up and `--split full` for complete frozen manifests. See [docs/benchmarks.md](docs/benchmarks.md) for runner matrices and result artifacts. The repository does not claim comparative quality, cost, or latency beyond checked-in or reproducibly generated run evidence.
 
@@ -570,7 +627,7 @@ The top-level docs are short, user-facing guides. The deep dive lives in [`docs/
 - [Runtimes](docs/runtimes.md): `Runtime` protocol, shipped runtimes (Local / subprocess / Docker / Modal), writing your own.
 - [Prompt customization](docs/prompt_customization.md): `Prompt`, Flow default factories, node prompt/message hooks, and `PromptProfile` / `prompt_profile` / `prompt_router`.
 - [Security](docs/security.md): trust model, Docker isolation knobs, engine-level caps, proxied tools, approval gates.
-- [Benchmarks](docs/benchmarks.md): the five evaluation suites, with OOLONG as the primary long-context evidence, MazeBench as the visual environment, and swarm-fanout for delegation.
+- [Benchmarks](docs/benchmarks.md): the four evaluation suites, with OOLONG as the primary long-context evidence, MazeBench as the visual environment, and swarm-fanout for delegation.
 - [Changelog](CHANGELOG.md): release-by-release changes.
 
 ## References

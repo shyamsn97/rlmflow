@@ -28,7 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from rlmflow import AgentStart, DoneOutput, UserQuery, persistence
+from rlmflow import AgentStart, DoneOutput, Graph, LLMOutput, UserQuery, reads
+from rlmflow.graph.graph import FROM
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1]
 RUN_DIR = EXAMPLES_DIR / "_runs" / "shepherd"
@@ -109,9 +110,22 @@ class Branch:
         return "fresh board" if kept == 0 else f"keeps {kept} push{'es' if kept > 1 else ''}"
 
 
-def rewind_depth(agent: AgentStart) -> int | None:
+def load_run(run_dir: Path) -> tuple[Graph, AgentStart, AgentStart]:
+    """The saved run graph, with its worker and shepherd agents."""
+    g = Graph.load(run_dir / "graph")
+    tops = {a.config.name: a for a in g.nodes(AgentStart) if reads.launcher(g, a) is None}
+    if "worker" not in tops or "shepherd" not in tops:
+        raise SystemExit(f"{run_dir} holds no shepherd run")
+    return g, tops["worker"], tops["shepherd"]
+
+
+def llm_turns(g: Graph, agent: AgentStart) -> int:
+    return sum(isinstance(node, LLMOutput) for node in reads.history(g, agent))
+
+
+def rewind_depth(g: Graph, agent: AgentStart) -> int | None:
     """How far this branch rewound, per the note ``prepare_branch`` left it."""
-    for node in agent.walk():
+    for node in g.nodes(agent=agent):
         if isinstance(node, UserQuery):
             found = re.search(r"Rewound (\d+) pushes", node.content or "")
             if found:
@@ -119,10 +133,9 @@ def rewind_depth(agent: AgentStart) -> int | None:
     return None
 
 
-def picked_summary(shepherd: AgentStart) -> str:
-    for node in shepherd.walk():
-        if isinstance(node, DoneOutput) and node.parent_agent is shepherd:
-            return str(node.result or node.content or "")
+def picked_summary(g: Graph, shepherd: AgentStart) -> str:
+    for node in g.nodes(DoneOutput, agent=shepherd):
+        return str(node.result or node.content or "")
     return ""
 
 
@@ -150,19 +163,21 @@ def board_rows(text: str) -> list[str]:
     return [line for line in text.splitlines() if line and set(line) <= BOARD_CHARS]
 
 
-def read_branches(shepherd: AgentStart, winner: str, boards: dict[str, str]) -> list[Branch]:
+def read_branches(
+    g: Graph, shepherd: AgentStart, winner: str, boards: dict[str, str]
+) -> list[Branch]:
     return [
         Branch(
             name=agent.config.name,
-            rewind=rewind_depth(agent),
-            outcome=str(agent.result() or "unfinished"),
-            turns=agent.llm_turns(),
-            nodes=sum(1 for _ in agent.walk()),
+            rewind=rewind_depth(g, agent),
+            outcome=str(reads.result(g, agent) or "unfinished"),
+            turns=llm_turns(g, agent),
+            nodes=len(reads.history(g, agent)),
             plan=str(agent.args.get("_shepherd_order", "")),
             won=agent.config.name == winner,
             board=boards.get(agent.config.name, ""),
         )
-        for agent in shepherd.sub_agents
+        for agent in reads.children(g, shepherd)
     ]
 
 
@@ -480,9 +495,9 @@ def build_svg(
     return c.render()
 
 
-def agent_chain(agent: AgentStart) -> list:
-    """The nodes this agent appended, in order, without descending into children."""
-    return [node for node in agent.walk() if node is agent or node.parent_agent is agent]
+def agent_chain(g: Graph, agent: AgentStart) -> list:
+    """The agent's history, in order, without descending into children."""
+    return reads.history(g, agent)
 
 
 def rewind_marker(chain: list) -> int:
@@ -493,13 +508,14 @@ def rewind_marker(chain: list) -> int:
     return 0
 
 
-def build_nodes_svg(shepherd: AgentStart, branches: list[Branch]) -> str:
+def build_nodes_svg(g: Graph, shepherd: AgentStart, branches: list[Branch]) -> str:
     """Every saved Node, one square each: the trunk, the fan, and eight chains."""
     margin, pitch, dot = 28.0, 9.0, 7.0
     label_w, row_h, note_size = 74.0, 26.0, 11.0
 
-    trunk = agent_chain(shepherd)
-    tracks = [(branch, agent_chain(agent)) for branch, agent in zip(branches, shepherd.sub_agents)]
+    trunk = agent_chain(g, shepherd)
+    children = reads.children(g, shepherd)
+    tracks = [(branch, agent_chain(g, agent)) for branch, agent in zip(branches, children)]
     longest = max([len(trunk)] + [len(chain) for _, chain in tracks])
 
     trunk_note = f"{len(trunk)} nodes · plans the rewinds"
@@ -551,8 +567,9 @@ def build_nodes_svg(shepherd: AgentStart, branches: list[Branch]) -> str:
 
     draw_chain(y_trunk, trunk, "shepherd", trunk_note, MUTED)
 
-    # The one node with more than one child is where the branches hang.
-    fan = next((i for i, node in enumerate(trunk) if len(node.children) > 1), len(trunk) - 1)
+    # The action that launched the branches is where they hang.
+    launchers = {edge.target for child in children for edge in g.edges(kind=FROM, source=child.id)}
+    fan = next((i for i, node in enumerate(trunk) if node.id in launchers), len(trunk) - 1)
     fan_x = lane_x + fan * pitch + dot / 2
     bus_x, bus_top = lane_x - 12, y_first - 9
     y_last = y_first + (len(tracks) - 1) * row_h + dot / 2
@@ -600,26 +617,22 @@ def main() -> None:
     args = parser.parse_args()
 
     run_dir: Path = args.run_dir
-    if not (run_dir / "shepherd").exists():
+    if not (run_dir / "graph").exists():
         raise SystemExit(
             f"no saved shepherd graph under {run_dir}. Run: python examples/shepherd/shepherd.py"
         )
 
-    shepherd = persistence.load(run_dir / "shepherd")
-    summary = picked_summary(shepherd)
+    g, worker, shepherd = load_run(run_dir)
+    summary = picked_summary(g, shepherd)
     found = re.search(r"Picked (\S+?):", summary)
     boards = final_boards(run_dir)
-    branches = read_branches(shepherd, found.group(1) if found else "", boards)
+    branches = read_branches(g, shepherd, found.group(1) if found else "", boards)
     if not branches:
         raise SystemExit("that run has no recovery branches to draw")
 
-    worker_turns, worker_pushes = shepherd.llm_turns(), None
-    worker_dir = run_dir / "worker"
-    if worker_dir.exists():
-        worker = persistence.load(worker_dir)
-        worker_turns = worker.llm_turns()
-        # The jam is one push per turn, minus the turn that built the board.
-        worker_pushes = max(0, worker_turns - 1)
+    worker_turns = llm_turns(g, worker)
+    # The jam is one push per turn, minus the turn that built the board.
+    worker_pushes = max(0, worker_turns - 1)
 
     max_rewind = None
     raw_rewind = shepherd.args.get("max_rewind")
@@ -632,9 +645,9 @@ def main() -> None:
         worker_turns=worker_turns,
         worker_pushes=worker_pushes,
         worker_board=boards.get("worker", ""),
-        shepherd_turns=shepherd.llm_turns(),
+        shepherd_turns=llm_turns(g, shepherd),
         max_rewind=max_rewind,
-        total_nodes=sum(1 for _ in shepherd.walk()),
+        total_nodes=len(g.nodes()),
     )
     out: Path = args.out or (run_dir / "graph.svg")
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -642,7 +655,7 @@ def main() -> None:
 
     nodes_out: Path = args.nodes_out or (run_dir / "nodes.svg")
     nodes_out.parent.mkdir(parents=True, exist_ok=True)
-    nodes_out.write_text(build_nodes_svg(shepherd, branches), encoding="utf-8")
+    nodes_out.write_text(build_nodes_svg(g, shepherd, branches), encoding="utf-8")
 
     print(summary or "no branch picked")
     for branch in branches:

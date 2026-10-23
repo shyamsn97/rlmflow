@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from rlmflow.cli.options import CliError
+from rlmflow.cli import CliError
 
 
 class ViewCLI:
@@ -107,7 +107,7 @@ class RenderCLI:
           ms_per_frame: How long each step is on screen.
           hold_last_ms: How long to hold the finished graph at the end.
         """
-        from rlmflow.view.images import save_gif
+        from rlmflow.view.figure import save_gif
 
         graph = load_graph(source)
         with _rasteriser():
@@ -130,7 +130,7 @@ class RenderCLI:
           every: Keep every Nth step.
           scale: Multiply the figure's size by this.
         """
-        from rlmflow.view.images import save_frames
+        from rlmflow.view.figure import save_frames
 
         graph = load_graph(source)
         with _rasteriser():
@@ -144,7 +144,7 @@ class RenderCLI:
           source: The checkpoint directory.
         """
         try:
-            from rlmflow.view.app import open_viewer
+            from rlmflow.view.html import open_viewer
         except ImportError as exc:
             raise CliError(str(exc)) from exc
 
@@ -153,13 +153,13 @@ class RenderCLI:
 
 def load_graph(source: str | Path) -> Any:
     """Load a checkpoint directory, or say why it could not be read."""
-    from rlmflow import persistence
+    from rlmflow import Graph
 
     path = Path(source)
     if not path.exists():
         raise CliError(f"path not found: {path}")
     try:
-        return persistence.load(path)
+        return Graph.load(path)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise CliError(f"cannot read a graph from {path}: {exc}") from exc
 
@@ -168,7 +168,7 @@ def load_graph(source: str | Path) -> Any:
 def _rasteriser() -> Iterator[None]:
     """Turn the missing-extra ImportError into one line of stderr.
 
-    ``rlmflow.view.images`` imports cleanly and only reaches for cairosvg and
+    ``rlmflow.view.figure`` imports cleanly and only reaches for cairosvg and
     Pillow when a frame is actually drawn, so the failure surfaces at call time.
     """
     try:

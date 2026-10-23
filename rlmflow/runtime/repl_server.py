@@ -1,47 +1,169 @@
-"""Sandbox-side lightweight Python worker."""
+"""The sandbox-side Python worker and the typed JSON-line protocol it speaks."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import inspect
+import json
 import os
 import sys
 import threading
 from collections.abc import Sequence
 from concurrent.futures import Future
-from typing import TextIO, cast
+from typing import Annotated, Any, Literal, TextIO, cast
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, ValidationError
 
-from rlmflow.engine import verification
-from rlmflow.runtime.protocol import (
-    InjectProxyRequest,
-    InjectRequest,
-    PingRequest,
-    ProxyCall,
-    ProxyResponse,
-    RemoveRequest,
-    ReplRequest,
-    ReplResponse,
-    RetrieveRequest,
-    RunRequest,
-    VerifyRequest,
-    WireModel,
-    dump_message,
-    parse_host_message,
-)
 from rlmflow.runtime.repl import (
+    AGENT_WAIT_TOOL,
     CurrentObject,
     DoneSignal,
     LocalRepl,
     ReplStatus,
     base_namespace,
     current_binding,
+    encode_agent_references,
 )
 from rlmflow.structured import DEFAULT_OUTPUT_CODEC, as_finish_value
-from rlmflow.tools.agents import AGENT_OBSERVE_TOOL, AGENT_WAIT_TOOL, encode_agent_references
-from rlmflow.utils.serial import decode_host_value
+from rlmflow.utils import decode_host_value
+
+
+class WireModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class BaseRequest(WireModel):
+    id: str
+    cmd: str
+    tenant_id: str
+
+
+class PingRequest(BaseRequest):
+    cmd: Literal["ping"] = "ping"
+
+
+class RunRequest(BaseRequest):
+    cmd: Literal["run"] = "run"
+    code: str
+    binding: str
+    restoring: bool = False
+
+
+class InjectRequest(BaseRequest):
+    cmd: Literal["inject"] = "inject"
+    name: str
+    value: str
+
+
+class RetrieveRequest(BaseRequest):
+    cmd: Literal["retrieve"] = "retrieve"
+    name: str
+
+
+class RemoveRequest(BaseRequest):
+    cmd: Literal["remove"] = "remove"
+    name: str
+
+
+class InjectProxyRequest(BaseRequest):
+    cmd: Literal["inject_proxy"] = "inject_proxy"
+    name: str
+    is_async: bool = False
+
+
+class VerifyRequest(BaseRequest):
+    cmd: Literal["verify"] = "verify"
+    verifier_id: str
+    candidate: JsonValue
+
+
+ReplRequest = Annotated[
+    PingRequest
+    | RunRequest
+    | InjectRequest
+    | RetrieveRequest
+    | RemoveRequest
+    | InjectProxyRequest
+    | VerifyRequest,
+    Field(discriminator="cmd"),
+]
+
+
+class ReplResponse(WireModel):
+    id: str
+    ok: bool = True
+    output: str = ""
+    errored: bool = False
+    error: str | None = None
+    value: JsonValue = None
+    env: dict[str, JsonValue] | None = None
+
+
+class ProxyCall(WireModel):
+    id: str
+    run_id: str
+    tenant_id: str
+    proxy: str
+    call_id: int
+    restoring: bool = False
+    args: list[JsonValue]
+    kwargs: dict[str, JsonValue]
+
+
+class ProxyResponse(WireModel):
+    id: str
+    ok: bool = True
+    value: str | None = None
+    done: bool = False
+    error: str | None = None
+
+
+_REQUEST = TypeAdapter(ReplRequest)
+
+
+def parse_host_message(data: str) -> ReplRequest | ProxyResponse:
+    raw = TypeAdapter(dict[str, Any]).validate_json(data)
+    if "cmd" in raw:
+        return _REQUEST.validate_python(raw)
+    return ProxyResponse.model_validate(raw)
+
+
+def parse_client_message(data: str) -> ReplResponse | ProxyCall:
+    raw = TypeAdapter(dict[str, Any]).validate_json(data)
+    if "proxy" in raw:
+        return ProxyCall.model_validate(raw)
+    return ReplResponse.model_validate(raw)
+
+
+def dump_message(message: WireModel) -> str:
+    return message.model_dump_json(exclude_none=True)
+
+
+def _digest(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def fingerprint(verify: Any) -> str:
+    """Stable identity of a verifier callable's code.
+
+    The host imports this too: a replayed launch must hash to the same value on
+    whichever side registered the verifier.
+    """
+    code = getattr(verify, "__code__", None)
+    return _digest(
+        {
+            "qualname": getattr(verify, "__qualname__", repr(verify)),
+            "code": code.co_code.hex() if code is not None else repr(verify),
+            "constants": repr(code.co_consts) if code is not None else "",
+        }
+    )
+
+
+def schema_hash(schema: object) -> str | None:
+    return _digest(schema) if schema is not None else None
 
 
 class ReplServer:
@@ -94,20 +216,20 @@ class ReplServer:
             counts = binding.setdefault("_rpc_counts", {})
             call_id = counts.get(name, 0)
             counts[name] = call_id + 1
-            if name == "launch_subagent":
+            if name in {"launch_agent", "launch_subagent"}:
                 schema = kwargs.get("schema")
                 if schema is not None:
                     kwargs["schema"] = DEFAULT_OUTPUT_CODEC.normalize(schema)
                 verifier = kwargs.get("verify")
                 if verifier is not None:
                     if not callable(verifier):
-                        raise TypeError("launch_subagent verify must be callable")
-                    verifier_id = f"{binding['step_id']}:{call_id}"
+                        raise TypeError(f"{name} verify must be callable")
+                    verifier_id = f"{binding['step_id']}:{name}:{call_id}"
                     with self._state_lock:
                         self._verifiers[(binding["tenant_id"], verifier_id)] = verifier
                     kwargs["verify"] = {
                         "$rlmflow_verifier": verifier_id,
-                        "fingerprint": verification.fingerprint(verifier),
+                        "fingerprint": fingerprint(verifier),
                     }
             request_id = self._next_proxy_id(name)
             future: Future[ProxyResponse] = Future()
@@ -203,13 +325,9 @@ class ReplServer:
                 response = ReplResponse(id=message.id)
             elif isinstance(message, VerifyRequest):
                 with self._state_lock:
-                    verifier = self._verifiers.get(
-                        (message.tenant_id, message.verifier_id)
-                    )
+                    verifier = self._verifiers.get((message.tenant_id, message.verifier_id))
                 if verifier is None:
-                    raise RuntimeError(
-                        f"verifier {message.verifier_id!r} is not registered"
-                    )
+                    raise RuntimeError(f"verifier {message.verifier_id!r} is not registered")
                 feedback = verifier(message.candidate)
                 if inspect.isawaitable(feedback):
                     feedback = asyncio.run(feedback)
@@ -235,9 +353,6 @@ class ReplServer:
         wait_agent = tenant.namespace.get(AGENT_WAIT_TOOL)
         if wait_agent is not None:
             binding["wait_agent"] = wait_agent
-        observe_agent = tenant.namespace.get(AGENT_OBSERVE_TOOL)
-        if observe_agent is not None:
-            binding["observe_agent"] = observe_agent
         if binding.get("expose_agents"):
             tenant.namespace.setdefault("AGENTS", CurrentObject("agents"))
         try:
@@ -321,4 +436,24 @@ if __name__ == "__main__":
     main()
 
 
-__all__ = ["ReplServer", "main"]
+__all__ = [
+    "InjectProxyRequest",
+    "InjectRequest",
+    "PingRequest",
+    "ProxyCall",
+    "ProxyResponse",
+    "RemoveRequest",
+    "ReplRequest",
+    "ReplResponse",
+    "ReplServer",
+    "RetrieveRequest",
+    "RunRequest",
+    "VerifyRequest",
+    "WireModel",
+    "dump_message",
+    "fingerprint",
+    "main",
+    "parse_client_message",
+    "parse_host_message",
+    "schema_hash",
+]

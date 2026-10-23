@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
 from typing import Any
 
 from benchmarks.eval.environments.environment import Environment
@@ -14,8 +13,8 @@ from benchmarks.eval.environments.episode import (
 from benchmarks.eval.environments.episode import (
     EpisodeOwner as EnvironmentInstance,
 )
-from rlmflow import Flow
-from rlmflow.graph.nodes import AgentStart, ExecAction, Node
+from rlmflow import FROM, AgentConfig, Flow, Graph, reads
+from rlmflow.graph.nodes import LAUNCH_TOOLS, AgentStart, ExecAction, Node, agent_ref_id
 from rlmflow.runtime.repl_client import current_rpc_call_id
 from rlmflow.tools import tool
 
@@ -55,6 +54,8 @@ class EnvironmentEpisode:
             expected_observation_sha256=expected_observation_sha256,
         )
         self._receipts: dict[tuple[str, int, str], dict[str, Any] | Exception] = {}
+        #: The run graph, set when its first agent is bound.
+        self.graph: Graph | None = None
 
     @property
     def adapter(self) -> Environment:
@@ -105,8 +106,11 @@ class EnvironmentEpisode:
             fork_action_count=len(selected.environment_prefix),
         )
 
-    def bind_root(self, root: AgentStart) -> EnvironmentInstance:
-        return self.core.start(root.id, path=root.config.path, depth=root.config.depth)
+    def bind_root(self, graph: Graph, root: AgentStart) -> EnvironmentInstance:
+        self.graph = graph
+        return self.core.start(
+            root.id, path=reads.path(graph, root), depth=reads.depth(graph, root)
+        )
 
     def fork_child(
         self,
@@ -114,17 +118,16 @@ class EnvironmentEpisode:
         child: AgentStart,
         launch_call_id: int,
     ) -> EnvironmentInstance:
-        parent = action.parent_agent
-        if parent is None:
-            raise RuntimeError("cannot fork an environment from a detached launch")
+        g = self.graph
+        parent = g.node(action.agent_id)
         if parent.id not in self.core.owners:
-            self.bind_root(parent)
+            self.bind_root(g, parent)
         prefix = self.core.prefix_at(parent.id, action.id, launch_call_id)
         return self.core.fork(
             child.id,
             parent_owner_id=parent.id,
-            path=child.config.path,
-            depth=child.config.depth,
+            path=reads.path(g, child),
+            depth=reads.depth(g, child),
             exec_action_id=action.id,
             call_id=launch_call_id,
             prefix=prefix,
@@ -147,8 +150,7 @@ class EnvironmentEpisode:
             raise RuntimeError(str(previous))
         if isinstance(previous, dict):
             return dict(previous)
-        agent = node.parent_agent
-        owner = self._ensure_owner(agent)
+        owner = self._ensure_owner(self.graph.node(node.agent_id))
         try:
             result = self.core.perform(
                 owner.id,
@@ -189,7 +191,7 @@ class EnvironmentEpisode:
         ) -> dict[str, Any]:
             if not isinstance(node, ExecAction):
                 raise TypeError("candidate tools require an ExecAction")
-            owner = self._ensure_owner(node.parent_agent)
+            owner = self._ensure_owner(self.graph.node(node.agent_id))
             record = self.core.submit_candidate(
                 owner.id,
                 label=label,
@@ -212,7 +214,7 @@ class EnvironmentEpisode:
         def select_candidate(candidate_id: str) -> dict[str, Any]:
             if not isinstance(node, ExecAction):
                 raise TypeError("candidate tools require an ExecAction")
-            owner = self._ensure_owner(node.parent_agent)
+            owner = self._ensure_owner(self.graph.node(node.agent_id))
             record = self.core.select_candidate(candidate_id, owner_id=owner.id)
             return {
                 "selected_candidate_id": record.id,
@@ -226,20 +228,29 @@ class EnvironmentEpisode:
             "select_candidate": select_candidate,
         }
 
-    def _ensure_owner(self, agent: AgentStart | None) -> EnvironmentInstance:
-        if agent is None:
-            raise RuntimeError("environment tool belongs to no graph agent")
+    def _ensure_owner(self, agent: AgentStart) -> EnvironmentInstance:
         existing = self.core.owners.get(agent.id)
         if existing is not None:
             return existing
-        if agent is agent.root:
-            return self.bind_root(agent)
-        if not isinstance(agent.parent, ExecAction):
+        g = self.graph
+        launches = g.edges(kind=FROM, source=agent.id)
+        if not launches:
+            return self.bind_root(g, agent)
+        action = g.node(launches[0].target)
+        if not isinstance(action, ExecAction):
             raise RuntimeError("environment child has no launch action")
-        call_id = agent.parent.launch_call_id_for(agent.id)
+        call_id = next(
+            (
+                call_id
+                for tool_name in LAUNCH_TOOLS
+                for call_id, result in action.tool_calls(tool_name).items()
+                if agent_ref_id(result) == agent.id
+            ),
+            None,
+        )
         if call_id is None:
-            raise RuntimeError(f"agent {agent.config.path!r} has no saved launch call")
-        return self.fork_child(agent.parent, agent, call_id)
+            raise RuntimeError(f"agent {reads.path(g, agent)!r} has no saved launch call")
+        return self.fork_child(action, agent, call_id)
 
 
 class EnvironmentFlow(Flow):
@@ -249,9 +260,21 @@ class EnvironmentFlow(Flow):
         self.environment = environment
         super().__init__(*args, **kwargs)
 
-    def start(self, query: str = "", **overrides: Any) -> AgentStart:
-        root = super().start(query, **overrides)
-        self.environment.bind_root(root)
+    def create_root(
+        self,
+        graph: Graph,
+        task: str,
+        *,
+        config: AgentConfig | None = None,
+        **args: Any,
+    ) -> AgentStart:
+        """Create the episode's root agent, bind it, and give it the initial observation.
+
+        Binding starts the episode and keys it by agent id, so the observation joins
+        the root's arguments after the root exists and before it first steps.
+        """
+        root = graph.create_agent(task, config=config, **args)
+        self.environment.bind_root(graph, root)
         root.args["environment_observation"] = json.dumps(
             self.environment.initial_observation,
             ensure_ascii=False,
@@ -291,30 +314,12 @@ class EnvironmentFlow(Flow):
         self.environment.fork_child(action, child, call_id)
         return child
 
-    async def run_streaming(
-        self,
-        root: AgentStart | str,
-        *roots: AgentStart | str,
-        **kwargs: Any,
-    ) -> AsyncIterator[Node]:
-        agents = [
-            self.start(value) if isinstance(value, str) else value for value in (root, *roots)
-        ]
-        for agent in agents:
-            self.environment.bind_root(agent)
-            agent.args["environment_observation"] = json.dumps(
-                self.environment.initial_observation,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-        async for node in super().run_streaming(*agents, **kwargs):
-            yield node
-
     async def aclose(self) -> None:
         try:
             await super().aclose()
         finally:
             self.environment.close()
+
 
 __all__ = [
     "EnvironmentEpisode",

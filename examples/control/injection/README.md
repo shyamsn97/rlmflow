@@ -1,20 +1,20 @@
 # Supervisor Injection Example
 
-This directory demonstrates steering a real saved `Flow` run down a different route. The point is injection: fork the run at the turn you disagree with, hand the model a new instruction there, and continue each copy on a fresh `Flow`.
+This directory demonstrates steering a real saved `Flow` run down a different route. The point is injection: fork the run at the turn you disagree with, hand the model a new instruction there, and continue every fork in the same graph.
 
 ## Files
 
-- `word_search.py` generates the baseline delegated run for finding `AGENT` and saves it to `examples/_runs/word-search/baseline/` (manifest + `agents/` logs).
-- `inject_variants.py` loads that run, forks it twice at the turn where the root decided to delegate, appends a different `UserQuery` to each fork, and runs both variants in parallel on one `Flow`. It saves the finished variants beside the baseline at `examples/_runs/word-search/variant-cols/` and `.../variant-root/`. The baseline and variants use the same structured `WordSearchResult` shape, so validation checks the typed result instead of scraping a prose answer.
+- `word_search.py` generates the baseline delegated run for finding `AGENT` and saves its graph to `examples/_runs/word-search/baseline/`.
+- `inject_variants.py` loads that graph, forks the root twice just before the turn where it decided to delegate, appends a different `UserQuery` to each fork, and runs both forks in parallel with one `flow.run_streaming(g)`. The baseline and both forks live in one graph, saved beside the baseline at `examples/_runs/word-search/variants/`. The baseline and variants use the same structured `WordSearchResult` shape, so validation checks the typed result instead of scraping a prose answer.
 
 Inspect the baseline with:
 
 ```python
-from rlmflow import AgentStart
+from rlmflow import Graph, reads
 
-root = AgentStart.load("examples/_runs/word-search/baseline")
-for node in root.walk():
-    print(node.parent_agent.config.path, node.type)
+g = Graph.load("examples/_runs/word-search/baseline")
+for node in g.nodes():
+    print(reads.path(g, g.node(node.agent_id)), node.type)
 ```
 
 ## Flow
@@ -31,7 +31,7 @@ for node in root.walk():
    python examples/control/injection/inject_variants.py
    ```
 
-`inject_variants.py` creates two edited Node trees in memory:
+`inject_variants.py` adds two forks to the loaded graph:
 
 - **Variation A** replaces the delegated column route with one direct column helper function.
 - **Variation B** replaces the delegation with one direct all-direction scanner.
@@ -42,7 +42,7 @@ The baseline prompt explicitly forbids a root-level all-direction scan so the sa
 
 ## What To Look For
 
-- `node.fork()` copies the whole tree and cuts everything after that node, so the children the forked turn had launched are gone from the variant — and the baseline it was forked from is untouched.
-- The new turn is an ordinary `UserQuery` appended to the fork's frontier. `Node.append` refuses anywhere else, so an edit cannot land mid-transcript.
-- Both variants are streamed in the same loop, so you can watch them diverge.
-- `root.result()` returns the structured word-search payload from `DoneOutput`, and the example validates it with `WordSearchResult.model_validate(...)`.
+- `ops.fork(g, node)` copies nothing: the fork shares the history up to `node` through one `next` edge, so the children the later turn launched are not part of it — and the baseline is untouched.
+- The new turn is an ordinary `UserQuery` appended with `ops.append`, which always lands on the fork's frontier, so an edit cannot land mid-transcript.
+- Both forks are driven by the same run, so you can watch them diverge.
+- `reads.result(g, fork)` returns the structured word-search payload from `DoneOutput`, and the example validates it with `WordSearchResult.model_validate(...)`.

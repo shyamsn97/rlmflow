@@ -275,9 +275,7 @@ class MazeBenchEnvironment(Environment[MazeBenchObservation, MazeBenchMetrics]):
     ) -> MazeBenchObservation:
         state = self._state_path(instance_id)
         if operation == "observe":
-            return MazeBenchObservation.from_runtime(
-                self._run(["observe", "--state", str(state)])
-            )
+            return MazeBenchObservation.from_runtime(self._run(["observe", "--state", str(state)]))
         if operation == "action":
             if max_actions < 1:
                 raise RuntimeError("the shared environment action budget is exhausted")
@@ -326,17 +324,19 @@ class MazeBenchEnvironment(Environment[MazeBenchObservation, MazeBenchMetrics]):
         if isinstance(initial, dict) and initial.get("board_state_hash"):
             hashes.add(str(initial["board_state_hash"]))
         gems = max(0, int(status.get("gem_count") or 0))
-        return MazeBenchMetrics({
-            "score": float(gems),
-            "gems_collected": gems,
-            "rooms_visited": len(status.get("visited_levels") or []),
-            "novel_block_positions": max(0, int(status.get("novel_push_count") or 0)),
-            "block_pushes": max(0, int(status.get("push_count") or 0)),
-            "unique_states": len(hashes),
-            "accepted_actions": len(actions),
-            "game_won": gems >= GAME_WON_GEM_COUNT,
-            "win_condition_gems": GAME_WON_GEM_COUNT,
-        })
+        return MazeBenchMetrics(
+            {
+                "score": float(gems),
+                "gems_collected": gems,
+                "rooms_visited": len(status.get("visited_levels") or []),
+                "novel_block_positions": max(0, int(status.get("novel_push_count") or 0)),
+                "block_pushes": max(0, int(status.get("push_count") or 0)),
+                "unique_states": len(hashes),
+                "accepted_actions": len(actions),
+                "game_won": gems >= GAME_WON_GEM_COUNT,
+                "win_condition_gems": GAME_WON_GEM_COUNT,
+            }
+        )
 
     def report(
         self,

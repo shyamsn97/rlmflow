@@ -1,30 +1,186 @@
-"""Live Python-worker ownership for in-memory agents."""
+"""Live Python-worker ownership for in-memory agents, and rebuilding a worker's
+namespace by replaying the ``ExecAction``s in an agent's history."""
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import os
+import subprocess
 import sys
+import threading
+from collections import deque
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from rlmflow.graph.nodes import AgentStart, ExecAction, Node
-from rlmflow.runtime.connections import DEFAULT_REPL_TIMEOUT, PopenConnection
-from rlmflow.runtime.env import agent_process_env
+from rlmflow.graph import reads
+from rlmflow.graph.graph import Graph
+from rlmflow.graph.nodes import AgentStart, ExecAction, Step, current_step, running_step
 from rlmflow.runtime.repl import Repl, ReplRun, ReplStatus
+from rlmflow.runtime.repl_server import (
+    ProxyCall,
+    ReplResponse,
+    WireModel,
+    dump_message,
+    parse_client_message,
+)
 
 if TYPE_CHECKING:
+    from rlmflow.graph.graph import Graph
     from rlmflow.runtime.repl_client import ReplConnection
+
+# Public ``RLMFLOW_*`` metadata an agent can read from its per-REPL ``ENV``
+# mapping (e.g. ``ENV["RLMFLOW_AGENT_ID"]``). Being per-REPL, it stays isolated
+# across concurrent local agents. Private control state (output schemas, done
+# results) never travels this way.
+
+#: Current agent id (for example ``"root"`` or ``"root.worker"``).
+RLMFLOW_AGENT_ID = "RLMFLOW_AGENT_ID"
+#: Current agent depth in the spawn tree (``"0"`` for root).
+RLMFLOW_DEPTH = "RLMFLOW_DEPTH"
+#: Parent agent id, or ``""`` for root.
+RLMFLOW_PARENT_AGENT_ID = "RLMFLOW_PARENT_AGENT_ID"
+#: Recursion bound configured on the flow.
+RLMFLOW_MAX_DEPTH = "RLMFLOW_MAX_DEPTH"
+#: ``"1"`` for root, ``"0"`` otherwise.
+RLMFLOW_IS_ROOT = "RLMFLOW_IS_ROOT"
+#: ``"1"`` while recorded code is being re-run to rebuild a namespace, ``"0"`` during
+#: a live turn. Code that reads it can skip work it should not repeat.
+RLMFLOW_REPLAY = "RLMFLOW_REPLAY"
+
+
+def agent_process_env(
+    *,
+    agent_id: str,
+    depth: int,
+    parent_agent_id: str | None,
+    max_depth: int,
+) -> dict[str, str]:
+    """Return public ``RLMFLOW_*`` environment variables for one agent."""
+    return {
+        RLMFLOW_AGENT_ID: agent_id,
+        RLMFLOW_DEPTH: str(depth),
+        RLMFLOW_PARENT_AGENT_ID: parent_agent_id or "",
+        RLMFLOW_MAX_DEPTH: str(max_depth),
+        RLMFLOW_IS_ROOT: "1" if depth == 0 else "0",
+        RLMFLOW_REPLAY: "0",
+    }
+
+
+STDERR_LINES = 200
+DEFAULT_REPL_TIMEOUT = 300.0
+
+
+class PopenConnection:
+    """A lazy subprocess connected by protected JSON-line stdio."""
+
+    def __init__(
+        self,
+        argv: list[str],
+        *,
+        cwd: str | Path | None = None,
+        env: dict[str, str] | None = None,
+        label: str = "REPL worker",
+    ) -> None:
+        self.argv = argv
+        self.cwd = cwd
+        self.env = env
+        self.label = label
+        self.proc: subprocess.Popen[bytes] | None = None
+        self._start_lock = threading.Lock()
+        self._stderr_tail: deque[str] = deque(maxlen=STDERR_LINES)
+        self._stderr_reader: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._process()
+
+    def _process(self) -> subprocess.Popen[bytes]:
+        with self._start_lock:
+            if self.proc is None:
+                self.proc = subprocess.Popen(
+                    self.argv,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=str(self.cwd) if self.cwd is not None else None,
+                    env=self.env,
+                    bufsize=0,
+                )
+                self._drain_stderr(self.proc)
+            return self.proc
+
+    def _drain_stderr(self, proc: subprocess.Popen[bytes]) -> None:
+        if proc.stderr is None:
+            return
+
+        def pump() -> None:
+            with suppress(Exception):
+                for line in iter(proc.stderr.readline, b""):
+                    self._stderr_tail.append(line.decode(errors="replace").rstrip("\n"))
+
+        self._stderr_reader = threading.Thread(
+            target=pump,
+            daemon=True,
+            name=f"{self.label} stderr",
+        )
+        self._stderr_reader.start()
+
+    def stderr_tail(self) -> str:
+        return "\n".join(self._stderr_tail)
+
+    def send(self, message: WireModel) -> None:
+        proc = self._process()
+        if proc.stdin is None:
+            raise RuntimeError(f"{self.label} stdin is unavailable")
+        proc.stdin.write((dump_message(message) + "\n").encode())
+        proc.stdin.flush()
+
+    def recv(self) -> ReplResponse | ProxyCall:
+        proc = self._process()
+        if proc.stdout is None:
+            raise RuntimeError(f"{self.label} stdout is unavailable")
+        line = proc.stdout.readline()
+        if not line:
+            raise self._exited_error()
+        return parse_client_message(line.decode())
+
+    def _exited_error(self) -> RuntimeError:
+        if self._stderr_reader is not None:
+            self._stderr_reader.join(timeout=0.2)
+        tail = self.stderr_tail()
+        detail = f" stderr: {tail}" if tail else ""
+        return RuntimeError(f"{self.label} exited unexpectedly.{detail}")
+
+    def close(self, *, force: bool = False) -> None:
+        with self._start_lock:
+            proc, self.proc = self.proc, None
+        if proc is None:
+            return
+        if force and proc.poll() is None:
+            with suppress(Exception):
+                proc.terminate()
+        with suppress(Exception):
+            if proc.stdin is not None and not proc.stdin.closed:
+                proc.stdin.close()
+        try:
+            proc.wait(timeout=0.5 if force else 2)
+        except subprocess.TimeoutExpired:
+            with suppress(Exception):
+                proc.kill()
+                proc.wait(timeout=1)
+        for stream in (proc.stdout, proc.stderr):
+            with suppress(Exception):
+                if stream is not None and not stream.closed:
+                    stream.close()
+
 
 ExecutionGuard = Callable[[ExecAction], str | None | Awaitable[str | None]]
 
 
-def _agent(value: AgentStart | Node) -> AgentStart:
-    if value.parent_agent is None:
-        raise RuntimeError("node is detached")
-    return value.parent_agent
+def _key(agent: AgentStart | str) -> str:
+    return agent if isinstance(agent, str) else agent.id
 
 
 class Runtime:
@@ -64,10 +220,10 @@ class Runtime:
         """A fresh, unstarted connection to one worker process."""
         raise NotImplementedError
 
-    def open(self, agent: AgentStart) -> Repl:
+    def open(self, agent: AgentStart, graph: Graph | None = None) -> Repl:
         from rlmflow.runtime.repl_client import WorkerRepl, WorkerSession
 
-        reused = self.reused_worker_repl(agent)
+        reused = self.reused_worker_repl(agent, graph)
         if reused is not None:
             return reused
         session = WorkerSession(
@@ -77,46 +233,33 @@ class Runtime:
         )
         return WorkerRepl(session, tenant_id=agent.id)
 
-    def get(self, value: AgentStart | Node) -> Repl | None:
-        return self.repls.get(_agent(value).id)
+    def get(self, agent: AgentStart | str) -> Repl | None:
+        return self.repls.get(_key(agent))
 
-    def repl_for(self, value: AgentStart | Node) -> Repl:
-        agent = _agent(value)
+    def repl_for(self, agent: AgentStart, graph: Graph | None = None) -> Repl:
+        """The agent's live REPL, opened on first use; ``graph`` places it in the run."""
         repl = self.repls.get(agent.id)
         if repl is None:
-            repl = self.open(agent)
+            repl = self.open(agent, graph)
             self.repls[agent.id] = repl
-            self.refresh_env(agent)
+            repl.update_env(agent_env(agent, graph))
         return repl
 
-    def reused_worker_repl(self, agent: AgentStart) -> Repl | None:
-        """Return a child tenant in its parent's worker when explicitly requested."""
-        if not agent.config.reuse_worker or agent.parent is None:
+    def reused_worker_repl(self, agent: AgentStart, graph: Graph | None = None) -> Repl | None:
+        """Return a child tenant in its launcher's worker when explicitly requested."""
+        from rlmflow.graph import reads
+
+        launcher = reads.launcher(graph, agent) if graph is not None else None
+        if not agent.config.reuse_worker or launcher is None:
             return None
         from rlmflow.runtime.repl_client import WorkerRepl
 
-        parent = agent.parent.parent_agent
-        parent_repl = self.repls.get(parent.id)
+        parent_repl = self.repls.get(launcher.id)
         if not isinstance(parent_repl, WorkerRepl):
             raise RuntimeError("reuse_worker requires a live parent worker")
         return WorkerRepl(parent_repl.session, tenant_id=agent.id)
 
-    def refresh_env(self, value: AgentStart | Node) -> None:
-        """Refresh public metadata for an agent's live REPL."""
-        agent = _agent(value)
-        repl = self.repls.get(agent.id)
-        if repl is None:
-            return
-        repl.update_env(
-            agent_process_env(
-                agent_id=agent.config.path,
-                depth=agent.config.depth,
-                parent_agent_id=agent.config.path.rpartition(".")[0] or None,
-                max_depth=agent.config.max_depth,
-            )
-        )
-
-    async def execute(self, value: AgentStart | Node, code: str) -> ReplRun:
+    async def execute(self, agent: AgentStart, code: str, graph: Graph | None = None) -> ReplRun:
         """Run code in this agent's REPL; a REPL that dies is an outcome, not a raise.
 
         Only a remote REPL can fail here — a local one captures whatever the code
@@ -124,15 +267,18 @@ class Runtime:
         so the next step opens a fresh one.
         """
         try:
-            return await self.repl_for(value).run(code)
+            return await self.repl_for(agent, graph).run(code)
+        except asyncio.CancelledError:
+            # A cancelled run force-closes its worker; never hand that worker out again.
+            self.close_repl(agent)
+            raise
         except Exception as exc:  # noqa: BLE001 - a dead REPL is an observation
-            self.close_repl(value)
+            self.close_repl(agent)
             text = f"REPL execution failed: {type(exc).__name__}: {exc}"
             return ReplRun(output=text, status=ReplStatus.DEAD, error=exc)
 
-    def close_repl(self, value: AgentStart | Node | str) -> None:
-        key = value if isinstance(value, str) else _agent(value).id
-        repl = self.repls.pop(key, None)
+    def close_repl(self, agent: AgentStart | str) -> None:
+        repl = self.repls.pop(_key(agent), None)
         if repl is not None:
             with suppress(Exception):
                 repl.close()
@@ -144,11 +290,11 @@ class Runtime:
     def close(self) -> None:
         self.close_repls()
 
-    def get_var(self, value: AgentStart | Node, name: str) -> Any:
-        return self.repl_for(value).get_var(name)
+    def get_var(self, agent: AgentStart, name: str) -> Any:
+        return self.repl_for(agent).get_var(name)
 
-    def get_env_var(self, value: AgentStart | Node, name: str) -> Any:
-        return self.repl_for(value).get_env_var(name)
+    def get_env_var(self, agent: AgentStart, name: str) -> Any:
+        return self.repl_for(agent).get_env_var(name)
 
     def inject_live(self, name: str, obj: Any) -> None:
         for repl in self.repls.values():
@@ -169,7 +315,7 @@ class WrappedRuntime:
     def __init__(
         self,
         runtime: Runtime,
-        build_namespace: Callable[[Node], dict[str, Any]],
+        build_namespace: Callable[[ExecAction], dict[str, Any]],
         execution_guard: ExecutionGuard | None = None,
     ) -> None:
         self.runtime = runtime
@@ -184,17 +330,42 @@ class WrappedRuntime:
             if reason is not None:
                 return ReplRun(output=reason, status=ReplStatus.ERROR)
         self.prepare(node)
-        return await self.runtime.execute(node, node.code)
+        step = current_step()
+        return await self.runtime.execute(step.agent, node.code, step.graph)
 
     def prepare(self, node: ExecAction) -> Repl:
-        """Seed the live or replayed action through one preparation path."""
-        agent = node.parent_agent
-        repl = self.runtime.repl_for(agent)
+        """Seed the live or replayed action of the current step through one path."""
+        from rlmflow.graph import reads
+
+        step = current_step()
+        if step is None:
+            raise RuntimeError("actions execute inside a step")
+        g, agent = step.graph, step.agent
+        repl = self.runtime.repl_for(agent, g)
+        repl.update_env(agent_env(agent, g))
         repl.seed(
             self.build_namespace(node),
-            agent.invocation_arguments(),
+            {"task": agent.content, **agent.resolved_args(), **reads.inputs(g, agent)},
         )
         return repl
+
+
+def agent_env(agent: AgentStart, graph: Graph | None = None) -> dict[str, str]:
+    """The ``ENV`` metadata describing where ``agent`` sits in its run."""
+    from rlmflow.graph import reads
+
+    if graph is None:
+        path, depth, parent = agent.config.name, 0, None
+    else:
+        path, depth = reads.path(graph, agent), reads.depth(graph, agent)
+        launcher = reads.launcher(graph, agent)
+        parent = reads.path(graph, launcher) if launcher is not None else None
+    return agent_process_env(
+        agent_id=path,
+        depth=depth,
+        parent_agent_id=parent,
+        max_depth=agent.config.max_depth,
+    )
 
 
 class LocalRuntime(Runtime):
@@ -244,11 +415,73 @@ class SubprocessRuntime(Runtime):
         )
 
 
+async def rebuild_repl(flow: Any, g: Graph, agent: AgentStart) -> None:
+    """Rebuild ``agent``'s namespace from the actions in its history.
+
+    Appends nothing: launch calls resolve through their receipts to agents
+    already in the graph. A block that failed the first time fails the same way
+    here, which is why output and errors are discarded. An action at the
+    frontier is skipped because the next step runs it live. A ``reuse_worker``
+    agent first restores the launcher whose worker it shares.
+    """
+    flow._restored_agents.add(agent.id)
+    if flow.runtime.get(agent) is not None:
+        return
+    launcher = reads.launcher(g, agent)
+    if agent.config.reuse_worker and launcher is not None:
+        await rebuild_repl(flow, g, launcher)
+    flow.runtime.repl_for(agent, g)
+    history = reads.history(g, agent)
+    for node in history[:-1]:
+        if not isinstance(node, ExecAction):
+            continue
+        with running_step(Step(g, agent, node)):
+            repl = flow.wrapped_runtime.prepare(node)
+            repl.update_env({RLMFLOW_REPLAY: "1"})
+            try:
+                await flow.runtime.execute(agent, node.code, g)
+            finally:
+                repl.update_env({RLMFLOW_REPLAY: "0"})
+
+
+async def ensure_repl_rebuilt(flow: Any, g: Graph, agent: AgentStart) -> None:
+    """Restore a namespace once per Flow, right before the agent's next action.
+
+    An agent restored earlier whose REPL has since died stays cold.
+    """
+    if agent.id in flow._restored_agents:
+        return
+    async with flow._restore_lock:
+        await rebuild_repl(flow, g, agent)
+
+
+async def rebuild_unfinished_repls(flow: Any, g: Graph) -> None:
+    """With eager restore, rebuild every unfinished agent's namespace up front."""
+    if flow.restore != "replay":
+        return
+    for agent in g.nodes(AgentStart):
+        if not reads.terminal(g, agent):
+            await ensure_repl_rebuilt(flow, g, agent)
+
+
 __all__ = [
     "DEFAULT_REPL_TIMEOUT",
     "LocalRuntime",
+    "PopenConnection",
+    "RLMFLOW_AGENT_ID",
+    "RLMFLOW_DEPTH",
+    "RLMFLOW_IS_ROOT",
+    "RLMFLOW_MAX_DEPTH",
+    "RLMFLOW_PARENT_AGENT_ID",
+    "RLMFLOW_REPLAY",
     "Repl",
     "Runtime",
+    "STDERR_LINES",
     "SubprocessRuntime",
     "WrappedRuntime",
+    "agent_env",
+    "agent_process_env",
+    "ensure_repl_rebuilt",
+    "rebuild_repl",
+    "rebuild_unfinished_repls",
 ]

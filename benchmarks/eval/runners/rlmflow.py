@@ -33,12 +33,16 @@ from benchmarks.eval.types import Example, Model, Prediction, RunContext, Runner
 from rlmflow import (
     AgentConfig,
     Flow,
+    Graph,
     GraphCheckpointer,
     LocalRuntime,
-    persistence,
+    Node,
+    reads,
     tool,
 )
-from rlmflow.llm import LLMClient, LLMUsage, OpenAIClient
+from rlmflow.graph.nodes import LLMUsage
+from rlmflow.llm import LLMClient
+from rlmflow.llm.openai import OpenAIClient
 from rlmflow.view.html import save_html
 
 
@@ -87,11 +91,11 @@ class RLMFlowLocalRunner(Runner):
         llm_clients = {}
         if self.worker_model is not None:
             llm_clients["worker"] = OpenAIClient(self.worker_model)
+        child_config = {"model": "worker"} if self.worker_model is not None else {}
         flow_kwargs = dict(
             runtime=LocalRuntime(working_directory=prepared.work_dir),
             tools=_example_tools(example),
             llm_clients=llm_clients or None,
-            delegation_model="worker" if self.worker_model is not None else None,
             use_llm_query=self.use_llm_query,
             use_agent_tree=self.use_agent_tree,
         )
@@ -117,6 +121,7 @@ class RLMFlowLocalRunner(Runner):
                     max_depth=max_depth,
                     max_budget=max_budget,
                     resume_on_child_done=False,
+                    child_config=child_config,
                 ),
                 **flow_kwargs,
             )
@@ -128,16 +133,18 @@ class RLMFlowLocalRunner(Runner):
                     max_depth=max_depth,
                     max_budget=max_budget,
                     resume_on_child_done=False,
+                    child_config=child_config,
                 ),
                 **flow_kwargs,
             )
         started_at = time.perf_counter()
-        # Seed the durable graph; `run_streaming` then drives the whole tree,
-        # mutating that graph in place and publishing each changed Node.
-        graph = flow.start(
-            prompt,
-            **inputs,
-        )
+        # Seed the durable graph; `run_streaming` then drives every agent in it
+        # and yields each item it adds.
+        graph = Graph()
+        if isinstance(flow, EnvironmentFlow):
+            root = flow.create_root(graph, prompt, config=flow.root_config, **inputs)
+        else:
+            root = graph.create_agent(prompt, **inputs, config=flow.root_config)
         cap = self.max_steps or max(200, self.max_iters * max(1, max_depth + 1) * 25)
         steps = 0
         error = None
@@ -146,10 +153,10 @@ class RLMFlowLocalRunner(Runner):
         async def drive() -> None:
             nonlocal steps
             try:
-                async for node in flow.run_streaming(graph):
-                    steps += 1
+                async for item in flow.run_streaming(graph):
+                    steps += isinstance(item, Node)
                     if checkpointer is not None:
-                        checkpointer.handle(node)
+                        checkpointer.handle(item, graph)
                     if steps >= cap:
                         raise RuntimeError(f"run exceeded step cap ({cap})")
             finally:
@@ -159,20 +166,20 @@ class RLMFlowLocalRunner(Runner):
 
         try:
             if self.live_save:
-                persistence.save(graph, graph_dir)
+                graph.save(graph_dir)
             asyncio.run(drive())
         except Exception as exc:  # noqa: BLE001 - benchmark rows should record failures
             error = f"{type(exc).__name__}: {exc}"
         finally:
             if checkpointer is None:
-                persistence.save(graph, graph_dir)
+                graph.save(graph_dir)
 
-        spent = graph.usage
-        answer = _prediction_answer(graph.result())
+        spent = reads.usage(graph)
+        answer = _prediction_answer(reads.result(graph, root))
         environment_metrics = (
             environment_episode.metrics() if environment_episode is not None else None
         )
-        delegation = delegation_metrics(graph)
+        delegation = delegation_metrics(graph, root)
         metrics = {
             "time_seconds": time.perf_counter() - started_at,
             "iterations": steps,
@@ -223,6 +230,7 @@ class RLMFlowLocalRunner(Runner):
                 example,
                 answer,
                 graph,
+                root,
                 ctx.artifact_dir,
                 environment=environment_metrics,
             )

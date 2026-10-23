@@ -170,9 +170,7 @@ def environment_by_id(
     try:
         return next(item for item in candidates if item.id == environment_id)
     except StopIteration as exc:
-        raise ValueError(
-            f"{benchmark_name}: unknown environment {environment_id!r}"
-        ) from exc
+        raise ValueError(f"{benchmark_name}: unknown environment {environment_id!r}") from exc
 
 
 def _validate_runners(benchmark_name: str, runners: list[str | ComponentSpec]) -> None:
@@ -181,14 +179,10 @@ def _validate_runners(benchmark_name: str, runners: list[str | ComponentSpec]) -
     if unknown:
         raise ValueError(f"unknown runner(s): {', '.join(unknown)}")
     incompatible = [
-        runner
-        for runner in runners
-        if benchmark_name not in RUNNER_CAPABILITIES[runner]
+        runner for runner in runners if benchmark_name not in RUNNER_CAPABILITIES[runner]
     ]
     if incompatible:
-        raise ValueError(
-            f"{benchmark_name} does not support runner(s): {', '.join(incompatible)}"
-        )
+        raise ValueError(f"{benchmark_name} does not support runner(s): {', '.join(incompatible)}")
 
 
 __all__ = [

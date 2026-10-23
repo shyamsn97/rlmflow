@@ -34,9 +34,7 @@ class FanoutEnvironment(Environment[FanoutObservation, dict]):
         self.id = example.id
         self.description = example.prompt
         self._shards = tuple(dict(shard) for shard in example.metadata["shards"])
-        self._observation = FanoutObservation(
-            payloads=fanout_payloads_for_example(example)
-        )
+        self._observation = FanoutObservation(payloads=fanout_payloads_for_example(example))
 
     def start(self, instance_id: str) -> FanoutObservation:
         del instance_id

@@ -1,11 +1,11 @@
-"""Render a run: as a figure, a timeline, a stepper, a browser app, or frames.
+"""Render a run: as a text tree, a figure, a timeline, a stepper, a browser app, or frames.
 
 Because the run is a typed graph, every view is a render of that graph::
 
-    from rlmflow import persistence
+    from rlmflow import Graph
     from rlmflow.view import save_html, save_svg, steps
 
-    graph = persistence.load("runs/coding/graph")
+    graph = Graph.load("runs/coding/graph")
     for step in steps(graph):
         print(step.index, step.title, step.summary)
     save_svg(graph, "graph.svg")
@@ -22,32 +22,42 @@ Gradio (``rlmflow[viewer]``), and ``save_frames``/``save_gif`` want a rasteriser
 (``rlmflow[image]``).
 """
 
-from typing import TYPE_CHECKING, Any
-
 from rlmflow.view.figure import (
     figure_title,
     graph_svg,
     node_color,
+    run_title,
+    save_frames,
+    save_gif,
+    step_svg,
 )
-from rlmflow.view.html import render_html, save_html, save_svg, step_svg
-from rlmflow.view.replay import as_root, render_steps, replay, snapshot
-from rlmflow.view.steps import Step, node_detail, steps, timeline
-
-if TYPE_CHECKING:  # the two that carry dependencies, typed but not imported
-    from rlmflow.view.app import open_viewer
-    from rlmflow.view.images import save_frames, save_gif
+from rlmflow.view.html import open_viewer, render_html, save_html, save_svg
+from rlmflow.view.text import render_forest, render_tree
+from rlmflow.view.timeline import (
+    Step,
+    as_graph,
+    node_detail,
+    render_steps,
+    replay,
+    snapshot,
+    steps,
+    timeline,
+)
 
 __all__ = [
     "Step",
-    "as_root",
+    "as_graph",
     "figure_title",
     "graph_svg",
     "node_color",
     "node_detail",
     "open_viewer",
+    "render_forest",
     "render_html",
     "render_steps",
+    "render_tree",
     "replay",
+    "run_title",
     "save_frames",
     "save_gif",
     "save_html",
@@ -57,23 +67,3 @@ __all__ = [
     "steps",
     "timeline",
 ]
-
-# Held back so importing rlmflow does not pull Gradio or a rasteriser into a run
-# that only ever wanted a Flow.
-_OPTIONAL = {
-    "open_viewer": "rlmflow.view.app",
-    "save_frames": "rlmflow.view.images",
-    "save_gif": "rlmflow.view.images",
-}
-
-
-def __getattr__(name: str) -> Any:
-    if name in _OPTIONAL:
-        from importlib import import_module
-
-        return getattr(import_module(_OPTIONAL[name]), name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def __dir__() -> list[str]:
-    return sorted(__all__)

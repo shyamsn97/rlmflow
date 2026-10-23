@@ -1,18 +1,25 @@
 """The machinery a ``Flow`` runs on.
 
 ``Flow`` itself lives in :mod:`rlmflow.flow`; these are the parts it is built out
-of. ``execution`` schedules the work, ``boundaries`` decides where a stream stops,
-and one ``Flow.run_streaming`` call can drive several roots at once.
+of. ``steps`` decides what one step does, ``scheduler`` runs steps concurrently
+and decides where a stream stops, and ``handoff`` delivers finished agents'
+results.
 """
 
-from rlmflow.engine import boundaries
-from rlmflow.engine.execution import Pool, SequentialPool, StepResult, TaskQueue, ThreadPool
+from rlmflow.engine.scheduler import (
+    Boundary,
+    Pool,
+    SequentialPool,
+    StepResult,
+    TaskQueue,
+    ThreadPool,
+)
 
 __all__ = [
+    "Boundary",
     "Pool",
     "SequentialPool",
     "StepResult",
     "TaskQueue",
     "ThreadPool",
-    "boundaries",
 ]

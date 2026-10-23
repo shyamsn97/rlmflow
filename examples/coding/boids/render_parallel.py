@@ -6,25 +6,19 @@ import argparse
 import io
 from pathlib import Path
 
-from rlmflow import persistence
-from rlmflow.graph.nodes import AgentStart, Node
-from rlmflow.view.figure import graph_svg
-from rlmflow.view.steps import timeline
+from rlmflow import AgentStart, Graph, Node, reads
+from rlmflow.view.figure import graph_svg, parent_ids
 
 
-def _depth(node: Node, cache: dict[str, int]) -> int:
-    if node.id in cache:
-        return cache[node.id]
-    cache[node.id] = 0 if node.parent is None else _depth(node.parent, cache) + 1
-    return cache[node.id]
-
-
-def _parallel_order(root: AgentStart) -> tuple[list[Node], list[tuple[int, str]]]:
+def _parallel_order(g: Graph, root: AgentStart) -> tuple[list[Node], list[tuple[int, str]]]:
     """Order the complete graph by structural level, preserving parent safety."""
-    chronological = timeline(root)
-    chronology = {node.id: index for index, node in enumerate(chronological)}
+    chronological = g.nodes()
+    parents = parent_ids(g)
     depths: dict[str, int] = {}
-    ordered = sorted(chronological, key=lambda node: (_depth(node, depths), chronology[node.id]))
+    for node in chronological:  # log order lands every parent before its children
+        parent = parents.get(node.id)
+        depths[node.id] = 0 if parent is None else depths[parent] + 1
+    ordered = sorted(chronological, key=lambda node: (depths[node.id], node.seq))
 
     frames = []
     cursor = 0
@@ -38,20 +32,12 @@ def _parallel_order(root: AgentStart) -> tuple[list[Node], list[tuple[int, str]]
             label = f"{agents} child agents launch together"
         elif level == 0:
             label = "root receives the application specification"
-        elif any(node.type == "done_output" and node.parent_agent is root for node in wave):
+        elif any(node.type == "done_output" and node.agent_id == root.id for node in wave):
             label = "root completes integration and verification"
         else:
             noun = "node" if len(wave) == 1 else "nodes"
             label = f"parallel graph level {level} · {len(wave)} {noun}"
         frames.append((cursor, label))
-
-    present: set[str] = set()
-    for node in ordered:
-        if node.parent is not None and node.parent.id not in present:
-            raise ValueError(f"node {node.id} appears before parent {node.parent.id}")
-        present.add(node.id)
-    if {node.id for node in ordered} != {node.id for node in chronological}:
-        raise ValueError("parallel ordering did not preserve the complete graph")
     return ordered, frames
 
 
@@ -68,12 +54,14 @@ def render(
     except ImportError as exc:
         raise SystemExit("rendering needs CairoSVG and Pillow: install rlmflow[image]") from exc
 
-    root = persistence.load(run_dir)
-    ordered, reveal_frames = _parallel_order(root)
+    g = Graph.load(run_dir)
+    root = next(agent for agent in g.nodes(AgentStart) if reads.launcher(g, agent) is None)
+    ordered, reveal_frames = _parallel_order(g, root)
     frames = []
     for revealed, label in reveal_frames:
         svg = graph_svg(
-            ordered,
+            g,
+            order=ordered,
             title=f"Boids coding · {label}",
             width=1040,
             height=420,

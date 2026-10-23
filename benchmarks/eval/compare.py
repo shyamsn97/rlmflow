@@ -27,7 +27,9 @@ def compare_runs(
             report.seed,
         )
 
-    indexed = {label: {key(report): report for report in reports} for label, reports in runs.items()}
+    indexed = {
+        label: {key(report): report for report in reports} for label, reports in runs.items()
+    }
     keys = sorted(set().union(*(reports.keys() for reports in indexed.values())))
     labels = list(runs)
     environments = []
@@ -57,9 +59,7 @@ def compare_runs(
             }
             for label, reports in runs.items()
         },
-        "paired_environments": sum(
-            len(item["runs"]) == len(labels) for item in environments
-        ),
+        "paired_environments": sum(len(item["runs"]) == len(labels) for item in environments),
         "environments": environments,
     }
 
@@ -108,11 +108,7 @@ def render_markdown(comparison: Mapping[str, Any]) -> str:
     for item in comparison["environments"]:
         values = [item["benchmark"], item["environment_id"], item["runner"]]
         values.extend(
-            (
-                f"{item['runs'][label]['score']:.4f}"
-                if label in item["runs"]
-                else "—"
-            )
+            (f"{item['runs'][label]['score']:.4f}" if label in item["runs"] else "—")
             for label in labels
         )
         if len(labels) == 2:

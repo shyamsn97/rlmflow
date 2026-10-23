@@ -4,8 +4,8 @@ Status: historical design record. The requested-transition path described below 
 
 The current design is smaller:
 
-- default automatic policy sits in `engine/steps.py`;
-- the reusable `Transitions` table type sits in `engine/transitions.py`;
+- default automatic policy sits in `steps/defaults.py`;
+- the reusable `Transitions` table type sits in `steps/transitions.py`;
 - `.choices(CurrentQuery, *targets)` declares model-selectable routes;
 - the always-bound `transition("name")` tool is documented only when choices exist;
 - `run_repl` resolves a valid choice directly from `ExecAction` to the selected `UserQuery`;
@@ -15,7 +15,7 @@ See [`step_table.md`](step_table.md) for the current API and transition map. The
 
 ## The original hop
 
-```57:70:rlmflow/engine/steps.py
+```57:70:rlmflow/steps/defaults.py
 @Flow.transitions.on(ExecOutput, when=has_request)
 def apply_requested(flow: Flow, node: Node) -> Node:
     selected = requested_transition(node)
@@ -31,10 +31,10 @@ def apply_requested(flow: Flow, node: Node) -> Node:
 ```text
 tools/namespace.py      transition() raises TransitionSignal
 runtime/repl.py         ReplRun(status=TRANSITION, transition=name)
-engine/steps.py         node_for_run stamps ExecAction.requested_transition
+steps/defaults.py         node_for_run stamps ExecAction.requested_transition
 graph/utils.py          requested_transition(node) peeks at prev
-engine/transitions.py   has_request / chose / resolve_offer / available
-engine/steps.py         apply_requested lands option.target()
+steps/transitions.py   has_request / chose / resolve_offer / available
+steps/defaults.py         apply_requested lands option.target()
 prompts/messages.py     transition_footer advertises the menu
 graph/nodes.py          UserQuery.name / transition_description / TurnMode
 ```
@@ -47,9 +47,9 @@ Extract-by-kind:
 
 | Kind            | Landed in                                                     |
 | --------------- | ------------------------------------------------------------- |
-| table type      | `engine/transitions.py` (`Transitions`, `Row`, `Offer`)       |
-| default rows    | `engine/steps.py`                                             |
-| default guards  | `engine/transitions.py` (bottom of the same file as the type) |
+| table type      | `steps/transitions.py` (`Transitions`, `Row`, `Offer`)       |
+| default rows    | `steps/defaults.py`                                             |
+| default guards  | `steps/transitions.py` (bottom of the same file as the type) |
 | tiny accessors  | `graph/utils.py`                                              |
 | turn strings    | `graph/prompts.py`                                            |
 | REPL callables  | `tools/namespace.py`                                          |
@@ -84,9 +84,9 @@ ExecAction                   → run_repl        → node_for_run(...)
 ### Last turn / budget — 6 files
 
 ```text
-engine/transitions.py   at_final, budget_nearly_spent, out_of_room
+steps/transitions.py   at_final, budget_nearly_spent, out_of_room
 flow.py                 budget_exceeded (hard stop; different predicate)
-engine/steps.py         to_final
+steps/defaults.py         to_final
 graph/prompts.py        FINAL_ANSWER_ACTION
 graph/nodes.py          FinalQuery.modify_prompt
 ```
@@ -96,8 +96,8 @@ Two budget policies. `out_of_room` is the soft nudge: one more average turn woul
 ### Plan turn — 5 files
 
 ```text
-engine/transitions.py  PLAN_SOURCES, child_returned
-engine/steps.py        to_plan
+steps/transitions.py  PLAN_SOURCES, child_returned
+steps/defaults.py        to_plan
 graph/prompts.py       USER_PROMPT
 graph/nodes.py         PlanQuery.modify_prompt
 ```
@@ -107,8 +107,8 @@ graph/nodes.py         PlanQuery.modify_prompt
 ### Truncation — 5 files
 
 ```text
-engine/transitions.py  needs_truncation
-engine/steps.py        to_summary
+steps/transitions.py  needs_truncation
+steps/defaults.py        to_summary
 graph/prompts.py        TRUNCATION_SUMMARY
 graph/nodes.py          TruncationSummary
 prompts/messages.py     build_messages re-finds the summary to prepend
@@ -119,7 +119,7 @@ The row creates the node. `build_messages` walks backwards for the same node to 
 ### `complete` — 3 files, acceptable
 
 ```text
-engine/steps.py        complete (max_iters hard stop, model call)
+steps/defaults.py        complete (max_iters hard stop, model call)
 flow.py                 llm_for_step, build_messages wrapper
 prompts/messages.py     build_messages
 ```
@@ -129,7 +129,7 @@ The producer is the story. Prompt assembly is a layer. This is the shape to keep
 ### `run_repl` — 4 files, mostly a real layer
 
 ```text
-engine/steps.py         run_repl, node_for_run, _turn_mode
+steps/defaults.py         run_repl, node_for_run, _turn_mode
 runtime/repl.py         ReplRun / ReplStatus / TransitionSignal
 tools/namespace.py      finish() / transition() raise the signals
 graph/nodes.py          TurnMode on the query that preceded the action
@@ -141,7 +141,7 @@ graph/nodes.py          TurnMode on the query that preceded the action
 
 ```text
 tools/namespace.py     build_namespace wires launch_subagent
-engine/delegation.py   launch_tool, resolve_child, new_child, submit_child
+tools/launch.py   launch_tool, resolve_child, new_child, submit_child
 flow.py                 one-line wrappers
 graph/nodes.py          AgentStart / AppendChild
 graph/config.py         AgentConfig.child
@@ -175,7 +175,7 @@ It is the drawer that caught whatever `nodes.py` did not want to keep:
 | `requested_transition`                            | `apply_requested` / `has_request`                             |
 | `_can_spawn`                                      | spawn policy (see above)                                      |
 | `_isoformat`                                      | persistence                                                   |
-| `_rebuild_index`                                  | `view/replay.py`                                              |
+| `_rebuild_index`                                  | `view/timeline.py`                                              |
 
 A file named `utils` that both the engine and the graph import is how `has_request` grew a third hop. Delete the drawer by parking each helper with its caller.
 
@@ -197,7 +197,7 @@ A reader of `apply_requested` is sent to `step_table.md`, which does not show th
 
 **Mechanism can live in its own file. Policy for a default row lives next to the producer.**
 
-- `Transitions` / `Row` / `Offer` / errors stay in `engine/transitions.py`. That is a type. Tests construct bare `Transitions()` tables. Subclasses `derive()`. Keep it.
+- `Transitions` / `Row` / `Offer` / errors stay in `steps/transitions.py`. That is a type. Tests construct bare `Transitions()` tables. Subclasses `derive()`. Keep it.
 - Default guards, `SOURCES`, `PLAN_SOURCES`, and `requested_transition` move next to the `@Flow.transitions.on` functions that use them.
 - Node payload fields stay on the node (`ExecAction.requested_transition`, `UserQuery.name`). That is data, not control.
 - REPL tools stay in `tools/namespace.py`. That is a layer: agent code raises, the engine interprets.
@@ -208,10 +208,10 @@ Read-path budget for a default row: **the producer file, plus at most one layer*
 ## Target
 
 ```text
-rlmflow/engine/transitions.py    Transitions, Row, Offer, errors
+rlmflow/steps/transitions.py    Transitions, Row, Offer, errors
                                 (no default policy, no SOURCES, no has_request)
 
-rlmflow/engine/steps.py         every default @on row
+rlmflow/steps/defaults.py         every default @on row
                                 the guards those rows use
                                 requested_transition, node_for_run
                                 SOURCES / PLAN_SOURCES
@@ -228,7 +228,7 @@ rlmflow/graph/config.py         AgentConfig
 
 rlmflow/tools/namespace.py      finish / transition / wait / observe factories
 
-rlmflow/engine/delegation.py    launch_tool + resolve / new / submit
+rlmflow/tools/launch.py    launch_tool + resolve / new / submit
 ```
 
 Delete `graph/utils.py`. Identity, in-flight, and `agent_payload` go into `nodes.py` (they are already re-exported from there). `_isoformat` stays with persistence. `_rebuild_index` stays with the replay that calls it, or becomes a method on `AgentStart`.
@@ -263,7 +263,7 @@ A method is the better end state: the peek is graph navigation, and `graph/utils
 
 ## Order
 
-1. **Move default policy into `steps.py`.** `SOURCES`, `PLAN_SOURCES`, `at_final`, `budget_nearly_spent`, `out_of_room`, `child_returned`, `needs_truncation`, `has_request`, `chose`, `requested_transition`. Re-export from `rlmflow.engine.transitions` for one release if anything outside `steps.py` imported them (`benchmarks/eval/delegation/conditions.py` imports `PLAN_SOURCES` and `child_returned` today). Then point those callers at `engine.steps`.
+1. **Move default policy into `steps.py`.** `SOURCES`, `PLAN_SOURCES`, `at_final`, `budget_nearly_spent`, `out_of_room`, `child_returned`, `needs_truncation`, `has_request`, `chose`, `requested_transition`. Re-export from `rlmflow.engine.steps` for one release if anything outside `steps.py` imported them (`benchmarks/eval/delegation/conditions.py` imports `PLAN_SOURCES` and `child_returned` today). Then point those callers at `engine.steps`.
 1. **Park `working_instruction` on `PlanQuery`.** It is the body of `PlanQuery.instruction`. Inline it, or keep the function in `nodes.py` under the class.
 1. **One `can_spawn`.** Keep `prompts.prompts.can_spawn` (the public one). Delete the two private copies. Decide the `None` case once: unbound prompt rendering may show launch tools (`True`); a live `PlanQuery` with no flow cannot spawn (`False`). Those are two callers, not two functions — pass the predicate the caller means, or make `can_spawn` require an agent and let prompt code skip the section when `flow is None`.
 1. **Delete `graph/utils.py`.** Each helper next to its caller, as in the table above.
@@ -282,8 +282,8 @@ A method is the better end state: the peek is graph navigation, and `graph/utils
 
 ## Acceptance
 
-- Opening `engine/steps.py` shows every default row, the `when=` next to it, and the predicate body.
-- `engine/transitions.py` is the empty table type plus `offer` / `resolve` / `available`. No `has_request`, no `out_of_room`, no `SOURCES`.
+- Opening `steps/defaults.py` shows every default row, the `when=` next to it, and the predicate body.
+- `steps/transitions.py` is the empty table type plus `offer` / `resolve` / `available`. No `has_request`, no `out_of_room`, no `SOURCES`.
 - `graph/utils.py` does not exist. `requested_transition` is a `Node` method or a function in `steps.py`.
 - There is one `can_spawn`. The two private copies are gone.
 - `docs/step_table.md` lists `apply_requested` and `run_repl`.

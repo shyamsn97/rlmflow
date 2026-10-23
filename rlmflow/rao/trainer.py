@@ -6,20 +6,23 @@ functions that use them, so importing this module costs nothing.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from rlmflow.llm import LLMUsage, TinkerClient, retry_transient
+from rlmflow.graph.nodes import LLMUsage
+from rlmflow.llm import retry_transient
+from rlmflow.llm.tinker import TinkerClient
 from rlmflow.rao.env import Env
 from rlmflow.rao.export import Trajectory, stats, trajectories, write_jsonl
 from rlmflow.rao.rollout import Budget, Collector, RolloutFlow, TaskSpec, TurnSample
 
 
-class Trainer(Protocol):
-    """What the loop needs of a trainer: something to sample with, and an update."""
+class Optimizer(Protocol):
+    """Policy-update boundary shared by CISPO, RLOO, PPO, and other objectives."""
 
     @property
     def sampler(self) -> Any:
@@ -27,6 +30,10 @@ class Trainer(Protocol):
 
     def update(self, items: Sequence[Trajectory]) -> dict[str, Any]:
         """Apply one policy update and return metrics."""
+
+
+# Backward-compatible name retained for the experimental API.
+Trainer = Optimizer
 
 
 # -- Sampling -------------------------------------------------------------
@@ -122,23 +129,35 @@ def arrays(turn: TurnSample, credit: float) -> dict[str, list]:
     ``tokens[i + 1]``. The sampled tokens begin at ``len(prompt_tokens)``, which
     puts the first trainable position at ``len(prompt_tokens) - 1``.
     """
+    if not turn.prompt_tokens:
+        raise ValueError("a sampled turn must include at least one prompt token")
+    if len(turn.sampled_tokens) != len(turn.logprobs):
+        raise ValueError(
+            "sampled token/logprob mismatch: "
+            f"{len(turn.sampled_tokens)} tokens, {len(turn.logprobs)} logprobs"
+        )
     tokens = [*turn.prompt_tokens, *turn.sampled_tokens]
     start = len(turn.prompt_tokens) - 1
     inputs, targets = tokens[:-1], tokens[1:]
-    weights = [1.0 if index >= start else 0.0 for index in range(len(targets))]
+    mask = [1.0 if index >= start else 0.0 for index in range(len(targets))]
     logprobs = [
         turn.logprobs[index - start] if index >= start else 0.0 for index in range(len(targets))
     ]
     return {
         "input_tokens": inputs,
         "target_tokens": targets,
-        "weights": weights,
+        "mask": mask,
         "logprobs": logprobs,
-        "advantages": [credit if weight else 0.0 for weight in weights],
+        "advantages": [credit if weight else 0.0 for weight in mask],
     }
 
 
-def build_datums(items: Sequence[Trajectory], types: Any) -> list[Any]:
+def build_datums(
+    items: Sequence[Trajectory],
+    types: Any,
+    *,
+    advantage_scale: float = 1.0,
+) -> list[Any]:
     """One datum per sampled turn, carrying that trajectory's credit.
 
     Every turn of one trajectory gets the same advantage: RAO's credit is
@@ -149,16 +168,33 @@ def build_datums(items: Sequence[Trajectory], types: Any) -> list[Any]:
     datums = []
     for item in items:
         for turn in item.turns:
-            data = arrays(turn, item.credit)
-            if not any(data["weights"]):
+            data = arrays(turn, item.credit * advantage_scale)
+            if not any(data["mask"]):
                 continue
+            data.pop("mask")
+            inputs = data.pop("input_tokens")
+            loss_inputs = {
+                name: _tensor_data(types, values, integral=name == "target_tokens")
+                for name, values in data.items()
+            }
             datums.append(
                 types.Datum(
-                    model_input=types.ModelInput.from_ints(data.pop("input_tokens")),
-                    loss_fn_inputs=data,
+                    model_input=types.ModelInput.from_ints(inputs),
+                    loss_fn_inputs=loss_inputs,
                 )
             )
     return datums
+
+
+def _tensor_data(types: Any, values: list, *, integral: bool) -> Any:
+    """Build Tinker's required tensor wrapper while keeping test doubles tiny."""
+    tensor_type = getattr(types, "TensorData", None)
+    if tensor_type is None:
+        return values
+    import torch
+
+    dtype = torch.long if integral else torch.float32
+    return tensor_type.from_torch(torch.tensor(values, dtype=dtype))
 
 
 # -- Trainers -------------------------------------------------------------
@@ -173,7 +209,23 @@ class TinkerConfig:
     learning_rate: float = 1e-5
     max_tokens: int = 2048
     temperature: float = 1.0
-    loss_fn: str = "importance_sampling"
+    #: RLOO is the default critic-free objective. Tinker implements its policy
+    #: gradient update as importance sampling over our leave-one-out advantages.
+    loss_fn: str = "rloo"
+
+
+def tinker_loss_fn(name: str) -> str:
+    """Resolve public optimizer names to Tinker's token-loss identifiers."""
+    normalized = name.lower().replace("-", "_")
+    aliases = {
+        "rloo": "importance_sampling",
+        "reinforce_leave_one_out": "importance_sampling",
+        "is": "importance_sampling",
+    }
+    resolved = aliases.get(normalized, normalized)
+    if resolved not in {"importance_sampling", "cispo", "ppo"}:
+        raise ValueError("loss_fn must be one of rloo, importance_sampling, cispo, or ppo")
+    return resolved
 
 
 class TinkerTrainer:
@@ -183,6 +235,7 @@ class TinkerTrainer:
         import tinker  # type: ignore[import-not-found]
 
         self.config = config or TinkerConfig()
+        tinker_loss_fn(self.config.loss_fn)
         self.service = service_client or tinker.ServiceClient()
         if self.config.state_path:
             self.training = self.service.create_training_client_from_state_with_optimizer(
@@ -213,24 +266,56 @@ class TinkerTrainer:
         )
 
     def update(self, items: Sequence[Trajectory]) -> dict[str, Any]:
+        active_tokens = sum(
+            len(turn.sampled_tokens) for item in items for turn in item.turns if turn.trainable
+        )
+        if not any(item.credit != 0.0 for item in items):
+            return {
+                "algorithm": self.config.loss_fn,
+                "active_tokens": active_tokens,
+                "datums": 0,
+                "skipped": "zero policy-gradient signal",
+                "step": self.steps,
+            }
+        if active_tokens == 0:
+            return {
+                "algorithm": self.config.loss_fn,
+                "active_tokens": 0,
+                "datums": 0,
+                "skipped": "no trainable turns",
+                "step": self.steps,
+            }
+
         from tinker import types  # type: ignore[import-not-found]
 
-        datums = build_datums(items, types)
+        # Tinker policy objectives use sum reduction. Normalize by active action
+        # tokens so update magnitude does not depend on response length or batch size.
+        advantage_scale = 1.0 / active_tokens
+        datums = build_datums(items, types, advantage_scale=advantage_scale)
         if not datums:
-            return {"datums": 0, "skipped": "no trainable turns"}
-        # Current Tinker derives the sampled-token mask from zero advantages for
-        # importance sampling and rejects the older explicit ``weights`` key.
-        if self.config.loss_fn == "importance_sampling":
-            for datum in datums:
-                datum.loss_fn_inputs.pop("weights", None)
-        self.training.forward_backward(datums, loss_fn=self.config.loss_fn).result()
+            return {
+                "algorithm": self.config.loss_fn,
+                "active_tokens": active_tokens,
+                "datums": 0,
+                "skipped": "no trainable turns",
+                "step": self.steps,
+            }
+        objective = tinker_loss_fn(self.config.loss_fn)
+        self.training.forward_backward(datums, loss_fn=objective).result()
         self.training.optim_step(types.AdamParams(learning_rate=self.config.learning_rate)).result()
         self.steps += 1
         # Resampling from the updated weights is what keeps the next batch
         # on-policy; the recorded logprobs are what keep the ratio correct if a
         # batch drifts anyway.
         self._sampler = self.build_sampler(self.training.save_weights_and_get_sampling_client)
-        return {"datums": len(datums), "step": self.steps}
+        return {
+            "algorithm": self.config.loss_fn,
+            "active_tokens": active_tokens,
+            "advantage_scale": advantage_scale,
+            "datums": len(datums),
+            "loss_fn": objective,
+            "step": self.steps,
+        }
 
     def save_checkpoint(self, name: str) -> dict[str, str]:
         """Persist inference weights and optimizer state under one logical name."""
@@ -266,6 +351,7 @@ class RunConfig:
     tasks_per_iteration: int = 4
     rollouts_per_task: int = 4
     budget: Budget = field(default_factory=Budget)
+    checkpoint_every: int | None = 1
 
 
 async def train(
@@ -273,17 +359,23 @@ async def train(
     open_env: Callable[[TaskSpec], Awaitable[Env]],
     trainer: Trainer,
     config: RunConfig | None = None,
+    collector_kwargs: Mapping[str, Any] | None = None,
     **flow_kwargs: Any,
 ) -> list[dict[str, Any]]:
     """Run the RAO loop and return one metrics dict per iteration."""
     config = config or RunConfig()
     metrics: list[dict[str, Any]] = []
     for iteration in range(config.iterations):
-        flow = RolloutFlow(trainer.sampler, budget=config.budget, **flow_kwargs)
+        # Tinker's public trainer lifecycle is synchronous. Keep those calls off
+        # the event loop; the SDK explicitly warns that calling them from async
+        # code can deadlock.
+        sampler = await asyncio.to_thread(lambda: trainer.sampler)
+        flow = RolloutFlow(sampler, budget=config.budget, **flow_kwargs)
         collector = Collector(
             flow,
             open_env,
             rollouts_per_task=config.rollouts_per_task,
+            **dict(collector_kwargs or {}),
         )
         start = (iteration * config.tasks_per_iteration) % max(len(tasks), 1)
         batch = [
@@ -297,7 +389,13 @@ async def train(
                 **stats(items, trees),
                 "refusals": dict(flow.refusals),
             }
-            record.update(trainer.update(items))
+            record.update(await asyncio.to_thread(trainer.update, items))
+            if (
+                config.checkpoint_every
+                and (iteration + 1) % config.checkpoint_every == 0
+                and callable(save := getattr(trainer, "save_checkpoint", None))
+            ):
+                record["checkpoint"] = await asyncio.to_thread(save, f"rao-{iteration + 1:06d}")
             metrics.append(record)
             write_artifacts(config.out_dir, iteration, items, record)
         finally:
@@ -321,6 +419,7 @@ def write_artifacts(
 
 __all__ = [
     "JsonlTrainer",
+    "Optimizer",
     "RunConfig",
     "TinkerConfig",
     "TinkerSampler",
@@ -329,5 +428,6 @@ __all__ = [
     "arrays",
     "build_datums",
     "train",
+    "tinker_loss_fn",
     "write_artifacts",
 ]

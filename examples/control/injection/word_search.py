@@ -8,10 +8,9 @@ delegating direction-specific search to three child agents:
 - ``diagonals`` searches diagonals in all four diagonal directions.
 
 That route is intentionally plausible but more complicated than necessary. It
-creates a real delegating turn at the root, with each child agent hanging off
-the ``ExecAction`` that launched it. The finished run is saved as a run
-directory (``graph.json`` manifest plus per-agent logs nested under
-``agents/``) that ``inject_variants.py`` loads with ``persistence.load``.
+creates a real delegating turn at the root, with each child agent launched by
+the ``ExecAction`` that called ``launch_subagent``. The finished graph is saved
+as a run directory that ``inject_variants.py`` loads with ``Graph.load``.
 
 Run:
     export OPENAI_API_KEY=...
@@ -29,14 +28,14 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rlmflow import AgentConfig, AgentStart, Flow, Node, json_schema_for
+from rlmflow import AgentConfig, AgentStart, Flow, Graph, json_schema_for, reads
 from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import checkpoint_stream, save_example_graph  # noqa: E402
+from common import print_agent_tree, print_run, save_example_graph  # noqa: E402
 
 TARGET_WORD = "AGENT"
 
@@ -122,18 +121,11 @@ def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
     )
 
 
-def print_tree(node: Node, depth: int = 0) -> None:
-    """One indented line per node, from ``node`` down."""
-    label = f"{node.type} [{node.config.path}]" if isinstance(node, AgentStart) else node.type
-    print(f"{'  ' * depth}{label}")
-    for child in node.children:
-        print_tree(child, depth + 1)
-
-
 def run(model: str, out_dir: Path) -> None:
     flow = Flow(client_for(model))
 
-    graph = flow.start(
+    g = Graph()
+    root = g.create_agent(
         QUERY,
         config=AgentConfig(
             output_schema=json_schema_for(WordSearchResult),
@@ -141,20 +133,16 @@ def run(model: str, out_dir: Path) -> None:
         ),
         puzzle=PUZZLE,
     )
-    print_tree(graph)
+    print_agent_tree(g, root)
 
-    async def run_to_done() -> None:
-        async for node in checkpoint_stream(flow.run_streaming(graph), out_dir):
-            print(f"- {node.parent_agent.config.path}: {node.type}")
-
-    asyncio.run(run_to_done())
+    asyncio.run(print_run(flow, g, out_dir))
     flow.runtime.close_repls()
 
     print("=== TREE ===")
-    print_tree(graph)
+    print_agent_tree(g, root)
 
     # With an output_schema, submit(...) records the parsed value, not raw text.
-    result = WordSearchResult.model_validate(graph.result())
+    result = WordSearchResult.model_validate(reads.result(g, root))
     actual = {_hit_key(hit) for hit in result.found}
     missing = set(result.missing)
 
@@ -164,12 +152,10 @@ def run(model: str, out_dir: Path) -> None:
         raise SystemExit("agent returned word-search hits that do not match EXPECTED")
 
     print("agent returned the expected word-search hits!")
-    path = graph.save(out_dir)
-    agents = sum(isinstance(node, AgentStart) for node in graph.walk())
+    path = g.save(out_dir)
     print(f"\nwrote baseline run: {path}")
-    print(f"  manifest: {path / 'graph.json'}")
-    print(f"  agents:   {path / 'agents'} ({agents} agents)")
-    save_example_graph(graph, "injection-word-search")
+    print(f"  graph:  {path / 'graph.json'} ({len(g.nodes(AgentStart))} agents)")
+    save_example_graph(g, "injection-word-search")
 
 
 def main() -> None:

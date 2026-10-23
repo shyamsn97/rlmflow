@@ -1,7 +1,7 @@
 import asyncio
 
 import pytest
-from helpers import StubLLM
+from helpers import StubLLM, agent_graph, next_node, stepping
 
 from rlmflow import (
     AgentStart,
@@ -15,15 +15,16 @@ from rlmflow import (
     ReplRun,
     ReplStatus,
     StructuredResult,
-    Submission,
     TransitionDecision,
     TransitionPolicyError,
     TruncationSummary,
+    TurnMode,
     UserQuery,
-    start,
+    ops,
+    reads,
 )
-from rlmflow.engine.steps import complete, node_for_run
-from rlmflow.engine.transitions import TransitionFunction, resolve
+from rlmflow.engine.steps import TransitionFunction, complete, node_for_run, resolve_transition
+from rlmflow.graph import Graph
 
 
 def test_transition_metadata_lives_on_the_callable():
@@ -79,18 +80,24 @@ def test_resolve_reuses_one_recorded_semantic_choice():
         source="all",
         node_only=True,
     )
-    root = start("query")
+    g, root = agent_graph("query")
     error = ErrorOutput(content="failed")
-    root.append(error)
+    ops.append(g, root, error)
 
-    chosen, anchor, source = asyncio.run(resolve((semantic, skipped, fallback), error, judge))
+    with stepping(g, root):
+        chosen, anchor, source = asyncio.run(
+            resolve_transition((semantic, skipped, fallback), error, judge)
+        )
     assert chosen is fallback
     assert source is error
     assert isinstance(anchor, TransitionDecision)
-    assert anchor.prev is error
+    assert reads.prev(g, anchor) is error
     assert judged == [((semantic.id, semantic.__name__, "Needs a different plan"),)]
 
-    chosen, again, source = asyncio.run(resolve((semantic, skipped, fallback), anchor, judge))
+    with stepping(g, root):
+        chosen, again, source = asyncio.run(
+            resolve_transition((semantic, skipped, fallback), anchor, judge)
+        )
     assert chosen is fallback
     assert again is anchor
     assert source is error
@@ -98,15 +105,15 @@ def test_resolve_reuses_one_recorded_semantic_choice():
 
 
 def test_one_turn_budget_starts_on_the_final_turn():
-    root = start("query", max_iters=1)
+    g, root = agent_graph("query", max_iters=1)
 
-    result = asyncio.run(Flow(object()).step(root))
+    result = asyncio.run(Flow(object()).step(g, root))
 
     assert isinstance(result, FinalQuery)
 
 
 def test_startup_calls_the_model_with_submit_available():
-    root = start("query", args={"context": "material"})
+    g, root = agent_graph("query", args={"context": "material"})
     requests = []
 
     class Recorder:
@@ -115,58 +122,93 @@ def test_startup_calls_the_model_with_submit_available():
             return "reply"
 
     flow = Flow(Recorder())
-    reply = asyncio.run(flow.step(root))
+    reply = asyncio.run(flow.step(g, root))
 
     assert isinstance(reply, LLMOutput)
-    assert reply.prev is root
+    assert reads.prev(g, reply) is root
     assert [message["role"] for message in requests[0]] == ["system", "user"]
     assert requests[0][-1]["content"] == "query"
-    assert "submit" in flow.build_tools(root)
+    with stepping(g, root):
+        assert "submit" in flow.build_tools(root)
 
 
 def test_first_block_may_submit():
-    root = start("query")
+    g, root = agent_graph("query")
     reply = LLMOutput(content="```repl\nsubmit(42)\n```", code="submit(42)")
-    root.append(reply)
+    ops.append(g, root, reply)
     action = ExecAction(code=reply.code)
-    reply.append(action)
+    ops.append(g, root, action)
 
-    submission = node_for_run(action, ReplRun(status=ReplStatus.DONE, answer=42))
+    with stepping(g, root):
+        done = node_for_run(action, ReplRun(status=ReplStatus.DONE, answer=42))
 
-    assert isinstance(submission, Submission)
-    assert submission.result == 42
+    assert isinstance(done, DoneOutput)
+    assert done.result == 42
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (UserQuery(content="continue"), TurnMode.ACTION),
+        (FinalQuery(), TurnMode.FINAL),
+    ],
+)
+def test_exec_action_stamps_the_source_turn_mode(source, expected):
+    g, root = agent_graph("query")
+    ops.append(g, root, source)
+    reply = LLMOutput(content="```repl\nprint(1)\n```", code="print(1)")
+    ops.append(g, root, reply)
+
+    action = asyncio.run(Flow(object()).step(g, root, reply))
+
+    assert isinstance(action, ExecAction)
+    assert action.turn_mode is expected
+
+
+def test_final_action_exposes_only_submit_and_errors_without_it():
+    g, root = agent_graph("query")
+    action = ExecAction(code="print(1)", turn_mode=TurnMode.FINAL)
+    ops.append(g, root, action)
+    flow = Flow(object())
+
+    with stepping(g, root):
+        assert set(flow.build_tools(action)) == {"submit"}
+    with stepping(g, root):
+        failed = node_for_run(action, ReplRun(status=ReplStatus.OK, output="1"))
+    assert isinstance(failed, ErrorOutput)
+    assert failed.content == "1\nMissingSubmitError: the final turn must call submit(answer)"
 
 
 def test_queries_and_observations_call_the_model_directly():
     flow = Flow(StubLLM(lambda _messages: "reply"))
-    root = start("query")
+    g, root = agent_graph("query")
     query = UserQuery(content="host instruction")
-    root.append(query)
-    assert isinstance(asyncio.run(flow.step(query)), LLMOutput)
+    ops.append(g, root, query)
+    assert isinstance(asyncio.run(flow.step(g, root, query)), LLMOutput)
 
     for observation_type, content in (
         (ExecOutput, "observed"),
         (ErrorOutput, "failed"),
     ):
-        root = start("query")
+        g, root = agent_graph("query")
         observation = observation_type(content=content)
-        root.append(observation)
-        assert isinstance(asyncio.run(flow.step(observation)), LLMOutput)
+        ops.append(g, root, observation)
+        assert isinstance(asyncio.run(flow.step(g, root, observation)), LLMOutput)
 
     for prior in (ExecOutput(content="observed"), DoneOutput(result="child")):
-        root = start("query")
-        root.append(prior)
+        g, root = agent_graph("query")
+        ops.append(g, root, prior)
         query = UserQuery(content="[handoff root.child]\nresult: 1")
-        prior.append(query)
-        assert isinstance(asyncio.run(flow.step(query)), LLMOutput)
+        ops.append(g, root, query)
+        assert isinstance(asyncio.run(flow.step(g, root, query)), LLMOutput)
 
 
 def test_specialized_queries_still_run_automatic_guards_before_chat():
-    root = start("query", keep_n_messages=1)
+    g, root = agent_graph("query", keep_n_messages=1)
     plan = UserQuery(content="next")
-    root.append(plan)
+    ops.append(g, root, plan)
 
-    result = asyncio.run(Flow(object()).step(plan))
+    result = asyncio.run(Flow(object()).step(g, root, plan))
 
     assert isinstance(result, TruncationSummary)
 
@@ -176,10 +218,11 @@ def test_flow_transition_registers_node_only_sync_and_async_handlers():
 
     @sync_flow.transition(source="all")
     def sync_handler(node):
-        assert isinstance(node, type(start("other")))
+        assert isinstance(node, AgentStart)
         return UserQuery()
 
-    assert isinstance(asyncio.run(sync_flow.step(start("query"))), UserQuery)
+    g, root = agent_graph("query")
+    assert isinstance(asyncio.run(sync_flow.step(g, root)), UserQuery)
 
     async_flow = Flow(object())
 
@@ -187,10 +230,10 @@ def test_flow_transition_registers_node_only_sync_and_async_handlers():
     async def async_handler(node):
         return UserQuery(content=node.content)
 
-    root = start("query")
+    g, root = agent_graph("query")
     error = ErrorOutput(content="retry")
-    root.append(error)
-    created = asyncio.run(async_flow.step(error))
+    ops.append(g, root, error)
+    created = asyncio.run(async_flow.step(g, root, error))
     assert isinstance(created, UserQuery)
     assert created.content == "retry"
 
@@ -250,17 +293,17 @@ def test_semantic_transition_persists_true_decision_and_uses_original_source(
         assert isinstance(node, ErrorOutput)
         return UserQuery(content="replanned")
 
-    root = start("query")
+    g, root = agent_graph("query")
     error = ErrorOutput(content="requirements changed")
-    root.append(error)
-    created = asyncio.run(flow.step(error))
+    ops.append(g, root, error)
+    created = asyncio.run(flow.step(g, root, error))
 
     assert isinstance(created, UserQuery)
-    decision = error.next
+    decision = next_node(g, error)
     assert isinstance(decision, TransitionDecision)
     assert decision.selected_rule_id == replan.id
     assert decision.source_node_id == error.id
-    assert decision.next is created
+    assert next_node(g, decision) is created
     assert decision.read_set_hash
     assert decision.prompt_hash
     assert decision.model == "judge"
@@ -270,19 +313,20 @@ def test_semantic_transition_persists_true_decision_and_uses_original_source(
     assert decision.started_at is not None
     assert decision.finished_at is not None
     assert decision.finished_at >= decision.started_at
-    assert root.usage == decision.usage
+    assert reads.usage(g) == decision.usage
 
-    loaded = type(root).load(root.save(tmp_path / "semantic"))
-    loaded_decision = next(node for node in loaded.walk() if isinstance(node, TransitionDecision))
+    g.save(tmp_path / "semantic")
+    loaded = Graph.load(tmp_path / "semantic")
+    [loaded_decision] = loaded.nodes(TransitionDecision)
     assert loaded_decision.candidates == {replan.id: "The error needs replanning"}
     assert loaded_decision.selected_rule_id == decision.selected_rule_id
     assert loaded_decision.read_set_node_ids == decision.read_set_node_ids
     assert loaded_decision.usage == decision.usage
-    assert loaded.usage == root.usage
+    assert reads.usage(loaded) == reads.usage(g)
 
-    forked = decision.fork()
+    forked = ops.fork(g, decision)
     request_count = len(engine.requests)
-    replayed = asyncio.run(flow.step(forked.frontier))
+    replayed = asyncio.run(flow.step(g, forked))
     assert isinstance(replayed, UserQuery)
     assert len(engine.requests) == request_count
 
@@ -303,19 +347,19 @@ def test_semantic_transitions_are_selected_by_one_structured_choice():
     def fallback(node):
         return UserQuery(content="fallback")
 
-    root = start("query")
+    g, root = agent_graph("query")
     error = ErrorOutput(content="retry this")
-    root.append(error)
-    created = asyncio.run(flow.step(error))
+    ops.append(g, root, error)
+    created = asyncio.run(flow.step(g, root, error))
 
-    decision = error.next
+    decision = next_node(g, error)
     assert isinstance(decision, TransitionDecision)
     assert decision.selected_rule_id == retry.id
     assert decision.candidates == {
         authenticate.id: "This is an authentication error",
         retry.id: "This can be retried unchanged",
     }
-    assert decision.next is created
+    assert next_node(g, decision) is created
     assert created.content == "retry"
     assert len(engine.requests) == 1
     request = engine.requests[0]

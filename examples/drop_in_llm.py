@@ -25,15 +25,15 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import AgentConfig, Flow
-from rlmflow.adapters import FlowLLM
-from rlmflow.llm import OpenAIClient
+from rlmflow import AgentConfig, Flow, Graph, reads
+from rlmflow.flow import FlowLLM
+from rlmflow.llm.openai import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import checkpoint_stream, example_run_dir, save_example_graph  # noqa: E402
+from common import example_run_dir, print_run, save_example_graph  # noqa: E402
 
 
 def ask(llm, question: str) -> str:
@@ -81,20 +81,16 @@ def demo_nested_flow():
         )
     )
     outer = Flow(inner)
-    root = outer.start(
+    g = Graph()
+    root = g.create_agent(
         "What's the 7th Fibonacci number? Use ```repl``` to compute.",
         config=AgentConfig(max_iters=3),
     )
     run_dir = example_run_dir("drop-in-llm") / "nested-flow"
-
-    async def drive() -> None:
-        async for node in checkpoint_stream(outer.run_streaming(root), run_dir):
-            print(f"{node.parent_agent.config.path}  {node.type}")
-
-    asyncio.run(drive())
-    print(root.result())
+    asyncio.run(print_run(outer, g, run_dir))
+    print(reads.result(g, root))
     save_example_graph(
-        root,
+        g,
         "drop-in-llm",
         out_dir=run_dir,
     )

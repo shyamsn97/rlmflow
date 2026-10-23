@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from rlmflow.graph import reads
 from rlmflow.rao.credit import NodeScore, agent_id
 from rlmflow.rao.rollout import RolloutFlow, RolloutTree, TurnSample
 
@@ -46,9 +47,10 @@ def trajectories(trees: Sequence[RolloutTree], flow: RolloutFlow) -> list[Trajec
     for tree in trees:
         if not tree.usable:
             continue
+        g = tree.graph
         for agent in tree.agents:
-            key = agent_id(agent)
-            turns = [turn for turn in flow.turns(agent) if turn.trainable]
+            key = agent_id(g, agent)
+            turns = [turn for turn in flow.turns(g, agent) if turn.trainable]
             if not turns:
                 continue
             out.append(
@@ -56,15 +58,15 @@ def trajectories(trees: Sequence[RolloutTree], flow: RolloutFlow) -> list[Trajec
                     task_id=tree.task.id,
                     rollout_id=tree.rollout_id,
                     agent_id=key,
-                    depth=agent.config.depth,
+                    depth=tree.scores[key].depth,
                     goal=agent.content,
                     turns=turns,
                     score=tree.scores[key],
                     metadata={
-                        "env_steps": len(tree.session.steps),
-                        "episode_reward": tree.session.total_reward,
-                        "children": len(agent.sub_agents),
-                        "result": agent.result(),
+                        "env_steps": sum(step.agent_id == key for step in tree.session.steps),
+                        "episode_reward": tree.session.reward_for(key),
+                        "children": len(reads.children(g, agent)),
+                        "result": reads.result(g, agent),
                     },
                 )
             )
@@ -96,13 +98,25 @@ def stats(items: Sequence[Trajectory], trees: Sequence[RolloutTree]) -> dict[str
         if tree.error is not None:
             dropped[tree.error] = dropped.get(tree.error, 0) + 1
     rewards = [tree.scores[tree.root_id].reward for tree in usable]
+    locals_by_depth: dict[int, list[float]] = {}
+    for tree in usable:
+        for score in tree.scores.values():
+            locals_by_depth.setdefault(score.depth, []).append(score.local)
+    agent_counts = [len(tree.agents) for tree in usable]
     return {
         "trajectories": len(items),
         "rollouts": len(trees),
         "usable_rollouts": len(usable),
         "dropped": dropped,
         "by_depth": depths,
+        "success_by_depth": {
+            str(depth): sum(values) / len(values)
+            for depth, values in sorted(locals_by_depth.items())
+        },
         "mean_root_reward": sum(rewards) / len(rewards) if rewards else 0.0,
+        "mean_agents": sum(agent_counts) / len(agent_counts) if agent_counts else 0.0,
+        "max_agent_depth": max(locals_by_depth, default=0),
+        "delegations": sum(max(count - 1, 0) for count in agent_counts),
         "mean_env_steps": (
             sum(len(tree.session.steps) for tree in usable) / len(usable) if usable else 0.0
         ),

@@ -283,17 +283,19 @@ class SudokuEnvironment(Environment[SudokuObservation, SudokuMetrics]):
         )
         exact = instance.grid == solution
         score = 0.6 * placement_score + 0.4 * float(exact)
-        return SudokuMetrics({
-            "puzzle_id": self.puzzle.id,
-            "score": score,
-            "placement_score": placement_score,
-            "exact": exact,
-            "filled_count": _filled_count(instance.grid),
-            "total_cells": self.puzzle.size**2,
-            "violation_count": len(violations),
-            "accepted_actions": len(instance.commands) - instance.replay_actions,
-            "replay_actions": instance.replay_actions,
-        })
+        return SudokuMetrics(
+            {
+                "puzzle_id": self.puzzle.id,
+                "score": score,
+                "placement_score": placement_score,
+                "exact": exact,
+                "filled_count": _filled_count(instance.grid),
+                "total_cells": self.puzzle.size**2,
+                "violation_count": len(violations),
+                "accepted_actions": len(instance.commands) - instance.replay_actions,
+                "replay_actions": instance.replay_actions,
+            }
+        )
 
     def candidate_metrics(self, instance_id: str) -> tuple[float, dict[str, Any]]:
         instance = self._instance(instance_id)
@@ -436,9 +438,7 @@ class SudokuEnvironment(Environment[SudokuObservation, SudokuMetrics]):
             box_rows=self.puzzle.box_rows,
             box_columns=self.puzzle.box_columns,
             grid=tuple(tuple(row) for row in instance.grid),
-            clue_mask=tuple(
-                tuple(cell != "." for cell in row) for row in self.puzzle.clues
-            ),
+            clue_mask=tuple(tuple(cell != "." for cell in row) for row in self.puzzle.clues),
             visual_grid=render_grid(
                 instance.grid,
                 box_rows=self.puzzle.box_rows,

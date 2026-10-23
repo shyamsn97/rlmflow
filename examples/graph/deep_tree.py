@@ -1,6 +1,6 @@
 """Build a deep agent tree by hand and plot it.
 
-No Flow, no LLM — just the node API:
+No Flow, no LLM — just graph ops:
 
     python examples/graph/deep_tree.py
     python examples/graph/deep_tree.py --depth 3 --branch 2 --show
@@ -16,89 +16,100 @@ from rlmflow import (
     DoneOutput,
     ExecAction,
     ExecOutput,
+    Graph,
     LLMOutput,
     LLMUsage,
     Node,
-    start,
+    ops,
+    reads,
 )
+from rlmflow.graph.graph import FROM, NEXT
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = EXAMPLES_DIR / "_runs" / "deep-tree"
 
 
-def grow(agent: AgentStart, *, depth: int, branch: int) -> None:
+def grow(g: Graph, agent: AgentStart, *, depth: int, branch: int) -> None:
     """Grow ``agent`` into a depth-``depth`` tree with ``branch`` children per fanout.
 
-    Each append hangs a child off the current frontier. Children branch off
-    the action that launched them, the way a real ``launch_subagent`` turn
-    records it.
+    Children are launched by the action of the agent's turn, the way a real
+    ``launch_subagent`` turn records it.
     """
-    turn = LLMOutput(
-        content=f"plan at {agent.config.path}",
-        code=f"# depth={agent.config.depth}",
-        usage=LLMUsage(input_tokens=10, output_tokens=5),
+    path = reads.path(g, agent)
+    ops.append(
+        g,
+        agent,
+        LLMOutput(
+            content=f"plan at {path}",
+            code=f"# depth={reads.depth(g, agent)}",
+            usage=LLMUsage(input_tokens=10, output_tokens=5),
+        ),
     )
-    agent.append(turn)
-    action = ExecAction(code=f"print({agent.config.path!r})")
-    turn.append(action)
+    action = ops.append(g, agent, ExecAction(code=f"print({path!r})"))
 
     if depth <= 0:
-        output = ExecOutput(content=f"ran {agent.config.path}")
-        action.append(output)
-        output.append(DoneOutput(result=agent.config.path))
+        ops.append(g, agent, ExecOutput(content=f"ran {path}"))
+        ops.append(g, agent, DoneOutput(result=path))
         return
 
     for index in range(branch):
-        child = AgentStart(
-            content=f"subtask of {agent.config.path}",
-            config=agent.config.child(f"c{index}"),
-        )
-        action.append(child)
-        grow(child, depth=depth - 1, branch=branch)
+        child = ops.spawn(g, f"subtask of {path}", by=action, name=f"c{index}")
+        grow(g, child, depth=depth - 1, branch=branch)
 
-    output = ExecOutput(content=f"fanout from {agent.config.path}")
-    action.append(output)
-    output.append(DoneOutput(result=f"merged:{agent.config.path}"))
+    ops.append(g, agent, ExecOutput(content=f"fanout from {path}"))
+    ops.append(g, agent, DoneOutput(result=f"merged:{path}"))
 
 
-def render_ascii(node: Node, *, prefix: str = "", is_last: bool = True) -> list[str]:
-    """Render the full ``children`` graph as an ASCII tree."""
+def tree_children(g: Graph) -> dict[str, list[Node]]:
+    """Each node's successors: its ``next`` node plus any agents its action launched."""
+    kids: dict[str, list[Node]] = {node.id: [] for node in g.nodes()}
+    for edge in g.edges(kind=NEXT):
+        kids[edge.source].append(g.node(edge.target))
+    for edge in g.edges(kind=FROM):
+        if edge.target in kids and isinstance(g.node(edge.source), AgentStart):
+            kids[edge.target].append(g.node(edge.source))
+    return kids
+
+
+def render_ascii(
+    node: Node,
+    kids: dict[str, list[Node]],
+    *,
+    prefix: str = "",
+    is_last: bool = True,
+) -> list[str]:
+    """Render the whole graph below ``node`` as an ASCII tree."""
     connector = "└── " if is_last else "├── "
     label = _label(node)
     lines = [f"{prefix}{connector}{label}" if prefix or not is_last else label]
     child_prefix = prefix + ("    " if is_last else "│   ")
-    for index, child in enumerate(node.children):
+    children = kids[node.id]
+    for index, child in enumerate(children):
         lines.extend(
-            render_ascii(
-                child,
-                prefix=child_prefix,
-                is_last=index == len(node.children) - 1,
-            )
+            render_ascii(child, kids, prefix=child_prefix, is_last=index == len(children) - 1)
         )
     return lines
 
 
-def render_agents(agent: AgentStart, *, prefix: str = "", is_last: bool = True) -> list[str]:
-    """Render only the agent ``sub_agents`` tree."""
+def render_agents(
+    g: Graph, agent: AgentStart, *, prefix: str = "", is_last: bool = True
+) -> list[str]:
+    """Render only the agent tree."""
     connector = "└── " if is_last else "├── "
-    tip = agent.frontier.type
-    label = f"{agent.config.path}  [{tip}]  leaves={len(agent.leaves())}"
+    label = f"{reads.path(g, agent)}  [{reads.frontier(g, agent).type}]"
     lines = [f"{prefix}{connector}{label}" if prefix or not is_last else label]
     child_prefix = prefix + ("    " if is_last else "│   ")
-    for index, child in enumerate(agent.sub_agents):
+    children = reads.children(g, agent)
+    for index, child in enumerate(children):
         lines.extend(
-            render_agents(
-                child,
-                prefix=child_prefix,
-                is_last=index == len(agent.sub_agents) - 1,
-            )
+            render_agents(g, child, prefix=child_prefix, is_last=index == len(children) - 1)
         )
     return lines
 
 
 def _label(node: Node) -> str:
     if isinstance(node, AgentStart):
-        return f"agent:{node.config.path}"
+        return f"agent:{node.config.name}"
     text = (node.content or "").replace("\n", " ")
     if len(text) > 40:
         text = text[:37] + "..."
@@ -106,48 +117,32 @@ def _label(node: Node) -> str:
     return f"{node.type}{suffix}"
 
 
-def _collect(root: Node) -> tuple[dict[str, Node], list[tuple[str, str]]]:
-    nodes: dict[str, Node] = {}
-    edges: list[tuple[str, str]] = []
-
-    def walk(node: Node) -> None:
-        nodes[node.id] = node
-        for child in node.children:
-            edges.append((node.id, child.id))
-            walk(child)
-
-    walk(root)
-    return nodes, edges
-
-
-def _layout(
-    root: Node,
-    nodes: dict[str, Node],
-) -> dict[str, tuple[float, float]]:
+def _layout(root: Node, kids: dict[str, list[Node]]) -> dict[str, tuple[float, float]]:
     """Assign (x, y) positions keyed by node id."""
     positions: dict[str, tuple[float, float]] = {}
     counter = {"x": 0.0}
 
     def walk(node: Node, depth: int) -> None:
-        kids = node.children
-        if not kids:
+        children = kids[node.id]
+        if not children:
             positions[node.id] = (counter["x"], -float(depth))
             counter["x"] += 1.0
             return
-        for child in kids:
+        for child in children:
             walk(child, depth + 1)
-        xs = [positions[child.id][0] for child in kids]
+        xs = [positions[child.id][0] for child in children]
         positions[node.id] = (sum(xs) / len(xs), -float(depth))
 
     walk(root, 0)
-    assert set(positions) == set(nodes)
     return positions
 
 
-def plot_tree(root: Node, out: Path, *, title: str, show: bool) -> Path:
+def plot_tree(g: Graph, root: Node, out: Path, *, title: str, show: bool) -> Path:
     """Save a PNG (matplotlib) or SVG fallback of the node tree."""
-    nodes, edges = _collect(root)
-    positions = _layout(root, nodes)
+    kids = tree_children(g)
+    nodes = {node.id: node for node in g.nodes()}
+    edges = [(parent, child.id) for parent, children in kids.items() for child in children]
+    positions = _layout(root, kids)
 
     try:
         import matplotlib.pyplot as plt
@@ -260,25 +255,25 @@ def _short(node: Node) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--depth", type=int, default=3, help="fanout depth below root")
-    parser.add_argument("--branch", type=int, default=2, help="children per supervise")
+    parser.add_argument("--branch", type=int, default=2, help="children per fanout")
     parser.add_argument("--show", action="store_true", help="open matplotlib window")
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR)
     args = parser.parse_args()
 
-    root = start("deep tree root", max_depth=args.depth + 1)
-    grow(root, depth=args.depth, branch=args.branch)
+    g = Graph()
+    root = ops.spawn(g, "deep tree root", max_depth=args.depth + 1)
+    grow(g, root, depth=args.depth, branch=args.branch)
 
-    agents = 1 + sum(1 for _ in _iter_agents(root))
-    nodes = sum(1 for _ in _iter_nodes(root))
-    print(f"agents={agents}  nodes={nodes}  leaves={len(root.leaves())}")
+    print(f"agents={len(g.nodes(AgentStart))}  nodes={len(g.nodes())}")
     print()
     print("=== agent tree ===")
-    print("\n".join(render_agents(root)))
+    print("\n".join(render_agents(g, root)))
     print()
     print("=== full node tree ===")
-    print("\n".join(render_ascii(root)))
+    print("\n".join(render_ascii(root, tree_children(g))))
 
     plot_path = plot_tree(
+        g,
         root,
         args.out_dir / "deep_tree.png",
         title=f"deep tree (depth={args.depth}, branch={args.branch})",
@@ -286,18 +281,6 @@ def main() -> None:
     )
     print()
     print(f"plot: {plot_path}")
-
-
-def _iter_agents(agent: AgentStart):
-    for child in agent.sub_agents:
-        yield child
-        yield from _iter_agents(child)
-
-
-def _iter_nodes(node: Node):
-    yield node
-    for child in node.children:
-        yield from _iter_nodes(child)
 
 
 if __name__ == "__main__":

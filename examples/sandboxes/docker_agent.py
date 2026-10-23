@@ -21,12 +21,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from examples.common import checkpoint_stream  # noqa: E402
+from examples.common import print_run  # noqa: E402
 from rlmflow import (  # noqa: E402
     AgentConfig,
-    AgentStart,
     DockerRuntime,
     Flow,
+    Graph,
+    reads,
 )
 from rlmflow.llm import client_for  # noqa: E402
 
@@ -58,12 +59,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def run_turn(flow: Flow, root: AgentStart, out_dir: Path) -> AgentStart:
-    async for node in checkpoint_stream(flow.run_streaming(root), out_dir):
-        print(f"{node.parent_agent.config.path}  {node.type}")
-    return root
-
-
 def main() -> None:
     args = parse_args()
     runtime = DockerRuntime(args.docker_image)
@@ -71,13 +66,15 @@ def main() -> None:
         client_for(args.model),
         llm_clients={"fast": client_for(args.fast_model)},
         runtime=runtime,
-        root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
     )
-    root = flow.start(PLATFORMER_QUERY)
+    g = Graph()
+    root = g.create_agent(
+        PLATFORMER_QUERY, config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)
+    )
     out_dir = Path(args.out_dir)
     try:
-        asyncio.run(run_turn(flow, root, out_dir))
-        print(root.result())
+        asyncio.run(print_run(flow, g, out_dir))
+        print(reads.result(g, root))
         print(f"Run saved to {out_dir}")
     finally:
         flow.runtime.close_repls()

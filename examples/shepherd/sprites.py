@@ -37,15 +37,15 @@ _TILE_NAMES = frozenset(_GLYPH.values())
 _BOX_IDS = "123456789"
 _BOX_ON_GOAL_IDS = "ABCDEFGHI"
 _BOX_COLORS = (
-    (255, 190, 60),    # B1 amber
-    (90, 190, 255),    # B2 sky
-    (185, 130, 255),   # B3 violet
-    (120, 225, 130),   # B4 green
-    (255, 120, 170),   # B5 pink
-    (90, 220, 205),    # B6 teal
-    (255, 130, 80),    # B7 ember
-    (205, 205, 235),   # B8 pale
-    (210, 230, 90),    # B9 lime
+    (255, 190, 60),  # B1 amber
+    (90, 190, 255),  # B2 sky
+    (185, 130, 255),  # B3 violet
+    (120, 225, 130),  # B4 green
+    (255, 120, 170),  # B5 pink
+    (90, 220, 205),  # B6 teal
+    (255, 130, 80),  # B7 ember
+    (205, 205, 235),  # B8 pale
+    (210, 230, 90),  # B9 lime
 )
 _BOARD_CHARS = frozenset(_GLYPH) | frozenset(_BOX_IDS) | frozenset(_BOX_ON_GOAL_IDS)
 
@@ -180,7 +180,9 @@ def save_gif(
     if not imgs:
         return False
     if end_caption:
-        imgs = [_captioned(im, end_caption if i == len(imgs) - 1 else None) for i, im in enumerate(imgs)]
+        imgs = [
+            _captioned(im, end_caption if i == len(imgs) - 1 else None) for i, im in enumerate(imgs)
+        ]
     duration: int | list[int] = ms
     if hold_last_ms is not None:
         duration = [ms] * (len(imgs) - 1) + [hold_last_ms]

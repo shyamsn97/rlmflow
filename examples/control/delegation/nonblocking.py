@@ -8,7 +8,7 @@ Run:
 
 from __future__ import annotations
 
-from rlmflow import AgentConfig, Flow, LLMUsage
+from rlmflow import AgentConfig, Flow, Graph, LLMUsage, reads
 
 ROOT_REPLY = """\
 ```repl
@@ -29,9 +29,7 @@ class ScriptedLLM:
     last_usage = LLMUsage(input_tokens=20, output_tokens=10)
 
     def chat(self, messages):
-        query = "\n\n".join(
-            message["content"] for message in messages if message["role"] == "user"
-        )
+        query = "\n\n".join(message["content"] for message in messages if message["role"] == "user")
         if "Return alpha." in query:
             return "```repl\nsubmit('alpha finished')\n```"
         if "Return beta." in query:
@@ -43,13 +41,17 @@ class ScriptedLLM:
 
 def main() -> None:
     flow = Flow(ScriptedLLM(), workers=3)
-    root = flow.start(
+    g = Graph()
+    root = g.create_agent(
         "Queue two children, then collect them on a later turn.",
         config=AgentConfig(max_depth=1, max_iters=3),
     )
     try:
-        result = flow.run(root)
-        child_results = {child.config.name: child.result() for child in root.sub_agents}
+        flow.run(g)
+        result = reads.result(g, root)
+        child_results = {
+            child.config.name: reads.result(g, child) for child in reads.children(g, root)
+        }
         print("root:", result)
         print("children:", child_results)
         assert result == "alpha finished, beta finished"

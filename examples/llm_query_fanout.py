@@ -14,7 +14,7 @@ import sys
 import threading
 from pathlib import Path
 
-from rlmflow import AgentConfig, Flow, LLMUsage
+from rlmflow import AgentConfig, Flow, Graph, LLMUsage, Node, reads
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -76,20 +76,22 @@ def main() -> None:
     llm = GuidedLLM()
     flow = Flow(
         llm,
-        root_config=AgentConfig(max_depth=0, max_iters=3),
         workers=3,
         use_llm_query=True,
     )
 
-    root = flow.start(
+    g = Graph()
+    root = g.create_agent(
         "Classify the reviews. Fan out `llm_query(prompt)` with "
-        "`await asyncio.gather(...)`, then call submit(...) with one line per review."
+        "`await asyncio.gather(...)`, then call submit(...) with one line per review.",
+        config=AgentConfig(max_depth=0, max_iters=3),
     )
     out_dir = example_run_dir("llm-query-fanout")
 
     async def drive() -> None:
-        async for node in checkpoint_stream(flow.run_streaming(root), out_dir):
-            print(f"{node.parent_agent.config.path}  {node.type}")
+        async for item in checkpoint_stream(flow.run_streaming(g), g, out_dir):
+            if isinstance(item, Node):
+                print(f"{reads.path(g, g.node(item.agent_id))}  {item.type}")
 
     asyncio.run(drive())
 
@@ -98,8 +100,8 @@ def main() -> None:
         print("-", prompt)
 
     print("\nFinal answer:")
-    print(root.result())
-    save_example_graph(root, "llm-query-fanout")
+    print(reads.result(g, root))
+    save_example_graph(g, "llm-query-fanout")
     flow.runtime.close_repls()
 
 

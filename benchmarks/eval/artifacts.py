@@ -8,13 +8,14 @@ from typing import Any
 
 from benchmarks.eval.loggers.jsonl import write_json
 from benchmarks.eval.types import Example
-from rlmflow import AgentStart
+from rlmflow import DEPENDS_ON, AgentStart, Graph, reads
 
 
 def render_problem_artifacts(
     example: Example,
     answer: str,
-    graph: AgentStart,
+    graph: Graph,
+    root: AgentStart,
     artifact_dir: Path,
     *,
     environment: dict[str, Any] | None = None,
@@ -24,7 +25,7 @@ def render_problem_artifacts(
     del answer, initial_svg
     artifact_dir.mkdir(parents=True, exist_ok=True)
     graph_path = artifact_dir / "agent_graph.svg"
-    graph_path.write_text(_agent_graph_svg(graph), encoding="utf-8")
+    graph_path.write_text(_agent_graph_svg(graph, root), encoding="utf-8")
     paths = {"agent_graph": graph_path}
     if environment:
         replay_path = artifact_dir / "environment_replay.json"
@@ -59,25 +60,26 @@ def render_problem_artifacts(
     return {key: str(path) for key, path in paths.items()}
 
 
-def _agent_graph_svg(root: AgentStart) -> str:
-    agents = list(root.iter_agents())
+def _agent_graph_svg(g: Graph, root: AgentStart) -> str:
+    agents = reads.tree(g, root)
     nodes = [
         {
             "id": agent.id,
-            "label": agent.config.path,
-            "column": agent.config.depth,
+            "label": reads.path(g, agent),
+            "column": reads.depth(g, agent),
             "row": index,
         }
         for index, agent in enumerate(agents)
     ]
     edges: list[tuple[str, str, str]] = []
     for agent in agents[1:]:
-        owner = agent.parent.parent_agent if agent.parent is not None else None
+        owner = reads.launcher(g, agent)
         if owner is not None:
             edges.append((owner.id, agent.id, "launch"))
         edges.extend(
-            (source_id, agent.id, f"arg:{argument_name}")
-            for argument_name, source_id in agent.argument_references
+            (edge.target, agent.id, f"arg:{edge.data['as']}")
+            for edge in g.edges(kind=DEPENDS_ON, source=agent.id)
+            if edge.data.get("as")
         )
     return _graph_svg(nodes, edges)
 

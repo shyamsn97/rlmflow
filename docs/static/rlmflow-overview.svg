@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" role="img" aria-labelledby="title desc">
+  <title id="title">How rlmflow works</title>
+  <desc id="desc">A root language model works in a stateful Python REPL, launches recursive agents with fresh contexts in parallel, and produces a result while every query, action, observation, child, and result remains in one durable typed graph.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#090d18"/>
+      <stop offset=".52" stop-color="#11182a"/>
+      <stop offset="1" stop-color="#0b1220"/>
+    </linearGradient>
+    <linearGradient id="rootFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#202b50"/>
+      <stop offset="1" stop-color="#17213d"/>
+    </linearGradient>
+    <linearGradient id="childFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#113a46"/>
+      <stop offset="1" stop-color="#14243a"/>
+    </linearGradient>
+    <linearGradient id="resultFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#17442f"/>
+      <stop offset="1" stop-color="#122a29"/>
+    </linearGradient>
+    <linearGradient id="graphFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#111827"/>
+      <stop offset=".5" stop-color="#151d33"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000" flood-opacity=".34"/>
+    </filter>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+    <style>
+      .sans { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }
+      .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+      .eyebrow { font-size: 13px; font-weight: 700; letter-spacing: 1.4px; }
+      .heading { font-size: 24px; font-weight: 750; }
+      .body { font-size: 15px; }
+      .small { font-size: 13px; }
+      .nodeLabel { font-size: 12px; font-weight: 650; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="760" rx="30" fill="url(#background)"/>
+  <circle cx="1200" cy="90" r="220" fill="#312e81" opacity=".08"/>
+  <circle cx="180" cy="710" r="260" fill="#0891b2" opacity=".06"/>
+
+  <text x="64" y="58" class="sans heading" fill="#f8fafc">Recursive agents. One inspectable execution graph.</text>
+  <text x="64" y="88" class="sans body" fill="#94a3b8">Models get a real Python workspace, delegate into fresh contexts, and keep every step as durable state.</text>
+
+  <!-- Task input -->
+  <g filter="url(#shadow)">
+    <rect x="62" y="145" width="205" height="150" rx="20" fill="#141c2d" stroke="#334155"/>
+  </g>
+  <rect x="82" y="165" width="64" height="24" rx="12" fill="#1e293b"/>
+  <text x="114" y="182" text-anchor="middle" class="sans eyebrow" fill="#93c5fd">INPUT</text>
+  <text x="82" y="224" class="sans heading" fill="#f8fafc">Task</text>
+  <text x="82" y="250" class="sans body" fill="#cbd5e1">+ named values</text>
+  <text x="82" y="274" class="sans body" fill="#cbd5e1">+ descriptions</text>
+
+  <path d="M267 220 H325" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- Root agent -->
+  <g filter="url(#shadow)">
+    <rect x="340" y="125" width="280" height="190" rx="24" fill="url(#rootFill)" stroke="#6366f1" stroke-opacity=".7"/>
+  </g>
+  <circle cx="378" cy="165" r="18" fill="#6366f1" filter="url(#glow)"/>
+  <path d="M370 165 H386 M378 157 V173" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="410" y="162" class="sans eyebrow" fill="#c7d2fe">ROOT AGENT</text>
+  <text x="376" y="205" class="sans heading" fill="#f8fafc">LLM + Python REPL</text>
+  <rect x="376" y="225" width="208" height="39" rx="9" fill="#0f172a" stroke="#334155"/>
+  <text x="392" y="250" class="mono body" fill="#a5f3fc">launch_subagent(...)</text>
+  <text x="376" y="290" class="sans small" fill="#a5b4fc">plan  |  inspect  |  compute  |  delegate</text>
+
+  <!-- Fan-out paths -->
+  <path d="M620 220 H664 V145 H700" stroke="#64748b" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M620 220 H700" stroke="#64748b" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+  <path d="M620 220 H664 V295 H700" stroke="#64748b" stroke-width="2.5" fill="none" marker-end="url(#arrow)"/>
+  <text x="656" y="207" text-anchor="middle" class="sans small" fill="#94a3b8">parallel</text>
+
+  <!-- Child agents -->
+  <g filter="url(#shadow)">
+    <rect x="716" y="105" width="240" height="92" rx="18" fill="url(#childFill)" stroke="#0e7490"/>
+    <rect x="716" y="205" width="240" height="92" rx="18" fill="url(#childFill)" stroke="#0e7490"/>
+    <rect x="716" y="305" width="240" height="92" rx="18" fill="url(#childFill)" stroke="#0e7490"/>
+  </g>
+  <g class="sans">
+    <circle cx="750" cy="138" r="12" fill="#22d3ee"/>
+    <text x="774" y="137" class="eyebrow" fill="#67e8f9">CHILD 0</text>
+    <text x="750" y="169" class="body" fill="#e2e8f0">fresh context + own REPL</text>
+
+    <circle cx="750" cy="238" r="12" fill="#22d3ee"/>
+    <text x="774" y="237" class="eyebrow" fill="#67e8f9">CHILD 1</text>
+    <text x="750" y="269" class="body" fill="#e2e8f0">tools + structured result</text>
+
+    <circle cx="750" cy="338" r="12" fill="#22d3ee"/>
+    <text x="774" y="337" class="eyebrow" fill="#67e8f9">CHILD 2</text>
+    <text x="750" y="369" class="body" fill="#e2e8f0">can delegate recursively</text>
+  </g>
+
+  <!-- Merge and result -->
+  <path d="M956 151 H998 V220 H1038" stroke="#64748b" stroke-width="2.5" fill="none"/>
+  <path d="M956 251 H998 V220" stroke="#64748b" stroke-width="2.5" fill="none"/>
+  <path d="M956 351 H998 V220" stroke="#64748b" stroke-width="2.5" fill="none"/>
+  <path d="M998 220 H1038" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <g filter="url(#shadow)">
+    <rect x="1054" y="151" width="280" height="138" rx="22" fill="url(#resultFill)" stroke="#22c55e" stroke-opacity=".65"/>
+  </g>
+  <circle cx="1090" cy="188" r="17" fill="#22c55e" filter="url(#glow)"/>
+  <path d="M1082 188 L1088 194 L1099 181" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="1118" y="186" class="sans eyebrow" fill="#86efac">COMPOSE</text>
+  <text x="1090" y="226" class="sans heading" fill="#f8fafc">Validated result</text>
+  <text x="1090" y="255" class="sans body" fill="#bbf7d0">simple value, full provenance</text>
+
+  <!-- Durable graph -->
+  <g filter="url(#shadow)">
+    <rect x="62" y="446" width="1272" height="246" rx="24" fill="url(#graphFill)" stroke="#334155"/>
+  </g>
+  <text x="92" y="481" class="sans eyebrow" fill="#c4b5fd">THE GRAPH IS THE RUN</text>
+  <text x="92" y="510" class="sans body" fill="#94a3b8">Every query, model output, REPL action, observation, child, and result is a typed Node.</text>
+
+  <!-- Main transcript line -->
+  <path d="M125 566 H1185" stroke="#334155" stroke-width="4" stroke-linecap="round"/>
+  <g class="sans nodeLabel" text-anchor="middle">
+    <circle cx="145" cy="566" r="15" fill="#3b82f6"/>
+    <text x="145" y="600" fill="#93c5fd">query</text>
+
+    <rect x="270" y="551" width="30" height="30" rx="7" fill="#8b5cf6" transform="rotate(45 285 566)"/>
+    <text x="285" y="600" fill="#c4b5fd">LLM</text>
+
+    <path d="M425 546 L446 566 L425 586 L404 566 Z" fill="#f59e0b"/>
+    <text x="425" y="600" fill="#fcd34d">action</text>
+
+    <circle cx="565" cy="566" r="15" fill="#06b6d4"/>
+    <text x="565" y="600" fill="#67e8f9">observation</text>
+
+    <rect x="690" y="551" width="30" height="30" rx="7" fill="#8b5cf6" transform="rotate(45 705 566)"/>
+    <text x="705" y="600" fill="#c4b5fd">LLM</text>
+
+    <path d="M845 546 L866 566 L845 586 L824 566 Z" fill="#f59e0b"/>
+    <text x="845" y="600" fill="#fcd34d">action</text>
+
+    <path d="M1125 548 L1141 557 L1141 575 L1125 584 L1109 575 L1109 557 Z" fill="#22c55e"/>
+    <text x="1125" y="600" fill="#86efac">done</text>
+  </g>
+
+  <!-- Child branch from action -->
+  <path d="M425 546 V532 C425 518 439 518 452 518 H735" stroke="#475569" stroke-width="2" fill="none"/>
+  <circle cx="505" cy="518" r="9" fill="#22d3ee"/>
+  <circle cx="575" cy="518" r="9" fill="#8b5cf6"/>
+  <circle cx="645" cy="518" r="9" fill="#f59e0b"/>
+  <circle cx="715" cy="518" r="9" fill="#22c55e"/>
+  <text x="755" y="523" class="sans small" fill="#67e8f9">child transcript</text>
+
+  <!-- Capabilities -->
+  <g class="sans small" text-anchor="middle">
+    <rect x="164" y="633" width="150" height="34" rx="17" fill="#1e293b"/><text x="239" y="655" fill="#e2e8f0">inspect live</text>
+    <rect x="326" y="633" width="150" height="34" rx="17" fill="#1e293b"/><text x="401" y="655" fill="#e2e8f0">stream nodes</text>
+    <rect x="488" y="633" width="150" height="34" rx="17" fill="#1e293b"/><text x="563" y="655" fill="#e2e8f0">save + load</text>
+    <rect x="650" y="633" width="150" height="34" rx="17" fill="#1e293b"/><text x="725" y="655" fill="#e2e8f0">replay state</text>
+    <rect x="812" y="633" width="150" height="34" rx="17" fill="#1e293b"/><text x="887" y="655" fill="#e2e8f0">fork history</text>
+    <rect x="974" y="633" width="190" height="34" rx="17" fill="#1e293b"/><text x="1069" y="655" fill="#e2e8f0">resume anywhere</text>
+  </g>
+</svg>

@@ -15,7 +15,11 @@ Keeping them separate means agent completion remains deterministic while one-sho
 submit({"label": "relevant"})
 ```
 
-`submit(value)` validates locally through the Flow's `OutputCodec`. It never calls another model. A valid candidate lands as a durable `Submission`; the normal graph transition then accepts it as a `DoneOutput`. `DoneOutput.result`, child handoffs, and persisted results remain strict JSON values.
+`submit(value)` validates locally through the Flow's `OutputCodec`. It never
+calls another model. A valid candidate lands directly as a durable
+`DoneOutput`; rejected candidates produce `VerificationFailure`.
+`DoneOutput.result`, child handoffs, and persisted results remain strict JSON
+values.
 
 Pydantic models and `TypeAdapter` instances are accepted at live API boundaries and normalized to JSON Schema before entering `AgentConfig`.
 

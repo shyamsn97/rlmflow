@@ -1,43 +1,36 @@
-"""Forking a minimal Node trajectory."""
+"""Forking a graph: branches share their prefix and nothing is copied."""
 
 from __future__ import annotations
 
-from rlmflow import (
-    AgentStart,
-    DoneOutput,
-    Node,
-    start,
-)
+import argparse
+from pathlib import Path
+
+from rlmflow import AgentStart, DoneOutput, Graph, ops, reads
 
 
-def seed_graph() -> AgentStart:
-    return start(query="choose a release plan")
-
-
-def print_tree(node: Node, depth: int = 0) -> None:
-    """One indented line per node, from ``node`` down."""
-    label = f"{node.type} [{node.config.path}]" if isinstance(node, AgentStart) else node.type
-    print(f"{'  ' * depth}{label}")
-    for child in node.children:
-        print_tree(child, depth + 1)
+def print_history(g: Graph, agent: AgentStart) -> None:
+    print("  " + " -> ".join(f"{node.type}" for node in reads.history(g, agent)))
 
 
 def main() -> None:
-    base = seed_graph()
-    # Each fork copies the tree and cuts everything after the forked node, so the
-    # two branches share this base and nothing else.
-    conservative = base.fork()
-    bold = base.fork()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--out-dir", type=Path, default=None)
+    args = parser.parse_args()
 
-    conservative.frontier.append(DoneOutput(result="ship a small patch release"))
-    bold.frontier.append(DoneOutput(result="ship a major release candidate"))
+    g = Graph()
+    base = ops.spawn(g, "choose a release plan")
+    # Each fork is a new agent whose history is the base up to the fork point.
+    conservative = ops.fork(g, base, name="conservative")
+    bold = ops.fork(g, base, name="bold")
 
-    print("base:")
-    print_tree(base)
-    print("\nconservative:")
-    print_tree(conservative)
-    print("\nbold:")
-    print_tree(bold)
+    ops.append(g, conservative, DoneOutput(result="ship a small patch release"))
+    ops.append(g, bold, DoneOutput(result="ship a major release candidate"))
+
+    for agent in (base, conservative, bold):
+        print(f"{agent.config.name}: {reads.result(g, agent)!r}")
+        print_history(g, agent)
+    if args.out_dir is not None:
+        print("saved:", g.save(args.out_dir))
 
 
 if __name__ == "__main__":

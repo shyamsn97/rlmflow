@@ -411,9 +411,7 @@ class EpisodeCore:
             if self._closed:
                 return
             try:
-                self._final_metrics = _metrics_dict(
-                    self.adapter.metrics(self.scored_instance_id)
-                )
+                self._final_metrics = _metrics_dict(self.adapter.metrics(self.scored_instance_id))
                 artifacts = getattr(self.adapter, "artifacts", None)
                 self._final_artifacts = (
                     artifacts(self.scored_instance_id) if artifacts is not None else {}

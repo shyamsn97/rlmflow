@@ -38,6 +38,8 @@ rlmflow = "rlmflow.cli:main"
 openai = ["openai>=3.0"]
 anthropic = ["anthropic>=1.0"]
 tinker = ["tinker", "tinker-cookbook"]
+textcraft = ["gymnasium>=1.0"]
+rao = ["tinker", "tinker-cookbook", "gymnasium>=1.0"]
 openenv = ["openenv>=0.4"]
 dspy = ["dspy"]
 mcp = ["mcp"]
@@ -75,6 +77,7 @@ all = [
     "anthropic>=1.0",
     "tinker",
     "tinker-cookbook",
+    "gymnasium>=1.0",
     "dspy",
     "mcp",
     "modal",

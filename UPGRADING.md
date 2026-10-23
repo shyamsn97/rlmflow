@@ -28,7 +28,9 @@ Flow selects child policy with `delegation_model`, `delegation_prompt_profile`, 
 
 ## Agent completion
 
-Agent code must call `submit(answer)`. The old `done(value)` name is not present in the REPL, and `finish(value)` is retained only as the hidden compatibility alias described above.
+Agent code finishes with `submit(answer)`. The old `done(value)` name is not present in the REPL, and `finish(value)` is retained only as the hidden compatibility alias described above.
+
+A model reply with no fenced `repl` block also finishes the agent: its text is checked exactly like `submit(text)`. If you scored runs on the assumption that prose was a protocol error, expect fewer recovery turns and plain-text results. Code that caught `TransitionProtocolError` should check for an `ErrorOutput` containing `MissingSubmitError` instead, and code that imported `MISSING_REPL_NOTE` should match the `MissingReplError:` prefix of the error observation.
 
 Without `output_schema`, `submit(answer)` accepts only strict JSON values: strings, finite numbers, booleans, `None`, lists, and dictionaries with string keys, recursively. Unsupported values such as tuples, sets, bytes, non-finite floats, arbitrary objects, and dictionaries with non-string keys now produce an execution error instead of being stringified. A string remains a string even when its contents happen to be JSON.
 
@@ -143,8 +145,7 @@ Removed: `StepFunction`, `LLMRequestStep`, `LLMOutputStep`, `ExecActionStep`, `u
 The legacy turn-counter `PlanQuery`, `to_plan`, `resume_after_child`, `child_returned`, and synthetic `Turn N/M:` message remain removed. `AgentStart` calls the model directly, and every response plans and executes its next step in one REPL block:
 
 ```text
-AgentStart -> LLMOutput -> ExecAction -> ExecOutput | Submission
-Submission -> DoneOutput
+AgentStart -> LLMOutput -> ExecAction -> ExecOutput | DoneOutput
 ```
 
 `submit` is available from the first block. The pinned core protocol tells the model to plan and execute the immediate next action, to look first when the inputs' size, format, or contents are unknown, and to submit only after reading any printed evidence needed to support the answer.
@@ -163,7 +164,7 @@ Node chat `render()` is also removed. `build_messages(user_prompt, flow)` is the
 
 For proxied tools whose external work must not repeat during namespace reconstruction, use `@tool(..., restore="result")`. Successful JSON results are saved on the owning action. Pass a restore callable only when that JSON value must be rebuilt into a runtime object.
 
-`FILE_TOOLS` is now a tuple of functions. Replace `FILE_TOOLS.read_file` with `from rlmflow.tools.filesystem import read_file`.
+`FILE_TOOLS` is now a tuple of functions. Replace `FILE_TOOLS.read_file` with `from rlmflow.tools.files import read_file`.
 
 `Flow.build_tools(node)` is the complete model-visible tool map. Flow-owned built-ins, configured application tools, and subclass-provided environment tools are all ordinary decorated callables in that map. The prompt renders it directly; invocation arguments are bound as direct REPL variables alongside `asyncio` and internal execution bindings. Use `flow.llm_query` from host code.
 

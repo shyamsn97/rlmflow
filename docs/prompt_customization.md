@@ -301,9 +301,10 @@ Tool documentation is rendered directly from `Flow.build_tools(node)`, the compl
 The prompt architecture does not override runtime routing:
 
 ```text
-exactly one non-empty repl → execute block
-anything else             → protocol error; execute nothing
-submit(value)             → submit the final JSON-compatible value
+exactly one non-empty repl     → execute block
+non-empty reply, no repl fence → final answer, checked like submit(reply)
+any other repl fence           → raise MissingReplError; execute nothing else
+submit(value)                  → submit the final JSON-compatible value
 ```
 
 `submit` is available from an agent's first block. The pinned `protocol.core` asks the model to look first when the inputs' size, format, or contents are unknown, and to read any printed evidence in a later turn before submitting. Prompt modifiers can refine the replaceable evidence policy, but cannot remove the pinned protocol or make an unavailable tool appear in the rendered tool list.

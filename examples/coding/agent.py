@@ -20,10 +20,11 @@ from rlmflow import (
     CODING_HANDOFF_SCHEMA,
     FILE_TOOLS,
     AgentConfig,
-    AgentStart,
     DockerRuntime,
     Flow,
+    Graph,
     LocalRuntime,
+    reads,
 )
 from rlmflow.llm import client_for
 
@@ -31,7 +32,7 @@ examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "ex
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import checkpoint_stream  # noqa: E402
+from common import print_run  # noqa: E402
 
 
 def main():
@@ -80,19 +81,12 @@ def main():
         runtime=runtime,
         tools=[FILE_TOOLS],
         workers=args.max_concurrency,
-        root_config=AgentConfig(child_output_schema=CODING_HANDOFF_SCHEMA),
     )
 
     try:
         _run_cli(flow, workdir, max_depth=args.max_depth, max_iters=args.max_iters)
     finally:
         flow.runtime.close_repls()
-
-
-async def _stream(flow: Flow, root: AgentStart, graph_dir: Path) -> None:
-    """Drive one query to done, printing each node and checkpointing the tree."""
-    async for node in checkpoint_stream(flow.run_streaming(root), graph_dir):
-        print(f"{node.parent_agent.config.path:<20} {node.type}")
 
 
 def _run_cli(flow: Flow, workdir: Path, *, max_depth: int, max_iters: int) -> None:
@@ -107,13 +101,18 @@ def _run_cli(flow: Flow, workdir: Path, *, max_depth: int, max_iters: int) -> No
         if not query or query.lower() in ("quit", "exit", "q"):
             break
 
-        root = flow.start(
+        g = Graph()
+        root = g.create_agent(
             query,
-            config=AgentConfig(max_depth=max_depth, max_iters=max_iters),
+            config=AgentConfig(
+                max_depth=max_depth,
+                max_iters=max_iters,
+                child_config={"output_schema": CODING_HANDOFF_SCHEMA},
+            ),
         )
-        asyncio.run(_stream(flow, root, graph_dir))
+        asyncio.run(print_run(flow, g, graph_dir, width=20))
 
-        print(f"\n{root.result() or '(no result)'}\n")
+        print(f"\n{reads.result(g, root) or '(no result)'}\n")
         print(f"Run checkpointed to {graph_dir}")
         print(f"Files written under {workdir}")
 

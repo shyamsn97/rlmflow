@@ -19,8 +19,7 @@ def build_matrix(reports: Sequence[EnvironmentReport]) -> dict[str, Any]:
     seeds = sorted({report.seed for report in reports}, key=lambda value: (value is None, value))
     environments = sorted({report.environment_id for report in reports})
     cells = {
-        (report.environment_id, report.runner, report.seed): _cell(report)
-        for report in reports
+        (report.environment_id, report.runner, report.seed): _cell(report) for report in reports
     }
     return {
         "runners": runners,
@@ -33,10 +32,7 @@ def build_matrix(reports: Sequence[EnvironmentReport]) -> dict[str, Any]:
             {
                 "environment_id": environment_id,
                 "cells": {
-                    runner: {
-                        str(seed): cells.get((environment_id, runner, seed))
-                        for seed in seeds
-                    }
+                    runner: {str(seed): cells.get((environment_id, runner, seed)) for seed in seeds}
                     for runner in runners
                 },
             }

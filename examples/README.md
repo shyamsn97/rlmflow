@@ -30,19 +30,24 @@ OOLONG and MazeBench remain in the separate [benchmark harness](../docs/benchmar
 
 ## Scripts
 
-| Script                                         | What it shows                                              |
-| ---------------------------------------------- | ---------------------------------------------------------- |
-| [`showcase.py`](showcase.py)                   | End-to-end `Flow` run, persistence, and gym-style stepping |
-| [`drop_in_llm.py`](drop_in_llm.py)             | Minimal `FlowLLM` as a drop-in LLM                         |
-| [`llm_query_fanout.py`](llm_query_fanout.py)   | Concurrent `llm_query` calls with `asyncio.gather`         |
-| [`skills.py`](skills.py)                       | On-disk skills + dynamic prompt section                    |
-| [`structured_output.py`](structured_output.py) | Root + child `output_schema` validation                    |
-| [`summarizer.py`](summarizer.py)               | Recursive map-reduce summarization                         |
+| Script                                                                       | What it shows                                                         |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| [`showcase.py`](showcase.py)                                                 | End-to-end `Flow` run, persistence, and gym-style stepping            |
+| [`drop_in_llm.py`](drop_in_llm.py)                                           | Minimal `FlowLLM` as a drop-in LLM                                    |
+| [`llm_query_fanout.py`](llm_query_fanout.py)                                 | Concurrent `llm_query` calls with `asyncio.gather`                    |
+| [`skills.py`](skills.py)                                                     | On-disk skills + dynamic prompt section                               |
+| [`structured_output.py`](structured_output.py)                               | Root + child `output_schema` validation                               |
+| [`summarizer.py`](summarizer.py)                                             | Recursive map-reduce summarization                                    |
+| [`providers/claude_code_delegation.py`](providers/claude_code_delegation.py) | Host-configured Claude Code children with unchanged `launch_subagent` |
+| [`collaboration/shared_board.py`](collaboration/shared_board.py)             | Shared task board: every task is an agent, `AGENTS` is the context   |
 
 ```bash
 python examples/showcase.py
 python examples/skills.py --model gpt-4o-mini
 python examples/summarizer.py --sections 10
+python examples/collaboration/shared_board.py \
+  --model gpt-5-mini --task "API" --task "Tests"
+python examples/providers/claude_code_delegation.py
 ```
 
 ## Tasks
@@ -52,6 +57,7 @@ python examples/summarizer.py --sections 10
 | [`needle/`](needle/)             | Needle-in-haystack (in-memory + filesystem variants)                                                                                                |
 | [`coding/`](coding/)             | Interactive file-editing agent plus the flagship model-designed Boids browser build                                                                 |
 | [`autoresearch/`](autoresearch/) | TinyStories autoresearch loop with Modal GPU trials                                                                                                 |
+| [`research/textcraft/`](research/textcraft/) | Gymnasium TextCraft-Synth environment, grouped recursive rollouts, exact per-agent credit, and Tinker RLOO training |
 | [`shepherd/`](shepherd/)         | Live meta-agent recovers a jammed Sokoban worker by forking its graph and replaying recovery branches in parallel, with board panels + a node trace |
 
 [`shepherd/README.md`](shepherd/README.md) has the canonical run and artifact commands. [`docs/shepherd.md`](../docs/shepherd.md) is the worked-run walkthrough: the jam, the plans the meta-agent wrote against it, what each recovery branch did, and how a profile user-prompt modifier adds the live board to the current worker turn.
@@ -62,7 +68,7 @@ After a Shepherd run, `make showcase-shepherd-assets` redraws the agent summary 
 
 | Folder                     | What it shows                                  |
 | -------------------------- | ---------------------------------------------- |
-| [`graph/`](graph/)         | Offline Node API (query, navigate, save, fork) |
+| [`graph/`](graph/)         | Offline Node API (inspect, append, fork, attach subtrees, save) |
 | [`control/`](control/)     | Delegation, branching, injection               |
 | [`sandboxes/`](sandboxes/) | Docker and Modal remote execution              |
 | [`providers/`](providers/) | DSPy, MCP, Tinker adapters                     |
@@ -114,15 +120,14 @@ A finished run is saved automatically under `_runs/`:
 python examples/summarizer.py        # saves to examples/_runs/summarizer/
 ```
 
-The saved directory holds `graph.json` plus per-agent logs under `agents/`. Read it back as the same tree the run held in memory:
+The saved directory holds `graph.json`, the graph's item log (plus `blobs/` for large arguments). Read it back as the same graph the run held in memory:
 
 ```python
-from rlmflow import AgentStart
+from rlmflow import Graph, reads
 
-root = AgentStart.load("examples/_runs/summarizer")
-print(root.result())
-for node in root.walk():
-    print(node.parent_agent.config.path, node.type)
+g = Graph.load("examples/_runs/summarizer")
+for node in g.nodes():
+    print(reads.path(g, g.node(node.agent_id)), node.type)
 ```
 
 ## Docker And Modal

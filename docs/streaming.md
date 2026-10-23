@@ -1,17 +1,19 @@
 # Streaming and task scheduling
 
-`Flow.run_streaming(...)` is the execution driver. It mutates one or more Node trees, yields each durable Node as it is created, applies stream boundaries, and feeds unfinished leaves back into one `TaskQueue`.
+`Flow.run_streaming(g)` is the execution driver. It appends to the graph, yields each node and edge as it lands, applies stream boundaries, and keeps one `TaskQueue` step in flight for every ready agent, including agents added to the graph while the stream runs.
 
 ```python
-from rlmflow import Flow
+from rlmflow import Flow, Graph, Node, reads
+
+g = Graph()
+root = g.create_agent("Audit this repository.")
 
 flow = Flow(client)
-root = flow.start("Audit this repository.")
+async for item in flow.run_streaming(g):
+    if isinstance(item, Node):
+        print(reads.path(g, g.node(item.agent_id)), item.type)
 
-async for node in flow.run_streaming(root):
-    print(node.parent_agent.config.path, node.type)
-
-print(root.result())
+print(reads.result(g, root))
 ```
 
 The graph is durable state. The queue contains only live execution state.
@@ -33,15 +35,14 @@ The implementation is deliberately split by responsibility:
 - [`rlmflow/flow.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/flow.py)
   - `Flow.run_streaming`: the driver loop;
   - `Flow.step`: one complete Node transition;
-  - `rlmflow.engine.delegation`: child creation, submission, and joining;
+  - `rlmflow.tools.launch`: child creation, submission, and joining;
   - `rlmflow.engine.steps`: declarative `@transition` producers;
   - `rlmflow.engine.handoff`: child `DoneOutput` → parent `UserQuery`.
-- [`rlmflow/engine/execution.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/engine/execution.py)
+- [`rlmflow/engine/scheduler.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/engine/scheduler.py)
   - `StepResult`: submitted Node, created Node, and infrastructure error;
   - `TaskQueue`: active tasks, completed transitions, child-terminal wake-ups;
-  - `Pool`, `ThreadPool`, `SequentialPool`: compute placement and capacity.
-- [`rlmflow/engine/boundaries.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/engine/boundaries.py)
-  - built-in and custom `until` boundary resolution.
+  - `Pool`, `ThreadPool`, `SequentialPool`: compute placement and capacity;
+  - `resolve_boundary`: built-in and custom `until` boundary resolution.
 - [`rlmflow/graph/nodes.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/graph/nodes.py)
   - `Node.append`, `AgentStart.leaves`, `frontier`, `terminal`, and `result`.
 

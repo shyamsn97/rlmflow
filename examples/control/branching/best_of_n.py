@@ -1,7 +1,7 @@
 """Best-of-N with independent Flow branches.
 
-Each branch is a fresh ``flow.start(...)`` run saved to its own ``graph.json``,
-demonstrating the Node-only surface.
+Each branch is a fresh ``g.create_agent(...)`` run saved to its own ``graph.json``,
+demonstrating that a branch is just its own graph.
 
 Usage:
     python examples/control/branching/best_of_n.py
@@ -17,7 +17,9 @@ from pathlib import Path
 from rlmflow import (
     AgentConfig,
     Flow,
+    Graph,
     LLMUsage,
+    reads,
 )
 
 FRUITS = [
@@ -76,12 +78,13 @@ def score(result: str) -> tuple[int, dict[str, str]]:
 def run_branch(root: Path, idx: int) -> tuple[str, int, dict[str, str], int]:
     llm = MockLLM(seed=idx)
     flow = Flow(llm)
-    graph = flow.start(QUERY, config=AgentConfig(max_depth=1, max_iters=10))
-    flow.run(graph)
+    g = Graph()
+    agent = g.create_agent(QUERY, config=AgentConfig(max_depth=1, max_iters=10))
+    flow.run(g)
     # Each branch persists to its own directory (graph.json).
-    graph.save(root / f"branch_{idx}")
+    g.save(root / f"branch_{idx}")
     flow.runtime.close_repls()
-    result = graph.result()
+    result = reads.result(g, agent)
     correct, preds = score(result)
     return result, correct, preds, llm.call_count
 

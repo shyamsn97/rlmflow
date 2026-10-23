@@ -9,9 +9,9 @@ Runtime    live REPL sessions
 TaskQueue  calls in flight, and when one lands
 ```
 
-There is no `Graph`, `Run`, `Driver`, Event hierarchy, detached worker queue, or merge subsystem, and no `Agent` class either — an agent is the `AgentStart` node that opened it. `Flow` is the public facade. Restore, builtin factories, child launch, child-completion handoff, and prompt assembly are `(flow, ...)` functions in `engine/restore.py`, `engine/delegation.py`, `engine/handoff.py`, `tools/namespace.py`, and `prompts/messages.py`.
+There is no `Graph`, `Run`, `Driver`, Event hierarchy, detached worker queue, or merge subsystem, and no `Agent` class either — an agent is the `AgentStart` node that opened it. `Flow` is the public facade. Restore, builtin factories, child launch, child-completion handoff, and prompt assembly are `(flow, ...)` functions in `runtime/runtime.py`, `tools/launch.py`, `engine/handoff.py`, `tools/namespace.py`, and `prompts.py`.
 
-The layout follows that. `rlmflow.graph` is the run itself — the node types and the format they are written to disk in. `rlmflow.flow` is the entry point, and `rlmflow.engine` is what it is built out of: `execution.py` (driver-scoped `TaskQueue`s plus `Pool`, `ThreadPool`, and `SequentialPool`), `boundaries.py` for the `until` vocabulary, `transitions.py` for deterministic resolution plus semantic choice sets, `semantic.py` for selecting once among string guards, plus `steps`, `restore`, `delegation`, and `handoff`. Several roots run through one `flow.run_streaming(root, *roots)` call. Everything public is re-exported from `rlmflow` itself, so which file a name lives in is an implementation detail rather than something a caller imports through.
+The layout follows that. `rlmflow.graph` is the run itself — the node types and the format they are written to disk in. `rlmflow.flow` is the entry point. `rlmflow.engine` decides what happens next: `steps.py` holds the transition mechanism (`resolve_transition`, and `choose_transition` for selecting once among string guards) and the default transitions, `scheduler.py` holds driver-scoped `TaskQueue`s, `Pool`, `ThreadPool`, `SequentialPool` and `resolve_boundary` for the `until` vocabulary, and `handoff.py` delivers results. Rebuilding a REPL from recorded actions is `rlmflow.runtime.runtime.rebuild_repl`; `launch_agent` lives in `rlmflow.tools.launch`, and launch verifiers run through `rlmflow.tools.builtins.run_verifier`. Several roots run through one `flow.run_streaming(root, *roots)` call. Everything public is re-exported from `rlmflow` itself, so which file a name lives in is an implementation detail rather than something a caller imports through.
 
 ## Node tree
 
@@ -55,21 +55,22 @@ stream driver(roots)
   -> stream resubmits that node when its agent is not terminal
 ```
 
-`Flow.step` calls the pure `transitions.resolve` over the Flow's own functions and then `DEFAULT_TRANSITIONS`, calls the matching producer, appends the result, and returns that node. Each producer in `rlmflow.engine.steps` is the callable object created by one `@transition(...)`; applications add node-only functions with `@flow.transition(...)`. String guards are judged by `engine/semantic.py`.
+`Flow.step` calls the pure `resolve_transition` over the Flow's own functions and then `DEFAULT_TRANSITIONS`, calls the matching producer, appends the result, and returns that node. Each producer in `rlmflow.engine.steps` is the callable object created by one `@transition(...)`; applications add node-only functions with `@flow.transition(...)`. String guards are judged once by `choose_transition`.
 
 ```text
 AgentStart   -> complete (LLMOutput)
 UserQuery    -> complete (LLMOutput)
+external AgentStart/UserQuery -> to_backend (BackendRun)
+BackendRun -> run_backend (DoneOutput or VerificationFailure)
 ExecOutput   -> complete (LLMOutput)
 ErrorOutput  -> complete (LLMOutput)
 VerificationFailure -> to_repair (RepairQuery)
-Submission   -> accept_submission (DoneOutput)
 LLMOutput    -> to_action (ExecAction), or to_missing_action (empty ExecAction)
 ExecAction   -> run_repl (output node)
 DoneOutput   -> terminal, never stepped
 ```
 
-After a child `DoneOutput`, `engine/handoff.py` enqueues the result on the launching parent. If that parent just landed `ExecOutput` (or `DoneOutput` with `resume_on_child_done`), the driver appends a `UserQuery` and submits that frontier instead of the observation it just yielded. Restore rebuilds the mailbox before seeding leaves.
+After a `DoneOutput`, `handoff.react` checks every agent the finished one reports to: its launcher, plus any agent it has a `reports_to` edge to. A recursive tree and a set of peers are the same rule over different edges. If a recipient's frontier is an `ExecOutput` (or a `DoneOutput` with `resume_on_child_done`), it gets one batched `UserQuery` through `ops.send`, with a `from` edge to each delivered `DoneOutput`. Those edges are the only delivery record, kept per recipient, so a resumed stream needs no rebuild step.
 
 Guards can preempt those rows: `out_of_room` → `FinalQuery`, `needs_truncation` → `TruncationSummary`.
 
@@ -90,20 +91,30 @@ Delegation submits each new child to the same queue. A driver-scoped condition w
 `run_repl` calls `WrappedRuntime.execute`, which seeds the agent's REPL with the current tool namespace and direct invocation variables, delegates to the original runtime, and turns the resulting `ReplRun` into exactly one node:
 
 ```text
-ReplStatus.DONE      -> Submission(result=run.answer)
+ReplStatus.DONE      -> DoneOutput(result=run.answer)
 ReplStatus.REJECTED  -> VerificationFailure
 ReplStatus.OK        -> ExecOutput
 ReplStatus.ERROR     -> ErrorOutput(error="exec")
 ReplStatus.DEAD      -> ReplDead
 ```
 
-The next automatic transition accepts a `Submission` as `DoneOutput`; a `VerificationFailure` produces a `RepairQuery` for the same agent.
+A `VerificationFailure` produces a `RepairQuery` for the same agent.
 
 Synchronous streams run through the shared pool; async streams run directly on the event loop under the same pool policy. `Flow(llm_request_timeout=...)` bounds the stream's full lifetime and also passes `timeout=` to clients that accept one, since cancelling a blocking call frees the caller but not its thread.
 
-## Delegation and replay
+## Launching and replay
 
 `launch_subagent` accepts an optional stable `name=` (otherwise `childN`), validates the child name and arguments, refuses a call past `max_depth` or over `max_query_chars`, opens one `AgentStart` under the running `ExecAction`, records `call_id -> agent.id` on that action, and submits it. Independent calls can run concurrently through `asyncio.gather`, which preserves call order in its result sequence. A handle-valued argument is persisted as an agent-reference marker; the consumer remains blocked until every source is terminal, then receives resolved values as direct REPL variables. Launch ownership never changes. The parent's frontier stays on the action for the whole block, so the step lands a single output when the block returns.
+
+An agent whose `AgentConfig.backend` names a `Flow(backends=...)` entry
+(directly, or through its parent's `child_config`) bypasses `complete` and the
+Python REPL:
+`AgentStart` produces a durable `BackendRun`, and stepping that action
+invokes the configured backend. The action stores its run ID before external
+work starts and records whether it started, so a loaded unfinished action uses
+the backend's resume path. Backend candidates use the same schema and verifier
+contract as `submit`; rejected values take the ordinary
+`VerificationFailure -> RepairQuery` path before a new backend action.
 
 A child failure is a value, not an exception: the crash is recorded as that child's `DoneOutput` so siblings settle and the parent reads an explicit failure string.
 

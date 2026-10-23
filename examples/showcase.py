@@ -1,12 +1,12 @@
-"""Showcase the Node-only Flow API.
+"""Showcase the graph-backed Flow API.
 
 This walks through the pieces that matter in the engine:
 
-1. Node-by-Node execution that advances a caller-owned trajectory.
-2. Persisting a run with ``persistence.save()`` / ``persistence.load()``.
+1. Node-by-node execution that advances a caller-owned graph.
+2. Persisting a run with ``g.save()`` / ``Graph.load()``.
 3. Latest-state inspection across agents.
-4. In-process history by keeping tree snapshots.
-5. Node summary helpers (``root.walk()``, ``root.usage``).
+4. Time travel: every log position is an earlier graph.
+5. Graph summaries (``g.nodes()``, ``reads.usage(g)``).
 6. Gym-style stepping with a scalar reward.
 
 Usage:
@@ -26,12 +26,12 @@ from rlmflow import (
     AgentConfig,
     AgentStart,
     Flow,
+    Graph,
     GraphCheckpointer,
     LLMUsage,
     LocalRuntime,
     Node,
-    persistence,
-    snapshot,
+    reads,
 )
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -67,7 +67,9 @@ class DemoLLM:
                 "```"
             )
         if "hello.py" in prompt:
-            return '```repl\nwrite_file("hello.py", "print(\\"hello\\")\\n")\nsubmit("hello.py")\n```'
+            return (
+                '```repl\nwrite_file("hello.py", "print(\\"hello\\")\\n")\nsubmit("hello.py")\n```'
+            )
         if "goodbye.py" in prompt:
             return '```repl\nwrite_file("goodbye.py", "print(\\"goodbye\\")\\n")\nsubmit("goodbye.py")\n```'
         if "haiku" in prompt:
@@ -75,10 +77,14 @@ class DemoLLM:
         return '```repl\nsubmit("ok")\n```'
 
 
-def file_flow(workdir: Path, config: AgentConfig) -> Flow:
+def file_flow(workdir: Path) -> Flow:
     """A Flow whose agents get the filesystem tools, running inside ``workdir``."""
     runtime = LocalRuntime(working_directory=workdir)
-    return Flow(DemoLLM(), runtime=runtime, tools=[FILE_TOOLS], root_config=config)
+    return Flow(
+        DemoLLM(),
+        runtime=runtime,
+        tools=[FILE_TOOLS],
+    )
 
 
 def banner(msg: str) -> None:
@@ -87,35 +93,35 @@ def banner(msg: str) -> None:
     print(f"{'=' * 60}{RESET}\n")
 
 
-def node_count(root: Node) -> int:
-    return sum(1 for _node in root.walk())
+async def run(flow: Flow, g: Graph, out_dir: Path) -> list[int]:
+    """Stream the run, checkpointing periodically and noting the log position of every node."""
+    positions = [g.items()[-1].seq]
+    async for item in checkpoint_stream(flow.run_streaming(g), g, out_dir):
+        if isinstance(item, Node):
+            print(f"{reads.path(g, g.node(item.agent_id))}  {item.type}")
+            positions.append(item.seq)
+    return positions
 
 
-def agents(root: Node) -> list[AgentStart]:
-    return [node for node in root.walk() if isinstance(node, AgentStart)]
+def as_of(g: Graph, seq: int) -> Graph:
+    """The graph as it stood once item ``seq`` (and the edges that landed with it) was written."""
+    items = g.items()
+    later = [item.seq for item in items if isinstance(item, Node) and item.seq > seq]
+    return g.as_of(later[0] - 1 if later else items[-1].seq)
 
 
-async def run(flow: Flow, root: AgentStart, out_dir: Path) -> list[AgentStart]:
-    """Stream the run, checkpointing periodically and snapshotting every node."""
-    history = [snapshot([root])]
-    async for node in checkpoint_stream(flow.run_streaming(root), out_dir):
-        print(f"{node.parent_agent.config.path}  {node.type}")
-        history.append(snapshot(list(root.walk())))
-    return history
-
-
-async def gym_loop(flow: Flow, root: AgentStart, out_dir: Path) -> list[float]:
+async def gym_loop(flow: Flow, g: Graph, root: AgentStart, out_dir: Path) -> list[float]:
     rewards: list[float] = []
     step = 0
     checkpoint = GraphCheckpointer(out_dir)
     try:
-        while not root.terminal:
-            async for node in flow.run_streaming(root, until="next"):
-                checkpoint.handle(node)
+        while not reads.terminal(g, root):
+            async for item in flow.run_streaming(g, until="next"):
+                checkpoint.handle(item, g)
             step += 1
-            reward = 1.0 if root.terminal else 0.0
+            reward = 1.0 if reads.terminal(g, root) else 0.0
             rewards.append(reward)
-            print(f"step {step}: state={root.frontier.type} reward={reward}")
+            print(f"step {step}: state={reads.frontier(g, root).type} reward={reward}")
     finally:
         checkpoint.close()
     return rewards
@@ -137,46 +143,53 @@ def main() -> None:
         shutil.rmtree(workdir)
     workdir.mkdir(parents=True)
 
-    flow = file_flow(workdir, AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters))
+    flow = file_flow(workdir)
+    config = AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)
 
     banner("1. Step-by-step execution")
-    root = flow.start("Create hello.py and goodbye.py. Delegate each file.")
-    history = asyncio.run(run(flow, root, workdir / "run"))
-    final = history[-1]
-    print(f"\n{GREEN}Result:{RESET} {final.result()}")
+    g = Graph()
+    root = g.create_agent("Create hello.py and goodbye.py. Delegate each file.", config=config)
+    positions = asyncio.run(run(flow, g, workdir / "run"))
+    print(f"\n{GREEN}Result:{RESET} {reads.result(g, root)}")
 
-    banner("2. Persistence — persistence.save() / persistence.load()")
-    path = persistence.save(final, workdir / "run")
-    loaded = persistence.load(path)
+    banner("2. Persistence — g.save() / Graph.load()")
+    path = g.save(workdir / "run")
+    loaded = Graph.load(path)
     print(
-        f"Saved + reloaded {len(agents(loaded))} agents and {node_count(loaded)} states from {path}"
+        f"Saved + reloaded {len(loaded.nodes(AgentStart))} agents and "
+        f"{len(loaded.nodes())} states from {path}"
     )
 
     banner("3. Latest state per agent")
-    for agent in agents(loaded):
-        print(f"  {agent.config.path}: {agent.frontier.type}")
+    for agent in loaded.nodes(AgentStart):
+        print(f"  {reads.path(loaded, agent)}: {reads.frontier(loaded, agent).type}")
 
-    banner("4. Time travel — kept snapshots")
-    for idx, snap in enumerate(history):
+    banner("4. Time travel — any log position is an earlier graph")
+    for idx, seq in enumerate(positions):
+        past = as_of(g, seq)
         print(
-            f"{CYAN}step {idx}{RESET}: root [{snap.frontier.type}]  "
-            f"agents={len(agents(snap))}"
+            f"{CYAN}step {idx}{RESET}: root [{reads.frontier(past, past.node(root.id)).type}]  "
+            f"agents={len(past.nodes(AgentStart))}"
         )
 
-    banner("5. Node summary")
-    usage = final.root.usage
-    print(f"Agents:  {len(agents(final))}")
-    print(f"States:  {node_count(final)}")
+    banner("5. Graph summary")
+    usage = reads.usage(g)
+    print(f"Agents:  {len(g.nodes(AgentStart))}")
+    print(f"States:  {len(g.nodes())}")
     print(f"Tokens:  {usage.total:,} ({usage.input_tokens:,} in / {usage.output_tokens:,} out)")
-    print(f"Final:   {final.frontier.type}")
+    print(f"Final:   {reads.frontier(g, root).type}")
 
     banner("6. Gym-style loop")
-    flow3 = file_flow(workdir, AgentConfig(max_depth=0, max_iters=args.max_iters))
-    root3 = flow3.start("Write a haiku about recursion to haiku.txt")
-    rewards = asyncio.run(gym_loop(flow3, root3, workdir / "gym-run"))
-    print(f"{GREEN}Result:{RESET} {root3.result()}")
+    flow3 = file_flow(workdir)
+    g3 = Graph()
+    root3 = g3.create_agent(
+        "Write a haiku about recursion to haiku.txt",
+        config=AgentConfig(max_depth=0, max_iters=args.max_iters),
+    )
+    rewards = asyncio.run(gym_loop(flow3, g3, root3, workdir / "gym-run"))
+    print(f"{GREEN}Result:{RESET} {reads.result(g3, root3)}")
     print(f"Total reward: {sum(rewards):.1f}")
-    gym_path = persistence.save(root3, workdir / "gym-run")
+    gym_path = g3.save(workdir / "gym-run")
     print(f"Gym run saved to {gym_path}")
 
     flow.runtime.close_repls()

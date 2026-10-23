@@ -1,7 +1,6 @@
 """Lightweight Python-worker runtimes for rlmflow."""
 
 from rlmflow.runtime.docker import DockerRuntime, build_docker_argv
-from rlmflow.runtime.env import agent_process_env
 from rlmflow.runtime.modal import ModalRuntime
 from rlmflow.runtime.repl import (
     DEFAULT_PREIMPORTS,
@@ -19,6 +18,7 @@ from rlmflow.runtime.runtime import (
     Runtime,
     SubprocessRuntime,
     WrappedRuntime,
+    agent_process_env,
 )
 
 __all__ = [

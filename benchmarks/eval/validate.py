@@ -28,10 +28,7 @@ def validate(*, include_mazebench: bool = False) -> dict[str, Any]:
     checked: list[dict[str, Any]] = []
     environments: list[tuple[str, Environment]] = [
         *[("smoke", item) for item in needle_environments(split="full", limit=1, seed=0)],
-        *[
-            ("delegation", item)
-            for item in fanout_environments(split="full", limit=None, seed=0)
-        ],
+        *[("delegation", item) for item in fanout_environments(split="full", limit=None, seed=0)],
     ]
     with TemporaryDirectory(prefix="rlmflow-benchmark-preflight-") as directory:
         interactive = interactive_environments(

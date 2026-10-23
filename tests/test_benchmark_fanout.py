@@ -58,8 +58,6 @@ def test_prime_spawn_tasks_are_recovered_from_child_sessions(tmp_path):
         )
     )
 
-    records = _with_spawn_tasks(
-        [{"op": "spawn", "childId": "child-1", "child": str(child)}]
-    )
+    records = _with_spawn_tasks([{"op": "spawn", "childId": "child-1", "child": str(child)}])
 
     assert records[0]["task"] == task

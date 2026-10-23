@@ -16,11 +16,14 @@ from pathlib import Path
 from rlmflow import (
     AgentStart,
     DoneOutput,
+    Edge,
     ExecAction,
     ExecOutput,
     Flow,
+    Graph,
     LLMOutput,
     Node,
+    reads,
 )
 from rlmflow.consumers import StreamConsumer
 
@@ -55,7 +58,7 @@ def grid_of_blocks(labeled: list[tuple[str, str]], *, cols: int = 4) -> str:
     return "\n\n".join(row for row in rows if row)
 
 
-def panel_status(flow: Flow, agent: AgentStart) -> str:
+def panel_status(flow: Flow, g: Graph, agent: AgentStart) -> str:
     """Live one-line status for a board panel, read from the agent's REPL env."""
     env = flow.runtime.repl_for(agent).env
     pushes = env.get("pushes")
@@ -66,8 +69,8 @@ def panel_status(flow: Flow, agent: AgentStart) -> str:
     # "stuck" and running out of turns look identical on the board but mean opposite
     # things. ``blocked`` only records that the last action was refused, so reading it
     # here would blame a stray illegal step for ending the branch.
-    if agent.terminal:
-        claim = str(agent.result() or "done").strip("[]")
+    if reads.terminal(g, agent):
+        claim = str(reads.result(g, agent) or "done").strip("[]")
         return f"{step} · {claim} (dist {env.get('dist')})"
     if env.get("blocked"):
         # A rejected push, not a terminal state — don't say DONE/BLOCKED.
@@ -76,11 +79,11 @@ def panel_status(flow: Flow, agent: AgentStart) -> str:
     return f"{step} · dist {dist}" if pushes is not None else ""
 
 
-def trace_line(node: Node, labels: dict[str, str]) -> str:
+def trace_line(g: Graph, node: Node, labels: dict[str, str]) -> str:
     """One compact line for the streamed node."""
     if isinstance(node, ExecAction):
         return ""
-    agent = node.parent_agent
+    agent = g.node(node.agent_id)
     lane = labels.get(agent.id, agent.config.name)
     if isinstance(node, LLMOutput):
         detail = node.code
@@ -124,11 +127,10 @@ def export_run_traces(
 
 
 class PanelViewer(StreamConsumer):
-    """Live side-by-side boards, one panel per **agent**, updated push-by-push.
+    """Live side-by-side boards, one panel per **labelled agent**, updated push-by-push.
 
-    One panel per agent, keyed by the agent's id in first-seen order. On each node
-    the viewer walks that node's whole tree, so a root and any children it
-    launched each get their own panel. Each panel shows that agent's board (via
+    One panel per agent the host named with :meth:`label`, keyed by the agent's
+    id in first-seen order; scratch agents such as previews never get a lane. Each panel shows that agent's board (via
     ``board_of``) or its latest ``ExecOutput`` grid, so the worker and every
     recovery branch animate as their streams advance. Safe to share across
     concurrently-gathered streams: node handling runs on one asyncio loop, so
@@ -171,10 +173,8 @@ class PanelViewer(StreamConsumer):
         # When False, still aggregate + sink, but do not clear/print the TTY —
         # use this when something else (a node trace, say) owns the terminal.
         self.paint = paint
-        # Panels are keyed per agent by the agent's own id, since every graph the
-        # host drives is a separate root whose config name is just "root".
-        # ``_root_labels`` holds host-supplied names for a graph's root agent
-        # (children default to their config name).
+        # Panels are keyed per agent by the agent's own id. ``_root_labels``
+        # holds the host-supplied name of every agent that gets a lane.
         self._order: list[str] = []
         self._labels: dict[str, str] = {}
         self._blocks: dict[str, str] = {}
@@ -184,7 +184,7 @@ class PanelViewer(StreamConsumer):
         self._closed = False
 
     def label(self, agent: AgentStart, label: str) -> None:
-        """Name a graph's root-agent panel (e.g. "worker"/"shepherd")."""
+        """Give ``agent`` a lane under ``label`` (e.g. "worker"/"shepherd")."""
         self._root_labels[agent.id] = label
         if agent.id in self._labels:
             self._labels[agent.id] = label
@@ -192,14 +192,12 @@ class PanelViewer(StreamConsumer):
     def _default_label(self, agent: AgentStart) -> str:
         return self._root_labels.get(agent.id) or agent.config.name
 
-    def handle(self, node: Node) -> None:
-        if self._closed:
+    def handle(self, item: Node | Edge, graph: Graph) -> None:
+        if self._closed or not isinstance(item, Node):
             return
-        # Fan out to every agent in this root's tree, so children get their own
-        # lane rather than folding into the root's.
-        agents = [n for n in node.root.walk() if isinstance(n, AgentStart)]
+        agents = [a for a in graph.nodes(AgentStart) if a.id in self._root_labels]
         for agent in agents:
-            self._observe(agent, node if node.parent_agent is agent else None)
+            self._observe(agent, item if item.agent_id == agent.id else None)
         # Play out this turn's per-sub-step frames so a box-level push visibly walks
         # the player around cell-by-cell instead of snapping (looking teleporty).
         if self.frames_of is not None:

@@ -192,10 +192,7 @@ def _verify_row_contract(
         "observation_sha256",
         contract.get("inputs_sha256"),
     )
-    if (
-        actual_description == description_sha256
-        and actual_observation == observation_sha256
-    ):
+    if actual_description == description_sha256 and actual_observation == observation_sha256:
         return row
     error = (
         "ObservationParityError: runner task bytes differ from the canonical "
@@ -225,9 +222,7 @@ def example_for_environment(
         metadata={
             "benchmark": benchmark_name,
             "environment_id": environment.id,
-            "environment_family": type(observation).__name__.removesuffix(
-                "Observation"
-            ).lower(),
+            "environment_family": type(observation).__name__.removesuffix("Observation").lower(),
             "observation_json": observation_json,
             "observation_sha256": observation_sha256(observation),
         },
@@ -243,7 +238,9 @@ def _validate_public_example(
     if example.id != environment.id:
         raise ValueError(f"{environment.id}: public example id does not match environment id")
     if example.prompt != environment.description:
-        raise ValueError(f"{environment.id}: runner description differs from environment description")
+        raise ValueError(
+            f"{environment.id}: runner description differs from environment description"
+        )
     if example.expected is not None:
         raise ValueError(f"{environment.id}: hidden expected answer leaked into runner payload")
     metadata_hash = example.metadata.get("observation_sha256")

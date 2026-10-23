@@ -30,7 +30,9 @@ from pathlib import Path
 from rlmflow import (
     AgentConfig,
     Flow,
+    Graph,
     LLMUsage,
+    reads,
 )
 from rlmflow.llm import client_for
 from rlmflow.tools import tool
@@ -163,10 +165,9 @@ def skills_prompt_modifier(library: SkillLibrary):
     return modify
 
 
-def build_flow(library: SkillLibrary, llm, *, max_iters: int) -> Flow:
+def build_flow(library: SkillLibrary, llm) -> Flow:
     return Flow(
         llm,
-        root_config=AgentConfig(max_iters=max_iters),
         tools=[make_add_skill(library)],
         system_prompt_modifiers=skills_prompt_modifier(library),
     )
@@ -201,23 +202,24 @@ def main() -> None:
     else:
         llm = client_for(args.model)
         print(f"Using live client ({args.model}).")
-    flow = build_flow(library, llm, max_iters=args.max_iters)
+    flow = build_flow(library, llm)
 
-    graph = flow.start(QUERY)
+    g = Graph()
+    root = g.create_agent(QUERY, config=AgentConfig(max_iters=args.max_iters))
     if args.print_prompt:
         print("\n--- Skills section BEFORE run (empty) ---\n")
         print(library.render())
 
     print("\n--- run ---\n")
-    flow.run(graph)
+    flow.run(g)
 
     print(f"\nagent installed skills: {library.names()}")
     if args.print_prompt:
         print("\n--- Skills section AFTER run (grown by the agent) ---\n")
         print(library.render())
 
-    print("\nresult:", graph.result())
-    print(f"Node saved to {graph.save(args.out_dir)}")
+    print("\nresult:", reads.result(g, root))
+    print(f"Graph saved to {g.save(args.out_dir)}")
     flow.runtime.close_repls()
 
 

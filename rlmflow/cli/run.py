@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from rlmflow.cli.options import CliError, RunOptions, resolve
+from rlmflow.cli import CliError, RunOptions, resolve_options
 
 # Anthropic for ``claude*``, OpenAI otherwise — the same rule ``client_for`` uses
 # to pick a client, applied one step earlier so a missing key is one line of
@@ -50,7 +50,7 @@ class RunCLI:
         self.query = None if query is None else str(query)
         self.resume = resume
         self.agent = agent
-        self.options, _ = resolve(
+        self.options, _ = resolve_options(
             {
                 "model": model,
                 "fast_model": fast_model,
@@ -127,7 +127,7 @@ class TuiCLI:
         self.query = None if query is None else str(query)
         self.resume = resume
         self.agent = agent
-        self.options, _ = resolve(
+        self.options, _ = resolve_options(
             {
                 "model": model,
                 "fast_model": fast_model,
@@ -162,7 +162,7 @@ def run_agent(
     flow: Any = None,
 ) -> None:
     """Run the coding agent. Headless streams one query; otherwise the TUI opens."""
-    workdir = Path(options.workdir).expanduser().resolve()
+    workdir = Path(options.workdir).expanduser().resolve_options()
     workdir.mkdir(parents=True, exist_ok=True)
     graph_dir = workdir / "graph"
 
@@ -212,7 +212,9 @@ def build_flow(options: RunOptions, *, workdir: Path, agent: str | None = None) 
         root_config=AgentConfig(
             max_depth=options.max_depth,
             max_iters=options.max_iters,
-            child_output_schema=CODING_HANDOFF_SCHEMA if options.tools == "files" else None,
+            child_config=(
+                {"output_schema": CODING_HANDOFF_SCHEMA} if options.tools == "files" else {}
+            ),
         ),
     )
 
@@ -240,18 +242,16 @@ def load_factory(target: str) -> Any:
 
 
 def load_root(source: str | Path) -> Any:
-    from rlmflow import AgentStart, persistence
+    """Load a saved run's graph to resume."""
+    from rlmflow import Graph
 
     path = Path(source)
     if not path.exists():
         raise CliError(f"path not found: {path}")
     try:
-        root = persistence.load(path)
+        return Graph.load(path)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise CliError(f"cannot read a run from {path}: {exc}") from exc
-    if not isinstance(root, AgentStart):
-        raise CliError(f"{path} holds a {type(root).__name__}, not a run to resume")
-    return root
 
 
 def require_api_key(model: str, environ: dict[str, str] | None = None) -> None:
@@ -262,41 +262,46 @@ def require_api_key(model: str, environ: dict[str, str] | None = None) -> None:
         raise CliError(f"{key} is not set, and {model} needs it")
 
 
-def _run_headless(flow: Any, query: str | None, root: Any, graph_dir: Path) -> None:
+def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> None:
     """No dashboard: stream one query, printing the tree as it grows."""
+    from rlmflow import Graph
     from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveTreeRenderer
+    from rlmflow.graph import reads
 
-    if root is None and not query:
+    if graph is None and not query:
         raise CliError("nothing to run: pass a query, or --resume a saved run")
     consumers = ConsumerGroup([LiveTreeRenderer(), GraphCheckpointer(graph_dir)])
     consumers.init(flow)
-    if root is None:
-        root = flow.start(query or "")
-    elif query:
-        _ask(root, query)
+    if graph is None:
+        graph = Graph()
+        agent = graph.create_agent(query or "", config=flow.root_config)
+    else:
+        agent = _first_agent(graph)
+        if query:
+            _ask(graph, query)
 
     async def stream() -> None:
-        async for node in flow.run_streaming(root):
-            consumers.handle(node)
+        async for item in flow.run_streaming(graph):
+            consumers.handle(item, graph)
 
     try:
         asyncio.run(stream())
     finally:
         consumers.close()
         flow.runtime.close_repls()
-    print(f"\n{root.result() or '(no result)'}\n")
+    print(f"\n{reads.result(graph, agent) or '(no result)'}\n")
 
 
-def _run_tui(flow: Any, query: str | None, root: Any, graph_dir: Path) -> None:
+def _run_tui(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> None:
     """The dashboard drives its own turns; it only needs the flow and a place to save.
 
     A query here is the opening turn, not a different mode: the panels are up
     while it runs, and the prompt is there when it finishes.
     """
+    from rlmflow.cli.tui import FlowTUI
     from rlmflow.consumers import GraphCheckpointer
-    from rlmflow.consumers.tui import FlowTUI
 
-    ui = FlowTUI(root, sink=GraphCheckpointer(graph_dir))
+    ui = FlowTUI(graph, sink=GraphCheckpointer(graph_dir))
     ui.init(flow)
     try:
         ui.run(query=query)
@@ -304,11 +309,20 @@ def _run_tui(flow: Any, query: str | None, root: Any, graph_dir: Path) -> None:
         flow.runtime.close_repls()
 
 
-def _ask(root: Any, query: str) -> None:
-    """Queue another turn on a run that already exists."""
-    from rlmflow.graph.nodes import UserQuery
+def _first_agent(graph: Any) -> Any:
+    from rlmflow.view.text import top_level
 
-    root.frontier.append(UserQuery(content=query))
+    tops = top_level(graph)
+    if not tops:
+        raise CliError("the saved run has no agents")
+    return tops[0]
+
+
+def _ask(graph: Any, query: str) -> None:
+    """Queue another turn on a run that already exists."""
+    from rlmflow.graph import ops
+
+    ops.send(graph, _first_agent(graph), query)
 
 
 __all__ = [

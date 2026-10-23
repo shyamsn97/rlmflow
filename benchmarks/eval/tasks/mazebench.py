@@ -87,6 +87,7 @@ class MazeBenchDataset(Dataset):
             )
         ]
 
+
 __all__ = [
     "GAME_WON_GEM_COUNT",
     "MazeBenchDataset",

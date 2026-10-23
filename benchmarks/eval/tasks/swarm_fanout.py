@@ -15,9 +15,7 @@ from benchmarks.eval.types import Dataset, Example, Prediction, Score
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures" / "swarm_fanout"
 ANSWER_LINE = re.compile(r"^\s*[-*]\s+(.+?):\s*(.*?)\s*$")
-CHILD_INSTRUCTION = (
-    "Answer the question using only the supplied content. Return only the number."
-)
+CHILD_INSTRUCTION = "Answer the question using only the supplied content. Return only the number."
 
 
 @dataclass(frozen=True, slots=True)
@@ -282,8 +280,7 @@ def _format_records(format_name: str, values: list[int]) -> str:
         )
     if format_name == "markdown":
         return "| id | value | noise |\n|---|---:|---:|\n" + "\n".join(
-            f"| {record['id']} | {record['value']} | {record['noise']} |"
-            for record in records
+            f"| {record['id']} | {record['value']} | {record['noise']} |" for record in records
         )
     if format_name == "nested-json":
         return json.dumps({"metadata": {"version": 1}, "records": records}, indent=2)

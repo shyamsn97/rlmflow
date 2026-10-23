@@ -1,78 +1,67 @@
 import json
-from collections import Counter
 from dataclasses import dataclass
 from typing import ClassVar
 
 import pytest
+from helpers import agent_graph
 
 from rlmflow import (
+    DEPENDS_ON,
+    AgentConfig,
     AgentStart,
+    Edge,
     ErrorOutput,
     ExecAction,
     ExecOutput,
+    Graph,
+    InvariantError,
     LLMOutput,
     LLMUsage,
     Node,
+    TurnMode,
     UserQuery,
+    ops,
     persistence,
-    start,
+    reads,
 )
 
 
-def chain(length: int) -> tuple[AgentStart, list[Node]]:
-    root = start("deep")
+def chain(length: int) -> tuple[Graph, AgentStart, list[Node]]:
+    g, root = agent_graph("deep")
     nodes: list[Node] = [root]
-    frontier: Node = root
     for index in range(length - 1):
-        nxt = UserQuery(content=str(index))
-        frontier.append(nxt)
-        frontier = nxt
-        nodes.append(frontier)
-    return root, nodes
-
-
-def assert_index_matches_tree(root: AgentStart) -> None:
-    nodes = list(root.walk())
-    agents = [node for node in nodes if isinstance(node, AgentStart)]
-    errors = [node for node in nodes if isinstance(node, ErrorOutput)]
-    usage = sum(
-        (node.usage for node in nodes if isinstance(node, LLMOutput)),
-        LLMUsage(),
-    )
-
-    assert root.stats.node_count == len(nodes)
-    assert root.stats.node_counts == Counter(node.type for node in nodes)
-    assert root.stats.agent_count == len(agents)
-    assert list(root.iter_agents()) == agents
-    assert root.errors() == tuple(errors)
-    assert root.usage == usage
+        nodes.append(ops.append(g, root, UserQuery(content=str(index))))
+    return g, root, nodes
 
 
 def test_deep_graph_operations_are_iterative(tmp_path):
-    root, nodes = chain(10_000)
+    g, root, nodes = chain(10_000)
 
-    assert list(root.walk()) == nodes
-    assert list(nodes[-1].iter_backwards()) == list(reversed(nodes))
+    assert reads.history(g, root) == nodes
+    assert reads.history(g, nodes[-1]) == nodes
 
-    loaded = AgentStart.load(root.save(tmp_path / "deep"))
-    assert len(list(loaded.walk())) == 10_000
-    assert_index_matches_tree(loaded)
+    g.save(tmp_path / "deep")
+    loaded = Graph.load(tmp_path / "deep")
+    assert len(reads.history(loaded, loaded.node(root.id))) == 10_000
+    assert len(loaded) == len(g)
 
-    fork = nodes[4_999].fork()
-    assert len(list(fork.walk())) == 5_000
-    assert {node.id for node in fork.walk()}.isdisjoint(node.id for node in root.walk())
-    assert_index_matches_tree(fork)
+    fork = ops.fork(g, nodes[4_999])
+    assert reads.history(g, fork) == [*nodes[:5_000], fork]
+    assert reads.frontier(g, fork) is nodes[4_999]
 
 
 def test_fork_and_persistence_preserve_full_config_without_sharing_values(tmp_path):
-    root = start(
+    g, root = agent_graph(
         "configured",
         args={"doc": "value"},
         output_schema={"type": "string"},
-        child_output_schema={
-            "type": "object",
-            "properties": {"done": {"type": "boolean"}},
-            "required": ["done"],
+        child_config={
+            "output_schema": {
+                "type": "object",
+                "properties": {"done": {"type": "boolean"}},
+                "required": ["done"],
+            },
+            "model": "fast",
         },
         max_depth=4,
         max_iters=7,
@@ -83,80 +72,65 @@ def test_fork_and_persistence_preserve_full_config_without_sharing_values(tmp_pa
         resume_on_child_done=True,
     )
 
-    fork = root.fork()
-    loaded = AgentStart.load(root.save(tmp_path / "configured"))
+    fork = ops.fork(g, root, name="root")
+    g.save(tmp_path / "configured")
+    loaded = Graph.load(tmp_path / "configured").node(root.id)
 
     assert fork.config == root.config
     assert loaded.config == root.config
     assert fork.config is not root.config
     assert fork.args is not root.args
     assert fork.config.output_schema is not root.config.output_schema
-    assert fork.config.child_output_schema is not root.config.child_output_schema
+    assert fork.config.child_config is not root.config.child_config
 
 
-def test_run_index_tracks_counts_usage_agents_and_errors():
-    root = start("indexed")
-    output = LLMOutput(
-        content="answer",
-        usage=LLMUsage(input_tokens=7, output_tokens=3),
+def test_reads_count_usage_agents_and_errors():
+    g, root = agent_graph("indexed")
+    ops.append(
+        g, root, LLMOutput(content="answer", usage=LLMUsage(input_tokens=7, output_tokens=3))
     )
-    root.append(output)
-    action = ExecAction(code="delegate")
-    output.append(action)
-    child = AgentStart(content="child", config=root.config.child("child"))
-    action.append(child)
-    child.append(ErrorOutput(content="failed"))
+    action = ops.append(g, root, ExecAction(code="delegate"))
+    child = ops.spawn(g, "child", by=action, name="child")
+    error = ops.append(g, child, ErrorOutput(content="failed"))
 
-    assert root.usage == LLMUsage(input_tokens=7, output_tokens=3)
-    assert root.stats.node_count == 5
-    assert root.stats.node_counts == {
-        "agent_start": 2,
-        "llm_output": 1,
-        "exec_action": 1,
-        "error_output": 1,
-    }
-    assert list(root.iter_agents()) == [root, child]
-    assert root.find_agent(root.id) is root
-    assert root.find_agent(child.id) is child
-    assert root.errors() == (child.frontier,)
-    assert_index_matches_tree(root)
-    with pytest.raises(TypeError):
-        root.stats.node_counts["node"] = 1  # type: ignore[index]
+    assert reads.usage(g) == LLMUsage(input_tokens=7, output_tokens=3)
+    assert reads.usage(g, [child]) == LLMUsage()
+    assert reads.tree(g, root) == [root, child]
+    assert g.node(child.id) is child
+    assert g.nodes(ErrorOutput) == [error]
+    assert len(g.nodes()) == 5
 
 
-def test_graph_document_is_flat_strict_and_unversioned():
-    root, _ = chain(4)
-    document = persistence.to_document(root)
+def test_saved_log_is_flat_ordered_and_strict(tmp_path):
+    g, _root, _nodes = chain(4)
+    run = g.save(tmp_path / "run")
+    document = json.loads((run / "graph.json").read_text())
 
-    assert "version" not in document
-    assert "root" not in document
-    assert all("children" not in record for record in document["nodes"])
-    assert persistence.to_document(persistence.from_document(document)) == document
+    assert set(document) == {"id", "items"}
+    assert [item["seq"] for item in document["items"]] == list(range(len(document["items"])))
+    assert all("children" not in item and "parent_id" not in item for item in document["items"])
 
-    missing_snapshot = json.loads(json.dumps(document))
-    del missing_snapshot["nodes"][0]["payload"]["messages"]
+    def broken(edit) -> Graph:
+        data = json.loads(json.dumps(document))
+        edit(data["items"])
+        (run / "graph.json").write_text(json.dumps(data))
+        return Graph.load(run)
+
     with pytest.raises(ValueError, match="no message snapshot field"):
-        persistence.from_document(missing_snapshot)
-
-    broken = {**document, "nodes": [dict(record) for record in document["nodes"]]}
-    broken["nodes"][1]["parent_id"] = "later"
-    with pytest.raises(ValueError, match="missing or later parent"):
-        persistence.from_document(broken)
-
-    unknown = {**document, "nodes": [dict(record) for record in document["nodes"]]}
-    unknown["nodes"][1]["type"] = "unknown_query"
+        broken(lambda items: items[0]["payload"].pop("messages"))
+    with pytest.raises(ValueError, match="out of log order"):
+        broken(lambda items: items.reverse())
     with pytest.raises(ValueError, match="unknown node type 'unknown_query'"):
-        persistence.from_document(unknown)
+        broken(lambda items: items[1].update(type="unknown_query"))
 
 
-def test_multi_message_snapshots_survive_persistence_and_fork():
+def test_multi_message_snapshots_survive_persistence_and_fork(tmp_path):
     @dataclass
     class BoardQuery(UserQuery):
         type: ClassVar[str] = "test_board_query_snapshot"
 
-    root = start("root")
-    query = BoardQuery(content="move")
-    root.append(query)
+    g, root = agent_graph("root")
+    query = ops.append(g, root, BoardQuery(content="move"))
     query.snapshot_messages(
         [
             {"role": "user", "content": "board"},
@@ -164,94 +138,47 @@ def test_multi_message_snapshots_survive_persistence_and_fork():
         ]
     )
 
-    loaded = persistence.from_document(persistence.to_document(root))
-    forked = query.fork()
+    g.save(tmp_path / "run")
+    loaded = Graph.load(tmp_path / "run")
+    forked = ops.fork(g, query)
 
-    assert loaded.frontier.message_dicts() == query.message_dicts()
-    assert forked.frontier.message_dicts() == query.message_dicts()
-
-
-def test_persistence_rejects_invalid_argument_references_and_cycles():
-    root = start("root")
-    action = ExecAction(code="launch")
-    root.append(action)
-    left = AgentStart(content="left", config=root.config.child("left"))
-    right = AgentStart(content="right", config=root.config.child("right"))
-    action.append(left)
-    action.record_tool_call("launch_subagent", 0, {"$rlmflow_agent": left.id})
-    action.append(right)
-    action.record_tool_call("launch_subagent", 1, {"$rlmflow_agent": right.id})
-
-    left.args["files"] = ["a.txt", "b.txt"]
-    loaded = persistence.from_document(persistence.to_document(root))
-    assert loaded.find_agent(left.id).args["files"] == ["a.txt", "b.txt"]
-    left.args.clear()
-
-    left.args["right"] = {"$rlmflow_agent": right.id}
-    right.args["left"] = {"$rlmflow_agent": left.id}
-    with pytest.raises(ValueError, match="dependency cycle"):
-        persistence.to_document(root)
-
-    right.args.clear()
-    left.args["right"] = {"$rlmflow_agent": "missing"}
-    with pytest.raises(ValueError, match="references missing agent"):
-        persistence.to_document(root)
-
-    left.args["right"] = {"$rlmflow_agent": left.id}
-    with pytest.raises(ValueError, match="cannot depend on itself"):
-        persistence.to_document(root)
-
-    left.args["right"] = {"$rlmflow_agent": right.id, "extra": "bad"}
-    with pytest.raises(TypeError, match="exact agent reference"):
-        persistence.to_document(root)
+    assert reads.frontier(loaded, loaded.node(root.id)).message_dicts() == query.message_dicts()
+    assert reads.frontier(g, forked).message_dicts() == query.message_dicts()
 
 
-def test_persistence_validates_and_round_trips_saved_tool_calls():
-    root = start("root")
-    action = ExecAction(code="query")
-    root.append(action)
+def test_graph_rejects_dependency_cycles_and_missing_producers():
+    g, root = agent_graph("root")
+    action = ops.append(g, root, ExecAction(code="launch"))
+    left = ops.spawn(g, "left", by=action, name="left")
+    right = ops.spawn(g, "right", by=action, name="right", depends_on=[left])
+
+    with pytest.raises(InvariantError):
+        g.add_edge(Edge(kind=DEPENDS_ON, source=left.id, target=right.id))
+    with pytest.raises(InvariantError):
+        ops.spawn(g, "orphan", depends_on=[AgentStart(content="missing")])
+
+
+def test_persistence_validates_and_round_trips_saved_tool_calls(tmp_path):
+    g, root = agent_graph("root")
+    action = ops.append(g, root, ExecAction(code="query", turn_mode=TurnMode.FINAL))
     action.record_tool_call("llm_query", 0, {"answer": 42})
-    action.append(ExecOutput(content="done"))
+    ops.append(g, root, ExecOutput(content="done"))
 
-    loaded = persistence.from_document(persistence.to_document(root))
-    loaded_action = next(node for node in loaded.walk() if isinstance(node, ExecAction))
+    g.save(tmp_path / "run")
+    [loaded_action] = Graph.load(tmp_path / "run").nodes(ExecAction)
+    assert loaded_action.turn_mode is TurnMode.FINAL
     assert loaded_action.saved_tool_calls == {"llm_query": {0: {"answer": 42}}}
 
     action.saved_tool_calls["llm_query"][1] = object()
     with pytest.raises(TypeError, match="must be strict JSON"):
-        persistence.to_document(root)
-
-
-def test_persistence_rejects_out_of_scope_input_reference():
-    root = start("root", max_depth=2)
-    root_action = ExecAction(code="launch siblings")
-    root.append(root_action)
-    owner = AgentStart(content="owner", config=root.config.child("owner"))
-    source = AgentStart(content="source", config=root.config.child("source"))
-    root_action.append(owner)
-    root_action.record_tool_call("launch_subagent", 0, {"$rlmflow_agent": owner.id})
-    root_action.append(source)
-    root_action.record_tool_call("launch_subagent", 1, {"$rlmflow_agent": source.id})
-
-    owner_action = ExecAction(code="launch consumer")
-    owner.append(owner_action)
-    consumer = AgentStart(
-        content="consumer",
-        args={"source": {"$rlmflow_agent": source.id}},
-        config=owner.config.child("consumer"),
-    )
-    owner_action.append(consumer)
-    owner_action.record_tool_call("launch_subagent", 0, {"$rlmflow_agent": consumer.id})
-
-    with pytest.raises(ValueError, match="outside its launch scope"):
-        persistence.to_document(root)
+        g.save(tmp_path / "bad")
 
 
 def test_graph_file_is_the_atomic_save_commit_point(tmp_path, monkeypatch):
-    root, nodes = chain(2)
-    run = persistence.save(root, tmp_path / "run")
-    committed_ids = [node.id for node in root.walk()]
-    nodes[-1].append(UserQuery(content="new work"))
+    g, root, _nodes = chain(2)
+    run = g.save(tmp_path / "run")
+    committed = [item.id for item in g.items()]
+    ops.append(g, root, UserQuery(content="new work"))
     write_json = persistence._write_json
 
     def interrupt_graph_commit(path, data):
@@ -261,74 +188,83 @@ def test_graph_file_is_the_atomic_save_commit_point(tmp_path, monkeypatch):
 
     monkeypatch.setattr(persistence, "_write_json", interrupt_graph_commit)
     with pytest.raises(OSError, match="simulated crash"):
-        persistence.save(root, run)
+        g.save(run)
 
-    assert [node.id for node in persistence.load(run).walk()] == committed_ids
+    assert [item.id for item in Graph.load(run).items()] == committed
 
 
-def test_large_args_are_content_addressed_once_across_graph_views(tmp_path):
+def test_large_args_are_content_addressed_once(tmp_path):
     large = "payment,row\n" + ("merchant,100.00\n" * 8_000)
-    root = start("root", args={"data": large})
-    action = ExecAction(code="delegate")
-    root.append(action)
-    child = AgentStart(
-        content="child",
-        args={"data": large},
-        config=root.config.child("child"),
-    )
-    action.append(child)
+    g, root = agent_graph("root", args={"data": large})
+    action = ops.append(g, root, ExecAction(code="delegate"))
+    child = ops.spawn(g, "child", by=action, name="child", data=large)
 
-    run = persistence.save(root, tmp_path / "run")
+    run = g.save(tmp_path / "run")
     graph_text = (run / "graph.json").read_text(encoding="utf-8")
-    graph = json.loads(graph_text)
     refs = [
-        record["payload"]["args"]["data"]
-        for record in graph["nodes"]
-        if record["type"] == "agent_start"
+        item["payload"]["args"]["data"]
+        for item in json.loads(graph_text)["items"]
+        if item.get("type") == "agent_start"
     ]
-    blobs = list((run / "arg_blobs").iterdir())
 
-    assert len(blobs) == 1
-    assert len({ref[persistence.ARG_BLOB_REF_KEY] for ref in refs}) == 1
+    assert len(list((run / "blobs").iterdir())) == 1
+    assert len({json.dumps(ref, sort_keys=True) for ref in refs}) == 1
     assert large not in graph_text
-    assert large not in (run / "agents" / "root" / "agent.json").read_text()
-    assert large not in (run / "agents" / "root" / "session.jsonl").read_text()
-    assert large not in (run / "agents" / "root" / "child" / "agent.json").read_text()
 
-    loaded = persistence.load(run)
-
-    assert loaded.args["data"] == large
-    assert loaded.find_agent(child.id).args["data"] == large
+    loaded = Graph.load(run)
+    assert loaded.node(root.id).args["data"] == large
+    assert loaded.node(child.id).args["data"] == large
 
 
-def test_removed_graph_apis_have_no_compatibility_aliases():
-    root = start("clean break")
-
-    assert not hasattr(Node, "to_dict")
-    assert not hasattr(Node, "tokens")
-    assert not hasattr(persistence, "to_dict")
-    assert not hasattr(persistence, "from_dict")
-    with pytest.raises(TypeError):
-        list(root.walk(reverse=True))  # type: ignore[call-arg]
-    with pytest.raises(TypeError):
-        root.fork(new_ids=False)  # type: ignore[call-arg]
+def test_removed_tree_apis_have_no_compatibility_aliases():
+    for name in ("to_dict", "tokens", "walk", "fork", "append", "parent_agent", "next", "prev"):
+        assert not hasattr(Node, name), name
+    for name in ("frontier", "sub_agents", "transcript", "result", "save", "load"):
+        assert not hasattr(AgentStart, name), name
+    assert not hasattr(persistence, "to_document")
 
 
-def test_registered_custom_node_round_trips():
+def test_registered_custom_node_round_trips(tmp_path):
     @dataclass
     class ReviewOutput(Node):
-        type = "test_review_output"
+        type: ClassVar[str] = "test_review_output"
         verdict: str = ""
 
-        def to_record(self):
-            record = super().to_record()
-            record["payload"]["verdict"] = self.verdict
-            return record
+    g, root = agent_graph("review")
+    ops.append(g, root, ReviewOutput(verdict="ship"))
 
-    root = start("review")
-    root.append(ReviewOutput(verdict="ship"))
+    g.save(tmp_path / "run")
+    loaded = Graph.load(tmp_path / "run")
+    frontier = reads.frontier(loaded, loaded.node(root.id))
 
-    loaded = persistence.from_document(persistence.to_document(root))
+    assert isinstance(frontier, ReviewOutput)
+    assert frontier.verdict == "ship"
 
-    assert isinstance(loaded.frontier, ReviewOutput)
-    assert loaded.frontier.verdict == "ship"
+
+def test_graph_saved_with_child_output_schema_loads_as_child_config(tmp_path):
+    schema = {"type": "object", "properties": {"n": {"type": "integer"}}, "required": ["n"]}
+    g, root = agent_graph("legacy")
+    g.save(tmp_path / "run")
+    path = tmp_path / "run" / "graph.json"
+    data = json.loads(path.read_text())
+    config = data["items"][0]["payload"]["config"]
+    del config["child_config"]
+    config["child_output_schema"] = schema
+    path.write_text(json.dumps(data))
+
+    loaded = Graph.load(tmp_path / "run").node(root.id)
+
+    assert loaded.config.child_config == {"output_schema": schema}
+
+
+def test_child_config_applies_to_every_descendant():
+    root = AgentConfig(max_depth=3, child_config={"model": "fast", "prompt_profile": "worker"})
+
+    child = root.child("child")
+    grandchild = child.child("grandchild", output_schema={"type": "string"})
+
+    assert (child.model, child.prompt_profile) == ("fast", "worker")
+    assert (grandchild.model, grandchild.prompt_profile) == ("fast", "worker")
+    assert grandchild.output_schema == {"type": "string"}
+    assert grandchild.max_depth == 3
+    assert root.model == "default"

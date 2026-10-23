@@ -1,13 +1,17 @@
-from helpers import StubLLM, TestRuntime
+from helpers import StubLLM, TestRuntime, run_result
 
 from rlmflow import (
+    DEPENDS_ON,
+    NEXT,
     AgentConfig,
-    AgentStart,
     Flow,
+    Graph,
     StructuredResult,
     TransitionDecision,
     UserQuery,
     VerificationFailure,
+    ops,
+    reads,
 )
 
 SCHEMA = {
@@ -94,31 +98,31 @@ def test_minimal_interface_end_to_end_replays_without_work(tmp_path):
     def select_handoff(node):
         return UserQuery(content="semantic route selected")
 
-    root = flow.start(
+    g = Graph()
+    root = g.create_agent(
         "conformance root",
         config=AgentConfig(max_depth=1, max_iters=8),
     )
-    assert flow.run(root) == "done"
+    assert run_result(flow, g, root) == "done"
 
-    children = list(root.iter_agents())[1:]
+    children = reads.tree(g, root)[1:]
     assert len(children) == 3
     assert {child.config.output_schema["required"][0] for child in children} == {
         "value",
         "ok",
         "sum",
     }
-    assert len(next(child for child in children if "right typed" in child.content).transcript()) > 3
-    assert sum(isinstance(node, VerificationFailure) for node in root.walk()) == 1
+    right = next(child for child in children if "right typed" in child.content)
+    assert len(reads.history(g, right)) > 3
+    assert len(g.nodes(VerificationFailure)) == 1
     matched = next(
-        node
-        for node in root.walk()
-        if isinstance(node, TransitionDecision) and node.selected_rule_id is not None
+        node for node in g.nodes(TransitionDecision) if node.selected_rule_id is not None
     )
-    assert any(child.argument_references for child in children)
-    assert matched.next is not None
+    assert any(g.edges(kind=DEPENDS_ON, source=child.id) for child in children)
+    assert g.edges(kind=NEXT, source=matched.id)
 
-    saved = root.save(tmp_path / "conformance")
-    loaded = AgentStart.load(saved)
+    g.save(tmp_path / "conformance")
+    loaded = Graph.load(tmp_path / "conformance")
     call_count = len(calls)
     semantic_count = engine.calls
 
@@ -129,14 +133,18 @@ def test_minimal_interface_end_to_end_replays_without_work(tmp_path):
     def no_model_call(_messages):
         raise AssertionError("model repeated during terminal replay")
 
-    assert Flow(
-        StubLLM(no_model_call),
-        runtime=TestRuntime(),
-        structured_engine=NoWorkEngine(),
-    ).run(loaded) == "done"
+    assert (
+        Flow(
+            StubLLM(no_model_call),
+            runtime=TestRuntime(),
+            structured_engine=NoWorkEngine(),
+        ).run(loaded)
+        is loaded
+    )
+    assert reads.result(loaded, loaded.node(root.id)) == "done"
     assert len(calls) == call_count
     assert engine.calls == semantic_count
 
-    forked = matched.fork()
-    assert isinstance(forked.frontier, TransitionDecision)
-    assert forked.frontier.next is None
+    forked = ops.fork(g, matched)
+    assert reads.frontier(g, forked) is matched
+    assert not reads.terminal(g, forked)

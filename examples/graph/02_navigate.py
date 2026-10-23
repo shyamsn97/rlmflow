@@ -1,11 +1,11 @@
-"""Navigating a minimal Node trajectory."""
+"""Navigating a graph: each agent's history, its children, and their results."""
 
 from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
 
-from rlmflow import AgentStart, Node
+from rlmflow import AgentStart, Graph, reads
 
 
 def build_graph():
@@ -19,24 +19,26 @@ def build_graph():
     return module.build_graph()
 
 
-def print_tree(node: Node, depth: int = 0) -> None:
-    """One indented line per node, from ``node`` down."""
-    label = f"{node.type} [{node.config.path}]" if isinstance(node, AgentStart) else node.type
-    print(f"{'  ' * depth}{label}")
-    for child in node.children:
-        print_tree(child, depth + 1)
+def print_tree(g: Graph, agent: AgentStart, depth: int = 0) -> None:
+    """One indented line per node of ``agent``'s history, then each child below it."""
+    pad = "  " * depth
+    print(f"{pad}{reads.path(g, agent)}")
+    for node in reads.history(g, agent)[1:]:
+        print(f"{pad}  {node.type}")
+    for child in reads.children(g, agent):
+        print_tree(g, child, depth + 1)
 
 
 def main() -> None:
-    graph = build_graph()
+    g, root = build_graph()
 
-    print_tree(graph)
-    print("\nwalk:", [node.id for node in graph.walk()])
-    print("agents:", [node.config.path for node in graph.walk() if isinstance(node, AgentStart)])
-    print("children:", [child.config.path for child in graph.sub_agents])
-    for child in graph.sub_agents:
-        print(f"{child.config.path} result:", child.result())
-    print("len(root nodes):", len(graph.transcript()))
+    print_tree(g, root)
+    print("\nlog:", [item.seq for item in g.items()][:8], "...")
+    print("agents:", [reads.path(g, agent) for agent in reads.tree(g, root)])
+    print("children:", [reads.path(g, child) for child in reads.children(g, root)])
+    for child in reads.children(g, root):
+        print(f"{reads.path(g, child)} result:", reads.result(g, child))
+    print("len(root history):", len(reads.history(g, root)))
 
 
 if __name__ == "__main__":

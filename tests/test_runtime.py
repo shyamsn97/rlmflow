@@ -2,7 +2,7 @@ import asyncio
 import sys
 
 import pytest
-from helpers import StubLLM, first_user
+from helpers import StubLLM, agent_graph, first_user, run_result
 from helpers import repl as block
 
 from rlmflow import (
@@ -13,9 +13,9 @@ from rlmflow import (
     ReplStatus,
     SubprocessRuntime,
     WorkerRepl,
-    start,
+    ops,
 )
-from rlmflow.graph.nodes import ExecAction
+from rlmflow.graph.nodes import AgentStart, ExecAction
 from rlmflow.runtime import DEFAULT_PREIMPORTS, base_namespace, build_docker_argv
 from rlmflow.runtime.repl_client import invoke_tool_call
 from rlmflow.tools import get_tool_metadata, tool
@@ -28,9 +28,8 @@ WRITE_A_NOTE = block(
 
 
 def test_tool_restore_metadata_and_saved_calls_are_generic():
-    root = start("root")
-    action = ExecAction(code="")
-    root.append(action)
+    g, root = agent_graph("root")
+    action = ops.append(g, root, ExecAction(code=""))
     calls: list[tuple[str, str]] = []
 
     @tool("First tool.", proxy=True, restore="result")
@@ -94,7 +93,7 @@ class RecordingWorkerSession:
     ],
 )
 def test_process_runtimes_propagate_execution_timeout(runtime):
-    repl = runtime.open(start("q"))
+    repl = runtime.open(AgentStart(content="q"))
     try:
         assert isinstance(repl, WorkerRepl)
         assert repl.session.execution_timeout == 17
@@ -113,7 +112,7 @@ def test_process_runtimes_propagate_execution_timeout(runtime):
 def test_sandbox_runtimes_propagate_execution_timeout(monkeypatch, runtime):
     monkeypatch.setattr("rlmflow.runtime.repl_client.WorkerSession", RecordingWorkerSession)
 
-    repl = runtime.open(start("q"))
+    repl = runtime.open(AgentStart(content="q"))
     try:
         assert isinstance(repl, WorkerRepl)
         assert repl.session.execution_timeout == 17
@@ -125,7 +124,7 @@ def test_sandbox_runtimes_propagate_execution_timeout(monkeypatch, runtime):
 def test_runtime_execution_timeout_returns_dead_and_removes_worker():
     runtime = LocalRuntime(execution_timeout=0.05)
     flow = Flow(StubLLM(lambda _messages: ""), runtime=runtime)
-    root = flow.start("q")
+    root = AgentStart(content="q")
     try:
         result = asyncio.run(
             runtime.execute(
@@ -147,9 +146,9 @@ def test_local_runtime_uses_worker_and_working_directory(tmp_path):
         StubLLM(lambda _messages: WRITE_A_NOTE),
         runtime=LocalRuntime(working_directory=tmp_path),
     )
-    root = start("q")
+    g, root = agent_graph("q")
     try:
-        assert flow.run(root) == "hello"
+        assert run_result(flow, g, root) == "hello"
         assert isinstance(flow.runtime.repl_for(root), WorkerRepl)
         assert (tmp_path / "note.txt").read_text() == "hello"
     finally:
@@ -165,7 +164,7 @@ def test_subprocess_runtime_uses_selected_python_and_working_directory(tmp_path)
         ),
     )
     try:
-        assert flow.run(start("q")) == "hello"
+        assert flow.run("q") == "hello"
         assert (tmp_path / "note.txt").read_text() == "hello"
     finally:
         asyncio.run(flow.aclose())
@@ -182,7 +181,7 @@ def test_subprocess_runtime_exposes_opt_in_agents_tree():
         use_agent_tree=True,
     )
     try:
-        assert flow.run(start("q")) == "root|0|root [running] (you)"
+        assert flow.run("q") == "root|0|root [running] (you)"
     finally:
         asyncio.run(flow.aclose())
 
@@ -190,15 +189,12 @@ def test_subprocess_runtime_exposes_opt_in_agents_tree():
 def test_subprocess_runtime_supports_subagent_handles():
     def reply(messages):
         if first_user(messages) == "parent":
-            return block(
-                'child = launch_subagent(task="child")\n'
-                "finish(await child)"
-            )
+            return block('child = launch_subagent(task="child")\nfinish(await child)')
         return block('finish("child-done")')
 
     flow = Flow(StubLLM(reply), runtime=SubprocessRuntime())
     try:
-        assert flow.run(start("parent", max_depth=1)) == "child-done"
+        assert run_result(flow, *agent_graph("parent", max_depth=1)) == "child-done"
     finally:
         asyncio.run(flow.aclose())
 
@@ -206,9 +202,9 @@ def test_subprocess_runtime_supports_subagent_handles():
 def test_worker_env_channel_round_trips():
     code = block('ENV["solved"] = ENV["RLMFLOW_IS_ROOT"] == "1"\nfinish(ENV["RLMFLOW_AGENT_ID"])')
     flow = Flow(StubLLM(lambda _messages: code))
-    root = start("q")
+    g, root = agent_graph("q")
     try:
-        assert flow.run(root) == "root"
+        assert run_result(flow, g, root) == "root"
         published = flow.runtime.repl_for(root).env
         assert published["solved"] is True
         assert published["RLMFLOW_AGENT_ID"] == "root"
@@ -218,7 +214,7 @@ def test_worker_env_channel_round_trips():
 
 def test_worker_executes_await_in_comprehensions(tmp_path):
     runtime = LocalRuntime(working_directory=tmp_path)
-    repl = runtime.repl_for(start("q"))
+    repl = runtime.repl_for(AgentStart(content="q"))
 
     async def double(value):
         await asyncio.sleep(0)
@@ -242,7 +238,7 @@ def test_worker_executes_await_in_comprehensions(tmp_path):
 
 def test_empty_iterator_reports_stopiteration_not_coroutine_wrapper():
     runtime = LocalRuntime()
-    repl = runtime.repl_for(start("q"))
+    repl = runtime.repl_for(AgentStart(content="q"))
 
     async def run():
         repl.seed({}, {})
@@ -259,9 +255,9 @@ def test_empty_iterator_reports_stopiteration_not_coroutine_wrapper():
 
 def test_get_var_reads_a_variable_out_of_the_worker():
     flow = Flow(StubLLM(lambda _messages: block('result = {"n": 42}\nfinish("ok")')))
-    root = start("q")
+    g, root = agent_graph("q")
     try:
-        assert flow.run(root) == "ok"
+        assert run_result(flow, g, root) == "ok"
         assert flow.runtime.get_var(root, "result") == {"n": 42}
     finally:
         asyncio.run(flow.aclose())
@@ -276,7 +272,7 @@ def test_worker_inject_ships_a_live_object_by_value(tmp_path):
             self.n += amount
 
     runtime = LocalRuntime(working_directory=tmp_path)
-    repl = runtime.repl_for(start("q"))
+    repl = runtime.repl_for(AgentStart(content="q"))
     counter = Counter()
 
     async def run():
@@ -297,7 +293,7 @@ def test_worker_inject_ships_a_live_object_by_value(tmp_path):
 def test_worker_preimports_core_modules(tmp_path):
     # Models reach for these without importing; a NameError costs a turn to recover.
     runtime = LocalRuntime(working_directory=tmp_path)
-    repl = runtime.repl_for(start("q"))
+    repl = runtime.repl_for(AgentStart(content="q"))
 
     async def run():
         repl.seed({}, {})
@@ -324,7 +320,7 @@ def test_worker_preimports_core_modules(tmp_path):
 
 def test_preimports_are_configurable_per_runtime(tmp_path):
     runtime = LocalRuntime(working_directory=tmp_path, preimports=["json"])
-    repl = runtime.repl_for(start("q"))
+    repl = runtime.repl_for(AgentStart(content="q"))
 
     async def run(code):
         repl.seed({}, {})
@@ -371,6 +367,4 @@ def test_docker_argv_runs_worker(tmp_path):
     assert ["--network", "none"] == argv[argv.index("--network") : argv.index("--network") + 2]
     assert ["--user", "1000:1000"] == argv[argv.index("--user") : argv.index("--user") + 2]
     assert "--read-only" in argv
-    assert ["--cap-drop", "ALL"] == argv[
-        argv.index("--cap-drop") : argv.index("--cap-drop") + 2
-    ]
+    assert ["--cap-drop", "ALL"] == argv[argv.index("--cap-drop") : argv.index("--cap-drop") + 2]

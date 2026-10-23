@@ -5,8 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from rlmflow.runtime.connections import DEFAULT_REPL_TIMEOUT, PopenConnection
-from rlmflow.runtime.runtime import Runtime
+from rlmflow.runtime.runtime import DEFAULT_REPL_TIMEOUT, PopenConnection, Runtime
 
 
 def build_docker_argv(

@@ -27,7 +27,7 @@ import argparse
 from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import Path
 
-from rlmflow import GraphCheckpointer, Node, persistence
+from rlmflow import AgentStart, Edge, Flow, Graph, GraphCheckpointer, Node, reads
 
 # The directory this module lives in, i.e. the repo's ``examples/`` folder.
 EXAMPLES_DIR = Path(__file__).resolve().parent
@@ -39,33 +39,46 @@ def example_run_dir(name: str) -> Path:
 
 
 def save_example_graph(
-    graph: Node,
+    graph: Graph,
     name: str,
     *,
     out_dir: str | Path | None = None,
-    label: str = "Node saved to",
+    label: str = "Graph saved to",
 ) -> Path:
     """Save ``graph`` to ``out_dir`` (or the default ``_runs`` dir) and print the path."""
-    path = persistence.save(
-        graph,
-        Path(out_dir) if out_dir is not None else example_run_dir(name),
-    )
+    path = graph.save(Path(out_dir) if out_dir is not None else example_run_dir(name))
     print(f"{label} {path}")
     return path
 
 
 async def checkpoint_stream(
-    nodes: AsyncIterable[Node],
+    items: AsyncIterable[Node | Edge],
+    graph: Graph,
     path: str | Path,
-) -> AsyncIterator[Node]:
-    """Yield every streamed Node while periodically checkpointing its run."""
+) -> AsyncIterator[Node | Edge]:
+    """Yield every streamed item while periodically checkpointing ``graph``."""
     checkpointer = GraphCheckpointer(path)
     try:
-        async for node in nodes:
-            checkpointer.handle(node)
-            yield node
+        async for item in items:
+            checkpointer.handle(item, graph)
+            yield item
     finally:
         checkpointer.close()
+
+
+def print_agent_tree(graph: Graph, agent: AgentStart, depth: int = 0) -> None:
+    """Each agent's history on one line, with the agents it launched indented below."""
+    history = " -> ".join(node.type for node in reads.history(graph, agent))
+    print(f"{'  ' * depth}[{reads.path(graph, agent)}] {history}")
+    for child in reads.children(graph, agent):
+        print_agent_tree(graph, child, depth + 1)
+
+
+async def print_run(flow: Flow, graph: Graph, path: str | Path, *, width: int = 0) -> None:
+    """Run ``graph`` to quiescence, checkpointing it and printing each node as it lands."""
+    async for item in checkpoint_stream(flow.run_streaming(graph), graph, path):
+        if isinstance(item, Node):
+            print(f"{reads.path(graph, graph.node(item.agent_id)):<{width}}  {item.type}")
 
 
 def add_model_args(

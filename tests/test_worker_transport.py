@@ -7,10 +7,10 @@ import time
 
 import pytest
 
-from rlmflow import ReplStatus, SubprocessRuntime, WorkerRepl, WorkerSession, start
-from rlmflow.runtime.connections import PopenConnection
-from rlmflow.runtime.protocol import PingRequest, ReplResponse
+from rlmflow import AgentStart, ReplStatus, SubprocessRuntime, WorkerRepl, WorkerSession
 from rlmflow.runtime.repl_client import ProtocolDesyncError
+from rlmflow.runtime.repl_server import PingRequest, ReplResponse
+from rlmflow.runtime.runtime import PopenConnection
 from rlmflow.tools import tool
 
 
@@ -220,9 +220,7 @@ def test_native_stderr_flood_does_not_block_worker(tmp_path):
     repl = make_repl(tmp_path)
     repl.seed({}, {})
     try:
-        result = asyncio.run(
-            repl.run("import os\nos.write(2, b'x' * 300_000)\nprint('survived')")
-        )
+        result = asyncio.run(repl.run("import os\nos.write(2, b'x' * 300_000)\nprint('survived')"))
         assert result.output == "survived"
     finally:
         repl.close()
@@ -331,7 +329,7 @@ def test_configured_execution_timeout_becomes_dead_outcome(tmp_path):
         repl_timeout=5,
         execution_timeout=0.05,
     )
-    agent = start("q")
+    agent = AgentStart(content="q")
     try:
         result = asyncio.run(runtime.execute(agent, "import time\ntime.sleep(30)"))
         assert result.status is ReplStatus.DEAD

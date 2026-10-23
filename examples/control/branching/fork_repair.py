@@ -1,6 +1,6 @@
-"""Compare repair branches with the Node-only API.
+"""Compare repair branches, each recorded in its own graph.
 
-Each repair attempt is a separate ``flow.start(...)`` run in its own working
+Each repair attempt is a separate ``g.create_agent(...)`` run in its own working
 directory; the resulting graphs are directly comparable.
 
 Usage:
@@ -19,9 +19,11 @@ from rlmflow import (
     FILE_TOOLS,
     AgentConfig,
     Flow,
+    Graph,
     GraphCheckpointer,
     LLMUsage,
     LocalRuntime,
+    reads,
 )
 
 TASK = "Implement slugify(text) in slugify.py so tests/test_slugify.py passes."
@@ -80,9 +82,7 @@ class RepairLLM:
 
     def chat(self, messages, *args, **kwargs):
         self.last_usage = LLMUsage(input_tokens=100, output_tokens=50)
-        return (
-            f"```repl\nwrite_file('slugify.py', {self.implementation!r})\nsubmit({self.label!r})\n```"
-        )
+        return f"```repl\nwrite_file('slugify.py', {self.implementation!r})\nsubmit({self.label!r})\n```"
 
 
 def setup_project(workdir: Path) -> None:
@@ -112,20 +112,21 @@ def run_branch(root: Path, name: str, implementation: str, label: str):
     # File tools run inside this branch's own working directory.
     runtime = LocalRuntime(working_directory=workdir)
     flow = Flow(RepairLLM(implementation, label), tools=[FILE_TOOLS], runtime=runtime)
-    graph = flow.start(TASK, config=AgentConfig(max_depth=0, max_iters=3))
+    g = Graph()
+    agent = g.create_agent(TASK, config=AgentConfig(max_depth=0, max_iters=3))
 
     async def drive() -> None:
         checkpoint = GraphCheckpointer(workdir / "graph")
         try:
-            async for node in flow.run_streaming(graph):
-                checkpoint.handle(node)
+            async for item in flow.run_streaming(g):
+                checkpoint.handle(item, g)
         finally:
             checkpoint.close()
 
     asyncio.run(drive())
     passed, output = run_tests(workdir)
     flow.runtime.close_repls()
-    return workdir, graph, passed, output
+    return workdir, reads.result(g, agent), passed, output
 
 
 def main() -> None:
@@ -149,13 +150,13 @@ def main() -> None:
 
     results = []
     for name, implementation, label in branches:
-        workdir, graph, passed, output = run_branch(root, name, implementation, label)
-        results.append((passed, workdir, graph, output))
-        print(f"{name}: tests={'PASS' if passed else 'FAIL'} result={graph.result()!r}")
+        workdir, result, passed, output = run_branch(root, name, implementation, label)
+        results.append((passed, workdir, output))
+        print(f"{name}: tests={'PASS' if passed else 'FAIL'} result={result!r}")
         print("  " + brief_test_output(output).replace("\n", "\n  "))
 
     winner = next((item for item in results if item[0]), results[0])
-    _passed, workdir, _graph, _output = winner
+    _passed, workdir, _output = winner
     print(f"\n[best] {workdir.name} dir={workdir}")
 
 

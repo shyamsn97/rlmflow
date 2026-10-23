@@ -331,34 +331,36 @@ class MiniMazeEnvironment(Environment[MiniMazeObservation, MiniMazeMetrics]):
             + SCORE_WEIGHTS["coverage"] * coverage
             + SCORE_WEIGHTS["path_efficiency"] * path_efficiency
         )
-        return MiniMazeMetrics({
-            "score": min(1.0, max(0.0, score)),
-            "task_id": self.spec.id,
-            "completed": gems_collected == total_gems,
-            "gems_collected": gems_collected,
-            "total_gems": total_gems,
-            "gem_completion": gem_completion,
-            "coverage": coverage,
-            "path_efficiency": path_efficiency,
-            "cells_seen": seen_walkable,
-            "total_traversable_cells": len(self._traversable),
-            "cells_visited": len(instance.visited),
-            "keys_collected": sorted(instance.keys),
-            "doors_unlocked": sorted(
-                {
-                    cell
-                    for row in self.spec.rows
-                    for cell in row
-                    if cell.isupper() and cell != "S" and cell.lower() in instance.keys
-                }
-            ),
-            "accepted_actions": actions,
-            "live_actions": actions - instance.replay_actions,
-            "replay_actions": instance.replay_actions,
-            "optimal_completion_actions": self._optimal_actions,
-            "position": list(instance.position),
-            "score_weights": dict(SCORE_WEIGHTS),
-        })
+        return MiniMazeMetrics(
+            {
+                "score": min(1.0, max(0.0, score)),
+                "task_id": self.spec.id,
+                "completed": gems_collected == total_gems,
+                "gems_collected": gems_collected,
+                "total_gems": total_gems,
+                "gem_completion": gem_completion,
+                "coverage": coverage,
+                "path_efficiency": path_efficiency,
+                "cells_seen": seen_walkable,
+                "total_traversable_cells": len(self._traversable),
+                "cells_visited": len(instance.visited),
+                "keys_collected": sorted(instance.keys),
+                "doors_unlocked": sorted(
+                    {
+                        cell
+                        for row in self.spec.rows
+                        for cell in row
+                        if cell.isupper() and cell != "S" and cell.lower() in instance.keys
+                    }
+                ),
+                "accepted_actions": actions,
+                "live_actions": actions - instance.replay_actions,
+                "replay_actions": instance.replay_actions,
+                "optimal_completion_actions": self._optimal_actions,
+                "position": list(instance.position),
+                "score_weights": dict(SCORE_WEIGHTS),
+            }
+        )
 
     def candidate_metrics(self, instance_id: str) -> tuple[float, dict[str, Any]]:
         metrics = self.metrics(instance_id).to_dict()

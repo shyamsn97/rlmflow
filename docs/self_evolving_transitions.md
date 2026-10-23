@@ -362,7 +362,7 @@ ExecAction
 └── ContinuationQuery("Independently run focused tests...")
 ```
 
-The child branch and parent continuation are different edge kinds. When the child finishes, the existing handoff mailbox eventually adds its durable `UserQuery` to the parent at a safe frontier.
+The child branch and parent continuation are different edge kinds. When the child finishes, handoff eventually adds its durable `UserQuery` to the parent at a safe frontier.
 
 ### Repair loop
 
@@ -718,7 +718,7 @@ performance improves only across evaluated candidates
 - Does skipping `ExecOutput -> PlanQuery` make planning more focused or merely reduce useful observation structure?
 - Should graph views render `ContinuationQuery` differently from external `UserQuery`?
 - Should continuation text be included in RAO trajectory exports as an explicit policy action?
-- If a child result is already pending, should `continue_with` be rejected, delayed, or allowed to proceed under the existing mailbox rules?
+- If a child result is already pending, should `continue_with` be rejected, delayed, or allowed to proceed under the existing handoff rules?
 
 ## References
 

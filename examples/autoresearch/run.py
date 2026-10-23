@@ -18,11 +18,14 @@ from typing import Any
 
 from rlmflow import (
     FILE_TOOLS,
-    AgentStart,
+    AgentConfig,
     DockerRuntime,
     Flow,
+    Graph,
     LocalRuntime,
+    Node,
     SubprocessRuntime,
+    reads,
     tool,
 )
 from rlmflow.consumers import WorkspaceSync
@@ -677,11 +680,11 @@ new direction, not stop). After each wave, re-check submission_status() and
 launch the next one.
 """
     graph_dir = args.out / "graph"
-    root = flow.start(
+    g = Graph()
+    root = g.create_agent(
         query,
+        config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
         task_instructions=(example_dir / "program.md").read_text(),
-        max_depth=args.max_depth,
-        max_iters=args.max_iters,
     )
     sync = (
         WorkspaceSync(args.out, args.sync_dir, every_s=args.sync_every_s)
@@ -689,18 +692,19 @@ launch the next one.
         else None
     )
 
-    async def drive(root: AgentStart) -> None:
-        async for node in checkpoint_stream(flow.run_streaming(root), graph_dir):
-            print(f"{node.parent_agent.config.path:<20} {node.type}", flush=True)
+    async def drive() -> None:
+        async for item in checkpoint_stream(flow.run_streaming(g), g, graph_dir):
+            if isinstance(item, Node):
+                print(f"{reads.path(g, g.node(item.agent_id)):<20} {item.type}", flush=True)
             if sync is not None:
-                sync.handle(node)
+                sync.handle(item, g)
 
     try:
-        root.save(graph_dir)
+        g.save(graph_dir)
         if sync is not None:
             sync.sync()
-        asyncio.run(drive(root))
-        print(root.result())
+        asyncio.run(drive())
+        print(reads.result(g, root))
         write_run_report(state, args.out, announce=True)
     finally:
         if sync is not None:

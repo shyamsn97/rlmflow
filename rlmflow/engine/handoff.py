@@ -1,10 +1,11 @@
-"""Deliver a finished child's result to the agent that launched it.
+"""Deliver finished agents' results to the agents they report to.
 
-The mailbox is live-only. On restore, rebuild it from terminal children whose
-launcher transcript does not yet contain the matching ``[handoff {path}]``
-marker. Flush only after that parent lands ``ExecOutput``, or after
-``DoneOutput`` when ``resume_on_child_done`` is on. Never splice into an
-in-flight step.
+An agent reports to the agent that launched it and to every agent it has a
+``reports_to`` edge to, so one rule covers a recursive tree and a set of peers.
+A ``DoneOutput`` is delivered once per recipient: the handoff message carries a
+``from`` edge to it. Delivery waits until the recipient's turn has landed an
+``ExecOutput``. A recipient that already finished is woken only by a result
+that landed after it, and only when ``resume_on_child_done`` is on.
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from rlmflow.graph.nodes import AgentStart, DoneOutput, ExecOutput, Node, UserQuery
+from rlmflow.graph import ops, reads
+from rlmflow.graph.graph import DEPENDS_ON, FROM, REPORTS_TO, Graph
+from rlmflow.graph.nodes import AgentStart, DoneOutput, ExecOutput, UserQuery
 
 HANDOFF_RESULT_MAX = 4000
 
@@ -31,92 +34,81 @@ def marker(path: str) -> str:
     return f"[handoff {path}]"
 
 
-def supervisor(child: AgentStart) -> AgentStart | None:
-    """The agent that launched ``child``, or ``None`` for a root."""
-    return child.supervisor
+def reporters(g: Graph, agent: AgentStart) -> list[AgentStart]:
+    """Agents whose results go to ``agent``: its children, then ``reports_to`` peers."""
+    found = {child.id: child for child in reads.children(g, agent)}
+    for edge in g.edges(kind=REPORTS_TO, target=agent.id):
+        found.setdefault(edge.source, g.node(edge.source))
+    return list(found.values())
 
 
-def delivered(agent: AgentStart, child: AgentStart) -> bool:
-    token = marker(child.config.path)
-    return any(type(node) is UserQuery and token in node.content for node in agent.transcript())
+def recipients(g: Graph, agent: AgentStart) -> list[AgentStart]:
+    """Agents that ``agent``'s results go to: its launcher, then ``reports_to`` targets."""
+    launcher = reads.launcher(g, agent)
+    found = {launcher.id: launcher} if launcher is not None else {}
+    for edge in g.edges(kind=REPORTS_TO, source=agent.id):
+        found.setdefault(edge.target, g.node(edge.target))
+    return list(found.values())
 
 
-def enqueue(parent: AgentStart, child: AgentStart) -> None:
-    """Stash one finished child until the parent is ready to observe it."""
-    path = child.config.path
-    if any(item.path == path for item in parent.pending_handoffs):
-        return
-    if delivered(parent, child):
-        return
-    parent.pending_handoffs.append(
-        Handoff(path=path, name=child.config.name, result=child.result())
-    )
+def pending(g: Graph, agent: AgentStart) -> list[AgentStart]:
+    """Finished reporters whose result has not been sent to ``agent``."""
+    return [
+        reporter
+        for reporter in reporters(g, agent)
+        if isinstance(done := reads.frontier(g, reporter), DoneOutput)
+        and done.agent_id == reporter.id
+        and not _delivered(g, done, agent)
+        and not g.edges(kind=DEPENDS_ON, target=reporter.id)
+    ]
 
 
-def dependency_routed(child: AgentStart) -> bool:
-    """Whether a handle-valued input routes this result to a consumer."""
-    root = child.root
-    if root is None:
-        return False
+def _delivered(g: Graph, done: DoneOutput, agent: AgentStart) -> bool:
     return any(
-        source_id == child.id
-        for agent in root.iter_agents()
-        for _argument_name, source_id in agent.argument_references
+        g.node(edge.source).agent_id == agent.id for edge in g.edges(kind=FROM, target=done.id)
     )
 
 
-def flush(agent: AgentStart) -> bool:
-    """Append one batched ``UserQuery`` when the parent's turn has landed.
+def react(g: Graph, agent: AgentStart) -> UserQuery | None:
+    """Send one batched handoff message when ``agent``'s turn has landed.
 
-    Returns True if a query was appended.
+    The caller guarantees ``agent`` has no step in flight.
     """
-    if not agent.pending_handoffs or agent.in_flight is not None:
-        return False
-    frontier = agent.frontier
-    wake = isinstance(frontier, DoneOutput) and agent.config.resume_on_child_done
-    if not isinstance(frontier, ExecOutput) and not wake:
-        return False
+    frontier = reads.frontier(g, agent)
+    if not isinstance(frontier, (ExecOutput, DoneOutput)):
+        return None
+    ready = pending(g, agent)
+    if not ready:
+        return None
+    if isinstance(frontier, DoneOutput) and not (
+        agent.config.resume_on_child_done
+        and any(reads.frontier(g, reporter).seq > frontier.seq for reporter in ready)
+    ):
+        return None
     limit = min(HANDOFF_RESULT_MAX, agent.config.max_output_length)
-    query = UserQuery(content=_render(agent.pending_handoffs, limit))
-    agent.pending_handoffs.clear()
-    frontier.append(query)
-    return True
+    items = [
+        Handoff(
+            path=reads.path(g, reporter),
+            name=reporter.config.name,
+            result=reads.result(g, reporter),
+        )
+        for reporter in ready
+    ]
+    children = {child.id for child in reads.children(g, agent)}
+    return ops.send(
+        g,
+        agent,
+        _render(items, limit, children=all(reporter.id in children for reporter in ready)),
+        sender=[reads.frontier(g, reporter) for reporter in ready],
+    )
 
 
-def apply(node: Node) -> list[Node]:
-    """Enqueue a just-finished child and flush any parent that is ready.
-
-    Returns the ``UserQuery`` leaves that should be submitted instead of the
-    landed node, if the frontier moved.
-
-    A child ``DoneOutput`` only flushes when the parent is already terminal
-    (``resume_on_child_done``). Flushing an ``ExecOutput`` from that path
-    would race the driver, which may already have submitted that observation.
-    """
-    extra: list[Node] = []
-    if isinstance(node, DoneOutput):
-        parent = supervisor(node.parent_agent)
-        if parent is not None and not dependency_routed(node.parent_agent):
-            enqueue(parent, node.parent_agent)
-            if isinstance(parent.frontier, DoneOutput) and flush(parent):
-                extra.append(parent.frontier)
-    if isinstance(node, ExecOutput) and flush(node.parent_agent):
-        extra.append(node.parent_agent.frontier)
-    return extra
-
-
-def rebuild_mailboxes(root: AgentStart) -> None:
-    """Rebuild mailboxes from the tree and flush any parent already sitting idle."""
-    for agent in root.iter_agents():
-        agent.pending_handoffs.clear()
-        for child in agent.sub_agents:
-            if child.terminal and not dependency_routed(child):
-                enqueue(agent, child)
-        flush(agent)
-
-
-def _render(items: list[Handoff], limit: int) -> str:
-    parts = ["Child results are ready. Each block is that child's submit() value."]
+def _render(items: list[Handoff], limit: int, *, children: bool = True) -> str:
+    parts = [
+        "Child results are ready. Each block is that child's submit() value."
+        if children
+        else "Agent results are ready. Each block is that agent's submit() value."
+    ]
     for item in items:
         body = _format_result(item.result, limit)
         parts.append(f"{marker(item.path)}\nname: {item.name}\n{body}")
@@ -157,10 +149,4 @@ def _jsonish(value: Any) -> str:
     return json.dumps(value, default=str, ensure_ascii=False)
 
 
-__all__ = [
-    "Handoff",
-    "apply",
-    "flush",
-    "rebuild_mailboxes",
-    "supervisor",
-]
+__all__ = ["Handoff", "marker", "pending", "react", "recipients", "reporters"]

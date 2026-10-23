@@ -3,23 +3,23 @@
 Prerequisite:
     python examples/control/injection/word_search.py
 
-That produces ``examples/_runs/word-search/baseline/`` — a run directory with
-``graph.json`` (manifest) and per-agent logs under ``agents/``. This example
-loads that run, forks it twice at the turn where the root decided to delegate,
-and steers each copy with a different operator instruction:
+That produces ``examples/_runs/word-search/baseline/``, a saved graph. This
+example loads it, forks the root twice just before the turn where it decided
+to delegate, and steers each fork with a different operator instruction:
 
 1. scan the columns directly with a helper function, instead of one agent per
    column;
 2. write one direct all-direction scanner, instead of reconciling children.
 
-A fork cuts everything after the node it is taken at, so the delegated children
-of that turn are gone from both copies and the model plans again from the same
-history with the new instruction in front of it. The instructions are prompts,
-not pre-written solution code or mocked results.
+A fork shares the history up to the node it is taken at and nothing after it,
+so the delegated children of that turn are not part of either fork and the
+model plans again from the same history with the new instruction in front of
+it. The instructions are prompts, not pre-written solution code or mocked
+results.
 
-Both variants run in parallel on one :class:`Flow` and are saved beside the
-baseline, at ``examples/_runs/word-search/variant-cols/`` and
-``.../variant-root/``.
+The baseline and both forks live in one graph; one ``flow.run`` drives the two
+forks in parallel, and the graph is saved beside the baseline at
+``examples/_runs/word-search/variants/``.
 """
 
 from __future__ import annotations
@@ -33,21 +33,23 @@ from typing import Literal
 from pydantic import BaseModel
 
 from rlmflow import (
-    AgentConfig,
     AgentStart,
     ExecAction,
     Flow,
-    GraphCheckpointer,
+    Graph,
+    Node,
     UserQuery,
-    persistence,
+    ops,
+    reads,
 )
+from rlmflow.graph.graph import FROM
 from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import example_run_dir, save_example_graph  # noqa: E402
+from common import checkpoint_stream, example_run_dir, save_example_graph  # noqa: E402
 
 
 class WordHit(BaseModel):
@@ -99,33 +101,36 @@ def default_source() -> Path:
     return word_search_runs_dir() / "baseline"
 
 
-def delegating_action(agent: AgentStart) -> ExecAction:
+def delegating_action(g: Graph, agent: AgentStart) -> ExecAction:
     """The most recent block this agent ran that launched sub-agents."""
-    for node in agent.frontier.iter_backwards():
-        launched = isinstance(node, ExecAction) and any(
-            isinstance(child, AgentStart) for child in node.children
-        )
-        if launched:
+    launchers = {
+        edge.target
+        for child in reads.children(g, agent)
+        for edge in g.edges(kind=FROM, source=child.id)
+    }
+    for node in reversed(reads.history(g, agent)):
+        if isinstance(node, ExecAction) and node.id in launchers:
             return node
     raise SystemExit("the baseline run never delegated; regenerate it with word_search.py")
 
 
-def steer(root: AgentStart, prompt: str) -> AgentStart:
+def steer(g: Graph, root: AgentStart, prompt: str, name: str) -> AgentStart:
     """Fork the run back to before it delegated, then hand it a new instruction."""
-    turn = delegating_action(root).prev  # the model turn that wrote that block
-    variant = (turn.prev or root).fork()
-    variant.frontier.append(UserQuery(content=prompt))
+    turn = reads.prev(g, delegating_action(g, root))  # the model turn that wrote that block
+    variant = ops.fork(g, reads.prev(g, turn), name=name)
+    ops.append(g, variant, UserQuery(content=prompt))
     return variant
 
 
-def summarize(label: str, root: AgentStart) -> None:
+def summarize(label: str, g: Graph, root: AgentStart) -> None:
     print(f"\n{label}")
     print("-" * len(label))
-    print(f"root frontier: {root.frontier.type}")
-    print(f"children: {', '.join(child.config.name for child in root.sub_agents) or '<none>'}")
-    if root.terminal:
+    print(f"root frontier: {reads.frontier(g, root).type}")
+    children = ", ".join(child.config.name for child in reads.children(g, root))
+    print(f"children: {children or '<none>'}")
+    if reads.terminal(g, root):
         print("result:")
-        print(root.result())
+        print(reads.result(g, root))
 
 
 def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
@@ -139,12 +144,12 @@ def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
     )
 
 
-def validate_result(label: str, root: AgentStart) -> None:
-    if not root.terminal:
+def validate_result(label: str, g: Graph, root: AgentStart) -> None:
+    if not reads.terminal(g, root):
         print(f"\n{label} validation: skipped (the run did not finish)")
         return
 
-    answer = root.result()
+    answer = reads.result(g, root)
     # A structured answer comes back parsed; an unstructured one is still text.
     result = (
         WordSearchResult.model_validate(answer)
@@ -182,53 +187,33 @@ def main() -> None:
     parser.add_argument("--model", default="gpt-5-mini")
     args = parser.parse_args()
 
-    baseline = persistence.load(args.source.resolve())
-    summarize("Loaded real word-search run", baseline)
+    g = Graph.load(args.source.resolve())
+    baseline = next(agent for agent in g.nodes(AgentStart) if reads.launcher(g, agent) is None)
+    summarize("Loaded real word-search run", g, baseline)
 
-    # Each fork is an independent copy with its own ids; the baseline is untouched.
-    cols_graph = steer(baseline, COLS_FUNCTION_PROMPT)
-    root_graph = steer(baseline, ROOT_DIRECT_SCAN_PROMPT)
+    # Both forks share the baseline's history; the baseline itself is untouched.
+    cols = steer(g, baseline, COLS_FUNCTION_PROMPT, "variant_cols")
+    direct = steer(g, baseline, ROOT_DIRECT_SCAN_PROMPT, "variant_root")
 
-    # One Flow drives both variants and merges their Node streams.
-    flow = Flow(
-        client_for(args.model),
-        root_config=AgentConfig(max_depth=2, max_iters=30),
-    )
-
-    out = args.out.resolve()
-    dirs = {id(cols_graph): out / "variant-cols", id(root_graph): out / "variant-root"}
+    # One run drives every unfinished agent in the graph: both forks, in parallel.
+    flow = Flow(client_for(args.model))
+    out_dir = args.out.resolve() / "variants"
 
     async def run_variants() -> None:
-        checkpoints = {identity: GraphCheckpointer(path) for identity, path in dirs.items()}
-        try:
-            async for node in flow.run_streaming(cols_graph, root_graph):
-                root = node.root
-                checkpoints[id(root)].handle(node)
-                print(f"step: {dirs[id(root)].name} -> {node.type}")
-        finally:
-            for checkpoint in checkpoints.values():
-                checkpoint.close()
+        stream = checkpoint_stream(flow.run_streaming(g), g, out_dir)
+        async for item in stream:
+            if isinstance(item, Node):
+                print(f"step: {reads.path(g, g.node(item.agent_id))} -> {item.type}")
 
     asyncio.run(run_variants())
     flow.runtime.close_repls()
 
-    summarize("Variation A: scan the columns directly", cols_graph)
-    validate_result("Variation A", cols_graph)
-    print(f"saved -> {cols_graph.save(dirs[id(cols_graph)])}")
-    save_example_graph(
-        cols_graph,
-        "injection-variants",
-        out_dir=example_run_dir("injection-variants") / "variant-cols",
-    )
-
-    summarize("Variation B: write a direct scanner", root_graph)
-    validate_result("Variation B", root_graph)
-    print(f"saved -> {root_graph.save(dirs[id(root_graph)])}")
-    save_example_graph(
-        root_graph,
-        "injection-variants",
-        out_dir=example_run_dir("injection-variants") / "variant-root",
-    )
+    summarize("Variation A: scan the columns directly", g, cols)
+    validate_result("Variation A", g, cols)
+    summarize("Variation B: write a direct scanner", g, direct)
+    validate_result("Variation B", g, direct)
+    print(f"saved -> {g.save(out_dir)}")
+    save_example_graph(g, "injection-variants", out_dir=example_run_dir("injection-variants"))
 
 
 if __name__ == "__main__":

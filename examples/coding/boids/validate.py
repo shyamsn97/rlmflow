@@ -140,9 +140,7 @@ def validate_project(
     references = [*document.sources, *document.stylesheets]
     parsed_references = [(reference, urlparse(reference)) for reference in references]
     external = [
-        reference
-        for reference, parsed in parsed_references
-        if parsed.scheme or parsed.netloc
+        reference for reference, parsed in parsed_references if parsed.scheme or parsed.netloc
     ]
     missing = [
         reference
@@ -193,7 +191,9 @@ def write_report(report: dict[str, object], path: Path) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate a generated Boids browser application.")
     parser.add_argument("run_dir", type=Path)
-    parser.add_argument("--browser", action="store_true", help="Load index.html in headless Chrome.")
+    parser.add_argument(
+        "--browser", action="store_true", help="Load index.html in headless Chrome."
+    )
     parser.add_argument("--screenshot", type=Path)
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()

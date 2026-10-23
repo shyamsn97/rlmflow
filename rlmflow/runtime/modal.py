@@ -9,15 +9,14 @@ from collections.abc import Sequence
 from contextlib import suppress
 from typing import Any
 
-from rlmflow.runtime.connections import STDERR_LINES
-from rlmflow.runtime.protocol import (
+from rlmflow.runtime.repl_server import (
     ProxyCall,
     ReplResponse,
     WireModel,
     dump_message,
     parse_client_message,
 )
-from rlmflow.runtime.runtime import Runtime
+from rlmflow.runtime.runtime import STDERR_LINES, Runtime
 
 
 class _ModalConnection:

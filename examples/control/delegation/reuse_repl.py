@@ -8,7 +8,7 @@ Run:
 
 from __future__ import annotations
 
-from rlmflow import AgentConfig, Flow, LLMUsage
+from rlmflow import AgentConfig, Flow, Graph, LLMUsage, reads
 
 ROOT_REPLY = """\
 ```repl
@@ -41,22 +41,22 @@ class ScriptedLLM:
     last_usage = LLMUsage(input_tokens=20, output_tokens=20)
 
     def chat(self, messages):
-        query = "\n\n".join(
-            message["content"] for message in messages if message["role"] == "user"
-        )
+        query = "\n\n".join(message["content"] for message in messages if message["role"] == "user")
         if "Report whether" in query:
             return SHARED_REPLY
         return ROOT_REPLY
 
 
 def main() -> None:
-    flow = Flow(ScriptedLLM(), delegation_reuse_worker=True)
-    root = flow.start(
+    flow = Flow(ScriptedLLM())
+    g = Graph()
+    root = g.create_agent(
         "Demonstrate isolated child namespaces in one worker.",
-        config=AgentConfig(max_depth=1, max_iters=3),
+        config=AgentConfig(max_depth=1, max_iters=3, child_config={"reuse_worker": True}),
     )
     try:
-        result = flow.run(root)
+        flow.run(g)
+        result = reads.result(g, root)
         print(result)
         assert result == EXPECTED
     finally:

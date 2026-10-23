@@ -13,22 +13,20 @@ from helpers import StubLLM
 
 from rlmflow import (
     Flow,
+    Graph,
     LLMChunk,
+    LLMOutput,
     LLMUsage,
     PooledLLMClient,
     SequentialPool,
     ThreadPool,
-    start,
+    ops,
+    reads,
 )
-from rlmflow.llm import (
-    AnthropicClient,
-    LLMClient,
-    OpenAIClient,
-    TinkerClient,
-    as_chunk,
-    join_chunks,
-    stream_with_retry,
-)
+from rlmflow.llm import LLMClient, as_chunk, join_chunks, stream_with_retry
+from rlmflow.llm.anthropic import AnthropicClient
+from rlmflow.llm.openai import OpenAIClient
+from rlmflow.llm.tinker import TinkerClient
 
 
 @pytest.fixture(autouse=True)
@@ -408,10 +406,13 @@ def test_flow_consumes_the_pooled_stream_primitive():
             raise AssertionError("chat must not run when stream is available")
 
     llm = StreamLLM()
-    root = start("go")
-    assert Flow(llm).run(root) == "ok"
+    g = Graph()
+    root = ops.spawn(g, "go")
+    flow = Flow(llm)
+    flow.run(g)
+    assert reads.result(g, root) == "ok"
     assert llm.chat_calls == 0
-    output = next(node for node in root.walk() if node.type == "llm_output")
+    [output] = g.nodes(LLMOutput)
     assert output.usage == LLMUsage(2, 2)
 
 

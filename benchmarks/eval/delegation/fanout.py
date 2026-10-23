@@ -197,8 +197,7 @@ def score_orchestration(
         "delegation_evidence": not missing and not unpersisted and not unterminated,
         "dedup": not overlap_duplicates and len(children) <= spawn_budget,
         "receipts": not missing_receipts and not missing,
-        "prompt_parity": expected_prompt_hashes is None
-        or (not missing and not prompt_mismatches),
+        "prompt_parity": expected_prompt_hashes is None or (not missing and not prompt_mismatches),
         "missing_delegated_shards": missing,
         "unpersisted_children": unpersisted,
         "unterminated_children": unterminated,

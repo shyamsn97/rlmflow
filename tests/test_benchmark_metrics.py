@@ -2,36 +2,40 @@ from benchmarks.eval.metrics import graph_metrics
 from benchmarks.eval.reporting import EnvironmentReport, report_table
 from benchmarks.eval.types import Prediction, Row, Score
 from rlmflow import (
+    Graph,
     LLMOutput,
     LLMUsage,
     TransitionDecision,
     UserQuery,
-    start,
+    ops,
+    reads,
 )
 
 
 def test_graph_metrics_count_turns_decisions_and_decision_costs():
-    root = start("task")
-    root.append(LLMOutput(usage=LLMUsage(input_tokens=10)))
-    first_decision = TransitionDecision(
-        usage=LLMUsage(input_tokens=3, output_tokens=1, reasoning_tokens=2),
-        started_at=10.0,
-        finished_at=10.25,
-    )
-    root.frontier.append(first_decision)
-    first_decision.append(UserQuery())
-    root.frontier.append(LLMOutput(usage=LLMUsage(input_tokens=11)))
-    second_decision = TransitionDecision(
-        selected_rule_id="retry",
-        usage=LLMUsage(input_tokens=4, output_tokens=1),
-        started_at=11.0,
-        finished_at=11.5,
-    )
-    root.frontier.append(second_decision)
-    second_decision.append(UserQuery())
-    root.frontier.append(LLMOutput(usage=LLMUsage(input_tokens=12)))
+    g = Graph()
+    root = ops.spawn(g, "task")
+    for node in (
+        LLMOutput(usage=LLMUsage(input_tokens=10)),
+        TransitionDecision(
+            usage=LLMUsage(input_tokens=3, output_tokens=1, reasoning_tokens=2),
+            started_at=10.0,
+            finished_at=10.25,
+        ),
+        UserQuery(),
+        LLMOutput(usage=LLMUsage(input_tokens=11)),
+        TransitionDecision(
+            selected_rule_id="retry",
+            usage=LLMUsage(input_tokens=4, output_tokens=1),
+            started_at=11.0,
+            finished_at=11.5,
+        ),
+        UserQuery(),
+        LLMOutput(usage=LLMUsage(input_tokens=12)),
+    ):
+        ops.append(g, root, node)
 
-    metrics = graph_metrics(root)
+    metrics = graph_metrics(g)
 
     assert metrics["llm_turns"] == 3
     assert metrics["decision_calls"] == 2
@@ -39,7 +43,7 @@ def test_graph_metrics_count_turns_decisions_and_decision_costs():
     assert metrics["decision_output_tokens"] == 2
     assert metrics["decision_reasoning_tokens"] == 2
     assert metrics["decision_latency_seconds"] == 0.75
-    assert root.usage.input_tokens == 40
+    assert reads.usage(g, [root]).input_tokens == 40
 
 
 def test_environment_report_persists_decision_and_action_efficiency_metrics():

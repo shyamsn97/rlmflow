@@ -1408,6 +1408,15 @@ wheels = [
 ]
 
 [[package]]
+name = "farama-notifications"
+version = "0.0.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ec/91/14397890dde30adc4bee6462158933806207bc5dd10d7b4d09d5c33845cf/farama_notifications-0.0.6.tar.gz", hash = "sha256:b19acac4bb41d76e59e03394b5dd165f4761c86fa327f56307a35cbee3b60158", size = 2517, upload-time = "2026-04-24T08:43:57.603Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7c/f0/21f81892e4ed10f4ec3ef2e7cf8635fb76e7c0907c55d0da66be50094760/farama_notifications-0.0.6-py3-none-any.whl", hash = "sha256:f84839188efa1ce5bb361c2a84881b2dc2c0d0d7fb661ff00421820170930935", size = 2897, upload-time = "2026-04-24T08:43:56.785Z" },
+]
+
+[[package]]
 name = "fastapi"
 version = "0.141.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1845,6 +1854,22 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5b/28/5a2c299ec82a876a252c5919aa895a6f1d1d35c96417c5ce4a4660dc3a80/grpclib-0.4.9.tar.gz", hash = "sha256:cc589c330fa81004c6400a52a566407574498cb5b055fa927013361e21466c46", size = 84798, upload-time = "2025-12-14T22:23:14.349Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5c/90/b0cbbd9efcc82816c58f31a34963071aa19fb792a212a5d9caf8e0fc3097/grpclib-0.4.9-py3-none-any.whl", hash = "sha256:7762ec1c8ed94dfad597475152dd35cbd11aecaaca2f243e29702435ca24cf0e", size = 77063, upload-time = "2025-12-14T22:23:13.224Z" },
+]
+
+[[package]]
+name = "gymnasium"
+version = "1.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cloudpickle" },
+    { name = "farama-notifications" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fb/3a/6713c8a92c259fd7619dc93ff19e6e435463f20d3d7b180b14ce99074c10/gymnasium-1.4.0.tar.gz", hash = "sha256:9754f630a32abfdbb76386abe1bc1e706c982db2d62dfa119c9952eb2de7697d", size = 350436, upload-time = "2026-10-05T11:02:16.217Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/4e/6a51be94ae8e9dc8eaddd6ea74a6dde754448c4c746b51a232681f81e41c/gymnasium-1.4.0-py3-none-any.whl", hash = "sha256:1cb947c59e7c72d8eabb2c2274c00cd20948e69f8452a9ef4092223be24fdf0e", size = 476306, upload-time = "2026-10-05T11:02:14.783Z" },
 ]
 
 [[package]]
@@ -5475,6 +5500,7 @@ all = [
     { name = "datasets" },
     { name = "dspy" },
     { name = "gradio" },
+    { name = "gymnasium" },
     { name = "huggingface-hub" },
     { name = "instructor" },
     { name = "jev-jsonschema" },
@@ -5557,8 +5583,16 @@ openai = [
 openenv = [
     { name = "openenv" },
 ]
+rao = [
+    { name = "gymnasium" },
+    { name = "tinker" },
+    { name = "tinker-cookbook" },
+]
 sandbox = [
     { name = "modal" },
+]
+textcraft = [
+    { name = "gymnasium" },
 ]
 tinker = [
     { name = "tinker" },
@@ -5587,6 +5621,9 @@ requires-dist = [
     { name = "fire", specifier = ">=0.6" },
     { name = "gradio", marker = "extra == 'all'", specifier = ">=4.44" },
     { name = "gradio", marker = "extra == 'viewer'", specifier = ">=4.44" },
+    { name = "gymnasium", marker = "extra == 'all'", specifier = ">=1.0" },
+    { name = "gymnasium", marker = "extra == 'rao'", specifier = ">=1.0" },
+    { name = "gymnasium", marker = "extra == 'textcraft'", specifier = ">=1.0" },
     { name = "huggingface-hub", marker = "extra == 'all'", specifier = ">=0.23" },
     { name = "huggingface-hub", marker = "extra == 'eval'", specifier = ">=0.23" },
     { name = "instructor", marker = "extra == 'all'", specifier = ">=1.0" },
@@ -5638,15 +5675,17 @@ requires-dist = [
     { name = "textual", marker = "extra == 'all'", specifier = ">=0.70" },
     { name = "textual", marker = "extra == 'tui'", specifier = ">=0.70" },
     { name = "tinker", marker = "extra == 'all'" },
+    { name = "tinker", marker = "extra == 'rao'" },
     { name = "tinker", marker = "extra == 'tinker'" },
     { name = "tinker-cookbook", marker = "extra == 'all'" },
+    { name = "tinker-cookbook", marker = "extra == 'rao'" },
     { name = "tinker-cookbook", marker = "extra == 'tinker'" },
     { name = "wandb", marker = "extra == 'all'", specifier = ">=0.16" },
     { name = "wandb", marker = "extra == 'eval'", specifier = ">=0.16" },
     { name = "websocket-client", marker = "extra == 'all'", specifier = ">=1.8" },
     { name = "websocket-client", marker = "extra == 'image'", specifier = ">=1.8" },
 ]
-provides-extras = ["openai", "anthropic", "tinker", "openenv", "dspy", "mcp", "modal", "jev", "instructor", "eval", "eval-environments", "official-rlm", "sandbox", "viewer", "image", "tui", "docs", "all", "dev"]
+provides-extras = ["openai", "anthropic", "tinker", "textcraft", "rao", "openenv", "dspy", "mcp", "modal", "jev", "instructor", "eval", "eval-environments", "official-rlm", "sandbox", "viewer", "image", "tui", "docs", "all", "dev"]
 
 [[package]]
 name = "rlms"

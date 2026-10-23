@@ -2,7 +2,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
-from helpers import StubLLM
+from helpers import StubLLM, run_result, stepping
 from pydantic import BaseModel
 
 from rlmflow import (
@@ -10,6 +10,7 @@ from rlmflow import (
     ConfidenceGate,
     FallbackEngine,
     Flow,
+    Graph,
     InstructorEngine,
     JevEngine,
     JsonSchemaCodec,
@@ -69,20 +70,20 @@ def test_flow_normalizes_root_contract_and_codec_owns_prompt_and_submit():
         StubLLM(lambda _messages: "```repl\nsubmit({'label': 'yes'})\n```"),
         output_codec=codec,
     )
-    root = flow.start("classify", config=AgentConfig(output_schema=Label))
+    g = Graph()
+    root = g.create_agent("classify", config=AgentConfig(output_schema=Label))
 
     assert root.config.output_schema["type"] == "object"
-    assert "CUSTOM submit" in flow.build_system_prompt(root).render()
-    assert flow.run(root) == {"label": "yes"}
+    with stepping(g, root):
+        assert "CUSTOM submit" in flow.build_system_prompt(root).render()
+    assert run_result(flow, g, root) == {"label": "yes"}
     assert codec.validated == [{"label": "yes"}]
 
 
 def test_chat_structured_query_returns_value_and_usage_metadata():
     flow = Flow(StubLLM(lambda _messages: '{"label":"yes"}'))
 
-    result = asyncio.run(
-        flow.structured_query("choose", output_schema=SCHEMA, model="default")
-    )
+    result = asyncio.run(flow.structured_query("choose", output_schema=SCHEMA, model="default"))
 
     assert result.value == {"label": "yes"}
     assert result.metadata["engine"] == "chat"
@@ -123,9 +124,7 @@ def test_custom_engine_is_explicit_and_locally_revalidated():
 
 def test_engine_wrappers_make_retry_fallback_and_confidence_explicit():
     flaky = FakeEngine(error=RuntimeError("temporary"))
-    good = FakeEngine(
-        StructuredResult({"label": "yes"}, {"confidence": {"label": 0.95}})
-    )
+    good = FakeEngine(StructuredResult({"label": "yes"}, {"confidence": {"label": 0.95}}))
     fallback = FallbackEngine(RetryingEngine(flaky, attempts=2), good)
     gated = ConfidenceGate(fallback, minimum=0.9)
 
@@ -198,9 +197,7 @@ def test_jev_engine_preserves_decision_metadata_and_revalidates():
     assert result.metadata["usage"] == {"input_tokens": 12, "output_tokens": 1}
     assert client.calls[0][1:] == ("evidence", "jev-latest")
 
-    assert asyncio.run(flow.llm_query("more evidence", schema=SCHEMA)) == {
-        "label": "yes"
-    }
+    assert asyncio.run(flow.llm_query("more evidence", schema=SCHEMA)) == {"label": "yes"}
     assert client.calls[1][1:] == ("more evidence", "jev-latest")
 
 
@@ -244,15 +241,16 @@ def test_query_builtins_are_ordinary_node_bound_tools():
     calls = []
     flow = Flow(
         StubLLM(lambda _messages: calls.append("default") or "default"),
-        llm_clients={
-            "worker": StubLLM(lambda _messages: calls.append("worker") or "worker")
-        },
+        llm_clients={"worker": StubLLM(lambda _messages: calls.append("worker") or "worker")},
         use_llm_query=True,
     )
-    bound = flow.build_tools(flow.start("q", config=AgentConfig(model="worker")))
+    g = Graph()
+    agent = g.create_agent("q", config=AgentConfig(model="worker"))
+    with stepping(g, agent):
+        bound = flow.build_tools(agent)
 
-    query_meta = get_tool_metadata(bound["llm_query"])
-    assert query_meta is not None and "Omitting `model` uses `worker`" in query_meta.description
-    assert bound["llm_query"] is not flow.llm_query
-    assert asyncio.run(bound["llm_query"]("inspect")) == "worker"
+        query_meta = get_tool_metadata(bound["llm_query"])
+        assert query_meta is not None and "Omitting `model` uses `worker`" in query_meta.description
+        assert bound["llm_query"] is not flow.llm_query
+        assert asyncio.run(bound["llm_query"]("inspect")) == "worker"
     assert calls == ["worker"]

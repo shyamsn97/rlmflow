@@ -129,15 +129,16 @@ def run_rlmflow(
     max_iters: int,
     max_concurrency: int,
 ) -> None:
-    from common import checkpoint_stream
+    from common import print_run
 
     from rlmflow import (
         FILE_TOOLS,
         AgentConfig,
-        AgentStart,
         Flow,
+        Graph,
         LocalRuntime,
         json_schema_for,
+        reads,
     )
 
     reset_run_dir(run_dir, force=force)
@@ -155,7 +156,8 @@ def run_rlmflow(
     print(f"\n=== rlmflow run ===\nworkdir: {run_dir}\nmodel: {model}\n")
     started = time.perf_counter()
     try:
-        root = flow.start(
+        g = Graph()
+        root = g.create_agent(
             PROMPT,
             config=AgentConfig(
                 output_schema=json_schema_for(BoidsSimulation),
@@ -165,13 +167,9 @@ def run_rlmflow(
         )
         graph_dir = run_dir / "graph"
 
-        async def drive(root: AgentStart) -> None:
-            async for node in checkpoint_stream(flow.run_streaming(root), graph_dir):
-                print(f"{node.parent_agent.config.path:<20} {node.type}")
+        asyncio.run(print_run(flow, g, graph_dir, width=20))
 
-        asyncio.run(drive(root))
-
-        result = root.result() or ""
+        result = reads.result(g, root) or ""
         (run_dir / "response.txt").write_text(str(result))
         validation = validate_project(run_dir, browser=True)
         write_report(validation, run_dir / "validation.json")
@@ -197,7 +195,9 @@ def run_rlmflow(
         print(f"\nrlmflow graph: {graph_dir}")
         print(f"validation: {'PASS' if validation['passed'] else 'FAIL'}")
         if not validation["passed"]:
-            raise RuntimeError(f"generated application failed validation: {run_dir / 'validation.json'}")
+            raise RuntimeError(
+                f"generated application failed validation: {run_dir / 'validation.json'}"
+            )
     finally:
         flow.runtime.close_repls()
 
@@ -279,7 +279,9 @@ def run_official_rlm(
     print(f"\nofficial RLM logs: {log_dir}")
     print(f"validation: {'PASS' if validation['passed'] else 'FAIL'}")
     if not validation["passed"]:
-        raise RuntimeError(f"generated application failed validation: {run_dir / 'validation.json'}")
+        raise RuntimeError(
+            f"generated application failed validation: {run_dir / 'validation.json'}"
+        )
     print("\nofficial RLM files:")
     for item in summarize_files(run_dir):
         print(f"- {item}")

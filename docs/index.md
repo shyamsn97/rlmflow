@@ -34,6 +34,7 @@ Together they show practical recursive execution at three scales: decompose long
 
 ## Extend rlmflow
 
+- [**Scope**](design/scope.md) — what the library provides (Graph, Flow, coding agents), what stays in user code, and the rule that decides.
 - [**Internals**](internals.md) — Node structure, Flow transitions, the task queue and pools, Runtime identity, replay, forks, and persistence.
 - [`Node.append`](node_append.md) — `append` is inplace and returns `None`; the step returns the created node.
 - [Flow extract](flow_extract.md) — `Flow` stays the facade; restore, builtin factories, and child launch become `(flow, ...)` functions.

@@ -3,15 +3,53 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 
-from rlmflow import AgentStart
-from rlmflow.graph.nodes import ExecAction, Node
-from rlmflow.runtime.env import RLMFLOW_REPLAY
-from rlmflow.runtime.repl import LocalRepl, base_namespace
+from rlmflow import AgentConfig, AgentStart
+from rlmflow.graph import NEXT, Graph, ops, reads
+from rlmflow.graph.nodes import ExecAction, Step, active_step, running_step
+from rlmflow.runtime.repl import (
+    AGENT_WAIT_TOOL,
+    AGENTS_BINDING,
+    LocalRepl,
+    base_namespace,
+    get_tool_metadata,
+)
 from rlmflow.runtime.repl_client import invoke_tool_call
-from rlmflow.runtime.runtime import Runtime
-from rlmflow.tools.agents import AGENT_OBSERVE_TOOL, AGENT_WAIT_TOOL, AGENTS_BINDING
-from rlmflow.tools.tools import get_tool_metadata
+from rlmflow.runtime.runtime import RLMFLOW_REPLAY, Runtime
+
+
+def agent_graph(
+    task: str = "",
+    *,
+    config: AgentConfig | None = None,
+    args: dict | None = None,
+    **overrides,
+) -> tuple[Graph, AgentStart]:
+    """A fresh graph holding one top-level agent."""
+    configured = replace(config or AgentConfig(), **overrides)
+    g = Graph()
+    return g, ops.spawn(g, task, config=configured, **(args or {}))
+
+
+def run_result(flow, g: Graph, agent: AgentStart, **kwargs):
+    """Run the graph to quiescence and return ``agent``'s result."""
+    flow.run(g, **kwargs)
+    return reads.result(g, agent)
+
+
+def stepping(g: Graph, agent: AgentStart, node=None):
+    """Run engine code as if inside ``agent``'s step at ``node`` (its frontier by default)."""
+    return running_step(Step(g, agent, node if node is not None else reads.frontier(g, agent)))
+
+
+def next_node(g: Graph, node):
+    """The node its own agent appended after ``node``, if any."""
+    for edge in g.edges(kind=NEXT, source=node.id):
+        target = g.node(edge.target)
+        if target.agent_id == node.agent_id and not isinstance(target, AgentStart):
+            return target
+    return None
 
 
 def repl(code: str, *, preamble: str | None = None) -> str:
@@ -40,17 +78,18 @@ class TestRuntime(Runtime):
 
     __test__ = False
 
-    def open(self, agent: AgentStart) -> LocalRepl:
+    def open(self, agent: AgentStart, graph: Graph | None = None) -> LocalRepl:
         namespace = base_namespace(self.preimports)
-        if agent.config.reuse_worker and agent.parent is not None:
-            parent = agent.parent.parent_agent
-            if not isinstance(self.repls.get(parent.id), LocalRepl):
+        launcher = reads.launcher(graph, agent) if graph is not None else None
+        if agent.config.reuse_worker and launcher is not None:
+            if not isinstance(self.repls.get(launcher.id), LocalRepl):
                 raise RuntimeError("reuse_worker requires a live parent worker")
         return LocalRepl(self.working_directory, namespace=namespace)
 
-    async def execute(self, value: AgentStart | Node, code: str):
-        repl = self.repl_for(value)
-        if not isinstance(value, ExecAction):
+    async def execute(self, agent: AgentStart, code: str, graph: Graph | None = None):
+        repl = self.repl_for(agent, graph)
+        action = active_step()
+        if not isinstance(action, ExecAction):
             raise TypeError("tool execution requires an ExecAction")
         restoring = repl.env.get(RLMFLOW_REPLAY) == "1"
         counts: dict[str, int] = {}
@@ -65,14 +104,16 @@ class TestRuntime(Runtime):
                 counts[_name] = call_id + 1
                 return invoke_tool_call(
                     _fn,
-                    value,
+                    action,
                     call_id,
                     restoring,
                     args,
                     kwargs,
+                    name=_name,
                 )
 
             if inspect.iscoroutinefunction(original):
+
                 async def async_invoke(*args, _invoke=invoke, **kwargs):
                     result = _invoke(*args, **kwargs)
                     return await result if inspect.isawaitable(result) else result
@@ -88,7 +129,6 @@ class TestRuntime(Runtime):
         for source, target in (
             (AGENTS_BINDING, "agents"),
             (AGENT_WAIT_TOOL, "wait_agent"),
-            (AGENT_OBSERVE_TOOL, "observe_agent"),
         ):
             item = repl.namespace.get(source)
             if item is not None:

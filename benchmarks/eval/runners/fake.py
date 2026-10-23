@@ -11,9 +11,7 @@ class FakeRunner(Runner):
     def run(self, example: Example, model: Model, ctx: RunContext) -> Prediction:
         del ctx
         inputs = "\n".join(f"{name}: {value}" for name, value in example.inputs().items())
-        answer = model.complete(
-            [{"role": "user", "content": f"{example.prompt}\n\n{inputs}"}]
-        )
+        answer = model.complete([{"role": "user", "content": f"{example.prompt}\n\n{inputs}"}])
         return Prediction(
             answer=answer,
             usage=model.usage(),

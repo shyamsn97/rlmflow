@@ -4,31 +4,37 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable, Sequence
+import threading
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from rlmflow.engine.execution import StepResult
+from rlmflow.engine.scheduler import StepResult
 from rlmflow.flow import Flow
+from rlmflow.graph import reads
+from rlmflow.graph.graph import Graph
 from rlmflow.graph.nodes import (
     AgentConfig,
     AgentStart,
     ExecAction,
     LLMOutput,
     Node,
+    Step,
+    current_step,
 )
 from rlmflow.llm import PooledLLMClient
 from rlmflow.rao.credit import (
     DELEGATION_BONUS,
     IncompleteTreeError,
     NodeScore,
+    RewardFn,
     agent_id,
     agents,
     assign_advantages,
     assign_depth_weights,
     score_tree,
 )
-from rlmflow.rao.env import Env, EnvSession, env_tool
+from rlmflow.rao.env import Env, EnvSession, env_tool, environment_rewards
 
 #: Direct root argument containing the initial environment observation.
 OBSERVATION_INPUT = "observation"
@@ -86,10 +92,10 @@ class Budget:
 
 
 class RolloutFlow(Flow):
-    """A ``Flow`` that shares one env across a tree, records tokens, and enforces budgets.
+    """A ``Flow`` that shares a world across agent-local envs and records tokens.
 
     Three narrow overrides and no runtime change: ``build_tools`` hands every
-    agent the env, ``llm_for_step``/``step`` record what was sampled, and
+    agent the env, ``llm_for_step``/``_drive`` record what was sampled, and
     ``resolve_child`` refuses launches past the budget.
     """
 
@@ -98,34 +104,53 @@ class RolloutFlow(Flow):
         kwargs.setdefault("root_config", budget.agent_config())
         super().__init__(llm, **kwargs)
         self.budget = budget
-        self.sessions: dict[int, EnvSession] = {}
+        #: ``AgentStart.id -> EnvSession``.
+        self.sessions: dict[str, EnvSession] = {}
         #: ``LLMOutput.id -> TurnSample``, so transcript order comes for free.
         self.samples: dict[str, TurnSample] = {}
         self.refusals: dict[str, int] = {}
         self._sample_sinks: dict[str, list[TurnSample]] = {}
+        self._session_lock = threading.RLock()
 
     # -- Env sharing ------------------------------------------------------
 
-    def bind(self, root: AgentStart, session: EnvSession) -> None:
-        """Give one rollout tree its env."""
-        self.sessions[id(root)] = session
+    def bind(self, agent: AgentStart, session: EnvSession) -> None:
+        """Give one agent its episode view of the rollout's shared world."""
+        with self._session_lock:
+            self.sessions[agent.id] = session
 
-    def unbind(self, root: AgentStart) -> None:
-        self.sessions.pop(id(root), None)
+    def unbind(self, graph: Graph, root: AgentStart) -> None:
+        with self._session_lock:
+            for agent in reads.tree(graph, root):
+                self.sessions.pop(agent.id, None)
+
+    def ensure_session(self, graph: Graph, agent: AgentStart) -> EnvSession | None:
+        """Idempotently bind restored children that bypassed ``resolve_child``."""
+        with self._session_lock:
+            if (session := self.sessions.get(agent.id)) is not None:
+                return session
+            parent = reads.launcher(graph, agent)
+            if parent is None:
+                return None
+            parent_session = self.ensure_session(graph, parent)
+            if parent_session is None:
+                return None
+            child_session, _observation = parent_session.fork(agent.content, dict(agent.args))
+            self.sessions[agent.id] = child_session
+            return child_session
 
     def session_for(self, node: Node) -> EnvSession | None:
-        root = node.root
-        return self.sessions.get(id(root)) if root is not None else None
+        step = current_step()
+        return self.ensure_session(step.graph, step.agent) if step is not None else None
 
     def build_tools(self, node: Node) -> dict[str, Any]:
         namespace = super().build_tools(node)
         session = self.session_for(node)
         if session is not None:
-            # Bound per node, which is what lets one Flow drive every rollout of a
-            # task while each tree only ever touches its own env.
-            agent = node.parent_agent
-            path = agent.config.path if agent is not None else "root"
-            namespace["env_step"] = env_tool(session, path)
+            # Bound per agent: forkable envs share world state while keeping
+            # independent tasks, termination, rewards, and local budgets.
+            step = current_step()
+            namespace["env_step"] = env_tool(session, reads.path(step.graph, step.agent))
         return namespace
 
     # -- Token capture ----------------------------------------------------
@@ -135,7 +160,7 @@ class RolloutFlow(Flow):
         return bool(getattr(self._llm_clients.get(model), "records_tokens", False))
 
     def llm_for_step(self, node: Node) -> PooledLLMClient:
-        agent = node.parent_agent
+        agent = current_step().agent
         model = agent.config.model
         if not self.records(model):
             return super().llm_for_step(node)
@@ -147,24 +172,20 @@ class RolloutFlow(Flow):
             request_kwargs={"sample_sink": sink},
         )
 
-    async def _drive(self, node: Node) -> StepResult:
-        transition = await super()._drive(node)
+    async def _drive(self, step: Step) -> StepResult:
+        transition = await super()._drive(step)
         created = transition.created
-        agent = created.parent_agent
-        sink = self._sample_sinks.pop(
-            agent.id if agent is not None else "",
-            [],
-        )
+        sink = self._sample_sinks.pop(step.agent.id, [])
         if isinstance(created, LLMOutput) and sink:
             self.samples[created.id] = sink[-1]
         return transition
 
-    def turns(self, agent: AgentStart) -> list[TurnSample]:
+    def turns(self, graph: Graph, agent: AgentStart) -> list[TurnSample]:
         """This agent's sampled turns, in transcript order."""
         return [
             self.samples[node.id]
-            for node in agent.transcript()
-            if isinstance(node, LLMOutput) and node.id in self.samples
+            for node in graph.nodes(LLMOutput, agent=agent)
+            if node.id in self.samples
         ]
 
     # -- Budgets ----------------------------------------------------------
@@ -175,46 +196,39 @@ class RolloutFlow(Flow):
         spec: dict[str, Any],
         call_id: int,
     ) -> AgentStart:
+        step = current_step()
+        g, parent = step.graph, step.agent
         limit = self.budget.max_children_per_agent
-        parent = action.parent_agent
-        # Only genuinely new launches are refused: ``super()`` hands back an
-        # already-attached child for a repeated call, and refusing that would
-        # break replay once a cap is full.
-        if limit is not None and len(parent.sub_agents) >= limit:
-            if not attached(action, spec, call_id):
-                self.refuse("max_children_per_agent")
-                raise ValueError(f"cannot launch beyond {limit} children per agent")
+        if limit is not None and len(reads.children(g, parent)) >= limit:
+            self.refuse("max_children_per_agent")
+            raise ValueError(f"cannot launch beyond {limit} children per agent")
         total = self.budget.max_total_agents
-        if total is not None and len(agents(action.root)) >= total:
-            if not attached(action, spec, call_id):
-                self.refuse("max_total_agents")
-                raise ValueError(f"cannot launch beyond {total} agents in one rollout")
-        return super().resolve_child(action, spec, call_id)
+        if total is not None and len(reads.tree(g, reads.lineage(g, parent)[0])) >= total:
+            self.refuse("max_total_agents")
+            raise ValueError(f"cannot launch beyond {total} agents in one rollout")
+        session = self.ensure_session(g, parent)
+        child_session = None
+        if session is not None:
+            args = dict(spec.get("args") or {})
+            child_session, observation = session.fork(spec.get("task", ""), args)
+            if observation is not None:
+                args.setdefault(OBSERVATION_INPUT, json.dumps(observation, default=str))
+            spec = {**spec, "args": args}
+        child = super().resolve_child(action, spec, call_id)
+        if child_session is not None:
+            self.bind(child, child_session)
+        return child
 
     def refuse(self, reason: str) -> None:
         self.refusals[reason] = self.refusals.get(reason, 0) + 1
 
 
-def attached(action: ExecAction, spec: dict[str, Any], call_id: int) -> bool:
-    """Whether this launch call already has its child, as ``Flow`` decides."""
-    if call_id in action.launch_agent_ids():
-        return True
-    name = spec.get("name")
-    root = action.root
-    if name is None or root is None:
-        return False
-    return any(
-        (child := root.find_agent(agent_id)) is not None
-        and child.config.name == name
-        for agent_id in action.launch_agent_ids().values()
-    )
-
-
 @dataclass
 class RolloutTree:
-    """One rollout: a tree of agents, the env they shared, and their scores."""
+    """One rollout: a top-level agent's tree, the env they shared, and their scores."""
 
     task: TaskSpec
+    graph: Graph
     root: AgentStart
     index: int
     session: EnvSession
@@ -227,16 +241,16 @@ class RolloutTree:
 
     @property
     def root_id(self) -> str:
-        return agent_id(self.root)
+        return agent_id(self.graph, self.root)
 
     @property
     def agents(self) -> list[AgentStart]:
-        return agents(self.root)
+        return agents(self.graph, self.root)
 
     @property
     def complete(self) -> bool:
         """Every agent terminal — not just the root."""
-        return all(agent.terminal for agent in self.agents)
+        return all(reads.terminal(self.graph, agent) for agent in self.agents)
 
     @property
     def usable(self) -> bool:
@@ -257,11 +271,17 @@ class Collector:
         *,
         rollouts_per_task: int = 4,
         delegation_bonus: float = DELEGATION_BONUS,
+        reward_fn: RewardFn | None = None,
+        local_scorer: Callable[[RolloutTree], Mapping[str, float]] | None = None,
     ) -> None:
+        if reward_fn is not None and local_scorer is not None:
+            raise ValueError("pass reward_fn or local_scorer, not both")
         self.flow = flow
         self.open_env = open_env
         self.rollouts_per_task = rollouts_per_task
         self.delegation_bonus = delegation_bonus
+        self.reward_fn = reward_fn
+        self.local_scorer = local_scorer
 
     async def collect(self, tasks: Sequence[TaskSpec]) -> list[RolloutTree]:
         trees: list[RolloutTree] = []
@@ -278,7 +298,7 @@ class Collector:
     async def rollout(self, task: TaskSpec) -> list[RolloutTree]:
         trees = await self.open(task)
         try:
-            await self.drive([tree.root for tree in trees])
+            await self.drive(trees[0].graph if trees else Graph())
         except TimeoutError:
             for tree in trees:
                 tree.error = tree.error or "wall time"
@@ -292,6 +312,8 @@ class Collector:
         return trees
 
     async def open(self, task: TaskSpec) -> list[RolloutTree]:
+        """One graph per task, holding each rollout as its own top-level agent."""
+        graph = Graph()
         trees: list[RolloutTree] = []
         for index in range(self.rollouts_per_task):
             session = EnvSession(
@@ -299,17 +321,24 @@ class Collector:
                 max_steps=self.flow.budget.max_env_steps,
             )
             observation = await session.reset()
-            root = self.flow.start(
+            root = graph.create_agent(
                 task.goal,
                 **{OBSERVATION_INPUT: json.dumps(observation, default=str)},
+                config=self.flow.root_config,
+            )
+            root.annotate(
+                "rollout.task",
+                {"id": task.id, "index": index, "metadata": task.metadata},
             )
             self.flow.bind(root, session)
-            trees.append(RolloutTree(task=task, root=root, index=index, session=session))
+            trees.append(
+                RolloutTree(task=task, graph=graph, root=root, index=index, session=session)
+            )
         return trees
 
-    async def drive(self, roots: list[AgentStart]) -> None:
+    async def drive(self, graph: Graph) -> None:
         async def run() -> None:
-            async for _node in self.flow.run_streaming(*roots):
+            async for _item in self.flow.run_streaming(graph):
                 pass
 
         timeout = self.flow.budget.max_wall_time
@@ -318,18 +347,33 @@ class Collector:
     def score(self, tree: RolloutTree) -> None:
         if tree.error is not None:
             return
-        local = {agent_id(agent): tree.session.reward_for(agent_id(agent)) for agent in tree.agents}
+        local = (
+            dict(self.reward_fn(tree.graph, tree.root))
+            if self.reward_fn is not None
+            else (
+                dict(self.local_scorer(tree))
+                if self.local_scorer is not None
+                else environment_rewards(tree.graph, tree.root)
+            )
+        )
         try:
-            tree.scores = score_tree(tree.root, local, delegation_bonus=self.delegation_bonus)
+            tree.scores = score_tree(
+                tree.graph, tree.root, local, delegation_bonus=self.delegation_bonus
+            )
         except IncompleteTreeError:
             tree.error = "incomplete"
 
     async def release(self, trees: Sequence[RolloutTree]) -> None:
         for tree in trees:
-            self.flow.unbind(tree.root)
+            sessions = {
+                id(session): session
+                for agent in tree.agents
+                if (session := self.flow.sessions.get(agent.id)) is not None
+            }
+            self.flow.unbind(tree.graph, tree.root)
             for agent in tree.agents:
                 self.flow.runtime.close_repl(agent)
-            await tree.session.close()
+            await asyncio.gather(*(session.close() for session in sessions.values()))
 
 
 __all__ = [

@@ -1,22 +1,35 @@
-"""Run agents: prompt the model, execute its code, delegate to children."""
+"""Run agents: find the ready ones in a graph, step each, append what it produced."""
 
 from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import contextmanager
-from dataclasses import replace
+from collections.abc import AsyncIterator, Callable
 from functools import partial
 from typing import Any, Literal
 
-from rlmflow import boundaries
-from rlmflow.engine import delegation, handoff, restore, semantic, transitions
-from rlmflow.engine.boundaries import StepUntil
-from rlmflow.engine.execution import Pool, StepResult, TaskQueue, ThreadPool
-from rlmflow.engine.steps import DEFAULT_TRANSITIONS
-from rlmflow.engine.transitions import TransitionFunction
-from rlmflow.graph.config import can_spawn
+from rlmflow.engine import handoff
+from rlmflow.engine.scheduler import (
+    Pool,
+    StepResult,
+    StepUntil,
+    TaskQueue,
+    ThreadPool,
+    resolve_boundary,
+)
+from rlmflow.engine.steps import (
+    DEFAULT_TRANSITIONS,
+    MAX_BUDGET_EXCEEDED,
+    AgentBackend,
+    TransitionFunction,
+    check_backends,
+    choose_transition,
+    final_turn_spent,
+    resolve_transition,
+)
+from rlmflow.graph import ops, reads
+from rlmflow.graph.config import ContextPolicy, can_spawn
+from rlmflow.graph.graph import Edge, Graph, StaleFrontier
 from rlmflow.graph.nodes import (
     AgentConfig,
     AgentStart,
@@ -26,13 +39,20 @@ from rlmflow.graph.nodes import (
     LLMOutput,
     LLMUsage,
     Node,
-    Submission,
+    Step,
     TurnMode,
-    build_agent,
+    current_step,
+    normalize_schemas,
+    running_step,
 )
 from rlmflow.llm import PooledLLMClient
 from rlmflow.prompts import (
+    AGENTS_TEXT,
     CORE_PROTOCOL_TEXT,
+    EVIDENCE_POLICY,
+    EXECUTION_POLICY,
+    LOCAL_WORK_EXAMPLE,
+    WORKER_ADDENDUM,
     PinnedPromptSectionError,
     Prompt,
     PromptModifierSource,
@@ -40,49 +60,33 @@ from rlmflow.prompts import (
     SystemPromptSource,
     add_argument_sections,
     apply_prompt_modifiers,
-    messages,
+    build_messages,
     prompt_for,
-)
-from rlmflow.prompts.text import (
-    AGENTS_TEXT,
-    EVIDENCE_POLICY,
-    EXECUTION_POLICY,
-    LOCAL_WORK_EXAMPLE,
-    WORKER_ADDENDUM,
+    render_tools,
 )
 from rlmflow.runtime import ExecutionGuard, LocalRuntime, Runtime, WrappedRuntime
 from rlmflow.runtime.repl import Repl
-from rlmflow.structured import DEFAULT_OUTPUT_CODEC, OutputCodec, Schema, as_finish_value
-from rlmflow.structured_engines import (
+from rlmflow.runtime.runtime import ensure_repl_rebuilt, rebuild_repl, rebuild_unfinished_repls
+from rlmflow.structured import (
+    DEFAULT_OUTPUT_CODEC,
     ChatStructuredEngine,
+    OutputCodec,
+    Schema,
     StructuredEngine,
     StructuredRequest,
     StructuredResult,
     UnsupportedStructuredOutputError,
+    as_finish_value,
 )
-from rlmflow.tools import namespace
+from rlmflow.tools import launch, namespace
 from rlmflow.tools.builtins import builtin_tools, query
 
 
-@contextmanager
-def timed(node: Node) -> Iterator[None]:
-    """Stamp whatever a step lands after ``node`` with how long the step ran."""
-    started = time.time()
-    try:
-        yield
-    finally:
-        landed = node.parent_agent.frontier
-        if landed is not node:  # a crashed or cancelled step lands nothing
-            landed.started_at, landed.finished_at = started, time.time()
-
-
-def _normalize_schemas(codec: OutputCodec, config: AgentConfig) -> AgentConfig:
-    schemas = {
-        key: codec.normalize(value)
-        for key in ("output_schema", "child_output_schema")
-        if (value := getattr(config, key)) is not None
-    }
-    return replace(config, **schemas) if schemas else config
+def _stepping_agent() -> AgentStart:
+    step = current_step()
+    if step is None:
+        raise RuntimeError("this runs inside a step; wrap direct calls in running_step(...)")
+    return step.agent
 
 
 class Flow:
@@ -103,13 +107,12 @@ class Flow:
         runtime: Runtime | None = None,
         execution_guard: ExecutionGuard | None = None,
         llm_clients: dict[str, Any] | None = None,
-        delegation_model: str | None = None,
-        delegation_prompt_profile: str | None = None,
-        delegation_reuse_worker: bool = False,
+        backends: dict[str, AgentBackend] | None = None,
         llm_request_timeout: float | None = None,
         workers: int | None = None,
         pool: Pool | None = None,
         use_llm_query: bool = False,
+        llm_query_cache: bool = False,
         use_agent_tree: bool = False,
         output_codec: OutputCodec | None = None,
         structured_engine: StructuredEngine | None = None,
@@ -118,8 +121,9 @@ class Flow:
             raise ValueError(f"restore must be 'replay' or 'lazy', not {restore!r}")
         if pool is not None and workers is not None:
             raise ValueError("pass workers or pool, not both")
+        self.backends = check_backends(backends)
         self.output_codec = output_codec or DEFAULT_OUTPUT_CODEC
-        self.root_config = _normalize_schemas(self.output_codec, root_config or AgentConfig())
+        self.root_config = normalize_schemas(root_config or AgentConfig(), self.output_codec)
         self.restore = restore
         self.llm_request_timeout = llm_request_timeout
         self.system_prompt = system_prompt
@@ -129,6 +133,8 @@ class Flow:
         self.prompt_router = prompt_router
         self.use_agent_tree = use_agent_tree
         self.use_llm_query = use_llm_query
+        self.llm_query_cache = llm_query_cache
+        self._llm_query_cache: dict[str, Any] = {}
         self._transitions: list[TransitionFunction] = []
         self.runtime = runtime or LocalRuntime()
         self.execution_guard = execution_guard
@@ -136,21 +142,16 @@ class Flow:
         self.queue: TaskQueue | None = None
         self._active_loop: asyncio.AbstractEventLoop | None = None
         self._verifiers: dict[str, Callable[[object], Any]] = {}
-        self._restored_agents: set[int] = set()
+        self._restored_agents: set[str] = set()
+        #: Waiting agent id -> the agents its open waits and asks are on.
+        self._waits: dict[str, list[str]] = {}
         self._restore_lock = asyncio.Lock()
         self._llm_clients = {"default": llm, **(llm_clients or {})}
-        if delegation_model is not None and delegation_model not in self._llm_clients:
-            available = ", ".join(sorted(self._llm_clients))
-            raise ValueError(
-                f"unknown delegation model {delegation_model!r}; available models: {available}"
-            )
-        self.delegation_model = delegation_model
-        self.delegation_prompt_profile = delegation_prompt_profile
-        self.delegation_reuse_worker = delegation_reuse_worker
+        for backend in self.backends.values():
+            if (bind := getattr(backend, "bind", None)) is not None:
+                bind(self)
         self.structured_engine = (
-            structured_engine
-            if structured_engine is not None
-            else ChatStructuredEngine()
+            structured_engine if structured_engine is not None else ChatStructuredEngine()
         )
         bind_engine = getattr(self.structured_engine, "bind", None)
         if bind_engine is not None:
@@ -188,11 +189,12 @@ class Flow:
 
     def build_messages(self, node: Node) -> list[dict[str, str]]:
         """The prompt as of ``node``: system message, then that agent's turns."""
-        return messages.build_messages(self, node)
+        return build_messages(self, node)
 
     def default_system_prompt(self, node: Node) -> Prompt:
         """Build a fresh shared system prompt before node customization."""
-        profile = self.profile(node.parent_agent)
+        agent = _stepping_agent()
+        profile = self.profile(agent)
         source = profile.system if profile.system is not None else self.system_prompt
         if source is None:
             prompt = Prompt()
@@ -203,7 +205,6 @@ class Flow:
                 source="Flow.default_system_prompt",
                 pinned=True,
             )
-            agent = node.parent_agent
             prompt.add_section(
                 "policy.evidence",
                 EVIDENCE_POLICY,
@@ -212,7 +213,7 @@ class Flow:
             )
             prompt.add_section(
                 "policy.execution",
-                EXECUTION_POLICY if can_spawn(agent) else WORKER_ADDENDUM,
+                EXECUTION_POLICY if can_spawn(current_step().graph, agent) else WORKER_ADDENDUM,
                 order=200,
                 source="Flow.default_system_prompt",
             )
@@ -273,7 +274,7 @@ class Flow:
                 order=1000,
                 source=type(node).__name__,
             )
-        profile = self.profile(node.parent_agent)
+        profile = self.profile(_stepping_agent())
         self._modify(prompt, node, self.user_prompt_modifiers, profile.user_modifiers)
         return prompt
 
@@ -291,7 +292,7 @@ class Flow:
 
     def render_tools(self, node: Node) -> str:
         """The ``### Tools`` list: exactly the callables this node's REPL binds."""
-        return messages.render_tools(self, node)
+        return render_tools(self, node)
 
     async def call_chat(
         self,
@@ -353,8 +354,7 @@ class Flow:
         )
 
     def llm_for_step(self, node: Node) -> PooledLLMClient:
-        agent = node.parent_agent
-        return self._create_pooled_llm(agent.config.model)
+        return self._create_pooled_llm(_stepping_agent().config.model)
 
     async def llm_query(
         self,
@@ -366,6 +366,7 @@ class Flow:
         top_p: float | None = None,
         max_tokens: int | None = None,
         stop: list[str] | None = None,
+        cache: bool | None = None,
     ) -> Any:
         """Make one context-free model call from host code."""
         return await query(
@@ -377,6 +378,7 @@ class Flow:
             top_p=top_p,
             max_tokens=max_tokens,
             stop=stop,
+            cache=cache,
         )
 
     def transition(
@@ -401,53 +403,62 @@ class Flow:
 
     # -- Steps ------------------------------------------------------------
 
-    async def step(self, node: Node) -> Node:
-        """Take one graph step and return the created node."""
-        return (await self._drive(node)).created
+    async def step(self, g: Graph, agent: AgentStart, node: Node | None = None) -> Node | None:
+        """Take one step for ``agent`` from ``node`` (its frontier by default), outside a run."""
+        step = Step(g, agent, node if node is not None else reads.frontier(g, agent))
+        with running_step(step):
+            return (await self._drive(step)).created
 
-    async def _drive(self, node: Node) -> StepResult:
+    async def _drive(self, step: Step) -> StepResult:
         """Queue entry: one step, with infrastructure failure as a terminal node."""
+        g, agent, node = step.graph, step.agent, step.node
         error: BaseException | None = None
         finalizing = self.budget_exceeded(node)
         if finalizing:
-            await self._wait_for_budget_descendants(node.parent_agent)
+            await self._wait_for_budget_descendants(g, agent)
 
-        with timed(node):
-            try:
-                if finalizing:
-                    landed = FinalQuery()
-                    anchor = node
-                else:
-                    producer, anchor, source = await transitions.resolve(
-                        (*self._transitions, *DEFAULT_TRANSITIONS),
-                        node,
-                        partial(semantic.choose, self),
-                    )
-                    landed = await producer.produce(self, source)
-                anchor.append(landed)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - a failed step is a transition
-                error = exc
-                detail = str(exc)
-                text = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
-                scope = "run" if node.parent_agent is node.root else "child"
-                landed = DoneOutput(
-                    content=text,
-                    result=f"[{scope} failed: {text}]",
+        started = time.time()
+        try:
+            if finalizing:
+                landed: Node | None = (
+                    DoneOutput(result=MAX_BUDGET_EXCEEDED) if final_turn_spent() else FinalQuery()
                 )
-                node.parent_agent.frontier.append(landed)
+                anchor = node
+            else:
+                producer, anchor, source = await resolve_transition(
+                    (*self._transitions, *DEFAULT_TRANSITIONS),
+                    node,
+                    partial(choose_transition, self),
+                )
+                landed = await producer.produce(self, source)
+            _stamp(landed, started)
+            ops.append(g, agent, landed, after=anchor)
+        except asyncio.CancelledError:
+            raise
+        except StaleFrontier:
+            landed = None  # a host write won; the agent is rescheduled from there
+        except Exception as exc:  # noqa: BLE001 - a failed step is a transition
+            error = exc
+            detail = str(exc)
+            text = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+            scope = "run" if reads.launcher(g, agent) is None else "child"
+            landed = DoneOutput(content=text, result=f"[{scope} failed: {text}]")
+            _stamp(landed, started)
+            ops.append(g, agent, landed)
 
-        return StepResult(submitted=node, created=landed, error=error)
+        return StepResult(step=step, created=landed, error=error)
 
-    def budget_exhausted(self, node: Node) -> bool:
-        """Whether this run has reached its configured soft token threshold."""
-        agent = node.parent_agent
+    def budget_exhausted(self, g: Graph) -> bool:
+        """Whether the stepping agent's run has reached its soft token threshold.
+
+        A run is the stepping agent's top-level ancestor and everything it launched.
+        """
+        agent = _stepping_agent()
         limit = agent.config.max_budget
         if limit is None:
             return False
-        root = node.root
-        return root is not None and root.usage.total >= limit
+        run = reads.tree(g, reads.lineage(g, agent)[0])
+        return reads.usage(g, run).total >= limit
 
     def budget_exceeded(self, node: Node) -> bool:
         """Whether this node must enter its agent's one final turn."""
@@ -455,24 +466,17 @@ class Flow:
         # and only lands once its ExecAction runs submit(), so stopping at either one
         # spends the tokens and throws the result away. FinalQuery itself must also
         # run even though the threshold has already been crossed.
-        if isinstance(node, (FinalQuery, LLMOutput, ExecAction, Submission)):
+        if isinstance(node, (FinalQuery, LLMOutput, ExecAction)):
             return False
-        return self.budget_exhausted(node)
+        return self.budget_exhausted(current_step().graph)
 
-    async def _wait_for_budget_descendants(self, agent: AgentStart) -> None:
+    async def _wait_for_budget_descendants(self, g: Graph, agent: AgentStart) -> None:
         """Let unfinished descendants finalize before their parent synthesizes."""
         queue = self.queue
         if queue is None:
             return
-        descendants: list[AgentStart] = []
-        stack = list(agent.sub_agents)
-        while stack:
-            child = stack.pop()
-            if not child.terminal:
-                descendants.append(child)
-            stack.extend(child.sub_agents)
-        if descendants:
-            await asyncio.gather(*(queue.join(child) for child in descendants))
+        descendants = reads.tree(g, agent)[1:]
+        await queue.join(lambda: all(reads.terminal(g, child) for child in descendants))
 
     # -- Tools ------------------------------------------------------------
 
@@ -503,136 +507,160 @@ class Flow:
         call_id: int,
     ) -> AgentStart:
         """Resolve one launch call to a child; subclasses hook per-child setup here."""
-        return delegation.resolve_child(self, action, spec, call_id)
+        return launch.resolve_child(self, action, spec, call_id)
+
+    def backend_for(self, agent: AgentStart) -> AgentBackend:
+        """The backend named by ``agent.config.backend``."""
+        name = agent.config.backend
+        if name not in self.backends:
+            available = ", ".join(sorted(self.backends)) or "none"
+            raise RuntimeError(
+                f"agent {agent.config.name!r} requires backend {name!r}; this Flow has: {available}"
+            )
+        return self.backends[name]
 
     # -- Running ----------------------------------------------------------
 
-    async def replay(self, root: AgentStart) -> None:
-        """Rebuild the namespaces of a graph we did not run, from its recorded code."""
-        await restore.replay(self, root)
+    async def replay(self, g: Graph, agent: AgentStart | None = None) -> None:
+        """Rebuild REPL namespaces from recorded code: one agent, or every unfinished one."""
+        if agent is not None:
+            await rebuild_repl(self, g, agent)
+            return
+        for agent in g.nodes(AgentStart):
+            if not reads.terminal(g, agent):
+                await rebuild_repl(self, g, agent)
+
+    def running_steps(self) -> dict[str, Node]:
+        """The node each in-flight step started from, by agent id."""
+        if self.queue is None:
+            return {}
+        return {agent_id: step.node for agent_id, (step, _task) in self.queue.running.items()}
 
     async def run_streaming(
         self,
-        root: AgentStart | str,
-        *roots: AgentStart | str,
+        g: Graph,
+        *,
         until: StepUntil = "done",
         close_repls: bool = False,
-    ) -> AsyncIterator[Node]:
-        """Drive one or more roots through one graph-agnostic queue."""
-        agents = [self.start(item) if isinstance(item, str) else item for item in (root, *roots)]
+    ) -> AsyncIterator[Node | Edge]:
+        """Drive every ready agent in the graph and yield what each step adds.
+
+        Yields graph items (nodes and edges) in log order.
+        """
         if self.queue is not None:
             raise RuntimeError("this Flow is already driving a stream")
-        if len({id(agent) for agent in agents}) != len(agents):
-            raise RuntimeError("the same root cannot be driven twice")
-
-        boundary = boundaries.resolve(until)
-        await restore.resume(self, agents)
+        boundary = resolve_boundary(until)
+        cursor = len(g) - 1
         queue = TaskQueue()
         self.queue = queue
         self._active_loop = asyncio.get_running_loop()
-        driving = {id(agent) for agent in agents}
-
         try:
-            for agent in agents:
-                for leaf in agent.leaves():
-                    await self._submit(leaf)
-
-            while driving and queue:
-                transition = await queue.next()
-                node = transition.created
-                root = node.root
-                if root is None or id(root) not in driving:
-                    continue
-
-                root_error = (
-                    transition.error
-                    if (
-                        not transition.is_agent_start
-                        and transition.error is not None
-                        and transition.submitted.parent_agent is root
-                    )
-                    else None
-                )
-
-                yield node
-                stop = boundary is not None and boundary(node, root)
+            await rebuild_unfinished_repls(self, g)
+            for agent in g.nodes(AgentStart):
+                handoff.react(g, agent)
+            await self._schedule(g)
+            while queue:
+                result = await queue.next()
+                if result is not None:
+                    self._react(g, result)
+                items = g.items(after=cursor)
+                cursor += len(items)
+                stop = False
+                for item in items:
+                    yield item
+                    stop = stop or (boundary is not None and boundary(item, g))
                 if stop:
-                    driving.discard(id(root))
-                    await queue.cancel(root.walk())
-                else:
-                    extra = handoff.apply(node)
-                    for dependent in delegation.ready_dependents(node):
-                        delegation.submit_child(self, dependent)
-                    if not transition.is_agent_start and node.parent_agent.frontier is node:
-                        await self._submit(node)
-                    for leaf in extra:
-                        delegation.submit_leaf(self, leaf)
-
-                if root_error is not None:
-                    raise root_error
+                    return
+                await queue.notify()
+                if (
+                    result is not None
+                    and result.error is not None
+                    and reads.launcher(g, result.agent) is None
+                ):
+                    raise result.error
+                await self._schedule(g)
         finally:
+            interrupted = list(queue.running)
             await queue.cancel()
+            # An interrupted step loses its REPL; replay it again on the next run.
+            self._restored_agents.difference_update(
+                agent_id for agent_id in interrupted if self.runtime.get(agent_id) is None
+            )
             if self.queue is queue:
                 self.queue = None
                 self._active_loop = None
             if close_repls:
-                for agent in agents:
-                    for node in agent.walk():
-                        if isinstance(node, AgentStart):
-                            self.runtime.close_repl(node)
+                for agent in g.nodes(AgentStart):
+                    self.runtime.close_repl(agent)
 
-    async def _submit(self, leaf: Node) -> None:
-        """Queue a leaf of a live agent, restoring its namespace first when lazy."""
-        owner = leaf.parent_agent
-        if owner is None or owner.terminal:
-            return
-        if self.restore == "lazy" and isinstance(leaf, ExecAction):
-            await restore.ensure_replayed(self, owner)
-        delegation.submit_leaf(self, leaf)
+    def _react(self, g: Graph, result: StepResult) -> None:
+        """Flow policy after a step lands: release live state, deliver results."""
+        agent = result.agent
+        if (
+            isinstance(result.created, DoneOutput)
+            and agent.config.context_policy != ContextPolicy.RESIDENT
+        ):
+            self.runtime.close_repl(agent)
+            self._restored_agents.discard(agent.id)
+        handoff.react(g, agent)
+        if isinstance(result.created, DoneOutput):
+            for recipient in handoff.recipients(g, agent):
+                if recipient not in self.queue:
+                    handoff.react(g, recipient)
+
+    async def _schedule(self, g: Graph) -> None:
+        """Start one step for every ready agent that has none in flight."""
+        queue = self.queue
+        for agent in reads.ready(g):
+            if agent in queue:
+                continue
+            if agent.config.context_policy == ContextPolicy.EPHEMERAL and isinstance(
+                reads.frontier(g, agent), DoneOutput
+            ):
+                continue
+            ops.deliver(g, agent)
+            if reads.terminal(g, agent):
+                continue
+            node = reads.frontier(g, agent)
+            if isinstance(node, ExecAction):
+                await ensure_repl_rebuilt(self, g, agent)
+            queue.submit(Step(g, agent, node), self._drive)
 
     async def arun(
         self,
-        root: AgentStart | str,
+        target: Graph | str,
         *,
         close_repls: bool = False,
         **args: Any,
     ) -> Any:
-        if not isinstance(root, str) and args:
+        """Run to quiescence. A graph returns itself; a task string returns its result."""
+        if isinstance(target, str):
+            g = Graph()
+            agent = g.create_agent(target, config=self.root_config, **args)
+        elif args:
             raise TypeError("agent arguments can only be passed with a task string")
-        agent = self.start(root, **args) if isinstance(root, str) else root
-        async for _node in self.run_streaming(agent, close_repls=close_repls):
+        else:
+            g, agent = target, None
+        async for _item in self.run_streaming(g, close_repls=close_repls):
             pass
-        return agent.result()
+        return g if agent is None else reads.result(g, agent)
 
     def run(
         self,
-        root: AgentStart | str,
+        target: Graph | str,
         *,
         close_repls: bool = False,
         **args: Any,
     ) -> Any:
-        return asyncio.run(self.arun(root, close_repls=close_repls, **args))
-
-    def start(
-        self,
-        task: str = "",
-        *,
-        config: AgentConfig | None = None,
-        **args: Any,
-    ) -> AgentStart:
-        """Build a root agent whose keyword arguments become direct REPL variables."""
-        agent = build_agent(task, args, config=config or self.root_config)
-        agent.config = _normalize_schemas(self.output_codec, agent.config)
-        return agent
+        return asyncio.run(self.arun(target, close_repls=close_repls, **args))
 
     async def aclose(self) -> None:
         if self.queue is not None:
             await self.queue.cancel()
             self.queue = None
-        owners = {id(item): item for item in (*self._llm_clients.values(), self.structured_engine)}
-        closing = [
-            close() for item in owners.values() if (close := getattr(item, "aclose", None))
-        ]
+        managed = [*self._llm_clients.values(), self.structured_engine, *self.backends.values()]
+        owners = {id(item): item for item in managed}
+        closing = [close() for item in owners.values() if (close := getattr(item, "aclose", None))]
         try:
             await asyncio.gather(*closing)
         finally:
@@ -640,4 +668,43 @@ class Flow:
             self.runtime.close()
 
 
-__all__ = ["Flow", "StepUntil"]
+def _stamp(node: Node, started: float) -> None:
+    node.started_at, node.finished_at = started, time.time()
+    node.annotate("timing", node.timing())
+
+
+def messages_to_query(messages: list[dict[str, Any]]) -> str:
+    """Project chat messages into a single agent query."""
+
+    parts: list[str] = []
+    for message in messages:
+        role = str(message.get("role") or "user")
+        content = message.get("content") or ""
+        parts.append(f"{role}: {content if isinstance(content, str) else str(content)}")
+    return "\n\n".join(parts)
+
+
+class FlowLLM:
+    """Expose a :class:`Flow` through a sync ``chat(messages)`` API."""
+
+    def __init__(self, flow: Flow) -> None:
+        self.flow = flow
+        self.last_graph: Graph | None = None
+        self.last_usage = LLMUsage()
+
+    def chat(self, messages: list[dict[str, Any]], *args: Any, **kwargs: Any) -> str:
+        graph = Graph()
+        agent = graph.create_agent(messages_to_query(messages), config=self.flow.root_config)
+        self.flow.run(graph)
+        self.last_graph = graph
+        self.last_usage = reads.usage(graph)
+        return reads.result(graph, agent)
+
+    def completion(self, prompt: str, *args: Any, **kwargs: Any) -> str:
+        return self.chat([{"role": "user", "content": prompt}], *args, **kwargs)
+
+    def close(self) -> None:
+        self.flow.runtime.close_repls()
+
+
+__all__ = ["Flow", "FlowLLM", "StepUntil", "messages_to_query"]

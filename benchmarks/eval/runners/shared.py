@@ -54,7 +54,9 @@ def benchmark_task_contract(example: Example) -> dict[str, Any]:
     paths = [raw_paths] if isinstance(raw_paths, str) else list(raw_paths)
     for raw_path in paths:
         path = Path(raw_path).expanduser().resolve()
-        files = sorted(item for item in path.rglob("*") if item.is_file()) if path.is_dir() else [path]
+        files = (
+            sorted(item for item in path.rglob("*") if item.is_file()) if path.is_dir() else [path]
+        )
         for file_path in files:
             name = f"{path.name}/{file_path.relative_to(path)}" if path.is_dir() else path.name
             fixture_hashes[name] = hashlib.sha256(file_path.read_bytes()).hexdigest()

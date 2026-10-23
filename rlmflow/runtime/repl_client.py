@@ -6,16 +6,27 @@ import asyncio
 import concurrent.futures
 import inspect
 import threading
+import time
 import uuid
 from collections.abc import Callable
+from contextlib import nullcontext
 from contextvars import Context, ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from rlmflow.graph.nodes import ExecAction, Node, active_step, running_step
-from rlmflow.runtime.env import RLMFLOW_REPLAY
-from rlmflow.runtime.protocol import (
+from rlmflow.graph.nodes import ExecAction, Step, current_step, metadata_writes, running_step
+from rlmflow.runtime.repl import (
+    AGENTS_BINDING,
+    DoneSignal,
+    Repl,
+    ReplRun,
+    ReplStatus,
+    VerificationSignal,
+    encode_agent_references,
+    get_tool_metadata,
+)
+from rlmflow.runtime.repl_server import (
     InjectProxyRequest,
     InjectRequest,
     PingRequest,
@@ -28,26 +39,23 @@ from rlmflow.runtime.protocol import (
     VerifyRequest,
     WireModel,
 )
-from rlmflow.runtime.repl import (
-    MISSING_REPL_NOTE,
-    DoneSignal,
-    Repl,
-    ReplRun,
-    ReplStatus,
-    VerificationSignal,
-)
+from rlmflow.runtime.runtime import RLMFLOW_REPLAY
 from rlmflow.structured import as_finish_value
-from rlmflow.tools import get_tool_metadata
-from rlmflow.tools.agents import AGENTS_BINDING, encode_agent_references
-from rlmflow.utils.serial import encode_host_value
+from rlmflow.utils import encode_host_value
 
 _NO_ANSWER = object()
 _RPC_CALL_ID: ContextVar[int] = ContextVar("rlmflow_rpc_call_id", default=0)
+_RPC_NAME: ContextVar[str] = ContextVar("rlmflow_rpc_name", default="")
 
 
 def current_rpc_call_id() -> int:
     """Ordinal of the current proxied call within one execution."""
     return _RPC_CALL_ID.get()
+
+
+def current_rpc_name() -> str:
+    """Binding name the current proxied call was made through."""
+    return _RPC_NAME.get()
 
 
 def invoke_tool_call(
@@ -57,48 +65,113 @@ def invoke_tool_call(
     restoring: bool,
     args: tuple[object, ...],
     kwargs: dict[str, object],
+    *,
+    name: str | None = None,
 ) -> object:
-    """Invoke or restore one proxied tool call and save successful results."""
+    """Invoke or restore one proxied tool call and save successful results.
+
+    Receipts are keyed by ``name``, the binding the code called, because call
+    indexes are counted per binding.
+    """
+    started = time.perf_counter()
     metadata = get_tool_metadata(fn)
     restore = metadata.restore if metadata is not None else None
-    name = metadata.name if metadata is not None else getattr(fn, "__name__", "tool")
+    if name is None:
+        name = metadata.name if metadata is not None else getattr(fn, "__name__", "tool")
     calls = action.tool_calls(name) if action is not None else {}
     use_saved = call_id in calls if restoring else action is not None and call_id in calls
 
     token = _RPC_CALL_ID.set(call_id)
+    name_token = _RPC_NAME.set(name)
     try:
         if restore is not None and use_saved:
             saved = deepcopy(calls[call_id])
-            return saved if restore == "result" else restore(saved, *args, **kwargs)
-        value = fn(*args, **kwargs)
+            try:
+                with metadata_writes(not restoring):
+                    result = saved if restore == "result" else restore(saved, *args, **kwargs)
+            except BaseException as exc:
+                if not restoring:
+                    _record_tool_receipt(action, name, call_id, started, restored=True, error=exc)
+                raise
+            if not restoring:
+                _record_tool_receipt(action, name, call_id, started, restored=True)
+            return result
+        try:
+            with metadata_writes(not restoring):
+                value = fn(*args, **kwargs)
+        except (DoneSignal, VerificationSignal):
+            if not restoring:
+                _record_tool_receipt(action, name, call_id, started)
+            raise
+        except BaseException as exc:
+            if not restoring:
+                _record_tool_receipt(action, name, call_id, started, error=exc)
+            raise
     finally:
         _RPC_CALL_ID.reset(token)
+        _RPC_NAME.reset(name_token)
 
-    if restore is None:
-        return value
-    if action is None:
+    if restore is not None and action is None:
         raise RuntimeError(f"cannot save {name} outside an ExecAction")
 
     def save(result: object) -> object:
+        if restore is None:
+            return result
         try:
             stored = as_finish_value(encode_agent_references(result))
         except TypeError as exc:
-            raise TypeError(
-                f"{name} returned a value that cannot be saved as strict JSON"
-            ) from exc
+            raise TypeError(f"{name} returned a value that cannot be saved as strict JSON") from exc
         action.record_tool_call(name, call_id, deepcopy(stored))
         return result
 
     if bool(metadata and metadata.is_async) and inspect.isawaitable(value):
+        step = current_step()
+
         async def wait_and_save() -> object:
             nested_token = _RPC_CALL_ID.set(call_id)
             try:
-                return save(await value)
+                context = running_step(step) if step is not None else nullcontext()
+                with context:
+                    with metadata_writes(not restoring):
+                        result = save(await value)
+                if not restoring:
+                    _record_tool_receipt(action, name, call_id, started)
+                return result
+            except BaseException as exc:
+                if not restoring:
+                    _record_tool_receipt(action, name, call_id, started, error=exc)
+                raise
             finally:
                 _RPC_CALL_ID.reset(nested_token)
 
         return wait_and_save()
-    return save(value)
+    result = save(value)
+    if not restoring:
+        _record_tool_receipt(action, name, call_id, started)
+    return result
+
+
+def _record_tool_receipt(
+    action: ExecAction | None,
+    name: str,
+    call_id: int,
+    started: float,
+    *,
+    restored: bool = False,
+    error: BaseException | None = None,
+) -> None:
+    if action is None:
+        return
+    receipt: dict[str, Any] = {
+        "name": name,
+        "call_id": call_id,
+        "restored": restored,
+        "status": "error" if error is not None else "ok",
+        "duration_ms": round((time.perf_counter() - started) * 1000, 3),
+    }
+    if error is not None:
+        receipt["error"] = f"{type(error).__name__}: {error}"
+    action.annotate("tools.calls", receipt, append=True)
 
 
 class ReplConnection(Protocol):
@@ -121,7 +194,7 @@ class ProtocolDesyncError(RuntimeError):
 class _RunState:
     tenant: WorkerRepl
     loop: asyncio.AbstractEventLoop
-    step: Node | None
+    step: Step | None
     proxied: dict[str, Callable[..., object]]
     answer: Any = _NO_ANSWER
     verification: VerificationSignal | None = None
@@ -147,7 +220,6 @@ class WorkerSession:
         self.closed = False
         self._started = False
         self._counter = 0
-        self._execution_order = 0
         self._start_lock = threading.Lock()
         self._send_lock = threading.Lock()
         self._state_lock = threading.Lock()
@@ -261,13 +333,15 @@ class WorkerSession:
 
             def invoke() -> Any:
                 fn = state.proxied[message.proxy]
+                action = state.step.node if state.step is not None else None
                 value = invoke_tool_call(
                     fn,
-                    state.step if isinstance(state.step, ExecAction) else None,
+                    action if isinstance(action, ExecAction) else None,
                     message.call_id,
                     message.restoring,
                     tuple(message.args),
                     dict(message.kwargs),
+                    name=message.proxy,
                 )
                 metadata = get_tool_metadata(fn)
                 if inspect.isawaitable(value) and bool(metadata and metadata.is_async):
@@ -314,14 +388,11 @@ class WorkerSession:
         self.ensure_started()
         run_id = uuid.uuid4().hex
         with self._state_lock:
-            self._execution_order += 1
-            if isinstance(state.step, ExecAction):
-                state.step.repl_execution_order = self._execution_order
             self.runs[run_id] = state
         binding: dict[str, Any] = {
             "run_id": run_id,
             "tenant_id": tenant.tenant_id,
-            "step_id": state.step.id if state.step is not None else run_id,
+            "step_id": state.step.node.id if state.step is not None else run_id,
             "args": dict(tenant.args),
             "env": dict(tenant.env),
         }
@@ -469,12 +540,10 @@ class WorkerRepl(Repl):
         return response.value
 
     async def run(self, code: str) -> ReplRun:
-        if not code.strip():
-            return ReplRun(output=MISSING_REPL_NOTE, status=ReplStatus.ERROR)
         state = _RunState(
             tenant=self,
             loop=asyncio.get_running_loop(),
-            step=active_step(),
+            step=current_step(),
             proxied=dict(self.proxied),
         )
         try:
@@ -500,4 +569,5 @@ __all__ = [
     "WorkerRepl",
     "WorkerSession",
     "current_rpc_call_id",
+    "current_rpc_name",
 ]

@@ -32,9 +32,9 @@ if str(Path(__file__).parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).parent))
 
 import sprites  # noqa: E402
-from render_graph import RUN_DIR, board_rows, picked_summary, rewind_depth  # noqa: E402
+from render_graph import RUN_DIR, board_rows, load_run, picked_summary, rewind_depth  # noqa: E402
 
-from rlmflow import persistence  # noqa: E402
+from rlmflow import reads  # noqa: E402
 
 JAM_COLOR = (217, 59, 48)
 REWIND_COLOR = (245, 165, 36)
@@ -213,18 +213,19 @@ def main() -> None:
     if not sprites.available():
         raise SystemExit("needs Pillow and the sprite tiles: pip install pillow")
     run_dir: Path = args.run_dir
-    if not (run_dir / "shepherd").exists():
+    if not (run_dir / "graph").exists():
         raise SystemExit(
             f"no saved shepherd graph under {run_dir}. Run: python examples/shepherd/shepherd.py"
         )
 
-    shepherd_graph = persistence.load(run_dir / "shepherd")
-    summary = picked_summary(shepherd_graph)
+    g, _worker, shepherd = load_run(run_dir)
+    summary = picked_summary(g, shepherd)
     found = re.search(r"Picked (\S+?):", summary)
     name = args.branch or (found.group(1) if found else "")
-    agent = next((a for a in shepherd_graph.sub_agents if a.config.name == name), None)
+    branches = reads.children(g, shepherd)
+    agent = next((a for a in branches if a.config.name == name), None)
     if agent is None:
-        names = ", ".join(a.config.name for a in shepherd_graph.sub_agents)
+        names = ", ".join(a.config.name for a in branches)
         raise SystemExit(f"no branch {name!r} in that run. Available: {names}")
 
     jam = load_frames(run_dir / "traces" / "worker.json")
@@ -238,8 +239,8 @@ def main() -> None:
         jam=jam,
         recovery=recovery,
         branch_name=name,
-        rewind=rewind_depth(agent) or len(jam),
-        outcome=str(agent.result() or "unfinished"),
+        rewind=rewind_depth(g, agent) or len(jam),
+        outcome=str(reads.result(g, agent) or "unfinished"),
         step_ms=args.step_ms,
         pause_ms=args.pause_ms,
     )

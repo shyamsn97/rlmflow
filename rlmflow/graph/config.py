@@ -3,15 +3,75 @@
 from __future__ import annotations
 
 import keyword
-from collections.abc import Mapping
+from collections.abc import Callable
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, fields, replace
+from enum import StrEnum
 from typing import Any
 
-from rlmflow.graph.arguments import RECURSE, visit_argument
+# Return this from a callback to visit a list or dictionary's children.
+RECURSE = object()
+ArgumentCallback = Callable[[str, Any], Any]
+
+
+def transform_argument(
+    value: Any,
+    transform: ArgumentCallback,
+    *,
+    path: str,
+) -> Any:
+    """Transform an argument tree in pre-order, recursing on ``RECURSE``."""
+    return _traverse(value, transform, path=path, rebuild=True)
+
+
+def visit_argument(value: Any, visitor: ArgumentCallback, *, path: str) -> None:
+    """Visit an argument tree in pre-order, recursing on ``RECURSE``."""
+    _traverse(value, visitor, path=path, rebuild=False)
+
+
+def _traverse(
+    value: Any,
+    callback: ArgumentCallback,
+    *,
+    path: str,
+    rebuild: bool,
+) -> Any:
+    """Shared recursive implementation for argument mapping and inspection."""
+    result = callback(path, value)
+    if result is not RECURSE:
+        return result
+    if isinstance(value, list):
+        if rebuild:
+            return [
+                _traverse(
+                    item,
+                    callback,
+                    path=f"{path}[{index}]",
+                    rebuild=True,
+                )
+                for index, item in enumerate(value)
+            ]
+        for index, item in enumerate(value):
+            _traverse(item, callback, path=f"{path}[{index}]", rebuild=False)
+        return value
+    if isinstance(value, dict):
+        result: dict[str, Any] | None = {} if rebuild else None
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"argument {path!r} contains a non-string object key")
+            mapped_item = _traverse(
+                item,
+                callback,
+                path=f"{path}.{key}",
+                rebuild=rebuild,
+            )
+            if result is not None:
+                result[key] = mapped_item
+        return result if result is not None else value
+    return value
+
 
 DEFAULT_QUERY = "Complete the requested task."
-AGENT_REF_KEY = "$rlmflow_agent"
 INPUT_VALUE_KEY = "$rlmflow_input"
 INPUT_DESCRIPTION_KEY = "$rlmflow_description"
 _INPUT_MARKER_KEY = "$rlmflow_input_marker"
@@ -58,36 +118,15 @@ def input_parts(value: object) -> tuple[Any, str] | None:
     return None
 
 
-def agent_ref_id(value: object) -> str | None:
-    """Return the agent id from one exact persisted input reference."""
-    if (
-        isinstance(value, dict)
-        and set(value) == {AGENT_REF_KEY}
-        and isinstance(value.get(AGENT_REF_KEY), str)
-        and value[AGENT_REF_KEY]
-    ):
-        return value[AGENT_REF_KEY]
-    return None
+class ContextPolicy(StrEnum):
+    """What happens to an agent's live state once it is terminal."""
 
-
-def argument_references(args: Mapping[str, object]) -> tuple[tuple[str, str], ...]:
-    """Return ``(argument_path, agent_id)`` pairs from nested JSON arguments."""
-    references: list[tuple[str, str]] = []
-
-    def visit(path: str, value: object) -> object:
-        wrapped = input_parts(value)
-        if wrapped is not None:
-            visit_argument(wrapped[0], visit, path=path)
-            return value
-        agent_id = agent_ref_id(value)
-        if agent_id is not None:
-            references.append((path, agent_id))
-            return value
-        return RECURSE
-
-    for name, value in args.items():
-        visit_argument(value, visit, path=name)
-    return tuple(references)
+    #: Drop live state when terminal and refuse follow-up messages.
+    EPHEMERAL = "ephemeral"
+    #: Drop live state when terminal; replay history on a follow-up.
+    REHYDRATABLE = "rehydratable"
+    #: Keep live state; replay only after process loss.
+    RESIDENT = "resident"
 
 
 def validate_agent_name(name: str) -> None:
@@ -108,17 +147,23 @@ def validate_argument_name(name: str) -> None:
         raise ValueError("'task' is the invocation task and cannot be passed twice")
 
 
+#: ``AgentConfig.backend`` for rlmflow's own model-and-REPL loop.
+NATIVE_BACKEND = "rlmflow"
+
+
 @dataclass
 class AgentConfig:
     name: str = "root"
-    path: str = "root"
-    depth: int = 0
+    #: Durable executor identity: ``NATIVE_BACKEND`` or a ``Flow(backends=...)`` key.
+    backend: str = NATIVE_BACKEND
     model: str = "default"
     prompt_profile: str = "default"
     output_schema: dict[str, Any] | None = None
-    #: Default ``output_schema`` for launched children. Launch ``schema=``
-    #: still wins. The root's own ``output_schema`` is independent.
-    child_output_schema: dict[str, Any] | None = None
+    #: Field overrides for agents this one launches, e.g. ``{"model": "fast",
+    #: "backend": "claude-code", "output_schema": Schema}``. Every other field
+    #: is inherited, and children inherit this table, so it applies all the way
+    #: down. Launch ``schema=`` still wins over ``output_schema`` here.
+    child_config: dict[str, Any] = field(default_factory=dict)
     #: Durable identity of a launch verifier whose callable remains in the parent worker.
     verifier_id: str | None = None
     verifier_hash: str | None = None
@@ -139,31 +184,43 @@ class AgentConfig:
     #: append the child's result as a ``UserQuery`` and keep driving. Pass
     #: ``False`` on scored evals that must stay terminal once the parent submits.
     resume_on_child_done: bool = True
+    context_policy: ContextPolicy = ContextPolicy.RESIDENT
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.backend, str) or not self.backend:
+            raise ValueError("agent backend must be a non-empty string")
+        if self.reuse_worker and self.backend != NATIVE_BACKEND:
+            raise ValueError("an external backend cannot reuse its launcher's worker")
+        unknown = set(self.child_config) - _CHILD_FIELDS
+        if unknown:
+            raise ValueError(f"child_config cannot set {sorted(unknown)}")
+        self.context_policy = ContextPolicy(self.context_policy)
 
     def child(self, name: str, **overrides: Any) -> AgentConfig:
+        """The config for a child named ``name``: this one, plus ``child_config``."""
         validate_agent_name(name)
-        schema = deepcopy(self.child_output_schema)
         values = {
             "name": name,
-            "path": f"{self.path}.{name}",
-            "depth": self.depth + 1,
-            "output_schema": schema,
-            "child_output_schema": deepcopy(schema),
+            "output_schema": None,
             "verifier_id": None,
             "verifier_hash": None,
             "reuse_worker": False,
+            **deepcopy(self.child_config),
         }
         return replace(self, **{**values, **overrides})
 
 
-def can_spawn(agent: Any) -> bool:
+#: What ``child_config`` may override; identity and the table itself are not.
+_CHILD_FIELDS = frozenset(f.name for f in fields(AgentConfig)) - {"name", "child_config"}
+
+
+def can_spawn(graph: Any, agent: Any) -> bool:
     """Whether this agent can create another recursion level."""
+    from rlmflow.graph import reads
+
     if agent is None:
         return False
-    config = getattr(agent, "config", None)
-    if config is None:
-        return False
-    return config.max_depth > 0 and config.depth < config.max_depth
+    return agent.config.max_depth > 0 and reads.depth(graph, agent) < agent.config.max_depth
 
 
 def at_leaf(flow: Any = None, node: Any = None) -> bool:
@@ -171,21 +228,22 @@ def at_leaf(flow: Any = None, node: Any = None) -> bool:
 
     Pass as ``@tool(..., when=at_leaf)``; ``when`` predicates take ``(flow, node)``.
     """
-    agent = None if node is None else getattr(node, "parent_agent", None)
-    return not can_spawn(agent)
+    from rlmflow.graph.nodes import current_step
+
+    step = current_step()
+    return step is None or not can_spawn(step.graph, step.agent)
 
 
 __all__ = [
-    "AGENT_REF_KEY",
+    "AgentArgValue",
+    "AgentConfig",
+    "ContextPolicy",
     "DEFAULT_MAX_OUTPUT_CHARS",
     "DEFAULT_MAX_QUERY_CHARS",
     "DEFAULT_QUERY",
-    "AgentConfig",
-    "AgentArgValue",
     "Input",
-    "agent_ref_id",
+    "NATIVE_BACKEND",
     "at_leaf",
     "can_spawn",
-    "argument_references",
     "validate_agent_name",
 ]

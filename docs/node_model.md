@@ -3,7 +3,7 @@
 `rlmflow` records every agent run as a typed tree of nodes. One agent's slice of that tree is its transcript, and it alternates between **queries**, **actions**, and **outputs**:
 
 - **Queries** (`UserQuery`) are explicit model-facing turns: a host or child message, a repair request, a last-turn prod, or a truncation notice.
-- **Actions** (`ActionNode`) are work the engine did on the agent's behalf: execute a block of code.
+- **Actions** (`ActionNode`) are work the engine did on the agent's behalf: execute a block of code or invoke a configured delegation backend.
 - **Outputs** (`OutputNode`) are values produced by a model, runtime, or terminal engine step. `LLMOutput` renders as the assistant reply; `ExecOutput` and `ErrorOutput` are observations fed back to the model; `DoneOutput` ends the agent.
 
 `AgentStart` is the agent handle. `LLMOutput` is the model reply itself — there is no `LLMAction` node; `ExecAction` records the code the engine then ran.
@@ -21,15 +21,15 @@ Node
 │   ├── FinalQuery
 │   └── TruncationSummary
 ├── ActionNode
-│   └── ExecAction
-│       └── AppendChild
+│   ├── ExecAction
+│   │   └── AppendChild
+│   └── BackendRun
 ├── OutputNode
 │   ├── LLMOutput
 │   ├── ExecOutput
 │   ├── ErrorOutput
 │   │   └── ReplDead
 │   ├── VerificationFailure
-│   ├── Submission
 │   └── DoneOutput
 ```
 
@@ -48,6 +48,7 @@ All nodes share:
 - `parent_agent`: the `AgentStart` whose transcript this node belongs to;
 - `root`: the `AgentStart` at the top of the run;
 - `seq`: position in this node's own agent transcript, counting from 0;
+- `metadata`: durable, application-defined strict-JSON telemetry and annotations;
 - `started_at` / `finished_at`: when the step that produced the node ran, or `None` for a node written from inside a step.
 
 The concrete payloads are:
@@ -62,14 +63,34 @@ The concrete payloads are:
 | `TransitionDecision`  | `transition_decision`  | semantic guard candidates and selected durable rule       |
 | `LLMOutput`           | `llm_output`           | `content` (the reply), `code`, `usage`, `prompt_id`       |
 | `ExecAction`          | `exec_action`          | `code`                                                    |
+| `BackendRun`    | `backend_run`    | backend, external run ID, started state                   |
 | `ExecOutput`          | `exec_output`          | `content` (the REPL's stdout)                             |
 | `ErrorOutput`         | `error_output`         | execution error text, `error="exec"`                      |
 | `ReplDead`            | `repl_dead`            | crash text plus the cold-REPL note, `error="repl"`        |
 | `VerificationFailure` | `verification_failure` | rejected candidate and validation feedback                |
-| `Submission`          | `submission`           | locally valid candidate awaiting graph acceptance         |
 | `DoneOutput`          | `done_output`          | `result`, `content`                                       |
 
-`LLMOutput.code` is the sole non-empty explicit `repl` block extracted from the reply; `ExecAction.code` is what the engine actually ran. Plain text, ordinary Markdown code fences, empty blocks, and multiple `repl` blocks are non-executable protocol errors. `LLMOutput.prompt_id` keys into `agent.system_prompts`, so the exact system prompt a turn ran under is recoverable with `agent.system_prompt_for(node)`. `DoneOutput` is the only terminal node: an agent is finished when `agent.terminal` is true, which means its frontier is a `DoneOutput`. Model-driven completion comes from `submit(value)` inside the REPL. Local schema and launch verifier checks happen before a `Submission` lands; the automatic acceptance transition then produces `DoneOutput`.
+`LLMOutput.code` is the sole non-empty explicit `repl` block extracted from the reply; `ExecAction.code` is what the engine actually ran. A reply with no `repl` fence (plain text, possibly with ordinary Markdown code fences) is the agent's final answer and lands `DoneOutput` or `VerificationFailure` directly. An empty reply, an empty or unclosed `repl` block, or several `repl` blocks become an engine-written `ExecAction` that raises `MissingReplError` with the reason, recorded in `metadata["protocol_error"]`; the resulting `ErrorOutput` is recovered from like any failing code. `LLMOutput.prompt_id` keys into `agent.system_prompts`, so the exact system prompt a turn ran under is recoverable with `agent.system_prompt_for(node)`. `DoneOutput` is the only terminal node: an agent is finished when `agent.terminal` is true, which means its frontier is a `DoneOutput`. Model-driven completion comes from `submit(value)` inside the REPL or from a plain-text reply. Local schema and launch verifier checks happen before `DoneOutput` lands; rejected candidates produce `VerificationFailure`.
+
+## Metadata
+
+Every node has an open `metadata` dictionary for consumer-defined JSON. Use
+namespaced keys so independent integrations compose:
+
+```python
+node.annotate("eval.verdict", {"score": 0.8, "reason": "exact match"})
+node.annotate("tool.calls", {"name": "lookup", "cache_hit": True}, append=True)
+```
+
+Metadata survives save/load and fork. Persisted node records place it under
+`metadata.extensions`; the rest of the record's `metadata` object remains the
+stable engine envelope for creation time, timing, model identity, and usage.
+Core graph invariants remain typed fields, while provider metrics, tool
+receipts, rewards, cache evidence, and experiment IDs can evolve independently.
+
+Host-side proxy tools may call `rlmflow.record_metadata(...)` to annotate the
+currently executing action without receiving its `Node` explicitly. Successful
+and failed proxy calls also append compact receipts to `tools.calls`.
 
 ## Navigating
 
@@ -107,9 +128,22 @@ AgentStart
   -> ExecOutput(content="...")
   -> LLMOutput(code="submit({'answer': x})")
   -> ExecAction
-  -> Submission(result={"answer": ...})
   -> DoneOutput(result={"answer": ...})
 ```
+
+When the host configures an external delegation backend, launched children use
+a shorter but still durable path:
+
+```text
+AgentStart
+  -> BackendRun(backend="claude-code", run_id="...")
+  -> DoneOutput | VerificationFailure
+```
+
+`VerificationFailure` produces `RepairQuery`, followed by another
+`BackendRun`. The backend identity lives in `AgentConfig`; the model
+cannot select it. A started action retains its run ID so a cold resume does not
+silently launch unrelated work.
 
 Without `output_schema`, `DoneOutput.result`, `Flow.run()`, and child result handles keep the strict JSON value passed to `submit` (strings stay strings; dictionaries with string keys, lists, finite numbers, booleans, and `None` stay typed). Tuples, sets, bytes, non-finite floats, arbitrary objects, dictionaries with non-string keys, and nested occurrences of those values produce an execution error rather than being stringified. With an explicit schema, a JSON value or JSON-encoded string is parsed and stored as the validated typed value.
 
@@ -157,14 +191,15 @@ ExecAction
 
 `node.next` skips the sub-agent branches, so the parent's transcript reads as one chain whether or not it delegated. Every child remains beneath the `ExecAction` that launched it. Handle-valued inputs add dataflow edges between those agents without changing ownership. Independent children run concurrently when their calls are passed to `asyncio.gather`. Each child's answer is its `DoneOutput.result`; a child that crashes has the failure recorded as its answer, so its siblings still settle. A result not routed through another agent's inputs also reaches its parent as a `[handoff]` `UserQuery`: a mapping is listed as fields, a scalar as labeled JSON.
 
-A host can set `AgentConfig.child_output_schema` so launched children get a schema without the parent passing `schema=` on each call. Launch `schema=` still wins. The coding CLI uses `CODING_HANDOFF_SCHEMA` this way; evals do not.
+A host can set `AgentConfig(child_config={"output_schema": ...})` so launched children get a schema without the parent passing `schema=` on each call. Launch `schema=` still wins. The coding CLI uses `CODING_HANDOFF_SCHEMA` this way; evals do not.
 
 ## Streaming Semantics
 
 `flow.run_streaming(root, until=...)` advances the run and yields each node as it lands; the tree is mutated in place. One logical reasoning turn is usually several node transitions:
 
 1. LLM half: `AgentStart | UserQuery | ExecOutput | ErrorOutput -> LLMOutput`.
-1. Resolution: exactly one non-empty `repl` block goes through `ExecAction -> <observation | Submission | VerificationFailure>`; any other model response becomes a protocol `ErrorOutput`. A `Submission` then transitions to `DoneOutput`.
+1. Resolution: exactly one non-empty `repl` block goes through `ExecAction -> <observation | DoneOutput | VerificationFailure>`; any other model response becomes a protocol `ErrorOutput`.
+1. External backend: an agent whose `config.backend` is not `"rlmflow"` goes through `AgentStart | RepairQuery -> BackendRun -> DoneOutput | VerificationFailure`.
 
 Each pass, the engine steps every leaf in the tree — the frontier of every agent that has not answered and is not already being stepped — so the parent and its children advance together:
 

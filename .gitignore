@@ -64,6 +64,7 @@ docs/internal/*
 examples/*_log.md
 examples/**/workspace/*
 examples/runs/
+/runs/
 */**/runs/*
 .DS_Store
 */**/needle_trace_images/*

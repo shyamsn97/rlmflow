@@ -1,15 +1,18 @@
 """Local reward, delegation credit, advantages, and depth weights.
 
-Pure functions over finished ``AgentStart`` trees: no env, no model, no I/O.
+Pure functions over finished agent trees in a graph: no env, no model, no I/O.
 This is the part the RAO paper is actually about, so it stays testable on
-hand-built trees.
+hand-built graphs.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
+from rlmflow.graph import reads
+from rlmflow.graph.graph import Graph
 from rlmflow.graph.nodes import AgentStart
 
 #: Weight on the mean local score of an agent's immediate children.
@@ -23,6 +26,12 @@ class IncompleteTreeError(RuntimeError):
     children that are still running is silently wrong, so scoring refuses
     rather than guessing.
     """
+
+
+class RewardFn(Protocol):
+    """Score every agent in one completed execution graph."""
+
+    def __call__(self, graph: Graph, root: AgentStart) -> Mapping[str, float]: ...
 
 
 @dataclass
@@ -47,13 +56,13 @@ class NodeScore:
         return self.advantage * self.weight
 
 
-def agent_id(agent: AgentStart) -> str:
+def agent_id(graph: Graph, agent: AgentStart) -> str:
     """The readable, tree-unique id used to key scores: ``root.child0.child1``."""
-    return agent.config.path
+    return reads.path(graph, agent)
 
 
-def agents(root: AgentStart) -> list[AgentStart]:
-    return list(root.iter_agents())
+def agents(graph: Graph, root: AgentStart) -> list[AgentStart]:
+    return reads.tree(graph, root)
 
 
 def mean(values: Sequence[float]) -> float:
@@ -61,6 +70,7 @@ def mean(values: Sequence[float]) -> float:
 
 
 def score_tree(
+    graph: Graph,
     root: AgentStart,
     local: Mapping[str, float],
     *,
@@ -71,24 +81,26 @@ def score_tree(
     ``local`` must cover every agent. A missing entry is a bug in the caller's
     scoring, not a zero, so it raises.
     """
-    found = agents(root)
-    unfinished = [agent_id(agent) for agent in found if not agent.terminal]
+    found = agents(graph, root)
+    ids = {agent.id: agent_id(graph, agent) for agent in found}
+    unfinished = [ids[agent.id] for agent in found if not reads.terminal(graph, agent)]
     if unfinished:
         raise IncompleteTreeError(f"cannot score a tree with agents still running: {unfinished}")
 
-    missing = [agent_id(agent) for agent in found if agent_id(agent) not in local]
+    missing = [ids[agent.id] for agent in found if ids[agent.id] not in local]
     if missing:
         raise KeyError(f"no local score for {missing}")
 
+    base = reads.depth(graph, root)
     scores: dict[str, NodeScore] = {}
     for agent in found:
         # Each immediate child's *local* score, not its augmented reward, so a
         # successful grandchild credits its own parent and stops there.
-        delegation = mean([local[agent_id(child)] for child in agent.sub_agents])
-        own = local[agent_id(agent)]
-        scores[agent_id(agent)] = NodeScore(
-            agent_id=agent_id(agent),
-            depth=agent.config.depth,
+        delegation = mean([local[ids[child.id]] for child in reads.children(graph, agent)])
+        own = local[ids[agent.id]]
+        scores[ids[agent.id]] = NodeScore(
+            agent_id=ids[agent.id],
+            depth=reads.depth(graph, agent) - base,
             local=own,
             delegation=delegation,
             reward=own + delegation_bonus * delegation,
@@ -149,6 +161,7 @@ __all__ = [
     "DELEGATION_BONUS",
     "IncompleteTreeError",
     "NodeScore",
+    "RewardFn",
     "agent_id",
     "agents",
     "assign_advantages",

@@ -1,4 +1,5 @@
-"""Execution outcomes and the stateful Python worker contract."""
+"""Execution outcomes, the stateful Python worker contract, and how agent handles
+cross the REPL boundary as data-only references."""
 
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from collections.abc import Callable, Iterable, MutableMapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 
 class DoneSignal(BaseException):
@@ -48,12 +49,6 @@ class VerificationSignal(BaseException):
 
 class _CellStopIteration(Exception):
     """StopIteration from cell code, lifted out of the async runner (PEP 479)."""
-
-
-#: Observation returned for an invalid action reply, so the retry knows what to fix.
-MISSING_REPL_NOTE = """MissingReplError: expected exactly one non-empty
-fenced ```repl``` block. Nothing ran and this turn produced no observation.
-Reply with one block that carries out the next step or calls submit(value)."""
 
 
 class ReplStatus(StrEnum):
@@ -283,8 +278,6 @@ class LocalRepl:
         pass
 
     async def run(self, code: str, *, binding: dict[str, Any] | None = None) -> ReplRun:
-        if not code.strip():
-            return ReplRun(output=MISSING_REPL_NOTE, status=ReplStatus.ERROR)
         current = binding or {"args": self.args, "env": self.env}
         current.setdefault("args", self.args)
         current.setdefault("env", self.env)
@@ -338,17 +331,71 @@ class LocalRepl:
             raise _CellStopIteration from None
 
 
+#: The worker cannot import ``rlmflow.graph``; this must equal
+#: ``rlmflow.graph.nodes.AGENT_REF_KEY``.
+AGENT_REF_KEY = "$rlmflow_agent"
+AGENTS_BINDING = "__rlmflow_agents__"
+AGENT_WAIT_TOOL = "__rlmflow_wait_agent__"
+
+
+class AgentReference:
+    """A REPL-side object that names one agent by ``agent_id``."""
+
+    __slots__ = ()
+    agent_id: str
+
+
+def encode_agent_references(value: object) -> object:
+    """Replace agent handles with data-only ``{AGENT_REF_KEY: id}`` references."""
+    if isinstance(value, AgentReference):
+        return {AGENT_REF_KEY: value.agent_id}
+    if isinstance(value, dict):
+        return {key: encode_agent_references(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [encode_agent_references(item) for item in value]
+    return value
+
+
+#: How a proxied tool's saved result rebuilds a namespace on replay.
+ToolRestore = Literal["result"] | Callable[..., Any] | None
+
+
+@dataclass(frozen=True)
+class ToolMetadata:
+    name: str
+    description: str
+    proxy: bool = False
+    is_async: bool = False
+    #: ``(flow, node) -> bool``. ``None`` means always visible. Evaluated for
+    #: both the prompt and the REPL binding.
+    when: Callable[..., bool] | None = None
+    #: Namespace restoration policy. ``"result"`` returns the saved value;
+    #: a callable rebuilds a tool-specific value from it.
+    restore: ToolRestore = None
+
+
+def get_tool_metadata(fn: Any) -> ToolMetadata | None:
+    target = getattr(fn, "__func__", fn)
+    return getattr(target, "_tool_meta", None)
+
+
 __all__ = [
-    "DEFAULT_PREIMPORTS",
+    "ToolMetadata",
+    "ToolRestore",
+    "get_tool_metadata",
+    "AGENTS_BINDING",
+    "AGENT_WAIT_TOOL",
+    "AgentReference",
     "CurrentMapping",
     "CurrentObject",
-    "MISSING_REPL_NOTE",
+    "DEFAULT_PREIMPORTS",
     "DoneSignal",
-    "VerificationSignal",
     "LocalRepl",
     "Repl",
     "ReplRun",
     "ReplStatus",
+    "VerificationSignal",
     "base_namespace",
     "current_binding",
+    "encode_agent_references",
 ]

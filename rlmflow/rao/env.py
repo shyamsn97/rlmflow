@@ -1,14 +1,13 @@
-"""The OpenEnv boundary: one env per rollout, shared by every agent in the tree.
+"""The environment boundary: one env per rollout, shared by every agent in the tree.
 
 The rollout is the episode. The root and every subagent act on the same env,
 because they are all working on the same world — that is what delegation means
 here. Concurrent siblings therefore serialize on one lock: two interleaved steps
 against one world produce an episode no reward can be trusted on.
 
-The protocol below is deliberately the shape of an OpenEnv ``EnvClient``
-(https://github.com/huggingface/OpenEnv), so a real client satisfies it with no
-adapter at all. ``rlmflow`` never needs the ``openenv`` package to be installed:
-the fakes in the tests satisfy the same three methods.
+The protocol accepts the official Gymnasium ``reset``/``step`` tuple API and
+OpenEnv's equivalent result objects. ``rlmflow`` imports neither package in its
+core; real environments and lightweight test doubles satisfy the same methods.
 """
 
 from __future__ import annotations
@@ -18,15 +17,17 @@ import inspect
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Protocol
 
+from rlmflow.graph import reads
+from rlmflow.graph.graph import Graph
+from rlmflow.graph.nodes import AgentStart, record_metadata
 from rlmflow.tools import tool
 
 
 class Env(Protocol):
-    """The subset of an OpenEnv ``EnvClient`` a rollout uses.
+    """The Gymnasium/OpenEnv methods a rollout uses.
 
-    OpenEnv's ``reset``/``step``/``close`` return a value that can be awaited or
-    read synchronously, so declaring them without ``async`` matches the real
-    client. :func:`resolve` handles either.
+    Methods may be synchronous (Gymnasium) or awaitable (OpenEnv);
+    :func:`resolve` handles either.
     """
 
     def reset(self, **kwargs: Any) -> Any:
@@ -37,6 +38,18 @@ class Env(Protocol):
 
     def close(self) -> Any:
         """Disconnect, and stop the container if this client started one."""
+
+
+class ForkableEnv(Env, Protocol):
+    """An agent-local episode view over a world shared with its parent.
+
+    Forking is synchronous because child creation happens inside the synchronous
+    ``launch_agent`` boundary. The returned env may share mutable world state,
+    but must own its task, termination state, and reward bookkeeping.
+    """
+
+    def fork(self, task: str, args: dict[str, Any]) -> Env:
+        """Create one child episode without resetting the shared world."""
 
 
 @dataclass(frozen=True)
@@ -96,25 +109,45 @@ def reward_of(result: Any) -> float:
     carries its own ``reward``, so a ``None`` on the result falls back to the
     observation before being read as zero.
     """
-    reward = getattr(result, "reward", None)
+    reward = result[1] if isinstance(result, tuple) and len(result) in (4, 5) else None
+    if reward is None:
+        reward = getattr(result, "reward", None)
     if reward is None:
         reward = getattr(getattr(result, "observation", None), "reward", None)
     return float(reward or 0.0)
 
 
 def done_of(result: Any) -> bool:
+    if isinstance(result, tuple):
+        if len(result) == 5:
+            return bool(result[2] or result[3])
+        if len(result) == 4:
+            return bool(result[2])
     if getattr(result, "done", False):
         return True
     return bool(getattr(getattr(result, "observation", None), "done", False))
 
 
+def observation_of(result: Any) -> Any:
+    """Read observations from Gymnasium tuples or OpenEnv result objects."""
+    if isinstance(result, tuple):
+        if len(result) in (2, 4, 5):
+            return result[0]
+        raise ValueError("environment returned an unsupported tuple shape")
+    return getattr(result, "observation", result)
+
+
 @dataclass
 class EnvSession:
-    """One env bound to one rollout: serialized access, plus the step log.
+    """One agent-local env view, serialized with every view of the same world.
 
     ``action_cls`` is the env's typed ``Action`` when the caller has one. Left
     unset, actions go out as plain dicts, which is what ``GenericEnvClient``
     accepts and what lets an agent act on an env whose package is not installed.
+
+    Forked sessions share ``steps`` and ``lock`` but not ``done`` or their local
+    step count. A child can therefore finish its assignment while its parent
+    continues acting on the shared world.
     """
 
     env: Env
@@ -123,6 +156,7 @@ class EnvSession:
     steps: list[EnvStep] = field(default_factory=list)
     done: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    _local_steps: int = field(default=0, init=False, repr=False)
 
     def action(self, **fields: Any) -> Any:
         return dict(fields) if self.action_cls is None else self.action_cls(**fields)
@@ -131,27 +165,50 @@ class EnvSession:
         result = await resolve(self.env.reset(**kwargs))
         self.steps.clear()
         self.done = False
-        # reset() returns a StepResult, not a bare observation.
-        return plain(getattr(result, "observation", result))
+        self._local_steps = 0
+        return plain(observation_of(result))
+
+    def fork(self, task: str, args: dict[str, Any]) -> tuple[EnvSession, Any]:
+        """Fork a child episode and synchronously return its initial observation."""
+        fork = getattr(self.env, "fork", None)
+        if not callable(fork):
+            # Compatibility for envs whose actions may be shared but whose
+            # protocol has no independent child episode.
+            return self, None
+        child_env = fork(task, args)
+        if inspect.isawaitable(child_env):
+            raise TypeError("Env.fork() must be synchronous")
+        child = EnvSession(
+            child_env,
+            action_cls=self.action_cls,
+            max_steps=self.max_steps,
+            steps=self.steps,
+            lock=self.lock,
+        )
+        result = child_env.reset()
+        if inspect.isawaitable(result):
+            raise TypeError("a forked env's reset() must be synchronous")
+        return child, plain(observation_of(result))
 
     async def act(self, agent_id: str, **fields: Any) -> EnvStep:
         """Take one step on behalf of ``agent_id``, one caller at a time."""
         async with self.lock:
             if self.done:
                 raise EpisodeOver("the episode is over; finish with what you have")
-            if self.max_steps is not None and len(self.steps) >= self.max_steps:
+            if self.max_steps is not None and self._local_steps >= self.max_steps:
                 self.done = True
-                raise EpisodeOver(f"this rollout is capped at {self.max_steps} env steps")
+                raise EpisodeOver(f"this agent is capped at {self.max_steps} env steps")
             result = await resolve(self.env.step(self.action(**fields)))
             step = EnvStep(
                 agent_id=agent_id,
                 action=dict(fields),
-                observation=plain(getattr(result, "observation", result)),
+                observation=plain(observation_of(result)),
                 reward=reward_of(result),
                 done=done_of(result),
                 index=len(self.steps),
             )
             self.steps.append(step)
+            self._local_steps += 1
             self.done = step.done
             return step
 
@@ -187,9 +244,35 @@ def env_tool(session: EnvSession, agent_id: str):
     )
     async def env_step(**fields: Any) -> dict[str, Any]:
         step = await session.act(agent_id, **fields)
+        record_metadata(
+            "environment.steps",
+            {
+                "agent_id": step.agent_id,
+                "action": step.action,
+                "observation": step.observation,
+                "reward": step.reward,
+                "done": step.done,
+                "index": step.index,
+            },
+            append=True,
+        )
         return {"observation": step.observation, "reward": step.reward, "done": step.done}
 
     return env_step
+
+
+def environment_rewards(graph: Graph, root: AgentStart) -> dict[str, float]:
+    """Sum graph-recorded environment rewards by acting agent in ``root``'s tree."""
+    agents = reads.tree(graph, root)
+    rewards = {reads.path(graph, agent): 0.0 for agent in agents}
+    for node in (node for agent in agents for node in graph.nodes(agent=agent.id)):
+        for receipt in node.metadata.get("environment.steps", []):
+            if not isinstance(receipt, dict):
+                continue
+            actor = receipt.get("agent_id")
+            if actor in rewards:
+                rewards[actor] += float(receipt.get("reward", 0.0) or 0.0)
+    return rewards
 
 
 async def open_env(
@@ -232,9 +315,12 @@ __all__ = [
     "EnvSession",
     "EnvStep",
     "EpisodeOver",
+    "ForkableEnv",
     "done_of",
     "env_tool",
+    "environment_rewards",
     "open_env",
+    "observation_of",
     "plain",
     "resolve",
     "reward_of",

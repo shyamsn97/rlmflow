@@ -1,24 +1,37 @@
-"""Build recursive agents as inspectable node trees."""
+"""Build recursive agents as inspectable, graph-backed runs."""
 
 from importlib import import_module
 from typing import Any
 
 from rlmflow.consumers import (
     ConsumerGroup,
-    FlowTUI,
     GraphCheckpointer,
     LiveGraphTree,
     LiveTreeRenderer,
     StreamConsumer,
     WorkspaceSync,
-    render_forest,
-    render_tree,
 )
-from rlmflow.engine import boundaries
-from rlmflow.engine.execution import Pool, SequentialPool, StepResult, TaskQueue, ThreadPool
-from rlmflow.engine.transitions import TransitionPolicyError, TransitionProtocolError
-from rlmflow.graph import persistence
-from rlmflow.graph.config import Input, at_leaf, can_spawn
+from rlmflow.engine.scheduler import (
+    Boundary,
+    Pool,
+    SequentialPool,
+    StepResult,
+    TaskQueue,
+    ThreadPool,
+)
+from rlmflow.engine.steps import AgentBackend, TransitionPolicyError
+from rlmflow.graph import ops, persistence, reads
+from rlmflow.graph.config import ContextPolicy, Input, at_leaf, can_spawn
+from rlmflow.graph.graph import (
+    DEPENDS_ON,
+    FROM,
+    NEXT,
+    REPORTS_TO,
+    Edge,
+    Graph,
+    InvariantError,
+    StaleFrontier,
+)
 from rlmflow.graph.nodes import (
     DEFAULT_MAX_QUERY_CHARS,
     DEFAULT_QUERY,
@@ -26,6 +39,7 @@ from rlmflow.graph.nodes import (
     AgentConfig,
     AgentStart,
     AppendChild,
+    BackendRun,
     ChatMessage,
     DoneOutput,
     ErrorOutput,
@@ -33,33 +47,28 @@ from rlmflow.graph.nodes import (
     ExecOutput,
     FinalQuery,
     LLMOutput,
+    LLMUsage,
     Node,
     OutputNode,
     RepairQuery,
     ReplDead,
-    RunStats,
-    Submission,
+    Step,
     TransitionDecision,
     TruncationSummary,
     TurnMode,
     UserQuery,
     VerificationFailure,
-    start,
-    turn_mode_for,
+    current_step,
+    record_metadata,
+    running_step,
 )
-from rlmflow.instructor import InstructorEngine
-from rlmflow.jev import JevEngine
-from rlmflow.llm import (
-    AnthropicClient,
-    LLMChunk,
-    LLMClient,
-    LLMUsage,
-    OpenAIClient,
-    PooledLLMClient,
-    TinkerClient,
-    is_retryable,
-    retry_transient,
-)
+from rlmflow.integrations.claude_code import ClaudeCodeBackend
+from rlmflow.integrations.instructor import InstructorEngine
+from rlmflow.integrations.jev import JevEngine
+from rlmflow.llm import LLMChunk, LLMClient, PooledLLMClient, is_retryable, retry_transient
+from rlmflow.llm.anthropic import AnthropicClient
+from rlmflow.llm.openai import OpenAIClient
+from rlmflow.llm.tinker import TinkerClient
 from rlmflow.prompts import (
     PinnedPromptSectionError,
     Prompt,
@@ -84,22 +93,20 @@ from rlmflow.runtime import (
 )
 from rlmflow.structured import (
     DEFAULT_OUTPUT_CODEC,
-    JsonSchemaCodec,
-    OutputCodec,
-    Schema,
-    StructuredOutputError,
-    json_schema_for,
-)
-from rlmflow.structured_engines import (
     ChatStructuredEngine,
     ConfidenceGate,
     FallbackEngine,
+    JsonSchemaCodec,
     LowConfidenceError,
+    OutputCodec,
     RetryingEngine,
+    Schema,
     StructuredEngine,
+    StructuredOutputError,
     StructuredRequest,
     StructuredResult,
     UnsupportedStructuredOutputError,
+    json_schema_for,
 )
 from rlmflow.tools import (
     CODING_HANDOFF_SCHEMA,
@@ -114,19 +121,22 @@ from rlmflow.tools import (
     tool,
 )
 from rlmflow.utils import find_code_blocks
+from rlmflow.view.text import render_forest, render_tree
 
 #: Names resolved on first access. ``flow`` because it pulls in the shared prompt
 #: stack, which imports these nodes back, so an eager import is a cycle;
-#: ``adapters`` because it probes for ``dspy``, which is slow and optional;
-#: ``view`` because two of its renderers carry optional dependencies, and a run
-#: that never draws itself should not pay for them.
+#: ``integrations.dspy`` because it probes for ``dspy``, which is slow and optional;
+#: ``FlowTUI`` because it needs Textual; ``view`` because two of its renderers
+#: carry optional dependencies, and a run that never draws itself should not pay
+#: for them.
 _LAZY = {
     "Flow": "rlmflow.flow",
+    "FlowTUI": "rlmflow.cli.tui",
     "StepUntil": "rlmflow.flow",
-    "code_block": "rlmflow.utils.helpers",
-    "DSPyFlow": "rlmflow.adapters",
-    "FlowLLM": "rlmflow.adapters",
-    "messages_to_query": "rlmflow.adapters",
+    "code_block": "rlmflow.utils",
+    "DSPyFlow": "rlmflow.integrations.dspy",
+    "FlowLLM": "rlmflow.flow",
+    "messages_to_query": "rlmflow.flow",
     "graph_svg": "rlmflow.view",
     "open_viewer": "rlmflow.view",
     "render_html": "rlmflow.view",
@@ -152,9 +162,24 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "Boundary",
+    "DEPENDS_ON",
+    "FROM",
+    "REPORTS_TO",
+    "NEXT",
+    "ContextPolicy",
+    "Edge",
+    "Graph",
+    "InvariantError",
+    "current_step",
+    "ops",
+    "reads",
+    "running_step",
     "DEFAULT_MAX_QUERY_CHARS",
     "DEFAULT_QUERY",
     "FILE_TOOLS",
+    "ClaudeCodeBackend",
+    "AgentBackend",
     "AgentConfig",
     "AgentDirectory",
     "AgentFrontier",
@@ -168,6 +193,7 @@ __all__ = [
     "CODING_HANDOFF_SCHEMA",
     "AnthropicClient",
     "AppendChild",
+    "BackendRun",
     "ChatStructuredEngine",
     "ChatMessage",
     "ConfidenceGate",
@@ -210,8 +236,8 @@ __all__ = [
     "Repl",
     "ReplDead",
     "RepairQuery",
-    "RunStats",
-    "Submission",
+    "Step",
+    "StaleFrontier",
     "TransitionDecision",
     "ReplRun",
     "ReplStatus",
@@ -232,7 +258,6 @@ __all__ = [
     "TinkerClient",
     "ToolMetadata",
     "TransitionPolicyError",
-    "TransitionProtocolError",
     "InstructorEngine",
     "Input",
     "TruncationSummary",
@@ -244,7 +269,6 @@ __all__ = [
     "UnsupportedStructuredOutputError",
     "WrappedRuntime",
     "WorkspaceSync",
-    "boundaries",
     "code_block",
     "find_code_blocks",
     "get_tool_metadata",
@@ -262,15 +286,14 @@ __all__ = [
     "render_tree",
     "replay",
     "retry_transient",
+    "record_metadata",
     "save_frames",
     "save_gif",
     "save_html",
     "save_svg",
     "snapshot",
-    "start",
     "steps",
     "timeline",
     "tool",
-    "turn_mode_for",
     "view",
 ]

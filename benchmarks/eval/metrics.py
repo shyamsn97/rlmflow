@@ -8,14 +8,14 @@ from typing import Any
 
 from benchmarks.eval.telemetry import RowTelemetry
 from benchmarks.eval.types import Row
-from rlmflow import Node
+from rlmflow import Graph, reads
 from rlmflow.graph.nodes import AgentStart, LLMOutput, TransitionDecision
 
 
-def graph_metrics(graph: Node | None) -> dict[str, Any]:
+def graph_metrics(graph: Graph | None) -> dict[str, Any]:
     if graph is None:
         return {}
-    nodes = list(graph.walk())
+    nodes = graph.nodes()
     agents = [node for node in nodes if isinstance(node, AgentStart)]
     outputs = [node for node in nodes if isinstance(node, LLMOutput)]
     decisions = [node for node in nodes if isinstance(node, TransitionDecision)]
@@ -36,8 +36,8 @@ def graph_metrics(graph: Node | None) -> dict[str, Any]:
         "decision_output_tokens": decision_output_tokens,
         "decision_reasoning_tokens": decision_reasoning_tokens,
         "decision_latency_seconds": decision_latency_seconds,
-        "max_depth": max((agent.config.depth for agent in agents), default=0),
-        "max_branching": max((len(agent.sub_agents) for agent in agents), default=0),
+        "max_depth": max((reads.depth(graph, agent) for agent in agents), default=0),
+        "max_branching": max((len(reads.children(graph, agent)) for agent in agents), default=0),
     }
 
 

@@ -1,4 +1,4 @@
-"""Saving and loading a Node trajectory."""
+"""Saving and loading a graph."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ import importlib.util
 import shutil
 from pathlib import Path
 
-from rlmflow import AgentStart, persistence
+from rlmflow import AgentStart, Graph, reads
 
 
-def build_graph() -> AgentStart:
+def build_graph():
     spec = importlib.util.spec_from_file_location(
         "graph_01_query", Path(__file__).with_name("01_query.py")
     )
@@ -33,14 +33,14 @@ def main() -> None:
     if out_dir.exists():
         shutil.rmtree(out_dir)
 
-    graph = build_graph()
-    run_dir = graph.save(out_dir / "run")
-    loaded = AgentStart.load(run_dir)
+    g, root = build_graph()
+    run_dir = g.save(out_dir / "run")
+    loaded = Graph.load(run_dir)
 
     print(f"saved: {run_dir}")
-    print("agents:", [node.config.path for node in loaded.walk() if isinstance(node, AgentStart)])
-    print("result:", loaded.result())
-    print("roundtrip:", persistence.to_document(graph) == persistence.to_document(loaded))
+    print("agents:", [reads.path(loaded, agent) for agent in loaded.nodes(AgentStart)])
+    print("result:", reads.result(loaded, loaded.node(root.id)))
+    print("roundtrip:", [item.id for item in loaded.items()] == [item.id for item in g.items()])
 
 
 if __name__ == "__main__":

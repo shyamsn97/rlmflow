@@ -52,7 +52,9 @@ def _debug_page(port: int, target: str, timeout: float = 10) -> str:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=1) as response:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/json/list", timeout=1
+            ) as response:
                 pages = json.load(response)
             matching = [
                 page

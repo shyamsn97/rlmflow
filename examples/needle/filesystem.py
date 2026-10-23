@@ -25,12 +25,14 @@ from rlmflow import (
     AgentConfig,
     DockerRuntime,
     Flow,
+    Graph,
     LocalRuntime,
     SubprocessRuntime,
+    reads,
 )
 from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
 from rlmflow.llm import client_for
-from rlmflow.tools.filesystem import (
+from rlmflow.tools.files import (
     append_file,
     edit_file,
     line_count,
@@ -140,15 +142,16 @@ def main():
             llm_clients=llm_clients,
             runtime=runtime,
             tools=NEEDLE_FILE_TOOLS,
-            root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
         )
 
-        root = flow.start(
+        g = Graph()
+        root = g.create_agent(
             f"There are {args.num_files} text files in haystack/. "
             "Exactly one line in one file matches the pattern "
             "`The magic number is <number>`. Find and return the number. "
             "There are too many files to search manually, so split the work "
-            "into batches."
+            "into batches.",
+            config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
         )
         out_dir = Path(args.out_dir)
         consumers = ConsumerGroup()
@@ -159,8 +162,8 @@ def main():
 
         async def drive() -> None:
             try:
-                async for node in flow.run_streaming(root):
-                    consumers.handle(node)
+                async for item in flow.run_streaming(g):
+                    consumers.handle(item, g)
             finally:
                 consumers.close()
                 await flow.aclose()
@@ -168,9 +171,10 @@ def main():
         asyncio.run(drive())
 
         print(f"\n{'=' * 40}")
-        print(f"Result:         {root.result()}")
+        result = reads.result(g, root)
+        print(f"Result:         {result}")
         print(f"Actual answer:  {answer}")
-        print(f"Correct:        {answer in str(root.result())}")
+        print(f"Correct:        {answer in str(result)}")
         print(f"Run saved to    {out_dir}")
 
     finally:

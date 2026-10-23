@@ -29,7 +29,7 @@ class FakeModel(Model):
         # quotes); match the key loosely so the secret hasn't-been-seen branch
         # fires regardless of quote style before falling back to finish(...).
         if wants_repl and answer == "UNKNOWN" and "haystack" in prompt:
-            return '```repl\nprint(haystack)\n```'
+            return "```repl\nprint(haystack)\n```"
         if wants_repl:
             return f'```repl\nfinish("{answer}")\n```'
         return answer

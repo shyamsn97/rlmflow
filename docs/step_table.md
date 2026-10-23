@@ -1,6 +1,6 @@
 # Transition policy
 
-Default policy is declared beside its producers in `rlmflow.engine.steps` with the internal module-level `@transition(...)` decorator. Each decorated callable is one `TransitionFunction` carrying its source, guard, stable identity, and producer. `rlmflow.engine.transitions.resolve(functions, node, judge)` resolves deterministic guards in order and semantic guards as one choice set.
+Default policy is declared beside its producers in `rlmflow.engine.steps` with the internal module-level `@transition(...)` decorator. Each decorated callable is one `TransitionFunction` carrying its source, guard, stable identity, and producer. `rlmflow.engine.steps.resolve(functions, node, judge)` resolves deterministic guards in order and semantic guards as one choice set.
 
 Applications add an earlier, instance-local rule with `@flow.transition`:
 
@@ -18,3 +18,5 @@ Application handlers and callable guards receive only the source node and may be
 There is no registry: no `Transitions`, `Flow.transitions`, constructor table injection, subclass mutation hook, or model-selected `transition("name")` route. Every edge is an automatic transition function.
 
 `await flow.step(node)` resolves one rule, appends its returned node, and returns that node. Producers return unattached nodes; the driver alone appends them.
+
+The full default table is the `rlmflow.engine.steps` module docstring. After an `LLMOutput`, `to_action` runs a single valid `repl` block, `to_text_reply` treats a non-empty reply with no `repl` fence as the final answer, and `to_missing_action` handles every other reply by writing an `ExecAction` that raises `MissingReplError` with the specific reason. Protocol errors therefore never leave the normal loop: the raising action executes, replays, and is recovered from like any other failing code.

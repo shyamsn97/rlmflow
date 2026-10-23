@@ -24,6 +24,8 @@ from rlmflow import (
     AgentConfig,
     DockerRuntime,
     Flow,
+    Graph,
+    reads,
 )
 from rlmflow.llm import client_for
 
@@ -31,7 +33,7 @@ examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "ex
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import checkpoint_stream, example_run_dir  # noqa: E402
+from common import example_run_dir, print_run  # noqa: E402
 
 _TOPICS = [
     "the migration to the new billing system",
@@ -147,22 +149,24 @@ def main() -> None:
     flow = Flow(
         client_for(args.model),
         llm_clients=llm_clients,
-        delegation_model="fast" if args.fast_model else None,
         runtime=runtime,
-        root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
     )
 
-    root = flow.start(SUMMARIZE_QUERY, document=document)
+    g = Graph()
+    root = g.create_agent(
+        SUMMARIZE_QUERY,
+        document=document,
+        config=AgentConfig(
+            max_depth=args.max_depth,
+            max_iters=args.max_iters,
+            child_config={"model": "fast"} if args.fast_model else {},
+        ),
+    )
     out_dir = Path(args.out_dir)
-
-    async def drive() -> None:
-        async for node in checkpoint_stream(flow.run_streaming(root), out_dir):
-            print(f"{node.parent_agent.config.path}  {node.type}")
-
-    asyncio.run(drive())
+    asyncio.run(print_run(flow, g, out_dir))
 
     print(f"\n{'=' * 60}\nFINAL SUMMARY\n{'=' * 60}")
-    print(root.result())
+    print(reads.result(g, root))
 
     print(f"\nRun saved to {out_dir}")
 

@@ -1,39 +1,15 @@
-"""Tool metadata, prompt formatting, and built-in file tools."""
+"""What agents call: the ``@tool`` decorator, built-in tools, and file tools."""
 
-from rlmflow.tools.agents import (
-    AGENT_OBSERVE_TOOL,
-    AGENT_WAIT_TOOL,
-    AGENTS_BINDING,
+from rlmflow.runtime.repl import ToolMetadata, get_tool_metadata
+from rlmflow.tools.agents_view import (
     AgentDirectory,
     AgentFrontier,
     AgentHandle,
     AgentInfo,
     AgentStatus,
 )
-from rlmflow.tools.coding import CODING_HANDOFF_SCHEMA
-from rlmflow.tools.filesystem import FILE_TOOLS, edit_file
-from rlmflow.tools.tools import (
-    ToolMetadata,
-    format_tool_docs,
-    get_tool_metadata,
-    tool,
-)
-
-RESERVED_TOOLS = frozenset(
-    {
-        "finish",
-        "submit",
-        "launch_subagent",
-        "llm_query",
-        "Input",
-        "asyncio",
-        "ENV",
-        "AGENTS",
-        AGENTS_BINDING,
-        AGENT_OBSERVE_TOOL,
-        AGENT_WAIT_TOOL,
-    }
-)
+from rlmflow.tools.files import CODING_HANDOFF_SCHEMA, FILE_TOOLS, edit_file
+from rlmflow.tools.namespace import RESERVED_TOOLS, format_tool_docs, tool
 
 __all__ = [
     "AgentDirectory",

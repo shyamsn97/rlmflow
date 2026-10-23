@@ -158,5 +158,5 @@ Same cycle as steps: `flow.py` finishes, then the modules that decorate or that 
 - `flow.py` is the constructor, the stream loop, and one-line wrappers. Restore, builtin factories, and child launch are not defined in it.
 - `await flow.replay(root)` and `flow.build_tools(node)` still work.
 - The prompt's tool list comes from `Flow.build_tools(node)`; `Flow.build_namespace(node)` adds only non-tool execution bindings.
-- `from rlmflow.engine.restore import replay` is the function. `from rlmflow.view.replay import ...` is still frames.
+- `from rlmflow.runtime.runtime import replay` is the function. `from rlmflow.view.replay import ...` is still frames.
 - No new public type. Callers keep importing `Flow`.

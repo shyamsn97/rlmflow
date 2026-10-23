@@ -25,6 +25,8 @@ from rlmflow import (
     AgentConfig,
     DockerRuntime,
     Flow,
+    Graph,
+    reads,
 )
 from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
 from rlmflow.llm import client_for
@@ -32,6 +34,7 @@ from rlmflow.llm import client_for
 examples_dir = next(path for path in Path(__file__).resolve().parents if path.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
+
 
 def generate_massive_context(
     num_lines: int = 1_000_000,
@@ -98,14 +101,15 @@ def main():
         llm,
         llm_clients=llm_clients,
         runtime=runtime,
-        root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
     )
 
-    root = flow.start(
+    g = Graph()
+    root = g.create_agent(
         "I'm looking for a magic number buried somewhere in the haystack in "
         "`haystack`. What is it? Chunk the string and search the "
         "pieces in parallel.",
         haystack=haystack,
+        config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
     )
     out_dir = Path(args.out_dir)
     consumers = ConsumerGroup()
@@ -116,17 +120,18 @@ def main():
 
     async def drive() -> None:
         try:
-            async for node in flow.run_streaming(root):
-                consumers.handle(node)
+            async for item in flow.run_streaming(g):
+                consumers.handle(item, g)
         finally:
             consumers.close()
 
     asyncio.run(drive())
 
     print(f"\n{'=' * 40}")
-    print(f"Result:         {root.result()}")
+    result = reads.result(g, root)
+    print(f"Result:         {result}")
     print(f"Actual answer:  {answer}")
-    print(f"Correct:        {answer in str(root.result())}")
+    print(f"Correct:        {answer in str(result)}")
     print(f"Run saved to    {out_dir}")
 
     flow.runtime.close_repls()

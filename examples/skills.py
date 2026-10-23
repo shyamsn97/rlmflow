@@ -24,14 +24,18 @@ from pathlib import Path
 from rlmflow import (
     AgentConfig,
     Flow,
+    Graph,
+    Step,
+    reads,
+    running_step,
 )
-from rlmflow.llm import OpenAIClient
+from rlmflow.llm.openai import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import checkpoint_stream, example_run_dir, save_example_graph  # noqa: E402
+from common import example_run_dir, print_run, save_example_graph  # noqa: E402
 
 MAX_ITERS = 5
 
@@ -125,7 +129,6 @@ def build_flow(skills_dir: Path, *, model: str) -> Flow:
     skills = SkillFiles([skill_path])
     return Flow(
         OpenAIClient(model=model),
-        root_config=AgentConfig(max_iters=MAX_ITERS),
         system_prompt_modifiers=skills.modify_prompt,
     )
 
@@ -167,22 +170,19 @@ def main() -> None:
             "(0, 1), (1, 2), (2, 2), (3, 4), then report m, b, the "
             "predicted values, and the L2 residual norm."
         )
-        root = flow.start(query)
+        g = Graph()
+        root = g.create_agent(query, config=AgentConfig(max_iters=MAX_ITERS))
 
         print(f"Wrote skill artifact under: {skills_dir}")
         print("- skills/numpy-linear-algebra/SKILL.md")
         if args.print_prompt:
             print("\n--- rendered system prompt ---\n")
-            print(flow.build_system_prompt(root))
+            with running_step(Step(g, root, root)):
+                print(flow.build_system_prompt(root))
             print("\n--- live run ---\n")
-
-        async def drive() -> None:
-            async for node in checkpoint_stream(flow.run_streaming(root), args.out_dir):
-                print(f"{node.parent_agent.config.path}  {node.type}")
-
-        asyncio.run(drive())
-        print(root.result())
-        save_example_graph(root, "skills", out_dir=args.out_dir)
+        asyncio.run(print_run(flow, g, args.out_dir))
+        print(reads.result(g, root))
+        save_example_graph(g, "skills", out_dir=args.out_dir)
         flow.runtime.close_repls()
     finally:
         if tmp is not None:

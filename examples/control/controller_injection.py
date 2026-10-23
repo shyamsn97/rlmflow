@@ -2,9 +2,9 @@
 
 The minimal controller workflow:
 
-1. The caller owns the root ``AgentStart``.
-2. The controller appends observations to an agent's frontier itself, with
-   ``agent.frontier.append(...)``.
+1. The caller owns the graph and the agents it starts in it.
+2. The controller writes observations into an agent's history itself, with
+   ``ops.append(g, agent, ...)``, or queues a message with ``ops.send``.
 3. "Finalize now" is just another controller instruction in the graph.
 
 Run:
@@ -19,11 +19,15 @@ from pathlib import Path
 
 from rlmflow import (
     AgentConfig,
+    AgentStart,
     ExecOutput,
     Flow,
+    Graph,
     LLMUsage,
-    Node,
-    UserQuery,
+    Step,
+    ops,
+    reads,
+    running_step,
 )
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -54,54 +58,54 @@ def banner(title: str) -> None:
     print("=" * 72)
 
 
-def state_types(graph: Node) -> list[str]:
-    return [state.type for state in graph.transcript()]
+def state_types(g: Graph, agent: AgentStart) -> list[str]:
+    return [state.type for state in reads.history(g, agent)]
 
 
-def assert_types(graph: Node, expected: list[str]) -> None:
-    actual = state_types(graph)
+def assert_types(g: Graph, agent: AgentStart, expected: list[str]) -> None:
+    actual = state_types(g, agent)
     assert actual == expected, f"expected states {expected}, got {actual}"
 
 
-def print_states(label: str, graph: Node) -> None:
+def print_states(label: str, g: Graph, agent: AgentStart) -> None:
     print(f"\n{label}")
-    print("state types:", " -> ".join(state_types(graph)))
+    print("state types:", " -> ".join(state_types(g, agent)))
 
 
 def observation_injection() -> None:
     banner("1. Inject an observation and let the LLM react")
 
     flow = Flow(DemoLLM())
-    graph = flow.start(
+    g = Graph()
+    agent = g.create_agent(
         "Wait for a controller note, then submit.",
         config=AgentConfig(max_depth=0, max_iters=4),
     )
-    assert_types(graph, ["agent_start"])
+    assert_types(g, agent, ["agent_start"])
 
-    graph.frontier.append(ExecOutput(content=OBSERVATION))
-    assert_types(graph, ["agent_start", "exec_output"])
+    extra = ops.append(g, agent, ExecOutput(content=OBSERVATION))
+    assert_types(g, agent, ["agent_start", "exec_output"])
+    assert reads.frontier(g, agent) is extra
 
-    extra = graph.frontier
-    assert isinstance(extra, ExecOutput)
+    print_states("after the controller appended its observation", g, agent)
 
-    print_states("after the controller appended its observation", graph)
-
-    projected = flow.build_messages(graph.frontier)[-1]["content"]
+    with running_step(Step(g, agent, extra)):
+        projected = flow.build_messages(extra)[-1]["content"]
     assert OBSERVATION in projected
     print("message projection contains the controller observation.")
 
     run_dir = example_run_dir("controller-injection") / "observation-injection"
 
     async def drive() -> None:
-        async for _node in checkpoint_stream(flow.run_streaming(graph), run_dir):
+        async for _item in checkpoint_stream(flow.run_streaming(g), g, run_dir):
             pass
 
     asyncio.run(drive())
-    assert graph.result() == "used the injected controller observation"
-    print_states("after stepping: run reacted and finished", graph)
-    print(f"result={graph.result()!r}")
+    assert reads.result(g, agent) == "used the injected controller observation"
+    print_states("after stepping: run reacted and finished", g, agent)
+    print(f"result={reads.result(g, agent)!r}")
     save_example_graph(
-        graph,
+        g,
         "controller-injection",
         out_dir=run_dir,
     )
@@ -111,7 +115,8 @@ def controller_stop_instruction() -> None:
     banner("2. Inject a controller stop instruction")
 
     flow = Flow(DemoLLM())
-    graph = flow.start(
+    g = Graph()
+    agent = g.create_agent(
         "This run will be stopped by the controller.",
         config=AgentConfig(max_depth=0, max_iters=4),
     )
@@ -122,26 +127,18 @@ def controller_stop_instruction() -> None:
         # ``until`` halts the run at the boundary (the driver does not run ahead),
         # the instruction we inject is guaranteed to be the next thing the agent
         # reads when we resume it.
-        async for _node in checkpoint_stream(
-            flow.run_streaming(graph, until="idle"),
-            run_dir,
-        ):
+        async for _item in checkpoint_stream(flow.run_streaming(g, until="idle"), g, run_dir):
             pass
-        graph.frontier.append(
-            UserQuery(content="Controller stop request: finalize now with current state.")
-        )
-        async for _node in checkpoint_stream(
-            flow.run_streaming(graph, until="done"),
-            run_dir,
-        ):
+        ops.send(g, agent, "Controller stop request: finalize now with current state.")
+        async for _item in checkpoint_stream(flow.run_streaming(g, until="done"), g, run_dir):
             pass
 
     asyncio.run(run_with_controller_stop())
-    assert graph.result() == "controller stopped the run"
-    print_states("after controller stop instruction: clean submit(...)", graph)
-    print(f"result={graph.result()!r}")
+    assert reads.result(g, agent) == "controller stopped the run"
+    print_states("after controller stop instruction: clean submit(...)", g, agent)
+    print(f"result={reads.result(g, agent)!r}")
     save_example_graph(
-        graph,
+        g,
         "controller-injection",
         out_dir=run_dir,
     )

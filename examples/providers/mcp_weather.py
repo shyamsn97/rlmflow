@@ -21,9 +21,10 @@ from typing import Any
 
 from rlmflow import (
     AgentConfig,
-    AgentStart,
     Flow,
+    Graph,
     LocalRuntime,
+    reads,
     tool,
 )
 from rlmflow.llm import client_for
@@ -32,7 +33,7 @@ examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "ex
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import checkpoint_stream  # noqa: E402
+from common import print_run  # noqa: E402
 
 DEFAULT_QUERY = """I will be in Seattle today, Austin 3 days after that, and San Francisco 5 days after that. Check the weather and tell me what to pack for each city.
 """
@@ -246,12 +247,6 @@ def mcp_tools(client: MCPStdioClient) -> list[Any]:
     return [make_mcp_tool(client, spec) for spec in client.list_tools()]
 
 
-async def run_until_done(flow: Flow, root: AgentStart, out_dir: Path) -> AgentStart:
-    async for node in checkpoint_stream(flow.run_streaming(root), out_dir):
-        print(f"{node.parent_agent.config.path}  {node.type}")
-    return root
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Flow + MCP weather example")
     parser.add_argument("--model", default="gpt-5-mini")
@@ -275,14 +270,16 @@ def main() -> None:
             client_for(args.model),
             runtime=LocalRuntime(),
             tools=mcp_tools(mcp_client),
-            root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
         )
-        root = flow.start(args.query)
+        g = Graph()
+        root = g.create_agent(
+            args.query, config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)
+        )
         out_dir = Path(args.out_dir)
-        asyncio.run(run_until_done(flow, root, out_dir))
+        asyncio.run(print_run(flow, g, out_dir))
 
         print(f"\n{'=' * 60}\nWEATHER PACKING RECOMMENDATION\n{'=' * 60}")
-        print(root.result())
+        print(reads.result(g, root))
         print(f"\nRun saved to {out_dir}")
 
         flow.runtime.close_repls()

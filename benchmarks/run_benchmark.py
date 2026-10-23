@@ -52,14 +52,9 @@ def main() -> None:
             }.items()
             if value is not None
         }
-        runners = [
-            ComponentSpec(name=name, params=params)
-            for name in runners
-        ]
+        runners = [ComponentSpec(name=name, params=params) for name in runners]
     stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    output_dir = args.output or (
-        Path("benchmarks/runs") / f"{args.benchmark}-{args.split}-{stamp}"
-    )
+    output_dir = args.output or (Path("benchmarks/runs") / f"{args.benchmark}-{args.split}-{stamp}")
     if args.resume and args.output is None:
         parser().error("--resume requires --output pointing to an existing run")
     BENCHMARKS[args.benchmark](
@@ -79,12 +74,7 @@ def main() -> None:
 def _runners(values: list[str] | None) -> list[str]:
     if not values:
         return []
-    return [
-        runner.strip()
-        for value in values
-        for runner in value.split(",")
-        if runner.strip()
-    ]
+    return [runner.strip() for value in values for runner in value.split(",") if runner.strip()]
 
 
 if __name__ == "__main__":

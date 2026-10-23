@@ -25,14 +25,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from examples.common import checkpoint_stream, save_example_graph  # noqa: E402
+from examples.common import print_run, save_example_graph  # noqa: E402
 from rlmflow import (  # noqa: E402
     AgentConfig,
-    AgentStart,
     Flow,
+    Graph,
     ModalRuntime,
+    reads,
 )
-from rlmflow.llm import OpenAIClient  # noqa: E402
+from rlmflow.llm.openai import OpenAIClient  # noqa: E402
 
 REMOTE_REPO = "/opt/rlmflow"
 
@@ -88,12 +89,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def run_turn(flow: Flow, root: AgentStart, out_dir: Path) -> AgentStart:
-    async for node in checkpoint_stream(flow.run_streaming(root), out_dir / "graph"):
-        print(f"{node.parent_agent.config.path}  {node.type}")
-    return root
-
-
 def local_rlmflow_image():
     import modal
 
@@ -140,14 +135,16 @@ def main() -> None:
         OpenAIClient(model=args.model),
         llm_clients={"fast": OpenAIClient(model=args.fast_model)},
         runtime=runtime,
-        root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
     )
-    root = flow.start(PLATFORMER_QUERY)
+    g = Graph()
+    root = g.create_agent(
+        PLATFORMER_QUERY, config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)
+    )
     log("running platformer task; first run may build/start Modal sandbox")
     try:
-        asyncio.run(run_turn(flow, root, Path(args.out_dir)))
-        print(root.result())
-        save_example_graph(root, "sandbox-modal", out_dir=args.out_dir)
+        asyncio.run(print_run(flow, g, Path(args.out_dir) / "graph"))
+        print(reads.result(g, root))
+        save_example_graph(g, "sandbox-modal", out_dir=args.out_dir)
     finally:
         log("closing Flow")
         flow.runtime.close_repls()

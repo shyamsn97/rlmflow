@@ -1,14 +1,15 @@
 import pytest
+from helpers import agent_graph
 
 from rlmflow import (
-    AgentStart,
     AppendChild,
     DoneOutput,
     ExecAction,
     ExecOutput,
+    Graph,
     Input,
-    persistence,
-    start,
+    ops,
+    reads,
 )
 
 
@@ -18,161 +19,123 @@ def test_input_requires_a_description(description):
         Input("value", description=description)
 
 
-def test_input_like_user_dictionary_remains_plain_data_after_roundtrip():
+def test_input_like_user_dictionary_remains_plain_data_after_roundtrip(tmp_path):
     value = {
         "$rlmflow_input": {"nested": "value"},
         "$rlmflow_description": "ordinary user data",
     }
-    root = start("query", args={"payload": value})
+    g, root = agent_graph("query", args={"payload": value})
 
-    loaded = persistence.from_document(persistence.to_document(root))
+    g.save(tmp_path / "run")
+    loaded = Graph.load(tmp_path / "run").node(root.id)
 
     assert root.resolved_args() == {"payload": value}
     assert loaded.resolved_args() == {"payload": value}
     assert loaded.argument_descriptions() == {}
 
 
-def test_agent_owns_an_ordered_transcript():
-    agent = start("query")
-    first = ExecOutput(content="one")
-    assert agent.append(first) is None
-    second = DoneOutput(result="ok")
-    first.append(second)
+def test_agent_owns_an_ordered_history():
+    g, agent = agent_graph("query")
+    first = ops.append(g, agent, ExecOutput(content="one"))
+    second = ops.append(g, agent, DoneOutput(result="ok"))
 
-    assert agent.transcript() == [agent, first, second]
-    assert [node.seq for node in agent.transcript()] == [0, 1, 2]
-    assert agent.frontier is second
-    assert first.parent_agent is agent
-    assert agent.root is agent
-    assert agent.terminal
-    assert agent.result() == "ok"
+    assert reads.history(g, agent) == [agent, first, second]
+    assert agent.seq < first.seq < second.seq
+    assert reads.frontier(g, agent) is second
+    assert first.agent_id == agent.id
+    assert reads.lineage(g, agent) == [agent]
+    assert reads.terminal(g, agent)
+    assert reads.result(g, agent) == "ok"
 
 
 def test_a_child_agent_branches_off_the_node_that_launched_it():
-    root = start("parent")
-    action = ExecAction(code="launch")
-    root.append(action)
-    child = AgentStart(content="child", config=root.config.child("worker"))
+    g, root = agent_graph("parent")
+    action = ops.append(g, root, ExecAction(code="launch"))
+    child = ops.spawn(g, "child", by=action, name="worker")
 
-    action.append(child)
-
-    assert child.parent is action
-    assert child.root is root
-    assert child.parent_agent is child  # a child starts a transcript of its own
-    assert root.sub_agents == [child]
-    assert [agent.config.path for agent in (root, *root.sub_agents)] == ["root", "root.worker"]
+    assert reads.launcher(g, child) is root
+    assert reads.lineage(g, child) == [root, child]
+    assert reads.children(g, root) == [child]
+    assert [reads.path(g, agent) for agent in (root, child)] == ["root", "root.worker"]
     # Launching moved neither agent on: the parent is still mid-step at the action,
     # and the child has nothing but its own start.
-    assert root.frontier is action and action.next is None
-    assert child.transcript() == [child]
+    assert reads.frontier(g, root) is action
+    assert reads.history(g, child) == [child]
 
 
-def test_duplicate_child_names_are_rejected():
-    root = start("parent")
-    root.append(AgentStart(config=root.config.child("worker")))
+def test_duplicate_attached_child_names_are_rejected():
+    g, root = agent_graph("parent")
+    ops.attach(g, root, ops.spawn(g, "one"), names=["worker"])
 
     with pytest.raises(ValueError, match="duplicate child name"):
-        root.append(AgentStart(config=root.config.child("worker")))
+        ops.attach(g, root, ops.spawn(g, "two"), names=["worker"])
 
 
-def test_fork_remaps_and_prunes_saved_launch_calls():
-    root = start("parent")
-    action = ExecAction(code="launch")
-    root.append(action)
-    child = AgentStart(content="child", config=root.config.child("child"))
-    action.append(child)
-    action.record_tool_call("launch_subagent", 0, {"$rlmflow_agent": child.id})
-    action.mark_agent_retrieved(child.id)
-    child.append(DoneOutput(result="done"))
+def test_fork_after_a_launch_shares_its_children_instead_of_copying_them():
+    g, root = agent_graph("parent")
+    action = ops.append(g, root, ExecAction(code="launch"))
+    child = ops.spawn(g, "child", by=action, name="child")
+    action.record_tool_call("launch_agent", 0, {"$rlmflow_agent": child.id})
+    ops.append(g, child, DoneOutput(result="done"))
+    output = ops.append(g, root, ExecOutput(content="done"))
 
-    complete = child.frontier.fork()
-    copied_action = next(node for node in complete.walk() if isinstance(node, ExecAction))
-    copied_child = complete.sub_agents[0]
-    assert copied_action.launch_agent_ids() == {0: copied_child.id}
-    assert copied_action.retrieved_agent_ids == [copied_child.id]
-    assert copied_child.id != child.id
+    after = ops.fork(g, output)
+    before = ops.fork(g, root)
 
-    pruned = action.fork()
-    pruned_action = next(node for node in pruned.walk() if isinstance(node, ExecAction))
-    assert pruned.sub_agents == []
-    assert pruned_action.launch_agent_ids() == {}
-    assert pruned_action.retrieved_agent_ids == []
+    assert action in reads.history(g, after)
+    assert action.launch_agent_ids() == [child.id]
+    assert len(g.nodes(type(child))) == 4  # root, child, and two empty forks
+    assert action not in reads.history(g, before)
 
 
-def test_fork_remaps_dependency_agent_ids():
-    root = start("parent")
-    action = ExecAction(code="launch")
-    root.append(action)
-    source = AgentStart(content="source", config=root.config.child("source"))
-    action.append(source)
-    action.record_tool_call("launch_subagent", 0, {"$rlmflow_agent": source.id})
-    source.append(DoneOutput(result="source"))
-    consumer = AgentStart(
-        content="consumer",
-        args={
-            "source": Input(
-                {"$rlmflow_agent": source.id},
-                description="The completed source artifact.",
-            )
-        },
-        config=root.config.child("consumer"),
-    )
-    action.append(consumer)
-    action.record_tool_call("launch_subagent", 1, {"$rlmflow_agent": consumer.id})
-
-    copied = consumer.fork()
-    copied_source, copied_consumer = copied.sub_agents
-
-    assert copied_consumer.args == {
-        "source": Input(
-            {"$rlmflow_agent": copied_source.id},
-            description="The completed source artifact.",
-        )
-    }
-    assert copied_consumer.argument_references == (("source", copied_source.id),)
-    assert copied_consumer.argument_descriptions() == {
-        "source": "The completed source artifact."
-    }
-
-
-def test_append_child_rehomes_a_complete_subtree():
-    subtree = start("copied worker")
-    nested_action = ExecAction(code="launch")
-    subtree.append(nested_action)
-    nested = AgentStart(content="nested", config=subtree.config.child("nested"))
-    nested_action.append(nested)
-    nested.append(DoneOutput(result="done"))
-
-    root = start("shepherd")
-    root.append_child(subtree, name="branch0")
-    action = root.frontier
-
-    assert isinstance(action, AppendChild)
-    assert action.child_agents == [subtree]
-    assert subtree.parent is action
-    assert root.sub_agents == [subtree]
-    assert all(node.root is root for node in subtree.walk())
-    assert subtree.config.path == "root.branch0"
-    assert nested.config.path == "root.branch0.nested"
-    assert action.code == (
-        "_handle = launch_subagent(task='')\n"
-        "print(await _handle)"
+def test_dependency_edges_name_the_producer_and_its_description():
+    g, root = agent_graph("parent")
+    action = ops.append(g, root, ExecAction(code="launch"))
+    source = ops.spawn(g, "source", by=action, name="source")
+    ops.append(g, source, DoneOutput(result="artifact"))
+    consumer = ops.spawn(
+        g,
+        "consumer",
+        by=action,
+        name="consumer",
+        inputs={"source": Input(source, description="The completed source artifact.")},
     )
 
+    assert reads.producers(g, consumer) == [source]
+    assert reads.inputs(g, consumer) == {"source": "artifact"}
+    [edge] = g.edges(source=consumer.id, target=source.id)
+    assert edge.data == {"as": "source", "description": "The completed source artifact."}
 
-def test_append_child_reuses_one_launch_action():
-    root = start("shepherd")
 
-    first = root.append_child(start("one"), name="one")
-    action = root.frontier
-    second = root.append_child(start("two"), name="two")
+def test_attach_rehomes_a_complete_subtree():
+    g, root = agent_graph("shepherd")
+    subtree = ops.spawn(g, "copied worker")
+    nested_action = ops.append(g, subtree, ExecAction(code="launch"))
+    nested = ops.spawn(g, "nested", by=nested_action, name="nested")
+    ops.append(g, nested, DoneOutput(result="done"))
+
+    action = ops.attach(g, root, subtree, names=["branch0"])
 
     assert isinstance(action, AppendChild)
-    assert action.child_agents == [first, second]
+    assert reads.frontier(g, root) is action
+    assert reads.children(g, root) == [subtree]
+    assert reads.lineage(g, nested) == [root, subtree, nested]
+    assert reads.path(g, subtree) == "root.branch0"
+    assert reads.path(g, nested) == "root.branch0.nested"
+
+
+def test_attach_launches_several_agents_from_one_action():
+    g, root = agent_graph("shepherd")
+    one, two = ops.spawn(g, "one"), ops.spawn(g, "two")
+
+    action = ops.attach(g, root, one, two, names=["one", "two"])
+
+    assert reads.children(g, root) == [one, two]
+    assert action.launch_agent_ids() == [one.id, two.id]
     assert action.code == (
         "_handles = [\n"
-        "    launch_subagent(task=''),\n"
-        "    launch_subagent(task=''),\n"
+        "    launch_agent(task=''),\n"
+        "    launch_agent(task=''),\n"
         "]\n"
         "print(await asyncio.gather(*_handles))"
     )

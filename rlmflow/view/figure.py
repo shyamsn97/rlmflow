@@ -15,9 +15,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 from xml.sax.saxutils import escape
 
+from rlmflow.graph import reads
+from rlmflow.graph.graph import FROM, Graph
 from rlmflow.graph.nodes import AgentStart, LLMOutput, Node
+from rlmflow.view.timeline import timeline
 
 BG = "#0d1117"
 INK = "#e6edf3"
@@ -31,12 +36,12 @@ NODE_COLORS: dict[str, str] = {
     "user_query": "#79c0ff",  # pale blue  — input handed to it
     "llm_output": "#bc8cff",  # lavender   — a model turn
     "exec_action": "#ff9e64",  # peach      — code about to run
+    "backend_run": "#f0883e",  # orange — external agent invocation
     "exec_output": "#56d4dd",  # cyan       — what came back
     "append_child": "#ffd33d",  # gold       — spawns children, then waits
     "done_output": "#56d364",  # emerald    — terminal success
     "error_output": "#ff7b72",  # coral      — failure
     "transition_decision": "#d2a8ff",  # violet — semantic branch judgment
-    "submission": "#f0c674",  # sand — submitted candidate
     "verification_failure": "#f85149",  # red   — rejected submission
     "repair_query": "#ffa657",  # amber       — same-agent repair request
 }
@@ -48,12 +53,12 @@ NODE_SHAPES: dict[str, str] = {
     "user_query": "circle-open",
     "llm_output": "diamond",
     "exec_action": "square",
+    "backend_run": "square",
     "exec_output": "triangle-right",
     "append_child": "star",
     "done_output": "hexagon",
     "error_output": "x",
     "transition_decision": "diamond",
-    "submission": "hexagon-open",
     "verification_failure": "x",
     "repair_query": "circle-open",
 }
@@ -100,10 +105,18 @@ def node_shape(node: Node) -> str:
 
 def node_label(node: Node) -> str:
     """Agents get named; the rest are identified by colour and shape."""
-    if not isinstance(node, AgentStart):
-        return ""
-    path = node.config.path or node.config.name
-    return path.rsplit(".", 1)[-1] if node.config.depth else path
+    return node.config.name if isinstance(node, AgentStart) else ""
+
+
+def parent_ids(g: Graph) -> dict[str, str]:
+    """Each node's drawn parent: an agent's launch action or fork base, else ``prev``."""
+    parents: dict[str, str] = {}
+    for node in g.nodes():
+        launch = g.edges(kind=FROM, source=node.id) if isinstance(node, AgentStart) else []
+        source = g.node(launch[0].target) if launch else reads.prev(g, node)
+        if source is not None:
+            parents[node.id] = source.id
+    return parents
 
 
 def node_tokens(node: Node) -> int:
@@ -118,14 +131,14 @@ def marker_diameter(node: Node) -> float:
     return BASE_DIAMETER + min(MAX_TOKEN_GROWTH, math.sqrt(node_tokens(node)) / 3.5)
 
 
-def tidy_tree(nodes: list[Node]) -> dict[str, tuple[float, float]]:
+def tidy_tree(nodes: list[Node], parents: dict[str, str]) -> dict[str, tuple[float, float]]:
     """Give every subtree a horizontal slot by leaf count; centre parents over it."""
     present = {node.id for node in nodes}
     children: dict[str, list[Node]] = {node.id: [] for node in nodes}
     for node in nodes:
-        parent = node.parent
-        if parent is not None and parent.id in present:
-            children[parent.id].append(node)
+        parent = parents.get(node.id)
+        if parent is not None and parent in present:
+            children[parent].append(node)
 
     leaves: dict[str, int] = {}
     for origin in nodes:
@@ -158,8 +171,8 @@ def tidy_tree(nodes: list[Node]) -> dict[str, tuple[float, float]]:
 
     cursor = 0.0
     for node in nodes:
-        parent = node.parent
-        if parent is None or parent.id not in present:
+        parent = parents.get(node.id)
+        if parent is None or parent not in present:
             width = float(max(leaves[node.id], 1))
             pending: list[tuple[Node, float, float, int]] = [(node, cursor, cursor + width, 0)]
             while pending:
@@ -192,6 +205,7 @@ def legend_width() -> float:
 
 def layout_graph(
     nodes: list[Node],
+    parents: dict[str, str],
     *,
     width: float = 1024.0,
     height: float = 360.0,
@@ -202,7 +216,7 @@ def layout_graph(
     if not nodes:
         return layout
 
-    pos = tidy_tree(nodes)
+    pos = tidy_tree(nodes, parents)
     xs = [pos[node.id][0] for node in nodes]
     ys = [pos[node.id][1] for node in nodes]
     span_x = max(max(xs) - min(xs), 0.001)
@@ -254,9 +268,9 @@ def layout_graph(
 
     at = {placed.node.id: placed for placed in layout.placed}
     for placed in layout.placed:
-        parent = placed.node.parent
-        if parent is not None and parent.id in at:
-            source = at[parent.id]
+        parent = parents.get(placed.node.id)
+        if parent is not None and parent in at:
+            source = at[parent]
             layout.edges.append((source.x, source.y, placed.x, placed.y))
 
     layout.height = max(p.y + p.r for p in layout.placed) + MARGIN_BOTTOM + legend_h
@@ -307,10 +321,9 @@ def marker(x: float, y: float, shape: str, color: str, r: float, *, ring: bool =
     return f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" fill="{color}"{stroke}/>'
 
 
-def hover_text(node: Node) -> str:
+def hover_text(g: Graph, node: Node) -> str:
     """Identity only — the detail panel carries the content."""
-    agent = node.parent_agent
-    rows = [f"{agent.config.path if agent else 'root'} · {node.type}"]
+    rows = [f"{reads.path(g, g.node(node.agent_id))} · {node.type}"]
     tokens = node_tokens(node)
     if tokens:
         usage = node.usage  # type: ignore[attr-defined]
@@ -319,27 +332,31 @@ def hover_text(node: Node) -> str:
 
 
 def graph_svg(
-    nodes: list[Node],
+    g: Graph,
     *,
     title: str = "execution graph",
     width: float = 1024.0,
     height: float = 360.0,
     dim_after: int | None = None,
+    order: list[Node] | None = None,
     highlight: str = "",
     legend: bool = True,
     interactive: bool = False,
 ) -> str:
-    """Render ``nodes`` as an SVG figure.
+    """Render ``g`` as an SVG figure.
 
     ``dim_after`` fades everything from that index on, which is how the stepper
-    shows a partly-built graph without markers moving between slides.
+    shows a partly-built graph without markers moving between slides. Indexes
+    count along ``order`` (every node of ``g``), which defaults to log order.
     ``highlight`` rings one node id: the step you are on.
 
     With ``interactive`` the markers carry their step index and geometry, and a
     spare ring is parked in the drawing. That lets one figure be stepped through
     by script instead of shipping a separate copy of it per step.
     """
-    layout = layout_graph(nodes, width=width, height=height, legend=legend)
+    nodes = g.nodes() if order is None else order
+    parents = parent_ids(g)
+    layout = layout_graph(nodes, parents, width=width, height=height, legend=legend)
     if not layout.placed:
         return (
             f'<svg xmlns="http://www.w3.org/2000/svg" width="420" height="80">'
@@ -350,7 +367,7 @@ def graph_svg(
 
     shown = nodes[:dim_after] if dim_after is not None else nodes
     ids = {node.id for node in shown}
-    edges_shown = sum(1 for node in shown if node.parent is not None and node.parent.id in ids)
+    edges_shown = sum(1 for node in shown if parents.get(node.id) in ids)
     w, h = layout.width, layout.height
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.0f}" height="{h:.0f}" '
@@ -363,7 +380,7 @@ def graph_svg(
     ]
 
     index_of = {placed.node.id: i for i, placed in enumerate(layout.placed)}
-    for x0, y0, x1, y1, child in _edges_with_child(layout, index_of):
+    for x0, y0, x1, y1, child in _edges_with_child(layout, parents, index_of):
         faded = dim_after is not None and child >= dim_after
         tag = f' class="rlm-e" data-i="{child}"' if interactive else ""
         parts.append(
@@ -387,7 +404,7 @@ def graph_svg(
                 f'<circle cx="{placed.x:.1f}" cy="{placed.y:.1f}" r="{placed.r + 5.5:.1f}" '
                 f'fill="none" stroke="{INK}" stroke-width="1.5" opacity="0.85"/>'
             )
-        parts.append(f"<title>{escape(hover_text(node))}</title>")
+        parts.append(f"<title>{escape(hover_text(g, node))}</title>")
         parts.append(marker(placed.x, placed.y, node_shape(node), node_color(node), placed.r))
         if placed.label:
             size = max(8.5, LABEL_SIZE * layout.scale)
@@ -410,15 +427,15 @@ def graph_svg(
 
 
 def _edges_with_child(
-    layout: Layout, index_of: dict[str, int]
+    layout: Layout, parents: dict[str, str], index_of: dict[str, int]
 ) -> list[tuple[float, float, float, float, int]]:
     """Edges tagged with the step their child arrives on, so they can appear with it."""
     at = {placed.node.id: placed for placed in layout.placed}
     out = []
     for placed in layout.placed:
-        parent = placed.node.parent
-        if parent is not None and parent.id in at:
-            source = at[parent.id]
+        parent = parents.get(placed.node.id)
+        if parent is not None and parent in at:
+            source = at[parent]
             out.append((source.x, source.y, placed.x, placed.y, index_of[placed.node.id]))
     return out
 
@@ -440,7 +457,113 @@ def _legend(width: float, y: float) -> str:
     return "".join(out)
 
 
-def figure_title(root: AgentStart, nodes: list[Node]) -> str:
+def run_title(g: Graph) -> str:
+    """The run's name: its top-level agents."""
+    tops = [a.config.name for a in g.nodes(AgentStart) if reads.launcher(g, a) is None]
+    return ", ".join(tops) or "empty graph"
+
+
+def figure_title(g: Graph) -> str:
     """The bold half of the title: ``root · done_output``."""
+    nodes = g.nodes()
     last = nodes[-1].type if nodes else "empty"
-    return f"{root.config.path} · {last}"
+    return f"{run_title(g)} · {last}"
+
+
+def step_svg(g: Graph, upto: int, **kwargs: object) -> str:
+    """The graph drawn in full, with everything after ``upto`` faded back."""
+    ordered = timeline(g)
+    return graph_svg(
+        g,
+        title=f"{run_title(g)} · {ordered[upto].type}",
+        dim_after=upto + 1,
+        highlight=ordered[upto].id,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+_MISSING = (
+    "PNG and GIF export need a rasteriser: pip install 'rlmflow[image]'. "
+    "rlmflow.view.save_svg and save_html need nothing."
+)
+
+
+def _rasterise() -> Any:
+    try:
+        import cairosvg
+    except ImportError as exc:  # pragma: no cover - depends on the extra
+        raise ImportError(_MISSING) from exc
+    return cairosvg
+
+
+def _image() -> Any:
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - depends on the extra
+        raise ImportError(_MISSING) from exc
+    return Image
+
+
+def save_frames(
+    g: Graph,
+    directory: str | Path,
+    *,
+    every: int = 1,
+    scale: float = 1.0,
+) -> list[Path]:
+    """Write one PNG per step into ``directory``, named by step number.
+
+    ``every`` thins a long run out — ``every=5`` keeps every fifth step.
+    """
+    cairosvg = _rasterise()
+    out = Path(directory)
+    out.mkdir(parents=True, exist_ok=True)
+    ordered = timeline(g)
+    width = len(str(len(ordered)))
+    written: list[Path] = []
+    for index in range(0, len(ordered), max(every, 1)):
+        path = out / f"step_{index + 1:0{width}d}.png"
+        cairosvg.svg2png(
+            bytestring=step_svg(g, index).encode("utf-8"),
+            write_to=str(path),
+            scale=scale,
+        )
+        written.append(path)
+    return written
+
+
+def save_gif(
+    g: Graph,
+    path: str | Path,
+    *,
+    every: int = 1,
+    ms_per_frame: int = 120,
+    hold_last_ms: int = 1600,
+    scale: float = 1.0,
+) -> Path:
+    """Animate the run into a GIF, holding on the finished graph at the end."""
+    cairosvg = _rasterise()
+    Image = _image()
+    import io
+
+    ordered = timeline(g)
+    frames = []
+    for index in range(0, len(ordered), max(every, 1)):
+        png = cairosvg.svg2png(bytestring=step_svg(g, index).encode("utf-8"), scale=scale)
+        frames.append(Image.open(io.BytesIO(png)).convert("P", palette=Image.ADAPTIVE))
+    if not frames:
+        raise ValueError("nothing to animate: that graph has no nodes")
+
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    durations = [ms_per_frame] * len(frames)
+    durations[-1] = max(hold_last_ms, ms_per_frame)
+    frames[0].save(
+        out,
+        save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=0,
+        optimize=True,
+    )
+    return out

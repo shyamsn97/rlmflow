@@ -15,10 +15,10 @@ Agent Python always crosses a process boundary. This provides fault and state is
 
 ## Isolated and colocated agents
 
-Each root and child gets an isolated worker by default. Placement is Flow-owned; set `delegation_reuse_worker=True` to place delegated children in their caller's worker process while retaining a separate Python namespace:
+Each root and child gets an isolated worker by default. Placement is host-owned; set `child_config={"reuse_worker": True}` to place launched children in their caller's worker process while retaining a separate Python namespace:
 
 ```python
-flow = Flow(client, delegation_reuse_worker=True)
+root = g.create_agent(task, config=AgentConfig(max_depth=1, child_config={"reuse_worker": True}))
 
 # In agent REPL code:
 analyst = launch_subagent(task="Analyze records.", records=records)

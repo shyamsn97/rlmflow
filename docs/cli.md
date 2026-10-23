@@ -58,7 +58,7 @@ def build() -> Flow:
         root_config=AgentConfig(
             max_depth=1,
             max_iters=40,
-            child_output_schema=CODING_HANDOFF_SCHEMA,
+            child_config={"output_schema": CODING_HANDOFF_SCHEMA},
         ),
     )
 ```

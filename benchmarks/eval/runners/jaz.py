@@ -245,12 +245,8 @@ def _evidence_hook(
                 "parent_invoke_id": event.parent_invoke_id,
                 "parent_repl_iteration": event.parent_repl_iteration,
                 "depth": event.depth,
-                "worker": (
-                    child_payload.get("worker") if child_payload is not None else None
-                ),
-                "filename": (
-                    child_payload.get("filename") if child_payload is not None else None
-                ),
+                "worker": (child_payload.get("worker") if child_payload is not None else None),
+                "filename": (child_payload.get("filename") if child_payload is not None else None),
                 "prompt_sha256": hashlib.sha256(task.encode()).hexdigest(),
                 "terminal": False,
                 "failed": False,
@@ -263,9 +259,7 @@ def _evidence_hook(
             record = self.records[event.invoke_id]
             record["terminal"] = True
             outcome = event.outcome
-            completed_return = isinstance(outcome, Completed) and isinstance(
-                outcome.result, Return
-            )
+            completed_return = isinstance(outcome, Completed) and isinstance(outcome.result, Return)
             record["failed"] = not completed_return or (
                 isinstance(outcome, Completed) and isinstance(outcome.result, Raise)
             )

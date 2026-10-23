@@ -1,0 +1,8 @@
+{"seed": 1000, "depth": 3, "branching": 2, "max_steps": 64}
+{"seed": 1001, "depth": 4, "branching": 2, "max_steps": 96}
+{"seed": 1002, "depth": 5, "branching": 2, "max_steps": 160}
+{"seed": 1003, "depth": 3, "branching": 3, "max_steps": 96}
+{"seed": 1004, "depth": 4, "branching": 2, "max_steps": 96}
+{"seed": 1005, "depth": 5, "branching": 2, "max_steps": 160}
+{"seed": 1006, "depth": 3, "branching": 2, "max_steps": 64}
+{"seed": 1007, "depth": 4, "branching": 3, "max_steps": 192}

@@ -21,14 +21,14 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rlmflow import AgentConfig, Flow, json_schema_for
-from rlmflow.llm import OpenAIClient
+from rlmflow import AgentConfig, Flow, Graph, json_schema_for, reads
+from rlmflow.llm.openai import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import checkpoint_stream, example_run_dir  # noqa: E402
+from common import example_run_dir, print_run  # noqa: E402
 
 
 class CityForecast(BaseModel):
@@ -81,10 +81,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    flow = Flow(
-        OpenAIClient(args.model),
-        root_config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
-    )
+    flow = Flow(OpenAIClient(args.model))
 
     query = (
         "Build a packing plan for my upcoming trip. The important weather info "
@@ -92,29 +89,29 @@ def main() -> None:
         "agents."
     )
 
-    root = flow.start(
+    g = Graph()
+    root = g.create_agent(
         query,
-        config=AgentConfig(output_schema=json_schema_for(PackingPlan)),
+        config=AgentConfig(
+            max_depth=args.max_depth,
+            max_iters=args.max_iters,
+            output_schema=json_schema_for(PackingPlan),
+        ),
         trip_brief=TRIP_BRIEF,
     )
     out_dir = Path(args.out_dir)
-
-    async def drive() -> None:
-        async for node in checkpoint_stream(flow.run_streaming(root), out_dir):
-            print(f"{node.parent_agent.config.path}  {node.type}")
-
-    asyncio.run(drive())
+    asyncio.run(print_run(flow, g, out_dir))
 
     # `submit(value)` parsed the answer against the schema, so the result is a
     # dict; the Pydantic model is the typed view of that same value.
-    plan = PackingPlan.model_validate(root.result())
+    plan = PackingPlan.model_validate(reads.result(g, root))
 
     print("Typed result:")
     print(type(plan).__name__)
     print(plan.model_dump_json(indent=2))
 
     print("\nRoot result:")
-    print(json.dumps(root.result(), indent=2))
+    print(json.dumps(reads.result(g, root), indent=2))
 
     print(f"\nRun saved to {out_dir}")
 
