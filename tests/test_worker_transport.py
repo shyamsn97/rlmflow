@@ -7,18 +7,18 @@ import time
 
 import pytest
 
-from rlmflow import AgentStart, ReplStatus, SubprocessRuntime, WorkerRepl, WorkerSession
-from rlmflow.runtime.repl_client import ProtocolDesyncError
-from rlmflow.runtime.repl_server import PingRequest, ReplResponse
-from rlmflow.runtime.runtime import PopenConnection
-from rlmflow.tools import tool
+from rlmflow import Graph, ReplStatus, SubprocessRuntime, WorkerRepl, WorkerSession
+from rlmflow.harnesses.repl.runtime.repl_client import ProtocolDesyncError
+from rlmflow.harnesses.repl.runtime.repl_server import PingRequest, ReplResponse
+from rlmflow.harnesses.repl.runtime.runtime import PopenConnection
+from rlmflow.harnesses.repl.tools import tool
 
 
 def make_repl(tmp_path, *, session=None):
     if session is None:
         session = WorkerSession(
             PopenConnection(
-                [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
+                [sys.executable, "-u", "-m", "rlmflow.harnesses.repl.runtime.repl_server"],
                 cwd=tmp_path,
             ),
             timeout=10,
@@ -329,7 +329,7 @@ def test_configured_execution_timeout_becomes_dead_outcome(tmp_path):
         repl_timeout=5,
         execution_timeout=0.05,
     )
-    agent = AgentStart(content="q")
+    agent = Graph().create_agent("q")
     try:
         result = asyncio.run(runtime.execute(agent, "import time\ntime.sleep(30)"))
         assert result.status is ReplStatus.DEAD

@@ -80,7 +80,7 @@ python examples/research/rao_textcraft.py collect \
 - Child success requires its target to be produced by that child's subtree;
   sibling work cannot leak credit.
 - Every Gym step is retained under `environment.steps` node metadata, so the
-  TextCraft reward function accepts a completed `AgentStart` graph and does not
+  TextCraft reward function accepts a completed graph and does not
   depend on a live environment session.
 - The TextCraft default delegation bonus is `0`. Pass
   `--delegation-bonus 0.4` for the generic RAO ablation.

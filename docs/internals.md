@@ -70,7 +70,7 @@ ExecAction   -> run_repl (output node)
 DoneOutput   -> terminal, never stepped
 ```
 
-After a `DoneOutput`, `handoff.react` checks every agent the finished one reports to: its launcher, plus any agent it has a `reports_to` edge to. A recursive tree and a set of peers are the same rule over different edges. If a recipient's frontier is an `ExecOutput` (or a `DoneOutput` with `resume_on_child_done`), it gets one batched `UserQuery` through `ops.send`, with a `from` edge to each delivered `DoneOutput`. Those edges are the only delivery record, kept per recipient, so a resumed stream needs no rebuild step.
+After a `DoneOutput`, `handoff.react` checks every agent the finished one reports to: its launcher, plus any agent it has a `reports_to` edge to. A recursive tree and a set of peers are the same rule over different edges. If a recipient's frontier is an `ExecOutput` (or a `DoneOutput` with `resume_on_child_done`), it gets one batched `UserQuery` through `g.send`, with a `from` edge to each delivered `DoneOutput`. Those edges are the only delivery record, kept per recipient, so a resumed stream needs no rebuild step.
 
 Guards can preempt those rows: `out_of_room` → `FinalQuery`, `needs_truncation` → `TruncationSummary`.
 
@@ -106,15 +106,7 @@ Synchronous streams run through the shared pool; async streams run directly on t
 
 `launch_subagent` accepts an optional stable `name=` (otherwise `childN`), validates the child name and arguments, refuses a call past `max_depth` or over `max_query_chars`, opens one `AgentStart` under the running `ExecAction`, records `call_id -> agent.id` on that action, and submits it. Independent calls can run concurrently through `asyncio.gather`, which preserves call order in its result sequence. A handle-valued argument is persisted as an agent-reference marker; the consumer remains blocked until every source is terminal, then receives resolved values as direct REPL variables. Launch ownership never changes. The parent's frontier stays on the action for the whole block, so the step lands a single output when the block returns.
 
-An agent whose `AgentConfig.backend` names a `Flow(backends=...)` entry
-(directly, or through its parent's `child_config`) bypasses `complete` and the
-Python REPL:
-`AgentStart` produces a durable `BackendRun`, and stepping that action
-invokes the configured backend. The action stores its run ID before external
-work starts and records whether it started, so a loaded unfinished action uses
-the backend's resume path. Backend candidates use the same schema and verifier
-contract as `submit`; rejected values take the ordinary
-`VerificationFailure -> RepairQuery` path before a new backend action.
+An agent whose `AgentConfig.backend` names a `Flow(backends=...)` entry (directly, or through its parent's `child_config`) bypasses `complete` and the Python REPL: `AgentStart` produces a durable `BackendRun`, and stepping that action invokes the configured backend. The action stores its run ID before external work starts and records whether it started, so a loaded unfinished action uses the backend's resume path. Backend candidates use the same schema and verifier contract as `submit`; rejected values take the ordinary `VerificationFailure -> RepairQuery` path before a new backend action.
 
 A child failure is a value, not an exception: the crash is recorded as that child's `DoneOutput` so siblings settle and the parent reads an explicit failure string.
 

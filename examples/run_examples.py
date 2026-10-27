@@ -65,7 +65,6 @@ class Example:
 EXAMPLES: list[Example] = [
     Example("controller-injection", "examples/control/controller_injection.py"),
     Example("streaming-until", "examples/control/streaming_until.py"),
-    Example("reuse-worker", "examples/control/delegation/reuse_repl.py"),
     Example("nonblocking-delegation", "examples/control/delegation/nonblocking.py"),
     Example(
         "decentralized-peers",

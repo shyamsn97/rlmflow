@@ -30,16 +30,7 @@ from benchmarks.eval.runners.shared import (
 )
 from benchmarks.eval.tasks.swarm_fanout import fanout_payloads
 from benchmarks.eval.types import Example, Model, Prediction, RunContext, Runner
-from rlmflow import (
-    AgentConfig,
-    Flow,
-    Graph,
-    GraphCheckpointer,
-    LocalRuntime,
-    Node,
-    reads,
-    tool,
-)
+from rlmflow import AgentConfig, Flow, Graph, GraphCheckpointer, LocalRuntime, Step, tool
 from rlmflow.graph.nodes import LLMUsage
 from rlmflow.llm import LLMClient
 from rlmflow.llm.openai import OpenAIClient
@@ -54,8 +45,6 @@ class RLMFlowLocalRunner(Runner):
         max_budget: int | None = 100_000,
         live_save: bool = True,
         max_steps: int | None = None,
-        use_llm_query: bool = True,
-        use_agent_tree: bool = False,
         worker_model: str | None = None,
         divide_budget_by_best_of_n: bool = False,
     ) -> None:
@@ -64,8 +53,6 @@ class RLMFlowLocalRunner(Runner):
         self.max_budget = max_budget
         self.live_save = live_save
         self.max_steps = max_steps
-        self.use_llm_query = use_llm_query
-        self.use_agent_tree = use_agent_tree
         self.worker_model = worker_model
         self.divide_budget_by_best_of_n = divide_budget_by_best_of_n
 
@@ -89,18 +76,28 @@ class RLMFlowLocalRunner(Runner):
         if self.divide_budget_by_best_of_n and max_budget is not None:
             max_budget = max(1, max_budget // max(1, best_of_n))
         llm_clients = {}
+        config = AgentConfig(max_iters=self.max_iters, max_depth=max_depth, max_budget=max_budget)
+        graph = Graph()
         if self.worker_model is not None:
             llm_clients["worker"] = OpenAIClient(self.worker_model)
-        child_config = {"model": "worker"} if self.worker_model is not None else {}
+            graph.add_config(
+                AgentConfig(
+                    name="worker",
+                    model="worker",
+                    description=f"runs on {self.worker_model}",
+                    max_iters=self.max_iters,
+                    max_depth=max_depth,
+                    max_budget=max_budget,
+                )
+            )
         flow_kwargs = dict(
             runtime=LocalRuntime(working_directory=prepared.work_dir),
             tools=_example_tools(example),
             llm_clients=llm_clients or None,
-            use_llm_query=self.use_llm_query,
-            use_agent_tree=self.use_agent_tree,
         )
         environment = prepared.environment
         environment_episode = None
+        started_at = time.perf_counter()
         if isinstance(environment, dict):
             built = build_environment(
                 environment,
@@ -113,38 +110,11 @@ class RLMFlowLocalRunner(Runner):
                 candidate_budget=candidate_budget(built),
                 expected_observation_sha256=environment.get("observation_sha256"),
             )
-            flow = EnvironmentFlow(
-                _ModelClient(model),
-                environment=environment_episode,
-                root_config=AgentConfig(
-                    max_iters=self.max_iters,
-                    max_depth=max_depth,
-                    max_budget=max_budget,
-                    resume_on_child_done=False,
-                    child_config=child_config,
-                ),
-                **flow_kwargs,
-            )
+            flow = EnvironmentFlow(_ModelClient(model), environment=environment_episode, **flow_kwargs)
+            root = flow.create_root(graph, prompt, config=config, **inputs)
         else:
-            flow = Flow(
-                _ModelClient(model),
-                root_config=AgentConfig(
-                    max_iters=self.max_iters,
-                    max_depth=max_depth,
-                    max_budget=max_budget,
-                    resume_on_child_done=False,
-                    child_config=child_config,
-                ),
-                **flow_kwargs,
-            )
-        started_at = time.perf_counter()
-        # Seed the durable graph; `run_streaming` then drives every agent in it
-        # and yields each item it adds.
-        graph = Graph()
-        if isinstance(flow, EnvironmentFlow):
-            root = flow.create_root(graph, prompt, config=flow.root_config, **inputs)
-        else:
-            root = graph.create_agent(prompt, **inputs, config=flow.root_config)
+            flow = Flow(_ModelClient(model), **flow_kwargs)
+            root = graph.create_agent(prompt, config=config, **inputs)
         cap = self.max_steps or max(200, self.max_iters * max(1, max_depth + 1) * 25)
         steps = 0
         error = None
@@ -154,7 +124,7 @@ class RLMFlowLocalRunner(Runner):
             nonlocal steps
             try:
                 async for item in flow.run_streaming(graph):
-                    steps += isinstance(item, Node)
+                    steps += isinstance(item, Step)
                     if checkpointer is not None:
                         checkpointer.handle(item, graph)
                     if steps >= cap:
@@ -174,8 +144,8 @@ class RLMFlowLocalRunner(Runner):
             if checkpointer is None:
                 graph.save(graph_dir)
 
-        spent = reads.usage(graph)
-        answer = _prediction_answer(reads.result(graph, root))
+        spent = graph.usage()
+        answer = _prediction_answer(graph.result(root))
         environment_metrics = (
             environment_episode.metrics() if environment_episode is not None else None
         )

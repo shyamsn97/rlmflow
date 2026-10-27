@@ -22,13 +22,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from examples.common import print_run  # noqa: E402
-from rlmflow import (  # noqa: E402
-    AgentConfig,
-    DockerRuntime,
-    Flow,
-    Graph,
-    reads,
-)
+from rlmflow import AgentConfig, DockerRuntime, Flow, Graph  # noqa: E402
 from rlmflow.llm import client_for  # noqa: E402
 
 PLATFORMER_QUERY = """\
@@ -74,7 +68,7 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     try:
         asyncio.run(print_run(flow, g, out_dir))
-        print(reads.result(g, root))
+        print(g.result(root))
         print(f"Run saved to {out_dir}")
     finally:
         flow.runtime.close_repls()

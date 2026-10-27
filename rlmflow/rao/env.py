@@ -17,10 +17,9 @@ import inspect
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Protocol
 
-from rlmflow.graph import reads
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import AgentStart, record_metadata
-from rlmflow.tools import tool
+from rlmflow.graph.nodes import Node, record_metadata
+from rlmflow.harnesses.repl.tools import tool
 
 
 class Env(Protocol):
@@ -261,10 +260,10 @@ def env_tool(session: EnvSession, agent_id: str):
     return env_step
 
 
-def environment_rewards(graph: Graph, root: AgentStart) -> dict[str, float]:
+def environment_rewards(graph: Graph, root: Node) -> dict[str, float]:
     """Sum graph-recorded environment rewards by acting agent in ``root``'s tree."""
-    agents = reads.tree(graph, root)
-    rewards = {reads.path(graph, agent): 0.0 for agent in agents}
+    agents = graph.tree(root)
+    rewards = {graph.path(agent): 0.0 for agent in agents}
     for node in (node for agent in agents for node in graph.nodes(agent=agent.id)):
         for receipt in node.metadata.get("environment.steps", []):
             if not isinstance(receipt, dict):

@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from rlmflow import AgentStart, DoneOutput, Graph, LLMOutput, Node, ops, reads
+from rlmflow import DONE, LLM_OUTPUT, Graph, Node
 
 
-def print_history(g: Graph, agent: AgentStart) -> None:
-    print("  " + " -> ".join(node.type for node in reads.history(g, agent)))
+def print_history(g: Graph, agent: Node) -> None:
+    print("  " + " -> ".join(node.type for node in g.history(agent)))
 
 
 def main() -> None:
     g = Graph()
-    root = ops.spawn(g, "write hello.py")
-    ops.append(g, root, LLMOutput(content='write_file("hello.py", "print(\\"hello\\")\\n")'))
-    ops.append(g, root, DoneOutput(result="hello.py created"))
+    root = g.spawn("write hello.py")
+    g.append(root, Node(LLM_OUTPUT, text='```repl\nwrite_file("hello.py", "print(1)")\n```'))
+    g.append(root, Node(DONE, result="hello.py created"))
 
     # The log is append-only, so the prefix ending just before each node (with
     # the edges that landed alongside it) is a valid earlier graph.

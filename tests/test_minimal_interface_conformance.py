@@ -1,18 +1,6 @@
-from helpers import StubLLM, TestRuntime, run_result
+from helpers import StubLLM, TestRuntime, first_user, run_result
 
-from rlmflow import (
-    DEPENDS_ON,
-    NEXT,
-    AgentConfig,
-    Flow,
-    Graph,
-    StructuredResult,
-    TransitionDecision,
-    UserQuery,
-    VerificationFailure,
-    ops,
-    reads,
-)
+from rlmflow import DEPENDS_ON, AgentConfig, Flow, Graph
 
 SCHEMA = {
     "type": "object",
@@ -34,117 +22,61 @@ SUM_SCHEMA = {
 }
 
 
-class HandoffSemanticEngine:
-    def __init__(self):
-        self.calls = 0
-
-    def supports(self, request):
-        return ()
-
-    async def generate(self, request, codec):
-        self.calls += 1
-        read_set = request.state["read_set"]
-        matched = any("[handoff " in item["content"] for item in read_set)
-        return StructuredResult(
-            request.state["candidates"][0]["transition"] if matched else "continue",
-            {"model": "semantic-test"},
-        )
-
-
-def test_minimal_interface_end_to_end_replays_without_work(tmp_path):
+def test_minimal_interface_end_to_end_reruns_without_work(tmp_path):
     calls: list[str] = []
 
     def reply(messages):
-        text = "\n".join(message["content"] for message in messages)
-        calls.append(text)
-        if "semantic route selected" in text:
-            return "```repl\nfinish('done')\n```"
-        if "join typed children" in text:
-            return "```repl\nfinish({'sum': 2})\n```"
-        if "right typed child" in text:
-            if "set ok to true" in text:
-                return "```repl\nfinish({'ok': True})\n```"
-            return "```repl\nfinish({'ok': False})\n```"
-        if "left typed child" in text:
-            return "```repl\nfinish({'value': 1})\n```"
+        task = first_user(messages)
+        last = messages[-1]["content"]
+        calls.append(task)
+        if task == "join typed children":
+            return "```repl\nsubmit({'sum': primary['value'] + int(audit['ok'])})\n```"
+        if task == "right typed child":
+            if "ok" in last and messages[-1] is not messages[1]:
+                return "```repl\nsubmit({'ok': True})\n```"
+            return "```repl\nsubmit({'ok': 'yes'})\n```"
+        if task == "left typed child":
+            return "```repl\nsubmit({'value': 1})\n```"
+        if "'sum': 2" in last:
+            return "```repl\nsubmit('done')\n```"
         return (
             "```repl\n"
-            "def verify(value):\n"
-            "    return None if value['ok'] else 'set ok to true'\n"
-            f"left = launch_subagent(task='left typed child', schema={SCHEMA!r})\n"
-            f"right = launch_subagent(task='right typed child', schema={OK_SCHEMA!r}, verify=verify)\n"
-            "primary = left if True else right\n"
-            "joined = launch_subagent(\n"
-            "    task='join typed children',\n"
-            f"    schema={SUM_SCHEMA!r},\n"
-            "    primary=primary,\n"
-            "    audit=right,\n"
-            ")\n"
+            "left = launch_agent('left typed child', config='value')\n"
+            "right = launch_agent('right typed child', config='ok')\n"
+            "joined = launch_agent('join typed children', config='sum', primary=left, audit=right)\n"
             "print(await joined)\n"
             "```"
         )
 
-    engine = HandoffSemanticEngine()
-    flow = Flow(
-        StubLLM(reply),
-        runtime=TestRuntime(),
-        structured_engine=engine,
-    )
-
-    @flow.transition(
-        source=UserQuery,
-        when="The joined child result is available to its parent.",
-    )
-    def select_handoff(node):
-        return UserQuery(content="semantic route selected")
-
     g = Graph()
-    root = g.create_agent(
-        "conformance root",
-        config=AgentConfig(max_depth=1, max_iters=8),
-    )
-    assert run_result(flow, g, root) == "done"
+    for name, schema in (("value", SCHEMA), ("ok", OK_SCHEMA), ("sum", SUM_SCHEMA)):
+        g.add_config(AgentConfig(name=name, output_schema=schema, max_iters=4))
+    root = g.create_agent("conformance root", config=AgentConfig(max_depth=1, max_iters=8))
+    flow = Flow(StubLLM(reply), runtime=TestRuntime())
 
-    children = reads.tree(g, root)[1:]
-    assert len(children) == 3
-    assert {child.config.output_schema["required"][0] for child in children} == {
-        "value",
-        "ok",
-        "sum",
-    }
-    right = next(child for child in children if "right typed" in child.content)
-    assert len(reads.history(g, right)) > 3
-    assert len(g.nodes(VerificationFailure)) == 1
-    matched = next(
-        node for node in g.nodes(TransitionDecision) if node.selected_rule_id is not None
-    )
-    assert any(g.edges(kind=DEPENDS_ON, source=child.id) for child in children)
-    assert g.edges(kind=NEXT, source=matched.id)
+    assert run_result(flow, g, root) == "done"
+    children = g.tree(root)[1:]
+    assert [child.config.name for child in children] == ["value", "ok", "sum"]
+    left, right, joined = children
+    assert g.result(left) == {"value": 1}
+    assert g.result(right) == {"ok": True}
+    assert g.result(joined) == {"sum": 2}
+    rejected = [n for n in g.history(right) if n.type == "code" and n.data.get("error")]
+    assert len(rejected) == 1
+    assert {e.target for e in g.edges(kind=DEPENDS_ON, source=joined.id)} == {left.id, right.id}
 
     g.save(tmp_path / "conformance")
     loaded = Graph.load(tmp_path / "conformance")
     call_count = len(calls)
-    semantic_count = engine.calls
-
-    class NoWorkEngine:
-        def supports(self, request):
-            raise AssertionError("semantic engine repeated during terminal replay")
 
     def no_model_call(_messages):
-        raise AssertionError("model repeated during terminal replay")
+        raise AssertionError("model repeated during terminal rerun")
 
-    assert (
-        Flow(
-            StubLLM(no_model_call),
-            runtime=TestRuntime(),
-            structured_engine=NoWorkEngine(),
-        ).run(loaded)
-        is loaded
-    )
-    assert reads.result(loaded, loaded.node(root.id)) == "done"
+    assert Flow(StubLLM(no_model_call), runtime=TestRuntime()).run(loaded) is loaded
+    assert loaded.result(loaded.node(root.id)) == "done"
     assert len(calls) == call_count
-    assert engine.calls == semantic_count
 
-    forked = ops.fork(g, matched)
-    assert reads.frontier(g, forked) is matched
-    assert not reads.terminal(g, forked)
+    cell = next(n for n in g.history(root) if n.type == "code")
+    forked = g.fork(cell)
+    assert g.frontier(forked) is cell
+    assert not g.terminal(forked)

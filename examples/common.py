@@ -27,7 +27,7 @@ import argparse
 from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import Path
 
-from rlmflow import AgentStart, Edge, Flow, Graph, GraphCheckpointer, Node, reads
+from rlmflow import Flow, Graph, GraphCheckpointer, Node, Step
 
 # The directory this module lives in, i.e. the repo's ``examples/`` folder.
 EXAMPLES_DIR = Path(__file__).resolve().parent
@@ -52,10 +52,10 @@ def save_example_graph(
 
 
 async def checkpoint_stream(
-    items: AsyncIterable[Node | Edge],
+    items: AsyncIterable[Step],
     graph: Graph,
     path: str | Path,
-) -> AsyncIterator[Node | Edge]:
+) -> AsyncIterator[Step]:
     """Yield every streamed item while periodically checkpointing ``graph``."""
     checkpointer = GraphCheckpointer(path)
     try:
@@ -66,19 +66,18 @@ async def checkpoint_stream(
         checkpointer.close()
 
 
-def print_agent_tree(graph: Graph, agent: AgentStart, depth: int = 0) -> None:
+def print_agent_tree(graph: Graph, agent: Node, depth: int = 0) -> None:
     """Each agent's history on one line, with the agents it launched indented below."""
-    history = " -> ".join(node.type for node in reads.history(graph, agent))
-    print(f"{'  ' * depth}[{reads.path(graph, agent)}] {history}")
-    for child in reads.children(graph, agent):
+    history = " -> ".join(node.type for node in graph.history(agent))
+    print(f"{'  ' * depth}[{graph.path(agent)}] {history}")
+    for child in graph.children(agent):
         print_agent_tree(graph, child, depth + 1)
 
 
 async def print_run(flow: Flow, graph: Graph, path: str | Path, *, width: int = 0) -> None:
     """Run ``graph`` to quiescence, checkpointing it and printing each node as it lands."""
-    async for item in checkpoint_stream(flow.run_streaming(graph), graph, path):
-        if isinstance(item, Node):
-            print(f"{reads.path(graph, graph.node(item.agent_id)):<{width}}  {item.type}")
+    async for step in checkpoint_stream(flow.run_streaming(graph), graph, path):
+        print(f"{graph.path(step.agent):<{width}}  {step.node.type}")
 
 
 def add_model_args(

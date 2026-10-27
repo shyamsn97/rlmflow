@@ -1,4 +1,7 @@
-"""Composable consumers for ``Flow.run_streaming`` Node streams."""
+"""Composable consumers for ``Flow.run_streaming``'s ``Step`` stream.
+
+``handle(item, graph)`` takes a streamed ``Step``, or a bare ``Node``.
+"""
 
 from __future__ import annotations
 
@@ -10,15 +13,9 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from rlmflow.graph import reads
 from rlmflow.graph.graph import Edge, Graph
-from rlmflow.graph.nodes import (
-    AgentStart,
-    DoneOutput,
-    ErrorOutput,
-    Node,
-)
-from rlmflow.view.text import _status, launched_by, render_forest, render_tree, top_level
+from rlmflow.graph.nodes import DONE, WAITING, Node, Step
+from rlmflow.view.text import _status, render_forest, render_tree, top_level
 
 if TYPE_CHECKING:
     from rlmflow.flow import Flow
@@ -36,7 +33,7 @@ class StreamConsumer:
         one, and only a flow can do that.
         """
 
-    def handle(self, item: Node | Edge, graph: Graph) -> None:
+    def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
         raise NotImplementedError
 
     def close(self) -> None:
@@ -56,7 +53,7 @@ class ConsumerGroup(StreamConsumer):
         for consumer in self.consumers:
             consumer.init(flow)
 
-    def handle(self, item: Node | Edge, graph: Graph) -> None:
+    def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
         for consumer in self.consumers:
             consumer.handle(item, graph)
 
@@ -88,12 +85,13 @@ class GraphCheckpointer(StreamConsumer):
         self.dirty_nodes = 0
         self.saved_revision = -1
 
-    def handle(self, item: Node | Edge, graph: Graph) -> None:
+    def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
         if self.latest is not None and graph is not self.latest:
             raise ValueError("one GraphCheckpointer cannot write multiple runs")
         self.latest = graph
         self.dirty_nodes += 1
-        if isinstance(item, (DoneOutput, ErrorOutput)) or self._due():
+        node = item.node if isinstance(item, Step) else item
+        if (isinstance(node, Node) and node.type == DONE) or self._due():
             self.flush()
 
     def _due(self) -> bool:
@@ -143,7 +141,7 @@ class WorkspaceSync(StreamConsumer):
         if _is_relative_to(self.target_dir, self.source_dir):
             raise ValueError("target_dir must not be inside source_dir")
 
-    def handle(self, item: Node | Edge, graph: Graph) -> None:
+    def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
         now = time.monotonic()
         if self.every_s and now - self.last < self.every_s:
             return
@@ -179,8 +177,8 @@ class LiveTreeRenderer(StreamConsumer):
         self.clear = clear
         self.graphs: dict[str, Graph] = {}
 
-    def handle(self, item: Node | Edge, graph: Graph) -> None:
-        if not isinstance(item, Node):
+    def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
+        if not isinstance(item, (Step, Node)):
             return
         self.graphs.setdefault(graph.id, graph)
         if self.clear and sys.stdout.isatty():
@@ -224,7 +222,7 @@ class LiveGraphTree(StreamConsumer):
         """Change the heading for an already tracked graph."""
         self.labels[graph_id] = label
 
-    def handle(self, item: Node | Edge, graph: Graph) -> None:
+    def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
         if self.closed:
             return
         self.track(graph)
@@ -308,14 +306,14 @@ class LiveGraphTree(StreamConsumer):
         from rich.text import Text
         from rich.tree import Tree
 
-        def render_label(agent: AgentStart):
+        def render_label(agent: Node):
             text = _status(graph, agent)
-            frontier = reads.frontier(graph, agent)
-            if isinstance(frontier, DoneOutput):
+            frontier = graph.frontier(agent)
+            if frontier.type == DONE:
+                if frontier.data.get("error"):
+                    return Text.assemble(("✗ ", "red"), (text, "red"))
                 return Text.assemble(("✓ ", "green"), (text, "green"))
-            if isinstance(frontier, ErrorOutput):
-                return Text.assemble(("✗ ", "red"), (text, "red"))
-            if launched_by(graph, frontier):
+            if frontier.type == WAITING or any(not graph.terminal(c) for c in graph.children(agent)):
                 return Text.assemble(("◌ ", "magenta"), (text, "magenta"))
             if self.spinners:
                 return Spinner("dots", text=Text(text, style="cyan"))
@@ -323,8 +321,8 @@ class LiveGraphTree(StreamConsumer):
 
         tree = Tree(Text(label or graph.id, style="bold"), guide_style="dim")
 
-        def populate(branch, agent: AgentStart) -> None:
-            for child in reads.children(graph, agent):
+        def populate(branch, agent: Node) -> None:
+            for child in graph.children(agent):
                 child_branch = branch.add(render_label(child), guide_style="dim")
                 populate(child_branch, child)
 

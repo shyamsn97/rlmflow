@@ -28,14 +28,14 @@ only from `reads`.
 
 Today one structural tree, rooted at an `AgentStart`, does six jobs:
 
-| Job | Current mechanism |
-|-----|-------------------|
-| Transcript order | `parent`/`children`, plus a same-agent filter in `Node.next` |
-| Launch ownership | a child `AgentStart` hangs under the launching `ExecAction` |
-| Dependency scope | handle arguments restricted to siblings (`delegation.resolve_args`) |
-| Fork boundary | `clone_until` copies the whole tree, prunes after one node, and re-IDs everything (about 100 lines) |
-| Persistence layout | tree-shaped documents plus per-agent directories |
-| Run container | `root._index`, `root.usage`, `root.find_agent`, `_require_run_root` |
+| Job                | Current mechanism                                                                                   |
+| ------------------ | --------------------------------------------------------------------------------------------------- |
+| Transcript order   | `parent`/`children`, plus a same-agent filter in `Node.next`                                        |
+| Launch ownership   | a child `AgentStart` hangs under the launching `ExecAction`                                         |
+| Dependency scope   | handle arguments restricted to siblings (`delegation.resolve_args`)                                 |
+| Fork boundary      | `clone_until` copies the whole tree, prunes after one node, and re-IDs everything (about 100 lines) |
+| Persistence layout | tree-shaped documents plus per-agent directories                                                    |
+| Run container      | `root._index`, `root.usage`, `root.find_agent`, `_require_run_root`                                 |
 
 Because the tree is the only structure available, live bookkeeping also sits
 on nodes: `in_flight`, `pending_handoffs`, `dependency_scheduled`, and
@@ -116,10 +116,10 @@ They lose `root`, `parent`, `children`, `parent_agent`, `sub_agents`,
 
 ## Structural edge kinds
 
-| Kind | Direction | Meaning |
-|------|-----------|---------|
-| `next` | earlier node → later node | History order. A branch in history is a fork. |
-| `from` | message → sender node | Who sent this message. On an `AgentStart`, that is who launched the agent. |
+| Kind         | Direction                                     | Meaning                                                                                                                        |
+| ------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `next`       | earlier node → later node                     | History order. A branch in history is a fork.                                                                                  |
+| `from`       | message → sender node                         | Who sent this message. On an `AgentStart`, that is who launched the agent.                                                     |
 | `depends_on` | consumer `AgentStart` → producer `AgentStart` | The consumer cannot start until the producer is terminal. If `data["as"]` is set, the producer's result is bound to that name. |
 
 Any other `kind` is application data, such as `peer`, `supervises`,
@@ -185,20 +185,20 @@ checking only what they touch.
 
 1. Node and edge IDs are unique, every edge's endpoints exist, and every node
    is owned by a known agent (an `AgentStart` owns itself).
-2. **`next`.** Every non-`AgentStart` node has exactly one incoming `next`
+1. **`next`.** Every non-`AgentStart` node has exactly one incoming `next`
    edge, from the current last node of its own agent. The one exception is an
    undelivered `UserQuery`, which has no incoming `next` yet; delivery adds
    it exactly once. A node has at most one outgoing `next` to its own agent.
    Any number of outgoing `next` edges may point to other agents'
    `AgentStart` nodes; those are forks, and they leave only landed nodes.
    Each agent's history is one chain reachable from its `AgentStart`.
-3. **`from`.** An `AgentStart` has at most one `from` edge, and the launcher
+1. **`from`.** An `AgentStart` has at most one `from` edge, and the launcher
    tree is acyclic. A `UserQuery` may have several, because one handoff can
    batch several results.
-4. **`depends_on`.** These edges connect distinct `AgentStart`s, are acyclic,
+1. **`depends_on`.** These edges connect distinct `AgentStart`s, are acyclic,
    and are added only before the consumer's first own step.
-5. Structural edges are never removed.
-6. A node may be annotated (metadata, tool receipts) only while it is its
+1. Structural edges are never removed.
+1. A node may be annotated (metadata, tool receipts) only while it is its
    agent's frontier.
 
 ## `reads`: agent queries
@@ -218,17 +218,17 @@ def path(g: Graph, agent: AgentStart) -> str: ...
 def depth(g: Graph, agent: AgentStart) -> int: ...
 ```
 
-| Function | Definition |
-|----------|------------|
-| `history` | Start at the agent's last own node and follow incoming `next` edges back to an `AgentStart` that has none. For a fork, this walk continues through the base agent's prefix. |
-| `frontier` | The last node of `history`. A fork's own `AgentStart` is transparent: an empty fork's frontier is its base node. |
-| `terminal` | The frontier is a `DoneOutput`. |
-| `inbox` | `UserQuery` nodes addressed to the agent with no incoming `next`, in `seq` order. |
-| `ready` | Agents that are not terminal, or have a non-empty inbox, and whose active `depends_on` producers are all terminal. |
-| `launcher` | The agent that owns the target of this agent's `from` edge. `None` means top-level. |
-| `children` | Agents whose launcher is this agent. |
-| `path` | The launcher's path plus `"." + name`. |
-| `depth` | The length of the launcher chain. |
+| Function   | Definition                                                                                                                                                                  |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `history`  | Start at the agent's last own node and follow incoming `next` edges back to an `AgentStart` that has none. For a fork, this walk continues through the base agent's prefix. |
+| `frontier` | The last node of `history`. A fork's own `AgentStart` is transparent: an empty fork's frontier is its base node.                                                            |
+| `terminal` | The frontier is a `DoneOutput`.                                                                                                                                             |
+| `inbox`    | `UserQuery` nodes addressed to the agent with no incoming `next`, in `seq` order.                                                                                           |
+| `ready`    | Agents that are not terminal, or have a non-empty inbox, and whose active `depends_on` producers are all terminal.                                                          |
+| `launcher` | The agent that owns the target of this agent's `from` edge. `None` means top-level.                                                                                         |
+| `children` | Agents whose launcher is this agent.                                                                                                                                        |
+| `path`     | The launcher's path plus `"." + name`.                                                                                                                                      |
+| `depth`    | The length of the launcher chain.                                                                                                                                           |
 
 `path` and `depth` are derived, so attaching an agent never rewrites configs.
 Anything else is a one-liner at the call site:
@@ -356,12 +356,12 @@ class Flow:
 ### Contract
 
 1. **Read.** Schedule `reads.ready(g)` minus the agents already in flight.
-2. **Step.** Call `ops.deliver`, then run one step on `reads.frontier`
+1. **Step.** Call `ops.deliver`, then run one step on `reads.frontier`
    through the existing transition policy: model call, code execution,
    delegation, final query, summary, or repair.
-3. **Write.** Land the result with `ops.append(..., after=frontier)` and run
+1. **Write.** Land the result with `ops.append(..., after=frontier)` and run
    reactions through `ops`.
-4. **Stream.** Yield `g.items(after=cursor)`.
+1. **Stream.** Yield `g.items(after=cursor)`.
 
 ```python
 async def run_streaming(self, g, *, until="done"):
@@ -394,23 +394,23 @@ async def _step(self, g, agent, node):
 
 These are Flow policy. Each one is a few lines over `ops`.
 
-| Reaction | Trigger | Write |
-|----------|---------|-------|
-| Handoff | A spawned agent lands `DoneOutput` | `ops.send(g, launcher, rendered, sender=done)`. It is skipped when the launcher is terminal and `resume_on_child_done=False`, when the child was consumed through `depends_on`, or when `done` already has an incoming `from` edge. |
-| Budget finalization | LLM usage crosses `max_budget` | `ops.append(g, agent, FinalQuery())` once descendants have finished |
-| Ask answer | A target lands `DoneOutput` after a query whose `from` edge points at a waiting sender action | Resolve that sender's waiting tool call |
+| Reaction            | Trigger                                                                                       | Write                                                                                                                                                                                                                               |
+| ------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Handoff             | A spawned agent lands `DoneOutput`                                                            | `ops.send(g, launcher, rendered, sender=done)`. It is skipped when the launcher is terminal and `resume_on_child_done=False`, when the child was consumed through `depends_on`, or when `done` already has an incoming `from` edge. |
+| Budget finalization | LLM usage crosses `max_budget`                                                                | `ops.append(g, agent, FinalQuery())` once descendants have finished                                                                                                                                                                 |
+| Ask answer          | A target lands `DoneOutput` after a query whose `from` edge points at a waiting sender action | Resolve that sender's waiting tool call                                                                                                                                                                                             |
 
 Handoff deduplication uses an edge instead of a string marker. A child that is
 reopened and finishes again is delivered once more.
 
 ### Live state
 
-| State | Rebuilt from |
-|-------|--------------|
-| Model clients, delegation backends, tools, codecs, transitions | constructor arguments |
-| REPLs keyed by `(g.id, agent.id)` | replaying the `ExecAction`s in `history` |
-| In-flight steps | `reads.ready(g)` |
-| Waiting tool calls (`await handle`, `ask_agent`) | the sender's unfinished `ExecAction`, which reruns on replay |
+| State                                                          | Rebuilt from                                                 |
+| -------------------------------------------------------------- | ------------------------------------------------------------ |
+| Model clients, delegation backends, tools, codecs, transitions | constructor arguments                                        |
+| REPLs keyed by `(g.id, agent.id)`                              | replaying the `ExecAction`s in `history`                     |
+| In-flight steps                                                | `reads.ready(g)`                                             |
+| Waiting tool calls (`await handle`, `ask_agent`)               | the sender's unfinished `ExecAction`, which reruns on replay |
 
 Flow owns no graph structure.
 
@@ -496,10 +496,10 @@ load through `persistence.upgrade_v1(path)`. That converter does three things:
 Python rehydration is required, and it stays a Flow operation:
 
 1. Open an agent's REPL lazily, when its next step is an `ExecAction`.
-2. Rerun every landed `ExecAction` in `history`, in order. For a fork, this
+1. Rerun every landed `ExecAction` in `history`, in order. For a fork, this
    includes the shared prefix. Saved receipts keep launches, forks, sends, and
    edges idempotent.
-3. Continue from the frontier.
+1. Continue from the frontier.
 
 `reuse_worker` remains a runtime placement detail; its owner is the
 launcher's REPL. External backends keep their session ID on
@@ -508,32 +508,32 @@ follow-up `DelegationAction` that resumes that session.
 
 ## Coverage: every current feature
 
-| Feature | Today | After |
-|---------|-------|-------|
-| Start a run | `start(task)` builds a root | `g.create_agent(task)`, which is `ops.spawn(g, task)` with no launcher |
-| Model, exec, and delegation steps | producer, then `anchor.append` | producer, then `ops.append(..., after=)` |
-| In-step nudges (`FinalQuery`, `TruncationSummary`, `TransitionDecision`) | `anchor.append` inside the step | `ops.append` from the same step |
-| `launch_subagent` | `resolve_child`, then a tree child | `ops.spawn(by=action)` |
-| Names, paths, depth, `max_depth` | stored, and rewritten on attach | `reads.path` and `reads.depth` |
-| Handle arguments, `blocked`, `resolved_args` | `$rlmflow_agent` markers, sibling scope | `depends_on` edges with `as` |
-| `Input(value, description=...)` | args marker | plain values unchanged; a handle's description moves to the edge data |
-| `await handle`, `AGENTS`, `render_graph` | waiter plus a tree snapshot | `reads` plus `g.edges` |
-| Handoff, `resume_on_child_done` | live mailbox and markers | reaction: `ops.send(..., sender=done)` |
-| Host injection, reopening a finished agent | `frontier.append(UserQuery)` | `ops.send`, or `ops.append` when idle |
-| Stale append, busy agent | frontier check plus `in_flight` | the `after=` guard |
-| `node.fork()` | `clone_until`: copy and re-ID | `ops.fork`: two or three items |
-| `append_child`, `AppendChild` | rehome a subtree and rewrite paths | `ops.attach`: one action plus `from` edges |
-| Shepherd best-of-N | standalone forks, manual replay, `append_child` | `ops.fork` in one graph, then `ops.attach` |
-| Save and load | tree document, agent directories, blobs | the log plus blobs |
-| `flow.replay`, `restore=` | walk the tree, find worker owners | replay the `ExecAction`s in `history` |
-| Stats, usage, errors | `root._index` | `g.nodes(...)` one-liners |
-| Driving several roots | a driving set inside `run_streaming` | `reads.ready(g)` |
-| `until=` boundaries | `predicate(node, root)` | `predicate(item, g)` |
-| Verification, repair, semantic transitions | typed nodes | unchanged |
-| External delegation | `DelegationAction` | unchanged; follow-ups arrive through the inbox |
-| RAO credit and export | `sub_agents`, `config.depth`, `config.path` | `reads.children`, `depth`, `path` |
-| Collaboration queue | external tool | unchanged |
-| Views, TUI, checkpointer | tree walk | `g.items(after=)` plus edges |
+| Feature                                                                  | Today                                           | After                                                                  |
+| ------------------------------------------------------------------------ | ----------------------------------------------- | ---------------------------------------------------------------------- |
+| Start a run                                                              | `start(task)` builds a root                     | `g.create_agent(task)`, which is `ops.spawn(g, task)` with no launcher |
+| Model, exec, and delegation steps                                        | producer, then `anchor.append`                  | producer, then `ops.append(..., after=)`                               |
+| In-step nudges (`FinalQuery`, `TruncationSummary`, `TransitionDecision`) | `anchor.append` inside the step                 | `ops.append` from the same step                                        |
+| `launch_subagent`                                                        | `resolve_child`, then a tree child              | `ops.spawn(by=action)`                                                 |
+| Names, paths, depth, `max_depth`                                         | stored, and rewritten on attach                 | `reads.path` and `reads.depth`                                         |
+| Handle arguments, `blocked`, `resolved_args`                             | `$rlmflow_agent` markers, sibling scope         | `depends_on` edges with `as`                                           |
+| `Input(value, description=...)`                                          | args marker                                     | plain values unchanged; a handle's description moves to the edge data  |
+| `await handle`, `AGENTS`, `render_graph`                                 | waiter plus a tree snapshot                     | `reads` plus `g.edges`                                                 |
+| Handoff, `resume_on_child_done`                                          | live mailbox and markers                        | reaction: `ops.send(..., sender=done)`                                 |
+| Host injection, reopening a finished agent                               | `frontier.append(UserQuery)`                    | `ops.send`, or `ops.append` when idle                                  |
+| Stale append, busy agent                                                 | frontier check plus `in_flight`                 | the `after=` guard                                                     |
+| `node.fork()`                                                            | `clone_until`: copy and re-ID                   | `ops.fork`: two or three items                                         |
+| `append_child`, `AppendChild`                                            | rehome a subtree and rewrite paths              | `ops.attach`: one action plus `from` edges                             |
+| Shepherd best-of-N                                                       | standalone forks, manual replay, `append_child` | `ops.fork` in one graph, then `ops.attach`                             |
+| Save and load                                                            | tree document, agent directories, blobs         | the log plus blobs                                                     |
+| `flow.replay`, `restore=`                                                | walk the tree, find worker owners               | replay the `ExecAction`s in `history`                                  |
+| Stats, usage, errors                                                     | `root._index`                                   | `g.nodes(...)` one-liners                                              |
+| Driving several roots                                                    | a driving set inside `run_streaming`            | `reads.ready(g)`                                                       |
+| `until=` boundaries                                                      | `predicate(node, root)`                         | `predicate(item, g)`                                                   |
+| Verification, repair, semantic transitions                               | typed nodes                                     | unchanged                                                              |
+| External delegation                                                      | `DelegationAction`                              | unchanged; follow-ups arrive through the inbox                         |
+| RAO credit and export                                                    | `sub_agents`, `config.depth`, `config.path`     | `reads.children`, `depth`, `path`                                      |
+| Collaboration queue                                                      | external tool                                   | unchanged                                                              |
+| Views, TUI, checkpointer                                                 | tree walk                                       | `g.items(after=)` plus edges                                           |
 
 ## Formations
 
@@ -650,36 +650,36 @@ for a net of about −800 before counting tests.
 
 ### `rlmflow/graph/nodes.py` (1124 → ~620)
 
-| Lines | Symbol | Fate |
-|-------|--------|------|
-| 78–83 | `AgentBusyError` | Deleted. Replaced by `StaleFrontier` in `graph.py`. |
-| 182–190 | `RunStats` | Deleted, along with its public export. |
-| 194–235 | `RunIndex` (`register`, `snapshot`) | Deleted. Its job moves to the private index inside `Graph`. |
-| 248–253 | `Node.root`, `parent_agent`, `children`, `parent` | Deleted. Replaced by the `agent_id` field. |
-| 254–256 | `Node.seq` as per-agent position | Becomes graph-global and assigned by `add`. |
-| 292–351 | `Node.append` (busy, frontier, and duplicate checks; index registration) | Deleted. Becomes `ops.append` plus the `Graph` invariants. |
-| 353–374 | `Node.append_child` | Deleted. Becomes `ops.attach`. |
-| 377–396 | `next`, `prev` | Shims in phase 1; deleted in phase 2. |
-| 398–409 | `walk` | Deleted. |
-| 411–416 | `iter_backwards` | Deleted. Becomes `reads.history`. |
-| 466–493 | `project` | Kept. Walks `reads.history(g, agent)`. |
-| 495–500 | `subtree_usage` | Deleted. |
-| 518–524 | `Node.fork` | Deleted. Becomes `ops.fork`. |
-| 538–552 | `AgentStart.sub_agents`, `frontier`, `in_flight`, `pending_handoffs`, `dependency_scheduled`, `_index` | Deleted. |
-| 554–563 | `AgentStart.__post_init__` | Shrinks to the message snapshot plus `agent_id = id`. |
-| 566–576 | `terminal`, `supervisor`, `result` | Shims, then `reads`. |
-| 579–619 | `blocked`, `argument_references`, `resolved_args` | Deleted. Replaced by `depends_on` edges; delegation binds the inputs. |
-| 621–631 | `argument_descriptions`, `invocation_arguments` | Kept. Handle descriptions are read from edge data. |
-| 633–647 | `leaves`, `transcript` | Deleted. Become `reads.ready` and `reads.history`. |
-| 649–656 | `retrieved_agent_ids` | Deleted, along with `ExecAction.mark_agent_retrieved`, the `observe_agent` tool, and `repl_execution_order`. They were written but never read. |
-| 658–700 | `_require_run_root`, `usage`, `stats`, `iter_agents`, `find_agent`, `errors`, `rebuild_index` | Deleted. Become `g.nodes(...)` one-liners. |
-| 702–721 | `llm_turns`, `record_prompt`, `system_prompt_for`, `latest_system_prompt` | Kept. |
-| 723–734 | `AgentStart.save` / `load` | Deleted. Become `Graph.save` / `Graph.load`. |
-| 824–835 | Launch-index side effect in `ExecAction.record_tool_call` | Deleted. The receipt is simply saved. |
-| 841–859 | `launch_agent_ids`, `launch_call_id_for` | Kept. The receipt key is renamed to `launch_agent`. |
-| 889–934 | `AppendChild.child_agents`, `append`, `attach` (subtree rehome, path/depth rewrite) | Deleted. |
-| 936–951 | `AppendChild._refresh_code` | Becomes `AppendChild.launching(agents, names)`. |
-| 1070–1081 | `start()` | Becomes a shim returning `(graph, agent)`, then is deleted. |
+| Lines     | Symbol                                                                                                 | Fate                                                                                                                                           |
+| --------- | ------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| 78–83     | `AgentBusyError`                                                                                       | Deleted. Replaced by `StaleFrontier` in `graph.py`.                                                                                            |
+| 182–190   | `RunStats`                                                                                             | Deleted, along with its public export.                                                                                                         |
+| 194–235   | `RunIndex` (`register`, `snapshot`)                                                                    | Deleted. Its job moves to the private index inside `Graph`.                                                                                    |
+| 248–253   | `Node.root`, `parent_agent`, `children`, `parent`                                                      | Deleted. Replaced by the `agent_id` field.                                                                                                     |
+| 254–256   | `Node.seq` as per-agent position                                                                       | Becomes graph-global and assigned by `add`.                                                                                                    |
+| 292–351   | `Node.append` (busy, frontier, and duplicate checks; index registration)                               | Deleted. Becomes `ops.append` plus the `Graph` invariants.                                                                                     |
+| 353–374   | `Node.append_child`                                                                                    | Deleted. Becomes `ops.attach`.                                                                                                                 |
+| 377–396   | `next`, `prev`                                                                                         | Shims in phase 1; deleted in phase 2.                                                                                                          |
+| 398–409   | `walk`                                                                                                 | Deleted.                                                                                                                                       |
+| 411–416   | `iter_backwards`                                                                                       | Deleted. Becomes `reads.history`.                                                                                                              |
+| 466–493   | `project`                                                                                              | Kept. Walks `reads.history(g, agent)`.                                                                                                         |
+| 495–500   | `subtree_usage`                                                                                        | Deleted.                                                                                                                                       |
+| 518–524   | `Node.fork`                                                                                            | Deleted. Becomes `ops.fork`.                                                                                                                   |
+| 538–552   | `AgentStart.sub_agents`, `frontier`, `in_flight`, `pending_handoffs`, `dependency_scheduled`, `_index` | Deleted.                                                                                                                                       |
+| 554–563   | `AgentStart.__post_init__`                                                                             | Shrinks to the message snapshot plus `agent_id = id`.                                                                                          |
+| 566–576   | `terminal`, `supervisor`, `result`                                                                     | Shims, then `reads`.                                                                                                                           |
+| 579–619   | `blocked`, `argument_references`, `resolved_args`                                                      | Deleted. Replaced by `depends_on` edges; delegation binds the inputs.                                                                          |
+| 621–631   | `argument_descriptions`, `invocation_arguments`                                                        | Kept. Handle descriptions are read from edge data.                                                                                             |
+| 633–647   | `leaves`, `transcript`                                                                                 | Deleted. Become `reads.ready` and `reads.history`.                                                                                             |
+| 649–656   | `retrieved_agent_ids`                                                                                  | Deleted, along with `ExecAction.mark_agent_retrieved`, the `observe_agent` tool, and `repl_execution_order`. They were written but never read. |
+| 658–700   | `_require_run_root`, `usage`, `stats`, `iter_agents`, `find_agent`, `errors`, `rebuild_index`          | Deleted. Become `g.nodes(...)` one-liners.                                                                                                     |
+| 702–721   | `llm_turns`, `record_prompt`, `system_prompt_for`, `latest_system_prompt`                              | Kept.                                                                                                                                          |
+| 723–734   | `AgentStart.save` / `load`                                                                             | Deleted. Become `Graph.save` / `Graph.load`.                                                                                                   |
+| 824–835   | Launch-index side effect in `ExecAction.record_tool_call`                                              | Deleted. The receipt is simply saved.                                                                                                          |
+| 841–859   | `launch_agent_ids`, `launch_call_id_for`                                                               | Kept. The receipt key is renamed to `launch_agent`.                                                                                            |
+| 889–934   | `AppendChild.child_agents`, `append`, `attach` (subtree rehome, path/depth rewrite)                    | Deleted.                                                                                                                                       |
+| 936–951   | `AppendChild._refresh_code`                                                                            | Becomes `AppendChild.launching(agents, names)`.                                                                                                |
+| 1070–1081 | `start()`                                                                                              | Becomes a shim returning `(graph, agent)`, then is deleted.                                                                                    |
 
 Unchanged: `ChatMessage`, `message_snapshot`, ID helpers, `active_step`,
 `record_metadata`, `running_step`, `TurnMode`, `annotate`, the
@@ -688,90 +688,90 @@ from `TransitionDecision` through `DoneOutput`, and `build_agent`.
 
 ### `rlmflow/graph/persistence.py` (764 → ~280)
 
-| Lines | Symbol | Fate |
-|-------|--------|------|
-| 167–179 | `to_document` | Deleted. `Graph.save` writes `items` instead. |
-| 182–248 | `from_document` (parent-before-child order, one root, `order`/`agent_id` path checks) | Deleted. `Graph.load` replays the log through `add`. |
-| 251–354 | `_validate_graph` | About 70 lines deleted: the argument-scope check, the dependency-cycle DFS, and launch uniqueness, which `Graph` invariants now cover. About 25 lines kept: strict-JSON validation of saved tool calls. |
-| 357–389 | `_validate_arg_value` | The agent-reference branch is deleted, leaving a plain JSON check. |
-| 392–414 | `save`, `load` | Move into `Graph`. |
-| 417–512 | `clone_until` | Deleted entirely (96 lines). |
-| 515–563 | `_agent_document`, `_summary_document`, `_write_agents` | Deleted. `agents/*/session.jsonl` and `latest.json` are write-only; nothing in `rlmflow` reads them. An opt-in exporter can replace them. |
-| 644–648 | `_prune` | Deleted along with `_write_agents`. |
-| 651–717 | `_new_node` | Kept, minus `parent_id` handling. |
-| new | `upgrade_v1(path)` | About 60 lines; see Persistence. |
+| Lines   | Symbol                                                                                | Fate                                                                                                                                                                                                    |
+| ------- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 167–179 | `to_document`                                                                         | Deleted. `Graph.save` writes `items` instead.                                                                                                                                                           |
+| 182–248 | `from_document` (parent-before-child order, one root, `order`/`agent_id` path checks) | Deleted. `Graph.load` replays the log through `add`.                                                                                                                                                    |
+| 251–354 | `_validate_graph`                                                                     | About 70 lines deleted: the argument-scope check, the dependency-cycle DFS, and launch uniqueness, which `Graph` invariants now cover. About 25 lines kept: strict-JSON validation of saved tool calls. |
+| 357–389 | `_validate_arg_value`                                                                 | The agent-reference branch is deleted, leaving a plain JSON check.                                                                                                                                      |
+| 392–414 | `save`, `load`                                                                        | Move into `Graph`.                                                                                                                                                                                      |
+| 417–512 | `clone_until`                                                                         | Deleted entirely (96 lines).                                                                                                                                                                            |
+| 515–563 | `_agent_document`, `_summary_document`, `_write_agents`                               | Deleted. `agents/*/session.jsonl` and `latest.json` are write-only; nothing in `rlmflow` reads them. An opt-in exporter can replace them.                                                               |
+| 644–648 | `_prune`                                                                              | Deleted along with `_write_agents`.                                                                                                                                                                     |
+| 651–717 | `_new_node`                                                                           | Kept, minus `parent_id` handling.                                                                                                                                                                       |
+| new     | `upgrade_v1(path)`                                                                    | About 60 lines; see Persistence.                                                                                                                                                                        |
 
 Kept: `to_record`, `_node_types`, `_ArgBlobStore`, the encode/resolve
 helpers, `_config`, `_epoch`, and the JSON writers.
 
 ### `rlmflow/graph/config.py` (197 → ~150)
 
-| Lines | Fate |
-|-------|------|
+| Lines                                                                 | Fate                                                                                                         |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | 14 `AGENT_REF_KEY`, 61–70 `agent_ref_id`, 73–90 `argument_references` | Deleted. Handles become edges. The proxy marker survives only inside `tools/agents.encode_agent_references`. |
-| 113–115 `AgentConfig.path`, `depth` | Deleted. |
-| 149–162 `child()` | Loses the `path` and `depth` lines. |
-| 165–181 `can_spawn`, `at_leaf` | Take `(g, agent)` and use `reads.depth`. |
-| new | `context_policy: ContextPolicy = RESIDENT`. |
+| 113–115 `AgentConfig.path`, `depth`                                   | Deleted.                                                                                                     |
+| 149–162 `child()`                                                     | Loses the `path` and `depth` lines.                                                                          |
+| 165–181 `can_spawn`, `at_leaf`                                        | Take `(g, agent)` and use `reads.depth`.                                                                     |
+| new                                                                   | `context_policy: ContextPolicy = RESIDENT`.                                                                  |
 
 ### `rlmflow/engine/delegation.py` (409 → ~170)
 
-| Lines | Symbol | Fate |
-|-------|--------|------|
-| 51–129 | `launch_tool` | Kept. Records receipts through `ops.spawn`. |
-| 132–166 | `_attach` | Rewritten in about 15 lines around `ops.spawn(by=action, depends_on=..., inputs=...)`. |
-| 198–255 | `resolve_args` | About 30 lines deleted: the sibling-scope check (228–234), duplicate-source tracking, and reference markers. About 20 lines remain to split handle inputs from JSON arguments. |
-| 258–288 | `resolve_child` | Kept. The depth check uses `reads.depth`. |
-| 291–315 | `submit_child`, `submit_leaf` (`dependency_scheduled` gating) | Deleted. Flow schedules from `ready()`. |
-| 318–333 | `ready_dependents` | Deleted. |
-| 336–370 | `new_child` | Kept, smaller. |
-| 373–398 | `_sort_launched_children` | Deleted. `seq` already orders launches. |
+| Lines   | Symbol                                                        | Fate                                                                                                                                                                           |
+| ------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 51–129  | `launch_tool`                                                 | Kept. Records receipts through `ops.spawn`.                                                                                                                                    |
+| 132–166 | `_attach`                                                     | Rewritten in about 15 lines around `ops.spawn(by=action, depends_on=..., inputs=...)`.                                                                                         |
+| 198–255 | `resolve_args`                                                | About 30 lines deleted: the sibling-scope check (228–234), duplicate-source tracking, and reference markers. About 20 lines remain to split handle inputs from JSON arguments. |
+| 258–288 | `resolve_child`                                               | Kept. The depth check uses `reads.depth`.                                                                                                                                      |
+| 291–315 | `submit_child`, `submit_leaf` (`dependency_scheduled` gating) | Deleted. Flow schedules from `ready()`.                                                                                                                                        |
+| 318–333 | `ready_dependents`                                            | Deleted.                                                                                                                                                                       |
+| 336–370 | `new_child`                                                   | Kept, smaller.                                                                                                                                                                 |
+| 373–398 | `_sort_launched_children`                                     | Deleted. `seq` already orders launches.                                                                                                                                        |
 
 ### `rlmflow/engine/handoff.py` (166 → ~75)
 
-| Lines | Fate |
-|-------|------|
+| Lines                                                                                                                         | Fate                                                                                                                                                       |
+| ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 24–115: `Handoff`, `marker`, `supervisor`, `delivered`, `enqueue`, `dependency_routed`, `flush`, `apply`, `rebuild_mailboxes` | Deleted. Replaced by about 25 lines: `react(g, done)` calls `ops.send(g, launcher, render(...), sender=done)` and deduplicates by an existing `from` edge. |
-| 118–157: `_render`, `_format_result`, `_result_body`, `_jsonish` | Kept. |
+| 118–157: `_render`, `_format_result`, `_result_body`, `_jsonish`                                                              | Kept.                                                                                                                                                      |
 
 ### `rlmflow/engine/restore.py` (125 → ~65)
 
-| Lines | Fate |
-|-------|------|
-| 12–37 `_replay_root`, `_required_agents` | Rewritten to find `reuse_worker` owners through `reads.launcher`. |
-| 40–82 `replay` | Same body, but iterates the `ExecAction`s in `reads.history(g, agent)`, which covers fork prefixes. |
-| 85–100 `ensure_replayed` | Keyed by `(g.id, agent.id)` instead of `id(agent)`. |
-| 103–122 `resume` | Drops the `dependency_scheduled` reset (119–121) and `rebuild_mailboxes`. |
+| Lines                                    | Fate                                                                                                |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| 12–37 `_replay_root`, `_required_agents` | Rewritten to find `reuse_worker` owners through `reads.launcher`.                                   |
+| 40–82 `replay`                           | Same body, but iterates the `ExecAction`s in `reads.history(g, agent)`, which covers fork prefixes. |
+| 85–100 `ensure_replayed`                 | Keyed by `(g.id, agent.id)` instead of `id(agent)`.                                                 |
+| 103–122 `resume`                         | Drops the `dependency_scheduled` reset (119–121) and `rebuild_mailboxes`.                           |
 
 ### `rlmflow/flow.py` (679 → ~620)
 
-| Lines | Fate |
-|-------|------|
-| 431–464 `_drive` | `anchor.append(landed)` and the `frontier.append` calls become `ops.append(..., after=node)`. Catches `StaleFrontier`. |
-| 466–498 budget helpers | `root.usage` becomes a graph sum; `sub_agents` becomes `reads.children`. |
-| 545–547 `replay(root)` | Becomes `replay(g, agent=None)`. |
-| 549–617 `run_streaming` | About 69 lines shrink to about 40: the `ready()` loop with `deliver`, reactions, and `g.items(after=)`. Deletes the root driving set, `driving`, `root_error`, `handoff.apply`, and `ready_dependents`. |
-| 619–626 `_submit` | Deleted. |
-| 628–661 `arun`, `run`, `start` | Take a `Graph`. The task-string shortcut is kept. |
+| Lines                          | Fate                                                                                                                                                                                                    |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 431–464 `_drive`               | `anchor.append(landed)` and the `frontier.append` calls become `ops.append(..., after=node)`. Catches `StaleFrontier`.                                                                                  |
+| 466–498 budget helpers         | `root.usage` becomes a graph sum; `sub_agents` becomes `reads.children`.                                                                                                                                |
+| 545–547 `replay(root)`         | Becomes `replay(g, agent=None)`.                                                                                                                                                                        |
+| 549–617 `run_streaming`        | About 69 lines shrink to about 40: the `ready()` loop with `deliver`, reactions, and `g.items(after=)`. Deletes the root driving set, `driving`, `root_error`, `handoff.apply`, and `ready_dependents`. |
+| 619–626 `_submit`              | Deleted.                                                                                                                                                                                                |
+| 628–661 `arun`, `run`, `start` | Take a `Graph`. The task-string shortcut is kept.                                                                                                                                                       |
 
 Unchanged: lines 92–423 (constructor, prompts, LLM clients, structured
 queries, `llm_query`, transitions) and 502–541 (tools and backends).
 
 ### Other modules
 
-| File | Change |
-|------|--------|
-| `engine/execution.py` 193–259 `TaskQueue` | `submit`, `join`, and `cancel` are keyed by agent id. `StepResult.is_agent_start` (189–190) is deleted along with the publish-on-spawn special case. |
-| `engine/boundaries.py` 10–18 | Boundary predicates take `(item, graph)`. |
-| `tools/agents.py` 348–416 `build_agent_directory` | Rebuilt from `reads` and `g.edges`. |
-| `tools/agents.py` 153 `AgentDirectory.root_id` | Becomes `top_level_ids`. |
-| `tools/agents.py` 237–311 `render_graph` | Renders a forest. Its dependency view reads `depends_on` edges. `AgentInfo` gains `edges` so agents can see peers. |
-| `tools/namespace.py` 63–98 | Wait and observe tools look agents up with `g.node` instead of `find_agent`. |
-| `tools/builtins.py` 172–181 | Renames the tool to `launch_agent` (keeping the `launch_subagent` alias) and adds `fork_agent`, `send_agent`, `ask_agent`, `connect_agent`, and `disconnect_agent`. |
+| File                                               | Change                                                                                                                                                                                                                        |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `engine/execution.py` 193–259 `TaskQueue`          | `submit`, `join`, and `cancel` are keyed by agent id. `StepResult.is_agent_start` (189–190) is deleted along with the publish-on-spawn special case.                                                                          |
+| `engine/boundaries.py` 10–18                       | Boundary predicates take `(item, graph)`.                                                                                                                                                                                     |
+| `tools/agents.py` 348–416 `build_agent_directory`  | Rebuilt from `reads` and `g.edges`.                                                                                                                                                                                           |
+| `tools/agents.py` 153 `AgentDirectory.root_id`     | Becomes `top_level_ids`.                                                                                                                                                                                                      |
+| `tools/agents.py` 237–311 `render_graph`           | Renders a forest. Its dependency view reads `depends_on` edges. `AgentInfo` gains `edges` so agents can see peers.                                                                                                            |
+| `tools/namespace.py` 63–98                         | Wait and observe tools look agents up with `g.node` instead of `find_agent`.                                                                                                                                                  |
+| `tools/builtins.py` 172–181                        | Renames the tool to `launch_agent` (keeping the `launch_subagent` alias) and adds `fork_agent`, `send_agent`, `ask_agent`, `connect_agent`, and `disconnect_agent`.                                                           |
 | `rao/credit.py`, `rao/export.py`, `rao/rollout.py` | `sub_agents`, `config.path`, and `config.depth` become `reads.children`, `path`, and `depth`. The tree `root` becomes a graph plus a top-level agent. `rao/env.py`'s environment fork is a separate concept and is unchanged. |
-| `view/*`, `consumers/*` | Walks over `.children` become edge reads. In `figure.py`, `append_child` references read `AppendChild` nodes. `tui.py`'s 19 uses of `.root` become `self.graph`. |
-| `rlmflow/__init__.py` | Removes `RunStats`, the public `persistence` module, and `start` (replaced by a shim). Adds `Graph`, `Edge`, `reads`, `ops`, and `ContextPolicy`. Keeps `AppendChild`. |
-| Unchanged | `llm.py`, `prompts/`, structured outputs and engines, `runtime/`, the REPL protocol, the `@tool` framework, `collaboration/`, and `backends/`. |
+| `view/*`, `consumers/*`                            | Walks over `.children` become edge reads. In `figure.py`, `append_child` references read `AppendChild` nodes. `tui.py`'s 19 uses of `.root` become `self.graph`.                                                              |
+| `rlmflow/__init__.py`                              | Removes `RunStats`, the public `persistence` module, and `start` (replaced by a shim). Adds `Graph`, `Edge`, `reads`, `ops`, and `ContextPolicy`. Keeps `AppendChild`.                                                        |
+| Unchanged                                          | `llm.py`, `prompts/`, structured outputs and engines, `runtime/`, the REPL protocol, the `@tool` framework, `collaboration/`, and `backends/`.                                                                                |
 
 The transition registry stays as Flow policy and can be simplified
 separately.
@@ -857,35 +857,35 @@ and the shims and `_graph` are deleted.
 
 ## Behaviors that change
 
-| Today | After |
-|-------|-------|
-| `AgentBusyError` when the host writes during a step | The host write wins; the step result is discarded and the agent rescheduled. Use `send` to queue a message instead. |
-| Forking at an `ExecAction` clears its receipts and reruns it | Rejected. Fork at the `LLMOutput` before it. |
-| Fork gives everything fresh IDs (`clone_until`) | The fork shares IDs and history; only the new agent's nodes are new. |
-| A run has exactly one root | Any number of top-level agents. |
-| Handle arguments are limited to siblings | Any agent in the graph. |
-| Handoff is deduplicated by a `[handoff path]` string | Deduplicated by a `from` edge, so a reopened child delivers again. |
-| `node.seq` is a per-agent position | Global log order. The per-agent position is the index in `history`. |
-| Every save writes `agents/*/session.jsonl` and `latest.json` | Removed, or produced by an opt-in exporter. |
-| `RunStats` and `root.stats` | One-liners over `g.nodes`. |
+| Today                                                        | After                                                                                                               |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `AgentBusyError` when the host writes during a step          | The host write wins; the step result is discarded and the agent rescheduled. Use `send` to queue a message instead. |
+| Forking at an `ExecAction` clears its receipts and reruns it | Rejected. Fork at the `LLMOutput` before it.                                                                        |
+| Fork gives everything fresh IDs (`clone_until`)              | The fork shares IDs and history; only the new agent's nodes are new.                                                |
+| A run has exactly one root                                   | Any number of top-level agents.                                                                                     |
+| Handle arguments are limited to siblings                     | Any agent in the graph.                                                                                             |
+| Handoff is deduplicated by a `[handoff path]` string         | Deduplicated by a `from` edge, so a reopened child delivers again.                                                  |
+| `node.seq` is a per-agent position                           | Global log order. The per-agent position is the index in `history`.                                                 |
+| Every save writes `agents/*/session.jsonl` and `latest.json` | Removed, or produced by an opt-in exporter.                                                                         |
+| `RunStats` and `root.stats`                                  | One-liners over `g.nodes`.                                                                                          |
 
 ## Migration
 
 ### API mapping
 
-| Today | After |
-|-------|-------|
-| `root = start(task)` | `g = Graph(); agent = g.create_agent(task)` |
-| `flow.run(root)` | `flow.run(g)` |
-| `root.save(p)` / `AgentStart.load(p)` | `g.save(p)` / `Graph.load(p)` |
-| `root.iter_agents()` / `find_agent(id)` | `g.nodes(AgentStart)` / `g.node(id)` |
-| `agent.sub_agents` / `agent.supervisor` | `reads.children(g, a)` / `reads.launcher(g, a)` |
-| `agent.frontier` / `agent.result()` | `reads.frontier(g, a)` / `reads.frontier(g, a).result` |
-| `node.append(x)` | `ops.append(g, agent, x, after=node)` |
-| `frontier.append(UserQuery(...))` | `ops.send(g, agent, ...)` |
-| `node.fork()` | `ops.fork(g, node)` |
-| `node.append_child(sub)` | `ops.attach(g, agent, sub)` |
-| handle argument | `depends_on` edge with `as` |
+| Today                                   | After                                                  |
+| --------------------------------------- | ------------------------------------------------------ |
+| `root = start(task)`                    | `g = Graph(); agent = g.create_agent(task)`            |
+| `flow.run(root)`                        | `flow.run(g)`                                          |
+| `root.save(p)` / `AgentStart.load(p)`   | `g.save(p)` / `Graph.load(p)`                          |
+| `root.iter_agents()` / `find_agent(id)` | `g.nodes(AgentStart)` / `g.node(id)`                   |
+| `agent.sub_agents` / `agent.supervisor` | `reads.children(g, a)` / `reads.launcher(g, a)`        |
+| `agent.frontier` / `agent.result()`     | `reads.frontier(g, a)` / `reads.frontier(g, a).result` |
+| `node.append(x)`                        | `ops.append(g, agent, x, after=node)`                  |
+| `frontier.append(UserQuery(...))`       | `ops.send(g, agent, ...)`                              |
+| `node.fork()`                           | `ops.fork(g, node)`                                    |
+| `node.append_child(sub)`                | `ops.attach(g, agent, sub)`                            |
+| handle argument                         | `depends_on` edge with `as`                            |
 
 `flow.run("task string")` can remain a shortcut that builds a one-agent graph
 and returns that agent's result.
@@ -915,55 +915,55 @@ and returns that agent's result.
 
 1. Add `records.py`, `graph.py`, and `reads.py` with their own unit tests.
    Nothing else changes.
-2. Add `ops.py` and the `nodes.py` shims, so the old attribute names read
+1. Add `ops.py` and the `nodes.py` shims, so the old attribute names read
    through the graph.
-3. Move persistence to the new format and add `upgrade_v1`.
-4. Move the engine: delegation, handoff, restore, `flow.run_streaming`, and
+1. Move persistence to the new format and add `upgrade_v1`.
+1. Move the engine: delegation, handoff, restore, `flow.run_streaming`, and
    `TaskQueue`.
-5. Add the tools: `launch_agent`, `fork_agent`, `send_agent`, `ask_agent`,
+1. Add the tools: `launch_agent`, `fork_agent`, `send_agent`, `ask_agent`,
    `connect_agent`, and `AGENTS`.
-6. Port RAO, views, and consumers.
-7. Delete dead code: `RunIndex`, `clone_until`, the mailbox, and the scope
+1. Port RAO, views, and consumers.
+1. Delete dead code: `RunIndex`, `clone_until`, the mailbox, and the scope
    checks.
-8. Port examples and tests, then remove the shims.
+1. Port examples and tests, then remove the shims.
 
 Steps 1–3 can land without breaking anything. Step 4 switches behavior over.
 
 ## Acceptance tests
 
 1. Existing RLM examples run on `Graph`.
-2. A refused write (any `ops` function, `add_edge`, `merge`) logs nothing.
-3. A graph with several top-level agents and no root runs to completion.
-4. `reads.ready(g)` matches Flow's scheduling with no Flow present.
-5. A `depends_on` edge written by `spawn` blocks before the first step;
+1. A refused write (any `ops` function, `add_edge`, `merge`) logs nothing.
+1. A graph with several top-level agents and no root runs to completion.
+1. `reads.ready(g)` matches Flow's scheduling with no Flow present.
+1. A `depends_on` edge written by `spawn` blocks before the first step;
    `depends_on` cycles are rejected and `peer` cycles are allowed.
-6. A named input binds the producer's result in the consumer's REPL.
-7. `append(after=)` rejects a stale write; a host write during a step wins,
+1. A named input binds the producer's result in the consumer's REPL.
+1. `append(after=)` rejects a stale write; a host write during a step wins,
    and Flow reschedules the agent.
-8. A message sent to a running agent waits in its inbox and is delivered
+1. A message sent to a running agent waits in its inbox and is delivered
    before that agent's next step, without interrupting the running one.
-9. `ops.fork` writes two or three items; `history(fork)` is the base prefix
+1. `ops.fork` writes two or three items; `history(fork)` is the base prefix
    plus the fork's own nodes; the original is unchanged.
-10. A fork at an `LLMOutput` runs a fresh action; a fork at an action is
-    rejected; a fork at a `DoneOutput` is terminal until it receives a
-    message.
-11. A fork's REPL is rebuilt by replaying the shared prefix, and its receipts
-    resolve to the original children.
-12. `ops.attach` gives a parent finished and unfinished agents; the parent's
-    next step sees every result; replay restores the same handles.
-13. The ported shepherd forks, runs, attaches, and merges in one graph.
-14. Importing a saved run and attaching it reproduces
-    `07_attach_subtree.py`.
-15. Handoff deduplicates by `from` edge, survives save and load, and
-    redelivers after a child is reopened and finishes again.
-16. Replayed tool calls (`launch_agent`, `fork_agent`, `send_agent`,
-    `ask_agent`, `connect_agent`) perform no new writes.
-17. Save and load round-trips the log, including removed edges, and load
-    enforces the invariants.
-18. A decentralized ring of peers on different models gossips, rewires,
-    and reaches quiescence; replay reproduces it.
-19. `run_streaming` yields every item in `seq` order.
-20. RAO credit derives ownership and depth from `from` edges.
+1. A fork at an `LLMOutput` runs a fresh action; a fork at an action is
+   rejected; a fork at a `DoneOutput` is terminal until it receives a
+   message.
+1. A fork's REPL is rebuilt by replaying the shared prefix, and its receipts
+   resolve to the original children.
+1. `ops.attach` gives a parent finished and unfinished agents; the parent's
+   next step sees every result; replay restores the same handles.
+1. The ported shepherd forks, runs, attaches, and merges in one graph.
+1. Importing a saved run and attaching it reproduces
+   `07_attach_subtree.py`.
+1. Handoff deduplicates by `from` edge, survives save and load, and
+   redelivers after a child is reopened and finishes again.
+1. Replayed tool calls (`launch_agent`, `fork_agent`, `send_agent`,
+   `ask_agent`, `connect_agent`) perform no new writes.
+1. Save and load round-trips the log, including removed edges, and load
+   enforces the invariants.
+1. A decentralized ring of peers on different models gossips, rewires,
+   and reaches quiescence; replay reproduces it.
+1. `run_streaming` yields every item in `seq` order.
+1. RAO credit derives ownership and depth from `from` edges.
 
 ## Deferred
 

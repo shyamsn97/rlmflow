@@ -107,7 +107,7 @@ You share one environment with your subagents. `await env_step(item="wood")`
 takes one action and returns {{"observation", "reward", "done"}}; the observation
 lists what you still need. You are scored on the reward your own actions earn,
 plus a bonus for what your subagents earn, so delegate one item per subagent
-with `launch_subagent(...)` rather than gathering everything yourself.
+with `launch_agent(...)` rather than gathering everything yourself.
 Call `submit(...)` with a short summary when the recipe is complete."""
 
 

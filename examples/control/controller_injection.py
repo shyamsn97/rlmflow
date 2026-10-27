@@ -4,7 +4,7 @@ The minimal controller workflow:
 
 1. The caller owns the graph and the agents it starts in it.
 2. The controller writes observations into an agent's history itself, with
-   ``ops.append(g, agent, ...)``, or queues a message with ``ops.send``.
+   ``g.append(agent, ...)``, or queues a message with ``g.send(agent, ...)``.
 3. "Finalize now" is just another controller instruction in the graph.
 
 Run:
@@ -17,18 +17,8 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import (
-    AgentConfig,
-    AgentStart,
-    ExecOutput,
-    Flow,
-    Graph,
-    LLMUsage,
-    Step,
-    ops,
-    reads,
-    running_step,
-)
+from rlmflow import CODE, AgentConfig, Flow, Graph, LLMUsage, Node, Step
+from rlmflow.harnesses.repl.prompts import repl_messages
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -58,16 +48,16 @@ def banner(title: str) -> None:
     print("=" * 72)
 
 
-def state_types(g: Graph, agent: AgentStart) -> list[str]:
-    return [state.type for state in reads.history(g, agent)]
+def state_types(g: Graph, agent: Node) -> list[str]:
+    return [state.type for state in g.history(agent)]
 
 
-def assert_types(g: Graph, agent: AgentStart, expected: list[str]) -> None:
+def assert_types(g: Graph, agent: Node, expected: list[str]) -> None:
     actual = state_types(g, agent)
     assert actual == expected, f"expected states {expected}, got {actual}"
 
 
-def print_states(label: str, g: Graph, agent: AgentStart) -> None:
+def print_states(label: str, g: Graph, agent: Node) -> None:
     print(f"\n{label}")
     print("state types:", " -> ".join(state_types(g, agent)))
 
@@ -83,14 +73,13 @@ def observation_injection() -> None:
     )
     assert_types(g, agent, ["agent_start"])
 
-    extra = ops.append(g, agent, ExecOutput(content=OBSERVATION))
-    assert_types(g, agent, ["agent_start", "exec_output"])
-    assert reads.frontier(g, agent) is extra
+    extra = g.append(agent, Node(CODE, code="", output=OBSERVATION))
+    assert_types(g, agent, ["agent_start", "code"])
+    assert g.frontier(agent) is extra
 
     print_states("after the controller appended its observation", g, agent)
 
-    with running_step(Step(g, agent, extra)):
-        projected = flow.build_messages(extra)[-1]["content"]
+    projected = repl_messages(flow, Step(g, agent, extra))[-1]["content"]
     assert OBSERVATION in projected
     print("message projection contains the controller observation.")
 
@@ -101,9 +90,9 @@ def observation_injection() -> None:
             pass
 
     asyncio.run(drive())
-    assert reads.result(g, agent) == "used the injected controller observation"
+    assert g.result(agent) == "used the injected controller observation"
     print_states("after stepping: run reacted and finished", g, agent)
-    print(f"result={reads.result(g, agent)!r}")
+    print(f"result={g.result(agent)!r}")
     save_example_graph(
         g,
         "controller-injection",
@@ -129,14 +118,14 @@ def controller_stop_instruction() -> None:
         # reads when we resume it.
         async for _item in checkpoint_stream(flow.run_streaming(g, until="idle"), g, run_dir):
             pass
-        ops.send(g, agent, "Controller stop request: finalize now with current state.")
+        g.send(agent, "Controller stop request: finalize now with current state.")
         async for _item in checkpoint_stream(flow.run_streaming(g, until="done"), g, run_dir):
             pass
 
     asyncio.run(run_with_controller_stop())
-    assert reads.result(g, agent) == "controller stopped the run"
+    assert g.result(agent) == "controller stopped the run"
     print_states("after controller stop instruction: clean submit(...)", g, agent)
-    print(f"result={reads.result(g, agent)!r}")
+    print(f"result={g.result(agent)!r}")
     save_example_graph(
         g,
         "controller-injection",

@@ -9,14 +9,14 @@ ROOT = Path(__file__).resolve().parents[1] / "rlmflow"
 
 LAYERS = {
     "rlmflow.utils": 0,
-    "rlmflow.structured": 0,
+    "rlmflow.schema": 0,
     "rlmflow.graph": 1,
     "rlmflow.llm": 2,
-    "rlmflow.runtime": 2,
+    "rlmflow.harnesses.repl.runtime": 2,
     "rlmflow.integrations": 2,
-    "rlmflow.tools": 3,
-    "rlmflow.prompts": 3,
-    "rlmflow.engine": 4,
+    "rlmflow.engine": 3,
+    "rlmflow.agent_tools": 3,
+    "rlmflow.harnesses": 4,
     "rlmflow.flow": 5,
     "rlmflow.cli": 6,
     "rlmflow.consumers": 6,
@@ -104,11 +104,11 @@ def test_leaves_import_nothing_from_rlmflow() -> None:
 
 
 #: What the REPL worker may import: it runs inside Docker and Modal images.
-WORKER_IMPORTS = ("rlmflow.runtime.repl", "rlmflow.structured", "rlmflow.utils")
+WORKER_IMPORTS = ("rlmflow.harnesses.repl.runtime.repl", "rlmflow.schema", "rlmflow.utils")
 
 
 def test_the_repl_worker_imports_only_leaf_modules():
-    path = ROOT / "runtime" / "repl_server.py"
+    path = ROOT / "harnesses" / "repl" / "runtime" / "repl_server.py"
     found = [
         f"{path.relative_to(ROOT.parent)}:{line} imports {name}"
         for line, name in runtime_imports(ast.parse(path.read_text(encoding="utf-8")))
@@ -119,6 +119,6 @@ def test_the_repl_worker_imports_only_leaf_modules():
 
 def test_the_worker_copy_of_the_agent_reference_key_matches_the_graph():
     from rlmflow.graph.nodes import AGENT_REF_KEY
-    from rlmflow.runtime import repl
+    from rlmflow.harnesses.repl.runtime import repl
 
     assert repl.AGENT_REF_KEY == AGENT_REF_KEY

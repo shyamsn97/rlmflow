@@ -3,20 +3,19 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import replace
 
-from rlmflow import AgentConfig, AgentStart
-from rlmflow.graph import NEXT, Graph, ops, reads
-from rlmflow.graph.nodes import ExecAction, Step, active_step, running_step
-from rlmflow.runtime.repl import (
+from rlmflow import AgentConfig, Node
+from rlmflow.graph import NEXT, Graph
+from rlmflow.graph.nodes import AGENT_START, Step, current_code, running_step
+from rlmflow.harnesses.repl.runtime.repl import (
     AGENT_WAIT_TOOL,
     AGENTS_BINDING,
     LocalRepl,
     base_namespace,
     get_tool_metadata,
 )
-from rlmflow.runtime.repl_client import invoke_tool_call
-from rlmflow.runtime.runtime import RLMFLOW_REPLAY, Runtime
+from rlmflow.harnesses.repl.runtime.repl_client import invoke_tool_call
+from rlmflow.harnesses.repl.runtime.runtime import RLMFLOW_REPLAY, Runtime
 
 
 def agent_graph(
@@ -25,29 +24,30 @@ def agent_graph(
     config: AgentConfig | None = None,
     args: dict | None = None,
     **overrides,
-) -> tuple[Graph, AgentStart]:
+) -> tuple[Graph, Node]:
     """A fresh graph holding one top-level agent."""
-    configured = replace(config or AgentConfig(), **overrides)
+    base = (config or AgentConfig()).to_dict()
+    configured = AgentConfig.from_dict({**base, **overrides})
     g = Graph()
-    return g, ops.spawn(g, task, config=configured, **(args or {}))
+    return g, g.spawn(task, config=configured, **(args or {}))
 
 
-def run_result(flow, g: Graph, agent: AgentStart, **kwargs):
+def run_result(flow, g: Graph, agent: Node, **kwargs):
     """Run the graph to quiescence and return ``agent``'s result."""
     flow.run(g, **kwargs)
-    return reads.result(g, agent)
+    return g.result(agent)
 
 
-def stepping(g: Graph, agent: AgentStart, node=None):
+def stepping(g: Graph, agent: Node, node=None):
     """Run engine code as if inside ``agent``'s step at ``node`` (its frontier by default)."""
-    return running_step(Step(g, agent, node if node is not None else reads.frontier(g, agent)))
+    return running_step(Step(g, agent, node if node is not None else g.frontier(agent)))
 
 
 def next_node(g: Graph, node):
     """The node its own agent appended after ``node``, if any."""
     for edge in g.edges(kind=NEXT, source=node.id):
         target = g.node(edge.target)
-        if target.agent_id == node.agent_id and not isinstance(target, AgentStart):
+        if target.agent_id == node.agent_id and target.type != AGENT_START:
             return target
     return None
 
@@ -78,19 +78,12 @@ class TestRuntime(Runtime):
 
     __test__ = False
 
-    def open(self, agent: AgentStart, graph: Graph | None = None) -> LocalRepl:
-        namespace = base_namespace(self.preimports)
-        launcher = reads.launcher(graph, agent) if graph is not None else None
-        if agent.config.reuse_worker and launcher is not None:
-            if not isinstance(self.repls.get(launcher.id), LocalRepl):
-                raise RuntimeError("reuse_worker requires a live parent worker")
-        return LocalRepl(self.working_directory, namespace=namespace)
+    def open(self, agent: Node) -> LocalRepl:
+        return LocalRepl(self.directory(agent), namespace=base_namespace(self.preimports))
 
-    async def execute(self, agent: AgentStart, code: str, graph: Graph | None = None):
+    async def execute(self, agent: Node, code: str, graph: Graph | None = None):
         repl = self.repl_for(agent, graph)
-        action = active_step()
-        if not isinstance(action, ExecAction):
-            raise TypeError("tool execution requires an ExecAction")
+        cell = current_code()
         restoring = repl.env.get(RLMFLOW_REPLAY) == "1"
         counts: dict[str, int] = {}
 
@@ -102,15 +95,7 @@ class TestRuntime(Runtime):
             def invoke(*args, _fn=original, _name=name, **kwargs):
                 call_id = counts.get(_name, 0)
                 counts[_name] = call_id + 1
-                return invoke_tool_call(
-                    _fn,
-                    action,
-                    call_id,
-                    restoring,
-                    args,
-                    kwargs,
-                    name=_name,
-                )
+                return invoke_tool_call(_fn, cell, call_id, restoring, args, kwargs, name=_name)
 
             if inspect.iscoroutinefunction(original):
 
@@ -122,14 +107,8 @@ class TestRuntime(Runtime):
             else:
                 repl.namespace[name] = invoke
 
-        binding = {
-            "args": repl.args,
-            "env": repl.env,
-        }
-        for source, target in (
-            (AGENTS_BINDING, "agents"),
-            (AGENT_WAIT_TOOL, "wait_agent"),
-        ):
+        binding = {"args": repl.args, "env": repl.env}
+        for source, target in ((AGENTS_BINDING, "agents"), (AGENT_WAIT_TOOL, "wait_agent")):
             item = repl.namespace.get(source)
             if item is not None:
                 binding[target] = item

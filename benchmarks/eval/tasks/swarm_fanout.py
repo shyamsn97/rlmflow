@@ -298,7 +298,7 @@ def fanout_runtime_guidance(runtime: str) -> str:
         "rlmflow": (
             "The exact child payloads are in `fanout_payloads`. For each "
             "basename, set `p = fanout_payloads[basename]`, then call "
-            "`launch_subagent(name=p['worker'], task=p['task'])` once, concurrently. "
+            "`launch_agent(p['task'], name=p['worker'])` once, concurrently. "
             "Await every handle."
         ),
         "official-rlm": (

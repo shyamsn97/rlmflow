@@ -5,7 +5,7 @@ is one concept, each file is named for what is in it, and imports only point
 down a fixed stack of layers. `from rlmflow import X` works for every public
 name; deep imports have one home and no compatibility re-exports.
 
-Per-file contents are in [../codebase.md](../codebase.md).
+Per-file contents are in [codebase.md](codebase.md).
 
 ## Layers
 
@@ -49,11 +49,9 @@ rlmflow/
   utils.py           code-block parsing, truncation, host-value encoding
 
   graph/             the data
-    graph.py         Graph, Edge, edge kinds, check_invariants, errors
+    graph.py         Graph (history writes and agent queries), Edge, edge kinds, check_invariants, errors
     nodes.py         node types, LLMUsage, Step context, payload keys, ids
     config.py        AgentConfig, ContextPolicy, Input, argument walkers
-    reads.py         pure queries
-    ops.py           history writes (append, spawn, send, deliver, fork, attach)
     persistence.py   save/load, blobs, v1 upgrade
 
   llm/               chat clients
@@ -96,6 +94,8 @@ rlmflow/
   cli/
     __init__.py      entry point, config and version commands, resolve_options
     run.py  view.py
+    serve.py         rlmflow serve: a Claude Code session as the root agent
+    fork.py          rlmflow fork
     tui.py           FlowTUI
 
   rao/               rollout, env, credit, export, trainer
@@ -110,38 +110,38 @@ rlmflow/
   call, so `view/` imports eagerly without requiring its extras.
 - Names say what the thing does: `resolve_transition`, `resolve_boundary`,
   `resolve_agent`, `resolve_options`, `rebuild_repl`, `run_verifier`.
-- History is written only through `graph/ops.py` and the explicit `Graph`
-  methods (`add_edge`, `remove_edge`, `merge`); each checks its own
-  preconditions. Loading a saved log runs `check_invariants` once.
+- History is written only through `Graph`'s history writes (`spawn`,
+  `append`, `send`, `deliver`, `fork`, `attach`) and its edge methods
+  (`add_edge`, `remove_edge`, `merge`); each checks its own preconditions. Loading a saved log runs `check_invariants` once.
 
 ## Moved imports
 
 The flattening pass moved these; `CHANGELOG.md` lists them for callers.
 
-| Old | New |
-| --- | --- |
-| `rlmflow.graph.records` | `rlmflow.graph.graph` (edges); `rlmflow.graph.nodes` (`AGENT_REF_KEY`, `ASK_KEY`, ids) |
-| `rlmflow.graph.usage` | `rlmflow.graph.nodes` |
-| `rlmflow.graph.arguments` | `rlmflow.graph.config` |
-| `rlmflow.models.*` | `rlmflow.llm` / `rlmflow.llm.<provider>` |
-| `rlmflow.structured.*` | `rlmflow.structured` |
-| `rlmflow.structured.instructor`, `.jev` | `rlmflow.integrations.instructor`, `.jev` |
-| `rlmflow.backends`, `rlmflow.backends.claude_code` | `rlmflow.engine.steps`, `rlmflow.integrations.claude_code` |
-| `rlmflow.adapters` | `rlmflow.flow` (`FlowLLM`), `rlmflow.integrations.dspy` (`DSPyFlow`) |
-| `rlmflow.steps.*` | `rlmflow.engine.steps` (verification: `rlmflow.tools.builtins`, `rlmflow.runtime.repl_server`) |
-| `rlmflow.engine.queue`, `.boundaries` | `rlmflow.engine.scheduler` |
-| `rlmflow.engine.restore` | `rlmflow.runtime.runtime` |
-| `rlmflow.runtime.env`, `.connections` | `rlmflow.runtime.runtime` |
-| `rlmflow.runtime.references` | `rlmflow.runtime.repl` |
-| `rlmflow.runtime.protocol` | `rlmflow.runtime.repl_server` |
-| `rlmflow.tools.decorator` | `rlmflow.tools.namespace` |
-| `rlmflow.tools.completion` | `rlmflow.tools.builtins` |
-| `rlmflow.tools.graph_tools` | `rlmflow.tools.messaging` (`fork_agent`: `rlmflow.tools.launch`) |
-| `rlmflow.tools.directory` | `rlmflow.tools.agents_view` |
-| `rlmflow.tools.filesystem`, `.coding` | `rlmflow.tools.files` |
-| `rlmflow.prompts.{text,prompts,sections,messages}` | `rlmflow.prompts` (turn-node text: `rlmflow.graph.nodes`) |
-| `rlmflow.utils.*` | `rlmflow.utils` |
-| `rlmflow.consumers.*` | `rlmflow.consumers` (`FlowTUI`: `rlmflow.cli.tui`) |
-| `rlmflow.cli.{app,config,options}` | `rlmflow.cli` |
-| `rlmflow.view.images` | `rlmflow.view.figure` |
-| `rlmflow.view.app` | `rlmflow.view.html` |
+| Old                                                | New                                                                                            |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `rlmflow.graph.records`                            | `rlmflow.graph.graph` (edges); `rlmflow.graph.nodes` (`AGENT_REF_KEY`, `ASK_KEY`, ids)         |
+| `rlmflow.graph.usage`                              | `rlmflow.graph.nodes`                                                                          |
+| `rlmflow.graph.arguments`                          | `rlmflow.graph.config`                                                                         |
+| `rlmflow.models.*`                                 | `rlmflow.llm` / `rlmflow.llm.<provider>`                                                       |
+| `rlmflow.structured.*`                             | `rlmflow.structured`                                                                           |
+| `rlmflow.structured.instructor`, `.jev`            | `rlmflow.integrations.instructor`, `.jev`                                                      |
+| `rlmflow.backends`, `rlmflow.backends.claude_code` | `rlmflow.engine.steps`, `rlmflow.integrations.claude_code`                                     |
+| `rlmflow.adapters`                                 | `rlmflow.flow` (`FlowLLM`), `rlmflow.integrations.dspy` (`DSPyFlow`)                           |
+| `rlmflow.steps.*`                                  | `rlmflow.engine.steps` (verification: `rlmflow.tools.builtins`, `rlmflow.runtime.repl_server`) |
+| `rlmflow.engine.queue`, `.boundaries`              | `rlmflow.engine.scheduler`                                                                     |
+| `rlmflow.engine.restore`                           | `rlmflow.runtime.runtime`                                                                      |
+| `rlmflow.runtime.env`, `.connections`              | `rlmflow.runtime.runtime`                                                                      |
+| `rlmflow.runtime.references`                       | `rlmflow.runtime.repl`                                                                         |
+| `rlmflow.runtime.protocol`                         | `rlmflow.runtime.repl_server`                                                                  |
+| `rlmflow.tools.decorator`                          | `rlmflow.tools.namespace`                                                                      |
+| `rlmflow.tools.completion`                         | `rlmflow.tools.builtins`                                                                       |
+| `rlmflow.tools.graph_tools`                        | `rlmflow.tools.messaging` (`fork_agent`: `rlmflow.tools.launch`)                               |
+| `rlmflow.tools.directory`                          | `rlmflow.tools.agents_view`                                                                    |
+| `rlmflow.harnesses.repl.filesystem`, `.coding`     | `rlmflow.harnesses.repl.files`                                                                 |
+| `rlmflow.prompts.{text,prompts,sections,messages}` | `rlmflow.prompts` (turn-node text: `rlmflow.graph.nodes`)                                      |
+| `rlmflow.utils.*`                                  | `rlmflow.utils`                                                                                |
+| `rlmflow.consumers.*`                              | `rlmflow.consumers` (`FlowTUI`: `rlmflow.cli.tui`)                                             |
+| `rlmflow.cli.{app,config,options}`                 | `rlmflow.cli`                                                                                  |
+| `rlmflow.view.images`                              | `rlmflow.view.figure`                                                                          |
+| `rlmflow.view.app`                                 | `rlmflow.view.html`                                                                            |

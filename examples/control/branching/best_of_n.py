@@ -14,13 +14,7 @@ import argparse
 import shutil
 from pathlib import Path
 
-from rlmflow import (
-    AgentConfig,
-    Flow,
-    Graph,
-    LLMUsage,
-    reads,
-)
+from rlmflow import AgentConfig, Flow, Graph, LLMUsage
 
 FRUITS = [
     ("lemon", "citrus"),
@@ -39,8 +33,8 @@ QUERY = (
 ROOT_REPLY = (
     "```repl\n"
     f"fruits = {[name for name, _ in FRUITS]!r}\n"
-    "handles = [launch_subagent("
-    "task=f\"Classify {name} as 'citrus' or 'not_citrus'.\") for name in fruits]\n"
+    "handles = [launch_agent("
+    "f\"Classify {name} as 'citrus' or 'not_citrus'.\") for name in fruits]\n"
     "results = await asyncio.gather(*handles)\n"
     "submit(', '.join(f'{name}={r}' for name, r in zip(fruits, results)))\n"
     "```"
@@ -84,7 +78,7 @@ def run_branch(root: Path, idx: int) -> tuple[str, int, dict[str, str], int]:
     # Each branch persists to its own directory (graph.json).
     g.save(root / f"branch_{idx}")
     flow.runtime.close_repls()
-    result = reads.result(g, agent)
+    result = g.result(agent)
     correct, preds = score(result)
     return result, correct, preds, llm.call_count
 

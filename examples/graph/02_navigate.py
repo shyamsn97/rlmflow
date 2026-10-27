@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from rlmflow import AgentStart, Graph, reads
+from rlmflow import Graph, Node
 
 
 def build_graph():
@@ -19,13 +19,13 @@ def build_graph():
     return module.build_graph()
 
 
-def print_tree(g: Graph, agent: AgentStart, depth: int = 0) -> None:
+def print_tree(g: Graph, agent: Node, depth: int = 0) -> None:
     """One indented line per node of ``agent``'s history, then each child below it."""
     pad = "  " * depth
-    print(f"{pad}{reads.path(g, agent)}")
-    for node in reads.history(g, agent)[1:]:
+    print(f"{pad}{g.path(agent)}")
+    for node in g.history(agent)[1:]:
         print(f"{pad}  {node.type}")
-    for child in reads.children(g, agent):
+    for child in g.children(agent):
         print_tree(g, child, depth + 1)
 
 
@@ -34,11 +34,11 @@ def main() -> None:
 
     print_tree(g, root)
     print("\nlog:", [item.seq for item in g.items()][:8], "...")
-    print("agents:", [reads.path(g, agent) for agent in reads.tree(g, root)])
-    print("children:", [reads.path(g, child) for child in reads.children(g, root)])
-    for child in reads.children(g, root):
-        print(f"{reads.path(g, child)} result:", reads.result(g, child))
-    print("len(root history):", len(reads.history(g, root)))
+    print("agents:", [g.path(agent) for agent in g.tree(root)])
+    print("children:", [g.path(child) for child in g.children(root)])
+    for child in g.children(root):
+        print(f"{g.path(child)} result:", g.result(child))
+    print("len(root history):", len(g.history(root)))
 
 
 if __name__ == "__main__":

@@ -43,6 +43,7 @@ rao = ["tinker", "tinker-cookbook", "gymnasium>=1.0"]
 openenv = ["openenv>=0.4"]
 dspy = ["dspy"]
 mcp = ["mcp"]
+claude = ["claude-agent-sdk>=0.2"]
 modal = ["modal"]
 jev = ["jev-jsonschema>=0.1.0"]
 instructor = ["instructor>=1.0"]
@@ -73,6 +74,7 @@ docs = [
     "mkdocstrings[python]>=0.26",
 ]
 all = [
+    "claude-agent-sdk>=0.2",
     "openai>=3.0",
     "anthropic>=1.0",
     "tinker",
@@ -124,6 +126,9 @@ packages = ["rlmflow"]
 testpaths = ["tests"]
 pythonpath = ["tests"]
 addopts = "-q --strict-markers"
+markers = [
+    "live: runs the real claude CLI and model APIs; skipped unless RLMFLOW_LIVE=1",
+]
 # ``pytest-timeout`` is listed in the ``dev`` optional dependencies. If a test
 # ever hangs (REPL stdio deadlock, runaway proxy loop), this caps the damage
 # instead of the whole CI job stalling for hours.

@@ -131,15 +131,7 @@ def run_rlmflow(
 ) -> None:
     from common import print_run
 
-    from rlmflow import (
-        FILE_TOOLS,
-        AgentConfig,
-        Flow,
-        Graph,
-        LocalRuntime,
-        json_schema_for,
-        reads,
-    )
+    from rlmflow import FILE_TOOLS, AgentConfig, Flow, Graph, LocalRuntime, json_schema_for
 
     reset_run_dir(run_dir, force=force)
     (run_dir / "task.txt").write_text(PROMPT)
@@ -169,7 +161,7 @@ def run_rlmflow(
 
         asyncio.run(print_run(flow, g, graph_dir, width=20))
 
-        result = reads.result(g, root) or ""
+        result = g.result(root) or ""
         (run_dir / "response.txt").write_text(str(result))
         validation = validate_project(run_dir, browser=True)
         write_report(validation, run_dir / "validation.json")

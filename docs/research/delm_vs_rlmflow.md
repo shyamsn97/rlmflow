@@ -588,20 +588,20 @@ try both first.
 For a coding prototype:
 
 1. Create one problem workspace.
-2. Initialize a shared task queue with N solver tasks like "attempt a fix from
+1. Initialize a shared task queue with N solver tasks like "attempt a fix from
    scratch; read shared lessons first".
-3. Start N Flow workers, each in its own workspace branch/directory.
-4. Give each worker a compact rendering of admitted lessons as context.
-5. Require each worker to return structured output:
+1. Start N Flow workers, each in its own workspace branch/directory.
+1. Give each worker a compact rendering of admitted lessons as context.
+1. Require each worker to return structured output:
    - final status
    - patch summary
    - tests run
    - lesson proposals
    - evidence refs
-6. Verify each lesson against the worker graph and artifacts.
-7. Admit accepted lessons.
-8. Optionally enqueue follow-up tasks based on admitted lessons.
-9. Finalize by selecting or synthesizing a patch.
+1. Verify each lesson against the worker graph and artifacts.
+1. Admit accepted lessons.
+1. Optionally enqueue follow-up tasks based on admitted lessons.
+1. Finalize by selecting or synthesizing a patch.
 
 This prototype can avoid full dynamic task generation at first. Just proving
 that later workers benefit from earlier admitted lessons would be enough.
@@ -609,11 +609,11 @@ that later workers benefit from earlier admitted lessons would be enough.
 For a long-context prototype:
 
 1. Split source documents into chunks.
-2. Queue chunk-reading tasks.
-3. Workers produce evidence gists with refs to raw chunks.
-4. Verifier checks gists against chunks.
-5. Follow-up workers answer subquestions using admitted gists.
-6. Finalizer answers from admitted gists and unfolds raw evidence when needed.
+1. Queue chunk-reading tasks.
+1. Workers produce evidence gists with refs to raw chunks.
+1. Verifier checks gists against chunks.
+1. Follow-up workers answer subquestions using admitted gists.
+1. Finalizer answers from admitted gists and unfolds raw evidence when needed.
 
 ## Suggested Implementation Phases
 
@@ -839,10 +839,10 @@ Flow's recursive graph semantics intact.
 The best near-term milestone is:
 
 1. Build a local `DeLMCoordinator` prototype around existing `Flow` workers.
-2. Use structured outputs for worker results and lesson proposals.
-3. Store every admitted lesson with graph/node evidence refs.
-4. Add a deterministic example and one real LLM example.
-5. Add an ablation harness comparing:
+1. Use structured outputs for worker results and lesson proposals.
+1. Store every admitted lesson with graph/node evidence refs.
+1. Add a deterministic example and one real LLM example.
+1. Add an ablation harness comparing:
    - independent parallel Flow attempts
    - centralized parent with `launch_subagents`
    - shared-context workers with verified lessons

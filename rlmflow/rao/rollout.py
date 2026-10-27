@@ -11,18 +11,9 @@ from typing import Any
 
 from rlmflow.engine.scheduler import StepResult
 from rlmflow.flow import Flow
-from rlmflow.graph import reads
+from rlmflow.graph.config import AgentConfig
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import (
-    AgentConfig,
-    AgentStart,
-    ExecAction,
-    LLMOutput,
-    Node,
-    Step,
-    current_step,
-)
-from rlmflow.llm import PooledLLMClient
+from rlmflow.graph.nodes import LLM_OUTPUT, LLMUsage, Node, Step, current_step
 from rlmflow.rao.credit import (
     DELEGATION_BONUS,
     IncompleteTreeError,
@@ -83,30 +74,23 @@ class Budget:
     max_wall_time: float | None = None
 
     def agent_config(self) -> AgentConfig:
-        return AgentConfig(
-            max_depth=self.max_depth,
-            max_iters=self.max_iters,
-            max_budget=self.max_budget,
-            resume_on_child_done=False,
-        )
+        return AgentConfig(max_depth=self.max_depth, max_iters=self.max_iters, max_budget=self.max_budget)
 
 
 class RolloutFlow(Flow):
     """A ``Flow`` that shares a world across agent-local envs and records tokens.
 
-    Three narrow overrides and no runtime change: ``build_tools`` hands every
-    agent the env, ``llm_for_step``/``_drive`` record what was sampled, and
-    ``resolve_child`` refuses launches past the budget.
+    Narrow overrides and no runtime change: ``namespace_for`` hands every agent
+    the env, ``complete``/``run_step`` record what was sampled, and ``spawn``
+    refuses launches past the budget.
     """
 
     def __init__(self, llm: Any, *, budget: Budget | None = None, **kwargs: Any) -> None:
-        budget = budget or Budget()
-        kwargs.setdefault("root_config", budget.agent_config())
         super().__init__(llm, **kwargs)
-        self.budget = budget
-        #: ``AgentStart.id -> EnvSession``.
+        self.budget = budget or Budget()
+        #: Agent id -> ``EnvSession``.
         self.sessions: dict[str, EnvSession] = {}
-        #: ``LLMOutput.id -> TurnSample``, so transcript order comes for free.
+        #: ``llm_output`` node id -> ``TurnSample``, so transcript order comes for free.
         self.samples: dict[str, TurnSample] = {}
         self.refusals: dict[str, int] = {}
         self._sample_sinks: dict[str, list[TurnSample]] = {}
@@ -114,107 +98,90 @@ class RolloutFlow(Flow):
 
     # -- Env sharing ------------------------------------------------------
 
-    def bind(self, agent: AgentStart, session: EnvSession) -> None:
+    def bind(self, agent: Node, session: EnvSession) -> None:
         """Give one agent its episode view of the rollout's shared world."""
         with self._session_lock:
             self.sessions[agent.id] = session
 
-    def unbind(self, graph: Graph, root: AgentStart) -> None:
+    def unbind(self, graph: Graph, root: Node) -> None:
         with self._session_lock:
-            for agent in reads.tree(graph, root):
+            for agent in graph.tree(root):
                 self.sessions.pop(agent.id, None)
 
-    def ensure_session(self, graph: Graph, agent: AgentStart) -> EnvSession | None:
-        """Idempotently bind restored children that bypassed ``resolve_child``."""
+    def ensure_session(self, graph: Graph, agent: Node) -> EnvSession | None:
+        """Idempotently bind restored children that bypassed ``spawn``."""
         with self._session_lock:
             if (session := self.sessions.get(agent.id)) is not None:
                 return session
-            parent = reads.launcher(graph, agent)
+            parent = graph.launcher(agent)
             if parent is None:
                 return None
             parent_session = self.ensure_session(graph, parent)
             if parent_session is None:
                 return None
-            child_session, _observation = parent_session.fork(agent.content, dict(agent.args))
+            child_session, _observation = parent_session.fork(agent.task, dict(agent.args))
             self.sessions[agent.id] = child_session
             return child_session
 
-    def session_for(self, node: Node) -> EnvSession | None:
-        step = current_step()
-        return self.ensure_session(step.graph, step.agent) if step is not None else None
-
-    def build_tools(self, node: Node) -> dict[str, Any]:
-        namespace = super().build_tools(node)
-        session = self.session_for(node)
-        if session is not None:
-            # Bound per agent: forkable envs share world state while keeping
-            # independent tasks, termination, rewards, and local budgets.
-            step = current_step()
-            namespace["env_step"] = env_tool(session, reads.path(step.graph, step.agent))
-        return namespace
+    def namespace_for(self, step: Step) -> dict[str, Any]:
+        session = self.ensure_session(step.graph, step.agent)
+        if session is None:
+            return {}
+        # Bound per agent: forkable envs share world state while keeping
+        # independent tasks, termination, rewards, and local budgets.
+        return {"env_step": env_tool(session, step.graph.path(step.agent))}
 
     # -- Token capture ----------------------------------------------------
 
     def records(self, model: str) -> bool:
         """Whether this model's client hands back the tokens it sampled."""
-        return bool(getattr(self._llm_clients.get(model), "records_tokens", False))
+        return bool(getattr(self.llms.get(model), "records_tokens", False))
 
-    def llm_for_step(self, node: Node) -> PooledLLMClient:
-        agent = current_step().agent
-        model = agent.config.model
-        if not self.records(model):
-            return super().llm_for_step(node)
-
+    async def complete(
+        self, messages: list[dict[str, str]], model: str = "default", **kwargs: Any
+    ) -> tuple[str, LLMUsage]:
+        step = current_step()
+        if step is None or not self.records(model):
+            return await super().complete(messages, model, **kwargs)
         sink: list[TurnSample] = []
-        self._sample_sinks[agent.id] = sink
-        return self._create_pooled_llm(
-            model,
-            request_kwargs={"sample_sink": sink},
-        )
+        self._sample_sinks[step.agent.id] = sink
+        return await super().complete(messages, model, sample_sink=sink, **kwargs)
 
-    async def _drive(self, step: Step) -> StepResult:
-        transition = await super()._drive(step)
-        created = transition.created
+    async def run_step(self, step: Step) -> StepResult:
+        result = await super().run_step(step)
         sink = self._sample_sinks.pop(step.agent.id, [])
-        if isinstance(created, LLMOutput) and sink:
-            self.samples[created.id] = sink[-1]
-        return transition
+        if result.created is not None and result.created.type == LLM_OUTPUT and sink:
+            self.samples[result.created.id] = sink[-1]
+        return result
 
-    def turns(self, graph: Graph, agent: AgentStart) -> list[TurnSample]:
+    def turns(self, graph: Graph, agent: Node) -> list[TurnSample]:
         """This agent's sampled turns, in transcript order."""
         return [
             self.samples[node.id]
-            for node in graph.nodes(LLMOutput, agent=agent)
+            for node in graph.nodes(LLM_OUTPUT, agent=agent.id)
             if node.id in self.samples
         ]
 
     # -- Budgets ----------------------------------------------------------
 
-    def resolve_child(
-        self,
-        action: ExecAction,
-        spec: dict[str, Any],
-        call_id: int,
-    ) -> AgentStart:
-        step = current_step()
+    def spawn(self, step: Step, task: str, *, config: AgentConfig, **kwargs: Any) -> Node:
         g, parent = step.graph, step.agent
         limit = self.budget.max_children_per_agent
-        if limit is not None and len(reads.children(g, parent)) >= limit:
+        if limit is not None and len(g.children(parent)) >= limit:
             self.refuse("max_children_per_agent")
             raise ValueError(f"cannot launch beyond {limit} children per agent")
         total = self.budget.max_total_agents
-        if total is not None and len(reads.tree(g, reads.lineage(g, parent)[0])) >= total:
+        if total is not None and len(g.tree(g.lineage(parent)[0])) >= total:
             self.refuse("max_total_agents")
             raise ValueError(f"cannot launch beyond {total} agents in one rollout")
         session = self.ensure_session(g, parent)
         child_session = None
         if session is not None:
-            args = dict(spec.get("args") or {})
-            child_session, observation = session.fork(spec.get("task", ""), args)
+            named = {k: v for k, v in kwargs.items() if k not in ("name", "inputs")}
+            child_session, observation = session.fork(task, named)
             if observation is not None:
-                args.setdefault(OBSERVATION_INPUT, json.dumps(observation, default=str))
-            spec = {**spec, "args": args}
-        child = super().resolve_child(action, spec, call_id)
+                kwargs.setdefault(OBSERVATION_INPUT, json.dumps(observation, default=str))
+        child = super().spawn(step, task, config=config, **kwargs)
         if child_session is not None:
             self.bind(child, child_session)
         return child
@@ -229,7 +196,7 @@ class RolloutTree:
 
     task: TaskSpec
     graph: Graph
-    root: AgentStart
+    root: Node
     index: int
     session: EnvSession
     scores: dict[str, NodeScore] = field(default_factory=dict)
@@ -244,13 +211,13 @@ class RolloutTree:
         return agent_id(self.graph, self.root)
 
     @property
-    def agents(self) -> list[AgentStart]:
+    def agents(self) -> list[Node]:
         return agents(self.graph, self.root)
 
     @property
     def complete(self) -> bool:
         """Every agent terminal — not just the root."""
-        return all(reads.terminal(self.graph, agent) for agent in self.agents)
+        return all(self.graph.terminal(agent) for agent in self.agents)
 
     @property
     def usable(self) -> bool:
@@ -324,7 +291,7 @@ class Collector:
             root = graph.create_agent(
                 task.goal,
                 **{OBSERVATION_INPUT: json.dumps(observation, default=str)},
-                config=self.flow.root_config,
+                config=self.flow.budget.agent_config(),
             )
             root.annotate(
                 "rollout.task",

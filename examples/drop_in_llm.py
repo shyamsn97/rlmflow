@@ -22,10 +22,11 @@ Run with:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sys
 from pathlib import Path
 
-from rlmflow import AgentConfig, Flow, Graph, reads
+from rlmflow import AgentConfig, Flow, Graph
 from rlmflow.flow import FlowLLM
 from rlmflow.llm.openai import OpenAIClient
 
@@ -40,6 +41,8 @@ def ask(llm, question: str) -> str:
     """A generic helper that takes any LLMClient. Doesn't know or care
     whether it got a plain OpenAI client or a full recursive agent."""
     reply = llm.chat([{"role": "user", "content": question}])
+    if inspect.isawaitable(reply):
+        reply = asyncio.run(reply)
     usage = llm.last_usage
     tokens = usage.input_tokens + usage.output_tokens if usage else 0
     print(f"[{type(llm).__name__}] tokens={tokens}")
@@ -55,12 +58,7 @@ def demo_plain_llm():
 
 def demo_flow_as_llm():
     print("=== Flow as LLMClient (drop-in) ===")
-    agent = FlowLLM(
-        Flow(
-            OpenAIClient(model="gpt-4o-mini"),
-            root_config=AgentConfig(max_iters=5),
-        )
-    )
+    agent = FlowLLM(Flow(OpenAIClient(model="gpt-4o-mini")), AgentConfig(max_iters=5))
     answer = ask(agent, "Compute 17 * 23 using a ```repl``` block, then call submit().")
     print(answer, "\n")
     if agent.last_graph is not None:
@@ -74,12 +72,7 @@ def demo_flow_as_llm():
 
 def demo_nested_flow():
     print("=== nested Flow (outer agent uses inner agent as its LLM) ===")
-    inner = FlowLLM(
-        Flow(
-            OpenAIClient(model="gpt-4o-mini"),
-            root_config=AgentConfig(max_iters=3),
-        )
-    )
+    inner = FlowLLM(Flow(OpenAIClient(model="gpt-4o-mini")), AgentConfig(max_iters=3))
     outer = Flow(inner)
     g = Graph()
     root = g.create_agent(
@@ -88,7 +81,7 @@ def demo_nested_flow():
     )
     run_dir = example_run_dir("drop-in-llm") / "nested-flow"
     asyncio.run(print_run(outer, g, run_dir))
-    print(reads.result(g, root))
+    print(g.result(root))
     save_example_graph(
         g,
         "drop-in-llm",

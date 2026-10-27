@@ -4,8 +4,8 @@ There is no root agent. Three peers are top-level agents in one graph, each
 holding a private number. ``alice`` draws ``peer`` edges to the others with
 ``connect_agent``, asks each for its number with ``ask_agent`` (which waits for
 the peer's next finished turn), then shares the total with ``send_agent``
-(which does not wait). Every message is a ``user_query`` node with a ``from``
-edge to the action that sent it, so the saved graph records who told whom what.
+(which does not wait). Every message is a ``message`` node with a ``from``
+edge to the turn that sent it, so the saved graph records who told whom what.
 
     python examples/collaboration/decentralized_peers.py --model gpt-5-mini
 """
@@ -17,16 +17,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import (
-    AgentConfig,
-    AgentStart,
-    Flow,
-    Graph,
-    GraphCheckpointer,
-    Node,
-    UserQuery,
-    reads,
-)
+from rlmflow import AGENT_START, MESSAGE, AgentConfig, Flow, Graph, GraphCheckpointer, Step
 from rlmflow.graph.graph import FROM
 from rlmflow.llm import client_for
 
@@ -58,12 +49,13 @@ async def run(flow: Flow, g: Graph, out_dir: str) -> None:
     """Drive every peer in ``g`` until none can step, checkpointing as items land."""
     checkpointer = GraphCheckpointer(out_dir)
     try:
-        async for item in flow.run_streaming(g, close_repls=True):
+        async for item in flow.run_streaming(g):
             checkpointer.handle(item, g)
-            if isinstance(item, Node):
-                print(f"{g.node(item.agent_id).config.name:<6}  {item.type}")
+            if isinstance(item, Step):
+                print(f"{item.agent.name:<6}  {item.node.type}")
     finally:
         checkpointer.close()
+        flow.runtime.close_repls()
 
 
 def main() -> None:
@@ -73,20 +65,21 @@ def main() -> None:
     parser.add_argument("--out-dir", default=str(example_run_dir("decentralized-peers")))
     args = parser.parse_args()
 
-    flow = Flow(client_for(args.model), use_agent_tree=True)
+    flow = Flow(client_for(args.model))
     g = Graph()
     for name, value in VALUES.items():
         role = COLLECTOR if name == "alice" else RESPONDER.format(name=name)
         g.create_agent(
             PEERS.format(name=name) + role,
-            config=AgentConfig(name=name, max_depth=0, max_iters=args.max_iters),
+            config=AgentConfig(max_depth=0, max_iters=args.max_iters),
+            name=name,
             value=value,
         )
 
     asyncio.run(run(flow, g, args.out_dir))
 
     print("\nresults:")
-    results = {peer.config.name: reads.result(g, peer) for peer in g.nodes(AgentStart)}
+    results = {peer.name: g.result(peer) for peer in g.nodes(AGENT_START)}
     for name, result in results.items():
         print(f"  {name}: {result!r}")
 
@@ -94,16 +87,16 @@ def main() -> None:
     for edge in g.edges():
         if not edge.structural:
             print(
-                f"  {g.node(edge.source).config.name} -{edge.kind}-> {g.node(edge.target).config.name}"
+                f"  {g.node(edge.source).name} -{edge.kind}-> {g.node(edge.target).name}"
             )
 
     print("\nmessages:")
-    for query in g.nodes(UserQuery):
-        senders = [g.node(edge.target) for edge in g.edges(kind=FROM, source=query.id)]
+    for message in g.nodes(MESSAGE):
+        senders = [g.node(edge.target) for edge in g.edges(kind=FROM, source=message.id)]
         if not senders:
             continue
-        frm = ", ".join(g.node(sender.agent_id).config.name for sender in senders)
-        print(f"  {frm} -> {g.node(query.agent_id).config.name}: {query.content}")
+        frm = ", ".join(g.node(sender.agent_id).name for sender in senders)
+        print(f"  {frm} -> {g.node(message.agent_id).name}: {message['text']}")
 
     print(f"\nexpected total {sum(VALUES.values())}, alice submitted {results['alice']!r}")
     print(f"Graph saved to {args.out_dir}")

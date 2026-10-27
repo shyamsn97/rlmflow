@@ -2,6 +2,17 @@
 
 Version 0.7 is a clean break. It removes the old transition registry, async launch admission, model-selected child policy, and model-facing `structured_query` surface. The old `finish(value)` completion name remains executable only as a hidden compatibility alias for persisted REPL code; new agent code and prompt documentation use `submit(value)`.
 
+## Graph queries and writes
+
+`rlmflow.graph.reads` and `rlmflow.graph.ops` are gone; call the same functions on the graph, without passing it:
+
+```python
+g.result(agent)          # was reads.result(g, agent)
+g.history(agent)         # was reads.history(g, agent)
+g.send(agent, "text")    # was ops.send(g, agent, "text")
+g.fork(node, name="b")   # was ops.fork(g, node, name="b")
+```
+
 ## Child launch
 
 Replace:

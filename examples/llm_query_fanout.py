@@ -14,7 +14,7 @@ import sys
 import threading
 from pathlib import Path
 
-from rlmflow import AgentConfig, Flow, Graph, LLMUsage, Node, reads
+from rlmflow import AgentConfig, Flow, Graph, LLMUsage
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -74,11 +74,7 @@ def root_repl_block() -> str:
 
 def main() -> None:
     llm = GuidedLLM()
-    flow = Flow(
-        llm,
-        workers=3,
-        use_llm_query=True,
-    )
+    flow = Flow(llm, workers=3)
 
     g = Graph()
     root = g.create_agent(
@@ -89,9 +85,8 @@ def main() -> None:
     out_dir = example_run_dir("llm-query-fanout")
 
     async def drive() -> None:
-        async for item in checkpoint_stream(flow.run_streaming(g), g, out_dir):
-            if isinstance(item, Node):
-                print(f"{reads.path(g, g.node(item.agent_id))}  {item.type}")
+        async for step in checkpoint_stream(flow.run_streaming(g), g, out_dir):
+            print(f"{g.path(step.agent)}  {step.node.type}")
 
     asyncio.run(drive())
 
@@ -100,9 +95,9 @@ def main() -> None:
         print("-", prompt)
 
     print("\nFinal answer:")
-    print(reads.result(g, root))
+    print(g.result(root))
     save_example_graph(g, "llm-query-fanout")
-    flow.runtime.close_repls()
+    flow.runtime.close()
 
 
 if __name__ == "__main__":

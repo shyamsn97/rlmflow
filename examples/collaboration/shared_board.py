@@ -1,7 +1,7 @@
 """A DeLM-style shared task board where the board is the graph.
 
 Every task is an agent. Seed tasks are top-level agents, follow-up work is a
-child launched with ``launch_subagent``, and the shared context is ``AGENTS``:
+child launched with ``launch_agent``, and the shared context is ``AGENTS``:
 each agent can read every other agent's status and result. ``Flow(workers=N)``
 is the pool of workers that claims ready tasks, and the saved graph holds the
 whole board.
@@ -21,7 +21,7 @@ import re
 import sys
 from pathlib import Path
 
-from rlmflow import AgentConfig, AgentStart, Flow, Graph, GraphCheckpointer, reads
+from rlmflow import AGENT_START, AgentConfig, Flow, Graph, GraphCheckpointer
 from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -38,7 +38,7 @@ parallel, and AGENTS shows every task's status and result.
    finished results that help.
 2. Solve your task in your REPL.
 3. If you find concrete follow-up work the team still needs, and no task on the
-   board covers it, launch_subagent(task=...) for it. Don't await it unless your
+   board covers it, launch_agent(task) for it. Don't await it unless your
    own answer depends on it.
 4. submit(...) a compact, reusable result.
 
@@ -63,10 +63,11 @@ def task_name(subject: str) -> str:
 async def run(flow: Flow, g: Graph, out_dir: str) -> None:
     checkpointer = GraphCheckpointer(out_dir)
     try:
-        async for item in flow.run_streaming(g, close_repls=True):
+        async for item in flow.run_streaming(g):
             checkpointer.handle(item, g)
     finally:
         checkpointer.close()
+        flow.runtime.close_repls()
 
 
 def main() -> None:
@@ -89,15 +90,16 @@ def main() -> None:
     for subject, detail in args.task:
         g.create_agent(
             BOARD.format(subject=subject, detail=detail),
-            config=AgentConfig(name=task_name(subject), max_depth=1, max_iters=args.max_iters),
+            config=AgentConfig(max_depth=1, max_iters=args.max_iters),
+            name=task_name(subject),
         )
 
-    flow = Flow(client_for(args.model), workers=args.workers, use_agent_tree=True)
+    flow = Flow(client_for(args.model), workers=args.workers)
     asyncio.run(run(flow, g, args.out_dir))
 
     print("board:")
-    for agent in g.nodes(AgentStart):
-        print(f"  {reads.path(g, agent)}: {reads.result(g, agent)!r}")
+    for agent in g.nodes(AGENT_START):
+        print(f"  {g.path(agent)}: {g.result(agent)!r}")
     print(f"\nGraph saved to {Path(args.out_dir).resolve()}")
 
 

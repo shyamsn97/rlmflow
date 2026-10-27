@@ -10,22 +10,9 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias
+from typing import Any, Literal, TypeAlias
 
-from rlmflow.graph.graph import Edge
-from rlmflow.graph.nodes import (
-    AgentStart,
-    DoneOutput,
-    ErrorOutput,
-    ExecOutput,
-    Node,
-    Step,
-    UserQuery,
-    running_step,
-)
-
-if TYPE_CHECKING:
-    from rlmflow.graph.graph import Graph
+from rlmflow.graph.nodes import CODE, DONE, MESSAGE, WAITING, Node, Step, running_step
 
 
 class Pool(ABC):
@@ -199,12 +186,8 @@ class StepResult:
     error: BaseException | None = None
 
     @property
-    def agent(self) -> AgentStart:
+    def agent(self) -> Node:
         return self.step.agent
-
-    @property
-    def submitted(self) -> Node:
-        return self.step.node
 
 
 class TaskQueue:
@@ -219,7 +202,7 @@ class TaskQueue:
     def __bool__(self) -> bool:
         return bool(self.running)
 
-    def __contains__(self, agent: AgentStart) -> bool:
+    def __contains__(self, agent: Node) -> bool:
         return agent.id in self.running
 
     def submit(self, step: Step, fn: Callable[[Step], Awaitable[StepResult]]) -> None:
@@ -262,7 +245,7 @@ class TaskQueue:
         async with self.changed:
             await self.changed.wait_for(predicate)
 
-    async def cancel(self, agents: Iterable[AgentStart] | None = None) -> None:
+    async def cancel(self, agents: Iterable[Node] | None = None) -> None:
         """Cancel the steps of these agents, or of every agent when omitted."""
         keys = set(self.running) if agents is None else {agent.id for agent in agents}
         tasks = [task for key, (_step, task) in self.running.items() if key in keys]
@@ -273,15 +256,14 @@ class TaskQueue:
             self.running.pop(key, None)
 
 
-Boundary: TypeAlias = Callable[[Node | Edge, "Graph"], bool]
-StepUntil: TypeAlias = Literal["next", "idle", "done", "finished", "error"] | Boundary
+Boundary: TypeAlias = Callable[[Step], bool]
+StepUntil: TypeAlias = Literal["next", "idle", "done", "finished"] | Boundary
 
 _FULL_RUN = frozenset({"done", "finished"})
 _BOUNDARIES: dict[str, Boundary] = {
     # Messages are written by senders, not steps.
-    "next": lambda item, g: isinstance(item, Node) and type(item) is not UserQuery,
-    "idle": lambda item, g: isinstance(item, (ExecOutput, DoneOutput)),
-    "error": lambda item, g: isinstance(item, ErrorOutput),
+    "next": lambda step: step.node.type != MESSAGE,
+    "idle": lambda step: step.node.type in (CODE, WAITING, DONE),
 }
 
 

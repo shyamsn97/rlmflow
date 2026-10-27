@@ -34,8 +34,6 @@ if str(Path(__file__).parent) not in sys.path:
 import sprites  # noqa: E402
 from render_graph import RUN_DIR, board_rows, load_run, picked_summary, rewind_depth  # noqa: E402
 
-from rlmflow import reads  # noqa: E402
-
 JAM_COLOR = (217, 59, 48)
 REWIND_COLOR = (245, 165, 36)
 RECOVERY_COLOR = (52, 168, 83)
@@ -222,7 +220,7 @@ def main() -> None:
     summary = picked_summary(g, shepherd)
     found = re.search(r"Picked (\S+?):", summary)
     name = args.branch or (found.group(1) if found else "")
-    branches = reads.children(g, shepherd)
+    branches = g.children(shepherd)
     agent = next((a for a in branches if a.config.name == name), None)
     if agent is None:
         names = ", ".join(a.config.name for a in branches)
@@ -240,7 +238,7 @@ def main() -> None:
         recovery=recovery,
         branch_name=name,
         rewind=rewind_depth(g, agent) or len(jam),
-        outcome=str(reads.result(g, agent) or "unfinished"),
+        outcome=str(g.result(agent) or "unfinished"),
         step_ms=args.step_ms,
         pause_ms=args.pause_ms,
     )

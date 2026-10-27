@@ -15,6 +15,18 @@ Run an agent, or read one you already ran::
     rlmflow config show                           resolved settings and their sources
     rlmflow version                               versions and installed extras
 
+Inside an agent's session (the harness sets ``RLMFLOW_URL/_AGENT/_TOKEN``)::
+
+    rlmflow repl 'print(len(haystack))'           a cell in the agent's REPL
+    rlmflow spawn --config worker "search 000-099"
+    rlmflow wait / send / done / agents
+
+Your own Claude Code session as the root agent (see ``rlmflow plugin path``)::
+
+    rlmflow serve --project .                     what `/rlmflow:run` starts for you
+    rlmflow hook prompt|stop|end                  the plugin's hooks
+    rlmflow fork RUN NODE --interactive           branch a run, continue it yourself
+
 ``python -m rlmflow …`` works the same.
 """
 
@@ -210,6 +222,16 @@ class VersionCLI:
         return ""
 
 
+class PluginCLI:
+    """The Claude Code plugin that makes your session an rlmflow root agent."""
+
+    def path(self) -> None:
+        """Print the plugin directory, for ``claude --plugin-dir``."""
+        from rlmflow.agent_tools.hooks import PLUGIN_DIR
+
+        print(PLUGIN_DIR)
+
+
 class RlmflowCLI:
     """Run agents, and read the graphs they leave behind.
 
@@ -233,14 +255,86 @@ class RlmflowCLI:
         self.render = RenderCLI()
         self.config = ConfigCLI()
         self.version = VersionCLI()
+        self.plugin = PluginCLI()
+
+    def serve(
+        self,
+        project: str = ".",
+        graph: str | None = None,
+        root: str | None = None,
+        model: str | None = None,
+        fast_model: str | None = None,
+        docker_image: str | None = None,
+        max_depth: int | None = None,
+        workers: int | None = None,
+        tools: str | None = None,
+        agent: str | None = None,
+    ) -> None:
+        """Serve a run whose root agent is a Claude Code session; `/rlmflow:run` starts this.
+
+        Args:
+          project: The working directory; serve.json goes in its .rlmflow/.
+          graph: A run directory to continue; default: a new one in .rlmflow/runs/.
+          root: The agent the session drives; default: the run's interactive agent.
+          agent: A ``module:factory`` that returns the Flow, instead of the coding agent's.
+        """
+        from rlmflow.cli.serve import serve_main
+
+        overrides = {
+            "model": model,
+            "fast_model": fast_model,
+            "docker_image": docker_image,
+            "max_depth": max_depth,
+            "workers": workers,
+            "tools": tools,
+        }
+        serve_main(project, graph_dir=graph, root=root, overrides=overrides, agent=agent)
+
+    def fork(
+        self,
+        run: str,
+        node: str,
+        harness: str | None = None,
+        interactive: bool = False,
+        name: str | None = None,
+        project: str = ".",
+        out: str | None = None,
+    ) -> None:
+        """Branch a saved run at NODE, then run the branch or continue it yourself.
+
+        Args:
+          run: The run directory.
+          node: The node id (or unique prefix) to branch after.
+          harness: Run the branch with this harness instead of the original's.
+          interactive: Continue the branch in your own Claude Code session.
+          name: The branch's agent name.
+          project: With --interactive, the working directory to serve.
+          out: Where to save the result; default: RUN itself.
+        """
+        from rlmflow.cli.fork import fork_run
+
+        fork_run(run, node, harness=harness, interactive=interactive, name=name, project=project, out=out)
 
 
 def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``rlmflow`` script: 0 fine, 1 handled error, 2 bad usage."""
+    from rlmflow.agent_tools import cli as agent_cli
+
+    command = list(sys.argv[1:] if argv is None else argv)
+    if command and command[0] in agent_cli.COMMANDS:
+        return agent_cli.main(command)
+    if command and command[0] == "hook":
+        from rlmflow.agent_tools import hooks
+
+        return hooks.main(command[1:])
+    if command and command[0] == "mcp":
+        from rlmflow.agent_tools import mcp
+
+        return mcp.main()
+
     import fire
     from fire.core import FireExit
 
-    command = list(sys.argv[1:] if argv is None else argv)
     try:
         fire.Fire(RlmflowCLI(), command=command, name="rlmflow")
     except CliError as exc:
@@ -258,6 +352,7 @@ __all__ = [
     "CONFIG_NAME",
     "CliError",
     "ConfigCLI",
+    "PluginCLI",
     "RlmflowCLI",
     "RunOptions",
     "env_var",

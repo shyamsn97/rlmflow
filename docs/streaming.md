@@ -3,7 +3,7 @@
 `Flow.run_streaming(g)` is the execution driver. It appends to the graph, yields each node and edge as it lands, applies stream boundaries, and keeps one `TaskQueue` step in flight for every ready agent, including agents added to the graph while the stream runs.
 
 ```python
-from rlmflow import Flow, Graph, Node, reads
+from rlmflow import Flow, Graph, Node
 
 g = Graph()
 root = g.create_agent("Audit this repository.")
@@ -11,9 +11,9 @@ root = g.create_agent("Audit this repository.")
 flow = Flow(client)
 async for item in flow.run_streaming(g):
     if isinstance(item, Node):
-        print(reads.path(g, g.node(item.agent_id)), item.type)
+        print(g.path(g.node(item.agent_id)), item.type)
 
-print(reads.result(g, root))
+print(g.result(root))
 ```
 
 The graph is durable state. The queue contains only live execution state.

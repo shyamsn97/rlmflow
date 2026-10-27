@@ -24,11 +24,6 @@ class RuntimeMetrics:
     llm_turns: int = 0
     agents: int = 0
     nodes: int = 0
-    decision_calls: int = 0
-    decision_input_tokens: int = 0
-    decision_output_tokens: int = 0
-    decision_reasoning_tokens: int = 0
-    decision_latency_seconds: float = 0.0
     environment_actions_per_llm_turn: float = 0.0
 
 
@@ -117,11 +112,6 @@ class EnvironmentReport(Generic[MetricsT]):
                         metrics.get("nodes", graph.get("nodes", 0)),
                     )
                 ),
-                decision_calls=int(graph.get("decision_calls", 0)),
-                decision_input_tokens=int(graph.get("decision_input_tokens", 0)),
-                decision_output_tokens=int(graph.get("decision_output_tokens", 0)),
-                decision_reasoning_tokens=int(graph.get("decision_reasoning_tokens", 0)),
-                decision_latency_seconds=float(graph.get("decision_latency_seconds", 0.0)),
                 environment_actions_per_llm_turn=(
                     float(environment_actions) / llm_turns if llm_turns else 0.0
                 ),
@@ -151,11 +141,6 @@ class EnvironmentReport(Generic[MetricsT]):
                     "llm_turns": self.runtime.llm_turns,
                     "agents": self.runtime.agents,
                     "nodes": self.runtime.nodes,
-                    "decision_calls": self.runtime.decision_calls,
-                    "decision_input_tokens": self.runtime.decision_input_tokens,
-                    "decision_output_tokens": self.runtime.decision_output_tokens,
-                    "decision_reasoning_tokens": self.runtime.decision_reasoning_tokens,
-                    "decision_latency_seconds": self.runtime.decision_latency_seconds,
                 },
             },
             artifacts=self.artifacts,
@@ -279,17 +264,6 @@ def summarize_reports(
                 "output_tokens": sum(item.runtime.output_tokens for item in items),
                 "reasoning_tokens": sum(item.runtime.reasoning_tokens for item in items),
                 "wall_time_seconds": sum(item.runtime.wall_time_seconds for item in items),
-                "decision_calls": sum(item.runtime.decision_calls for item in items),
-                "decision_input_tokens": sum(item.runtime.decision_input_tokens for item in items),
-                "decision_output_tokens": sum(
-                    item.runtime.decision_output_tokens for item in items
-                ),
-                "decision_reasoning_tokens": sum(
-                    item.runtime.decision_reasoning_tokens for item in items
-                ),
-                "decision_latency_seconds": sum(
-                    item.runtime.decision_latency_seconds for item in items
-                ),
                 "environment_actions_per_llm_turn": (
                     sum(item.runtime.environment_actions_per_llm_turn for item in items)
                     / len(items)
@@ -318,11 +292,6 @@ def report_table(
         "seconds",
         "LLM turns",
         "actions / LLM turn",
-        "decision calls",
-        "decision input tokens",
-        "decision output tokens",
-        "decision reasoning tokens",
-        "decision seconds",
         "agents",
         "nodes",
         "children",
@@ -360,11 +329,6 @@ def report_table(
                 round(report.runtime.wall_time_seconds, 3),
                 report.runtime.llm_turns,
                 round(report.runtime.environment_actions_per_llm_turn, 3),
-                report.runtime.decision_calls,
-                report.runtime.decision_input_tokens,
-                report.runtime.decision_output_tokens,
-                report.runtime.decision_reasoning_tokens,
-                round(report.runtime.decision_latency_seconds, 3),
                 report.runtime.agents,
                 report.runtime.nodes,
                 delegation.get("children", environment.get("children", 0)),

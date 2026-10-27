@@ -162,7 +162,7 @@ def run_agent(
     flow: Any = None,
 ) -> None:
     """Run the coding agent. Headless streams one query; otherwise the TUI opens."""
-    workdir = Path(options.workdir).expanduser().resolve_options()
+    workdir = Path(options.workdir).expanduser().resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     graph_dir = workdir / "graph"
 
@@ -170,27 +170,36 @@ def run_agent(
     if flow is None:
         flow = build_flow(options, workdir=workdir, agent=agent)
     root = load_root(resume) if resume is not None else None
+    config = coding_config(options) if own_flow else None
 
     # Naming a model we did not choose would be a lie when --agent built the flow.
     model = options.model if own_flow else (agent or "custom flow")
     print(f"rlmflow · {model} · {options.docker_image or 'local'} · {workdir}")
     if headless:
-        _run_headless(flow, query, root, graph_dir)
+        _run_headless(flow, query, root, graph_dir, config)
     else:
-        _run_tui(flow, query, root, graph_dir)
+        _run_tui(flow, query, root, graph_dir, config)
     print(f"run saved to {graph_dir}")
+
+
+def coding_config(options: RunOptions) -> tuple[Any, list[Any]]:
+    """The coding agent's config, and a ``worker`` config whose agents report what they changed."""
+    from rlmflow import CODING_HANDOFF_SCHEMA, AgentConfig
+
+    root = AgentConfig(max_depth=options.max_depth, max_iters=options.max_iters)
+    worker = AgentConfig(
+        name="worker",
+        model="fast",
+        description="Does one bounded coding task in the working directory and reports what changed.",
+        max_iters=options.max_iters,
+        output_schema=CODING_HANDOFF_SCHEMA if options.tools == "files" else None,
+    )
+    return root, [worker]
 
 
 def build_flow(options: RunOptions, *, workdir: Path, agent: str | None = None) -> Any:
     """The coding agent by default; ``module:factory`` when the caller has their own."""
-    from rlmflow import (
-        CODING_HANDOFF_SCHEMA,
-        FILE_TOOLS,
-        AgentConfig,
-        DockerRuntime,
-        Flow,
-        LocalRuntime,
-    )
+    from rlmflow import FILE_TOOLS, DockerRuntime, Flow, LocalRuntime
     from rlmflow.llm import client_for
 
     if agent is not None:
@@ -209,13 +218,6 @@ def build_flow(options: RunOptions, *, workdir: Path, agent: str | None = None) 
         runtime=runtime,
         tools=[FILE_TOOLS] if options.tools == "files" else None,
         workers=options.workers,
-        root_config=AgentConfig(
-            max_depth=options.max_depth,
-            max_iters=options.max_iters,
-            child_config=(
-                {"output_schema": CODING_HANDOFF_SCHEMA} if options.tools == "files" else {}
-            ),
-        ),
     )
 
 
@@ -262,19 +264,21 @@ def require_api_key(model: str, environ: dict[str, str] | None = None) -> None:
         raise CliError(f"{key} is not set, and {model} needs it")
 
 
-def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> None:
+def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path, configs: Any) -> None:
     """No dashboard: stream one query, printing the tree as it grows."""
     from rlmflow import Graph
     from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveTreeRenderer
-    from rlmflow.graph import reads
 
     if graph is None and not query:
         raise CliError("nothing to run: pass a query, or --resume a saved run")
     consumers = ConsumerGroup([LiveTreeRenderer(), GraphCheckpointer(graph_dir)])
     consumers.init(flow)
     if graph is None:
+        root, extra = configs if configs is not None else (None, [])
         graph = Graph()
-        agent = graph.create_agent(query or "", config=flow.root_config)
+        for config in extra:
+            graph.add_config(config)
+        agent = graph.create_agent(query or "", config=root)
     else:
         agent = _first_agent(graph)
         if query:
@@ -289,10 +293,10 @@ def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> 
     finally:
         consumers.close()
         flow.runtime.close_repls()
-    print(f"\n{reads.result(graph, agent) or '(no result)'}\n")
+    print(f"\n{graph.result(agent) or '(no result)'}\n")
 
 
-def _run_tui(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> None:
+def _run_tui(flow: Any, query: str | None, graph: Any, graph_dir: Path, configs: Any) -> None:
     """The dashboard drives its own turns; it only needs the flow and a place to save.
 
     A query here is the opening turn, not a different mode: the panels are up
@@ -301,7 +305,8 @@ def _run_tui(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> None:
     from rlmflow.cli.tui import FlowTUI
     from rlmflow.consumers import GraphCheckpointer
 
-    ui = FlowTUI(graph, sink=GraphCheckpointer(graph_dir))
+    root, extra = configs if configs is not None else (None, [])
+    ui = FlowTUI(graph, config=root, configs=extra, sink=GraphCheckpointer(graph_dir))
     ui.init(flow)
     try:
         ui.run(query=query)
@@ -320,9 +325,8 @@ def _first_agent(graph: Any) -> Any:
 
 def _ask(graph: Any, query: str) -> None:
     """Queue another turn on a run that already exists."""
-    from rlmflow.graph import ops
 
-    ops.send(graph, _first_agent(graph), query)
+    graph.send(_first_agent(graph), query)
 
 
 __all__ = [

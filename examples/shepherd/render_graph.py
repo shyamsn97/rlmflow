@@ -16,7 +16,7 @@ stay small, stay crisp at any zoom, and need no Pillow. The colours mirror
 Run a shepherd first (``python examples/shepherd/shepherd.py``), then:
 
     python examples/shepherd/render_graph.py
-    python examples/shepherd/render_graph.py --out docs/shepherd_graph.svg
+    python examples/shepherd/render_graph.py --out docs/static/shepherd_graph.svg
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from rlmflow import AgentStart, DoneOutput, Graph, LLMOutput, UserQuery, reads
+from rlmflow import AGENT_START, DONE, LLM_OUTPUT, MESSAGE, Graph, Node
 from rlmflow.graph.graph import FROM
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1]
@@ -71,11 +71,10 @@ BOARD_CHARS = frozenset("# .$*@+") | frozenset(BOX_IDS) | frozenset(BOX_ON_GOAL_
 NODE_COLORS = {
     "agent_start": "#4285f4",
     "llm_output": "#a855f7",
-    "exec_action": "#f5a524",
-    "exec_output": "#94a3b8",
-    "user_query": "#0ea5a4",
-    "append_child": "#ec4899",
-    "done_output": "#34a853",
+    "code": "#94a3b8",
+    "message": "#0ea5a4",
+    "waiting": "#f5a524",
+    "done": "#34a853",
 }
 NODE_FALLBACK = "#cbd5e1"
 
@@ -110,32 +109,31 @@ class Branch:
         return "fresh board" if kept == 0 else f"keeps {kept} push{'es' if kept > 1 else ''}"
 
 
-def load_run(run_dir: Path) -> tuple[Graph, AgentStart, AgentStart]:
+def load_run(run_dir: Path) -> tuple[Graph, Node, Node]:
     """The saved run graph, with its worker and shepherd agents."""
     g = Graph.load(run_dir / "graph")
-    tops = {a.config.name: a for a in g.nodes(AgentStart) if reads.launcher(g, a) is None}
+    tops = {a.name: a for a in g.nodes(AGENT_START) if g.launcher(a) is None}
     if "worker" not in tops or "shepherd" not in tops:
         raise SystemExit(f"{run_dir} holds no shepherd run")
     return g, tops["worker"], tops["shepherd"]
 
 
-def llm_turns(g: Graph, agent: AgentStart) -> int:
-    return sum(isinstance(node, LLMOutput) for node in reads.history(g, agent))
+def llm_turns(g: Graph, agent: Node) -> int:
+    return sum(node.type == LLM_OUTPUT for node in g.history(agent))
 
 
-def rewind_depth(g: Graph, agent: AgentStart) -> int | None:
+def rewind_depth(g: Graph, agent: Node) -> int | None:
     """How far this branch rewound, per the note ``prepare_branch`` left it."""
-    for node in g.nodes(agent=agent):
-        if isinstance(node, UserQuery):
-            found = re.search(r"Rewound (\d+) pushes", node.content or "")
-            if found:
-                return int(found.group(1))
+    for node in g.nodes(MESSAGE, agent=agent):
+        found = re.search(r"Rewound (\d+) pushes", node["text"])
+        if found:
+            return int(found.group(1))
     return None
 
 
-def picked_summary(g: Graph, shepherd: AgentStart) -> str:
-    for node in g.nodes(DoneOutput, agent=shepherd):
-        return str(node.result or node.content or "")
+def picked_summary(g: Graph, shepherd: Node) -> str:
+    for node in g.nodes(DONE, agent=shepherd):
+        return str(node.get("result") or "")
     return ""
 
 
@@ -164,20 +162,20 @@ def board_rows(text: str) -> list[str]:
 
 
 def read_branches(
-    g: Graph, shepherd: AgentStart, winner: str, boards: dict[str, str]
+    g: Graph, shepherd: Node, winner: str, boards: dict[str, str]
 ) -> list[Branch]:
     return [
         Branch(
-            name=agent.config.name,
+            name=agent.name,
             rewind=rewind_depth(g, agent),
-            outcome=str(reads.result(g, agent) or "unfinished"),
+            outcome=str(g.result(agent) or "unfinished"),
             turns=llm_turns(g, agent),
-            nodes=len(reads.history(g, agent)),
+            nodes=len(g.history(agent)),
             plan=str(agent.args.get("_shepherd_order", "")),
-            won=agent.config.name == winner,
-            board=boards.get(agent.config.name, ""),
+            won=agent.name == winner,
+            board=boards.get(agent.name, ""),
         )
-        for agent in reads.children(g, shepherd)
+        for agent in g.children(shepherd)
     ]
 
 
@@ -495,26 +493,26 @@ def build_svg(
     return c.render()
 
 
-def agent_chain(g: Graph, agent: AgentStart) -> list:
+def agent_chain(g: Graph, agent: Node) -> list:
     """The agent's history, in order, without descending into children."""
-    return reads.history(g, agent)
+    return g.history(agent)
 
 
 def rewind_marker(chain: list) -> int:
     """Index of the note ``prepare_branch`` left, which is where inherited history ends."""
     for index, node in enumerate(chain):
-        if isinstance(node, UserQuery) and re.search(r"Rewound \d+ pushes", node.content or ""):
+        if node.type == MESSAGE and re.search(r"Rewound \d+ pushes", node["text"]):
             return index
     return 0
 
 
-def build_nodes_svg(g: Graph, shepherd: AgentStart, branches: list[Branch]) -> str:
+def build_nodes_svg(g: Graph, shepherd: Node, branches: list[Branch]) -> str:
     """Every saved Node, one square each: the trunk, the fan, and eight chains."""
     margin, pitch, dot = 28.0, 9.0, 7.0
     label_w, row_h, note_size = 74.0, 26.0, 11.0
 
     trunk = agent_chain(g, shepherd)
-    children = reads.children(g, shepherd)
+    children = g.children(shepherd)
     tracks = [(branch, agent_chain(g, agent)) for branch, agent in zip(branches, children)]
     longest = max([len(trunk)] + [len(chain) for _, chain in tracks])
 

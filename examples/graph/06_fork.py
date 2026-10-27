@@ -5,11 +5,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rlmflow import AgentStart, DoneOutput, Graph, ops, reads
+from rlmflow import DONE, Graph, Node
 
 
-def print_history(g: Graph, agent: AgentStart) -> None:
-    print("  " + " -> ".join(f"{node.type}" for node in reads.history(g, agent)))
+def print_history(g: Graph, agent: Node) -> None:
+    print("  " + " -> ".join(f"{node.type}" for node in g.history(agent)))
 
 
 def main() -> None:
@@ -18,16 +18,16 @@ def main() -> None:
     args = parser.parse_args()
 
     g = Graph()
-    base = ops.spawn(g, "choose a release plan")
+    base = g.spawn("choose a release plan", name="base")
     # Each fork is a new agent whose history is the base up to the fork point.
-    conservative = ops.fork(g, base, name="conservative")
-    bold = ops.fork(g, base, name="bold")
+    conservative = g.fork(base, name="conservative")
+    bold = g.fork(base, name="bold")
 
-    ops.append(g, conservative, DoneOutput(result="ship a small patch release"))
-    ops.append(g, bold, DoneOutput(result="ship a major release candidate"))
+    g.append(conservative, Node(DONE, result="ship a small patch release"))
+    g.append(bold, Node(DONE, result="ship a major release candidate"))
 
     for agent in (base, conservative, bold):
-        print(f"{agent.config.name}: {reads.result(g, agent)!r}")
+        print(f"{agent.name}: {g.result(agent)!r}")
         print_history(g, agent)
     if args.out_dir is not None:
         print("saved:", g.save(args.out_dir))

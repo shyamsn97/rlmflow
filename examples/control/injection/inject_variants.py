@@ -32,16 +32,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rlmflow import (
-    AgentStart,
-    ExecAction,
-    Flow,
-    Graph,
-    Node,
-    UserQuery,
-    ops,
-    reads,
-)
+from rlmflow import AGENT_START, LLM_OUTPUT, Flow, Graph, Node
 from rlmflow.graph.graph import FROM
 from rlmflow.llm import client_for
 
@@ -101,36 +92,35 @@ def default_source() -> Path:
     return word_search_runs_dir() / "baseline"
 
 
-def delegating_action(g: Graph, agent: AgentStart) -> ExecAction:
-    """The most recent block this agent ran that launched sub-agents."""
+def delegating_turn(g: Graph, agent: Node) -> Node:
+    """The most recent model turn of this agent whose block launched sub-agents."""
     launchers = {
         edge.target
-        for child in reads.children(g, agent)
+        for child in g.children(agent)
         for edge in g.edges(kind=FROM, source=child.id)
     }
-    for node in reversed(reads.history(g, agent)):
-        if isinstance(node, ExecAction) and node.id in launchers:
+    for node in reversed(g.history(agent)):
+        if node.type == LLM_OUTPUT and node.id in launchers:
             return node
     raise SystemExit("the baseline run never delegated; regenerate it with word_search.py")
 
 
-def steer(g: Graph, root: AgentStart, prompt: str, name: str) -> AgentStart:
+def steer(g: Graph, root: Node, prompt: str, name: str) -> Node:
     """Fork the run back to before it delegated, then hand it a new instruction."""
-    turn = reads.prev(g, delegating_action(g, root))  # the model turn that wrote that block
-    variant = ops.fork(g, reads.prev(g, turn), name=name)
-    ops.append(g, variant, UserQuery(content=prompt))
+    variant = g.fork(g.prev(delegating_turn(g, root)), name=name)
+    g.send(variant, prompt)
     return variant
 
 
-def summarize(label: str, g: Graph, root: AgentStart) -> None:
+def summarize(label: str, g: Graph, root: Node) -> None:
     print(f"\n{label}")
     print("-" * len(label))
-    print(f"root frontier: {reads.frontier(g, root).type}")
-    children = ", ".join(child.config.name for child in reads.children(g, root))
+    print(f"root frontier: {g.frontier(root).type}")
+    children = ", ".join(child.name for child in g.children(root))
     print(f"children: {children or '<none>'}")
-    if reads.terminal(g, root):
+    if g.terminal(root):
         print("result:")
-        print(reads.result(g, root))
+        print(g.result(root))
 
 
 def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
@@ -144,12 +134,12 @@ def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
     )
 
 
-def validate_result(label: str, g: Graph, root: AgentStart) -> None:
-    if not reads.terminal(g, root):
+def validate_result(label: str, g: Graph, root: Node) -> None:
+    if not g.terminal(root):
         print(f"\n{label} validation: skipped (the run did not finish)")
         return
 
-    answer = reads.result(g, root)
+    answer = g.result(root)
     # A structured answer comes back parsed; an unstructured one is still text.
     result = (
         WordSearchResult.model_validate(answer)
@@ -188,7 +178,7 @@ def main() -> None:
     args = parser.parse_args()
 
     g = Graph.load(args.source.resolve())
-    baseline = next(agent for agent in g.nodes(AgentStart) if reads.launcher(g, agent) is None)
+    baseline = next(agent for agent in g.nodes(AGENT_START) if g.launcher(agent) is None)
     summarize("Loaded real word-search run", g, baseline)
 
     # Both forks share the baseline's history; the baseline itself is untouched.
@@ -201,9 +191,8 @@ def main() -> None:
 
     async def run_variants() -> None:
         stream = checkpoint_stream(flow.run_streaming(g), g, out_dir)
-        async for item in stream:
-            if isinstance(item, Node):
-                print(f"step: {reads.path(g, g.node(item.agent_id))} -> {item.type}")
+        async for step in stream:
+            print(f"step: {g.path(step.agent)} -> {step.node.type}")
 
     asyncio.run(run_variants())
     flow.runtime.close_repls()

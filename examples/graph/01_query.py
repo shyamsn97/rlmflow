@@ -2,49 +2,41 @@
 
 from __future__ import annotations
 
-from rlmflow import (
-    AgentStart,
-    DoneOutput,
-    ErrorOutput,
-    ExecAction,
-    ExecOutput,
-    Graph,
-    LLMOutput,
-    LLMUsage,
-    ops,
-    reads,
-)
+from rlmflow import AGENT_START, CODE, DONE, LLM_OUTPUT, Graph, LLMUsage, Node
 
 
-def build_graph() -> tuple[Graph, AgentStart]:
+def build_graph() -> tuple[Graph, Node]:
     """Hand-build the graph a delegating run would have recorded."""
     g = Graph()
-    root = ops.spawn(g, "ship a tiny package")
-    ops.append(
-        g,
+    root = g.spawn("ship a tiny package", name="root")
+    # Children are launched by the model turn whose cell called launch_agent.
+    turn = g.append(
         root,
-        LLMOutput(
-            content="splitting into two children",
-            code=(
-                "write = launch_subagent(task='write module')\n"
-                "test = launch_subagent(task='run pytest')"
+        Node(
+            LLM_OUTPUT,
+            text=(
+                "splitting into two children\n```repl\n"
+                "write = launch_agent('write module')\n"
+                "test = launch_agent('run pytest')\n"
+                "print(await write, await test)\n```"
             ),
-            usage=LLMUsage(input_tokens=120, output_tokens=40),
+            usage=LLMUsage(input_tokens=120, output_tokens=40).as_dict(),
         ),
     )
-    # Children are launched by the action; the agent's own sequel is the output
-    # of that same step.
-    launch = ops.append(g, root, ExecAction(code="write = launch_subagent(task=...)"))
 
-    writer = ops.spawn(g, "write module", by=launch, name="write")
-    ops.append(g, writer, DoneOutput(result="wrote pkg/__init__.py"))
+    writer = g.spawn("write module", by=turn, name="write")
+    g.append(writer, Node(DONE, result="wrote pkg/__init__.py"))
 
-    tester = ops.spawn(g, "run pytest", by=launch, name="test")
-    ops.append(g, tester, ErrorOutput(error="exec_error", content="ModuleNotFoundError: pkg"))
-    ops.append(g, tester, DoneOutput(result="3 passed"))
+    tester = g.spawn("run pytest", by=turn, name="test")
+    g.append(tester, Node(CODE, code="import pkg", output="ModuleNotFoundError: pkg", error=True)
+    )
+    g.append(tester, Node(DONE, result="3 passed"))
 
-    ops.append(g, root, ExecOutput(content="['wrote pkg/__init__.py', '3 passed']"))
-    ops.append(g, root, DoneOutput(result="package shipped"))
+    g.append(
+        root,
+        Node(CODE, code="print(await write, await test)", output="wrote pkg/__init__.py 3 passed"),
+    )
+    g.append(root, Node(DONE, result="package shipped"))
     return g, root
 
 
@@ -58,17 +50,21 @@ def main() -> None:
     g, root = build_graph()
 
     banner("agents / nodes")
-    print("agents:", [reads.path(g, agent) for agent in g.nodes(AgentStart)])
+    print("agents:", [g.path(agent) for agent in g.nodes(AGENT_START)])
     print("node types:", [node.type for node in g.nodes()])
     print(
         "errors:",
-        [(reads.path(g, g.node(node.agent_id)), node.error) for node in g.nodes(ErrorOutput)],
+        [
+            (g.path(g.node(node.agent_id)), node["output"])
+            for node in g.nodes(CODE)
+            if node.get("error")
+        ],
     )
 
     banner("frontier / result / tokens")
-    print("root frontier:", reads.frontier(g, root).type)
-    print("result:", reads.result(g, root))
-    print("tokens:", reads.usage(g))
+    print("root frontier:", g.frontier(root).type)
+    print("result:", g.result(root))
+    print("tokens:", g.usage())
 
 
 if __name__ == "__main__":

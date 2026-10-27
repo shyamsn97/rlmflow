@@ -1,9 +1,9 @@
-"""Dynamically add skills to a running agent via a live prompt modifier.
+"""Dynamically add skills to a running agent via a live system prompt.
 
 Two pieces work together here:
 
-1. A **system prompt modifier**. ``Flow`` applies it every turn, so a modifier
-   that reads a mutable ``SkillLibrary`` is always live.
+1. A **``Flow.complete`` override**. Every model turn goes through it, so a
+   system prompt section that reads a mutable ``SkillLibrary`` is always live.
 2. An **``add_skill`` tool**. A plain ``@tool``-decorated function passed via
    ``tools=[...]`` lands in the REPL namespace and auto-documents itself in the
    prompt. Because it closes over the same ``SkillLibrary``, the agent can
@@ -27,15 +27,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from rlmflow import (
-    AgentConfig,
-    Flow,
-    Graph,
-    LLMUsage,
-    reads,
-)
+from rlmflow import AgentConfig, Flow, Graph, LLMUsage
+from rlmflow.harnesses.repl.tools import tool
 from rlmflow.llm import client_for
-from rlmflow.tools import tool
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -151,26 +145,22 @@ class ScriptedLLM:
         )
 
 
-def skills_prompt_modifier(library: SkillLibrary):
-    def modify(prompt, flow=None, node=None):
-        extra = library.render()
-        if extra:
-            prompt.add_section(
-                "skills.dynamic",
-                extra,
-                order=800,
-                source="skills_prompt_modifier",
-            )
+class SkillsFlow(Flow):
+    """A Flow whose REPL turns carry the library's skills in their system prompt."""
 
-    return modify
+    def __init__(self, llm, library: SkillLibrary) -> None:
+        super().__init__(llm, tools=[make_add_skill(library)])
+        self.library = library
+
+    async def complete(self, messages, model="default", **kwargs):
+        if messages and messages[0]["role"] == "system":
+            system = f"{messages[0]['content']}\n\n## Skills\n\n{self.library.render()}"
+            messages = [{"role": "system", "content": system}, *messages[1:]]
+        return await super().complete(messages, model, **kwargs)
 
 
 def build_flow(library: SkillLibrary, llm) -> Flow:
-    return Flow(
-        llm,
-        tools=[make_add_skill(library)],
-        system_prompt_modifiers=skills_prompt_modifier(library),
-    )
+    return SkillsFlow(llm, library)
 
 
 def main() -> None:
@@ -218,7 +208,7 @@ def main() -> None:
         print("\n--- Skills section AFTER run (grown by the agent) ---\n")
         print(library.render())
 
-    print("\nresult:", reads.result(g, root))
+    print("\nresult:", g.result(root))
     print(f"Graph saved to {g.save(args.out_dir)}")
     flow.runtime.close_repls()
 

@@ -8,7 +8,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rlmflow.graph import reads
 from rlmflow.rao.credit import NodeScore, agent_id
 from rlmflow.rao.rollout import RolloutFlow, RolloutTree, TurnSample
 
@@ -59,14 +58,14 @@ def trajectories(trees: Sequence[RolloutTree], flow: RolloutFlow) -> list[Trajec
                     rollout_id=tree.rollout_id,
                     agent_id=key,
                     depth=tree.scores[key].depth,
-                    goal=agent.content,
+                    goal=agent.task,
                     turns=turns,
                     score=tree.scores[key],
                     metadata={
                         "env_steps": sum(step.agent_id == key for step in tree.session.steps),
                         "episode_reward": tree.session.reward_for(key),
-                        "children": len(reads.children(g, agent)),
-                        "result": reads.result(g, agent),
+                        "children": len(g.children(agent)),
+                        "result": g.result(agent),
                     },
                 )
             )

@@ -43,7 +43,7 @@ class ViewCLI:
             if step < 1 or step > len(walked):
                 raise CliError(f"--step {step} out of range (1..{len(walked)})")
             chosen = walked[step - 1]
-            print(f"=== step {step}/{len(walked)} · {chosen.title} · +{chosen.elapsed:.2f}s ===")
+            print(f"=== step {step}/{len(walked)} · {chosen.title} · {chosen.node.id} · +{chosen.elapsed:.2f}s ===")
             print(chosen.detail or chosen.summary or "(no content)")
             return
 

@@ -23,9 +23,7 @@ from rlmflow import (
     Flow,
     Graph,
     LocalRuntime,
-    Node,
     SubprocessRuntime,
-    reads,
     tool,
 )
 from rlmflow.consumers import WorkspaceSync
@@ -159,7 +157,7 @@ Editing train.py (do it the robust way):
   it still fails, re-read `trial_dir/train.py` from scratch and rewrite
   cleanly. Do not retry more than twice; if still broken, return the failure row.
 - If it returns any other failure row, return it to the parent.
-- `launch_subagent(task=..., **inputs)` values may be strict JSON values or child
+- `launch_agent(task, **inputs)` values may be strict JSON values or child
   handles.
 
 Root sketch (root is the planner: plan a wave, fan out implementers, repeat):
@@ -185,8 +183,8 @@ tried = {r.get("slug") for r in runs} | {r.get("hypothesis") for r in runs}
 ideas = [(s, h, seed) for s, h, seed in candidates if s not in tried and h not in tried][:remaining]
 trials = [create_trial(s, h, parent_slug=(seed["slug"] if seed else "baseline")) for s, h, seed in ideas]
 handles = [
-    launch_subagent(
-        task="Read trial_dir/train.py in full, then write_file the complete "
+    launch_agent(
+        "Read trial_dir/train.py in full, then write_file the complete "
         "updated file changing only the constants your hypothesis needs, then submit_trial(...).",
         trial_dir=row["agent_trial_dir"],
         slug=row["slug"],
@@ -205,13 +203,14 @@ print(results, list_runs(), best_run(), submission_status())
 """
 
 
-def add_autoresearch_prompt(prompt, flow=None, node=None):
-    prompt.add_section(
-        "profile.autoresearch",
-        ADAPTER_PROMPT,
-        order=800,
-        source="add_autoresearch_prompt",
-    )
+class AutoresearchFlow(Flow):
+    """A Flow whose REPL turns carry the autoresearch loop policy in their system prompt."""
+
+    async def complete(self, messages, model="default", **kwargs):
+        if messages and messages[0]["role"] == "system":
+            system = f"{messages[0]['content']}\n\n{ADAPTER_PROMPT}"
+            messages = [{"role": "system", "content": system}, *messages[1:]]
+        return await super().complete(messages, model, **kwargs)
 
 
 class ExperimentCrashed(RuntimeError):
@@ -653,12 +652,11 @@ def run(args: argparse.Namespace) -> None:
 
     runtime = build_runtime(args.agent_runtime, args.docker_image, args.out)
 
-    flow = Flow(
+    flow = AutoresearchFlow(
         client_for(args.model),
         runtime=runtime,
         tools=[FILE_TOOLS, *build_autoresearch_tools(state)],
         workers=args.parallel,
-        system_prompt_modifiers=add_autoresearch_prompt,
     )
 
     query = f"""\
@@ -693,18 +691,17 @@ launch the next one.
     )
 
     async def drive() -> None:
-        async for item in checkpoint_stream(flow.run_streaming(g), g, graph_dir):
-            if isinstance(item, Node):
-                print(f"{reads.path(g, g.node(item.agent_id)):<20} {item.type}", flush=True)
+        async for step in checkpoint_stream(flow.run_streaming(g), g, graph_dir):
+            print(f"{g.path(step.agent):<20} {step.node.type}", flush=True)
             if sync is not None:
-                sync.handle(item, g)
+                sync.handle(step, g)
 
     try:
         g.save(graph_dir)
         if sync is not None:
             sync.sync()
         asyncio.run(drive())
-        print(reads.result(g, root))
+        print(g.result(root))
         write_run_report(state, args.out, announce=True)
     finally:
         if sync is not None:

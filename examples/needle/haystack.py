@@ -21,13 +21,7 @@ import string
 import sys
 from pathlib import Path
 
-from rlmflow import (
-    AgentConfig,
-    DockerRuntime,
-    Flow,
-    Graph,
-    reads,
-)
+from rlmflow import AgentConfig, DockerRuntime, Flow, Graph
 from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
 from rlmflow.llm import client_for
 
@@ -75,6 +69,12 @@ def main():
     )
     parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument("--max-iters", type=int, default=15)
+    parser.add_argument(
+        "--harness",
+        default="repl",
+        choices=["repl", "claude_code"],
+        help="What runs the root agent; workers always use the REPL harness.",
+    )
     parser.add_argument("--no-viz", action="store_true", help="Disable the live agent tree")
     parser.add_argument(
         "--out-dir",
@@ -104,12 +104,24 @@ def main():
     )
 
     g = Graph()
+    if args.fast_model:
+        g.add_config(
+            AgentConfig(
+                name="searcher",
+                model="fast",
+                description="cheap model for searching one chunk",
+                max_iters=args.max_iters,
+                max_depth=0,
+            )
+        )
     root = g.create_agent(
         "I'm looking for a magic number buried somewhere in the haystack in "
         "`haystack`. What is it? Chunk the string and search the "
         "pieces in parallel.",
         haystack=haystack,
-        config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
+        config=AgentConfig(
+            harness=args.harness, max_depth=args.max_depth, max_iters=args.max_iters
+        ),
     )
     out_dir = Path(args.out_dir)
     consumers = ConsumerGroup()
@@ -128,7 +140,7 @@ def main():
     asyncio.run(drive())
 
     print(f"\n{'=' * 40}")
-    result = reads.result(g, root)
+    result = g.result(root)
     print(f"Result:         {result}")
     print(f"Actual answer:  {answer}")
     print(f"Correct:        {answer in str(result)}")

@@ -6,11 +6,11 @@ import argparse
 import io
 from pathlib import Path
 
-from rlmflow import AgentStart, Graph, Node, reads
+from rlmflow import AGENT_START, DONE, Graph, Node
 from rlmflow.view.figure import graph_svg, parent_ids
 
 
-def _parallel_order(g: Graph, root: AgentStart) -> tuple[list[Node], list[tuple[int, str]]]:
+def _parallel_order(g: Graph, root: Node) -> tuple[list[Node], list[tuple[int, str]]]:
     """Order the complete graph by structural level, preserving parent safety."""
     chronological = g.nodes()
     parents = parent_ids(g)
@@ -25,14 +25,14 @@ def _parallel_order(g: Graph, root: AgentStart) -> tuple[list[Node], list[tuple[
     for level in sorted(set(depths.values())):
         wave = [node for node in ordered if depths[node.id] == level]
         cursor += len(wave)
-        agents = sum(isinstance(node, AgentStart) and node is not root for node in wave)
+        agents = sum(node.type == AGENT_START and node.id != root.id for node in wave)
         if agents == 1:
             label = "root launches one follow-up child"
         elif agents:
             label = f"{agents} child agents launch together"
         elif level == 0:
             label = "root receives the application specification"
-        elif any(node.type == "done_output" and node.agent_id == root.id for node in wave):
+        elif any(node.type == DONE and node.agent_id == root.id for node in wave):
             label = "root completes integration and verification"
         else:
             noun = "node" if len(wave) == 1 else "nodes"
@@ -55,7 +55,7 @@ def render(
         raise SystemExit("rendering needs CairoSVG and Pillow: install rlmflow[image]") from exc
 
     g = Graph.load(run_dir)
-    root = next(agent for agent in g.nodes(AgentStart) if reads.launcher(g, agent) is None)
+    root = next(agent for agent in g.nodes(AGENT_START) if g.launcher(agent) is None)
     ordered, reveal_frames = _parallel_order(g, root)
     frames = []
     for revealed, label in reveal_frames:

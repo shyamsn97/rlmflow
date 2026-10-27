@@ -19,9 +19,8 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
-from rlmflow.graph import reads
 from rlmflow.graph.graph import FROM, Graph
-from rlmflow.graph.nodes import AgentStart, LLMOutput, Node
+from rlmflow.graph.nodes import AGENT_START, LLMUsage, Node
 from rlmflow.view.timeline import timeline
 
 BG = "#0d1117"
@@ -33,34 +32,22 @@ AGENT_LABEL = "#3fb950"
 # Hue per node type, from the original viewer.
 NODE_COLORS: dict[str, str] = {
     "agent_start": "#58a6ff",  # sky blue   — an agent's entry point
-    "user_query": "#79c0ff",  # pale blue  — input handed to it
+    "message": "#79c0ff",  # pale blue  — input handed to it
     "llm_output": "#bc8cff",  # lavender   — a model turn
-    "exec_action": "#ff9e64",  # peach      — code about to run
-    "backend_run": "#f0883e",  # orange — external agent invocation
-    "exec_output": "#56d4dd",  # cyan       — what came back
-    "append_child": "#ffd33d",  # gold       — spawns children, then waits
-    "done_output": "#56d364",  # emerald    — terminal success
-    "error_output": "#ff7b72",  # coral      — failure
-    "transition_decision": "#d2a8ff",  # violet — semantic branch judgment
-    "verification_failure": "#f85149",  # red   — rejected submission
-    "repair_query": "#ffa657",  # amber       — same-agent repair request
+    "code": "#ff9e64",  # peach      — a cell and what it printed
+    "waiting": "#ffd33d",  # gold       — turn ended with children running
+    "done": "#56d364",  # emerald    — finished
 }
 
 # Shape pairs with colour so types stay separable when small, in greyscale, or
 # to someone who cannot tell gold from peach.
 NODE_SHAPES: dict[str, str] = {
     "agent_start": "circle",
-    "user_query": "circle-open",
+    "message": "circle-open",
     "llm_output": "diamond",
-    "exec_action": "square",
-    "backend_run": "square",
-    "exec_output": "triangle-right",
-    "append_child": "star",
-    "done_output": "hexagon",
-    "error_output": "x",
-    "transition_decision": "diamond",
-    "verification_failure": "x",
-    "repair_query": "circle-open",
+    "code": "square",
+    "waiting": "star",
+    "done": "hexagon",
 }
 
 FALLBACK_COLOR = "#8b949e"
@@ -105,15 +92,15 @@ def node_shape(node: Node) -> str:
 
 def node_label(node: Node) -> str:
     """Agents get named; the rest are identified by colour and shape."""
-    return node.config.name if isinstance(node, AgentStart) else ""
+    return node.name if node.type == AGENT_START else ""
 
 
 def parent_ids(g: Graph) -> dict[str, str]:
     """Each node's drawn parent: an agent's launch action or fork base, else ``prev``."""
     parents: dict[str, str] = {}
     for node in g.nodes():
-        launch = g.edges(kind=FROM, source=node.id) if isinstance(node, AgentStart) else []
-        source = g.node(launch[0].target) if launch else reads.prev(g, node)
+        launch = g.edges(kind=FROM, source=node.id) if node.type == AGENT_START else []
+        source = g.node(launch[0].target) if launch else g.prev(node)
         if source is not None:
             parents[node.id] = source.id
     return parents
@@ -121,9 +108,8 @@ def parent_ids(g: Graph) -> dict[str, str]:
 
 def node_tokens(node: Node) -> int:
     """What this node cost, which is what sizes its marker."""
-    if not isinstance(node, LLMOutput):
-        return 0
-    return int(node.usage.input_tokens) + int(node.usage.output_tokens)
+    usage = LLMUsage.of(node.data.get("usage"))
+    return int(usage.input_tokens) + int(usage.output_tokens)
 
 
 def marker_diameter(node: Node) -> float:
@@ -323,10 +309,10 @@ def marker(x: float, y: float, shape: str, color: str, r: float, *, ring: bool =
 
 def hover_text(g: Graph, node: Node) -> str:
     """Identity only — the detail panel carries the content."""
-    rows = [f"{reads.path(g, g.node(node.agent_id))} · {node.type}"]
+    rows = [f"{g.path(g.node(node.agent_id))} · {node.type}"]
     tokens = node_tokens(node)
     if tokens:
-        usage = node.usage  # type: ignore[attr-defined]
+        usage = LLMUsage.of(node.data.get("usage"))
         rows.append(f"tokens {tokens:,} (in {usage.input_tokens:,} / out {usage.output_tokens:,})")
     return "\n".join(rows)
 
@@ -459,12 +445,12 @@ def _legend(width: float, y: float) -> str:
 
 def run_title(g: Graph) -> str:
     """The run's name: its top-level agents."""
-    tops = [a.config.name for a in g.nodes(AgentStart) if reads.launcher(g, a) is None]
+    tops = [a.name for a in g.agents() if g.launcher(a) is None]
     return ", ".join(tops) or "empty graph"
 
 
 def figure_title(g: Graph) -> str:
-    """The bold half of the title: ``root · done_output``."""
+    """The bold half of the title: ``root · done``."""
     nodes = g.nodes()
     last = nodes[-1].type if nodes else "empty"
     return f"{run_title(g)} · {last}"

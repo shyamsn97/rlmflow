@@ -1,47 +1,45 @@
 # rlmflow docs
 
-Pick the doc that matches what you're trying to do.
+## Start here
 
-## Flagship examples
+- [Usage](usage.md): run a task, configs, models, tools, runtimes, streaming, forks, Claude Code and pi, the CLI.
+- [Agents](agents.md): what an agent does in a run: its REPL tools, launching and waiting, messages, Claude Code sessions, forks.
+- [Command line](cli.md): every `rlmflow` command and flag, and how settings resolve.
 
-- [Needle](https://github.com/shyamsn97/rlmflow/tree/main/examples/needle) — recursive decomposition over a million-line REPL input, with a saved graph that can be rendered as SVG, HTML, or GIF.
-- [Shepherd recovery](shepherd.md) — a live meta-agent inspects a failed Sokoban run, rewinds its graph, forks eight recovery plans, and selects the best result.
-- [Boids coding](https://github.com/shyamsn97/rlmflow/tree/main/examples/coding) — a coding agent chooses the architecture and graph for a dependency-free browser simulation from product-level constraints.
+## Guides
 
-Together they show practical recursive execution at three scales: decompose long-context work, construct a multi-module application, then intervene in and recover the retained graph itself. The [benchmark suite](benchmarks.md) separately evaluates long-context work with OOLONG and persistent visual interaction with MazeBench.
+- [Runtimes](runtimes.md): where agent code runs: Local, subprocess, Docker, Modal, or your own.
+- [Security](security.md): the trust model, Docker isolation, caps, proxied tools.
+- [Streaming and scheduling](streaming.md): `run_streaming(..., until=...)`, boundaries, cancellation.
+- [Control](control.md): limits, multi-turn runs, save and resume, forks, custom tools.
+- [Node injection](injections.md): add nodes between streaming calls and continue the run.
+- [Observability](observability.md): querying the graph, consumers, reading a saved run.
+- [Node model](node_model.md): node types, their data, and edges.
+- [Prompt customization](prompt_customization.md): prompts, sections and profiles.
+- [Skills](skills.md): `SKILL.md` files in prompts.
+- [Benchmarks](benchmarks.md): the evaluation suites and how to run them.
 
-## Get oriented
+## Examples and context
 
-- [Blog post](https://shyamsn97.github.io/blog/rlmflow/) — long-form pitch. Why recursive agents, why graphs over flat traces, and walkthroughs.
-- [Positioning](positioning.md) — when to use rlmflow vs rlm-minimal, ypi, LangGraph, CrewAI, AutoGen, SWE-agent, Aider.
-- [Shepherd walkthrough](shepherd.md) — the flagship worked run and its reproducible visual artifacts.
+- [Shepherd walkthrough](shepherd.md): a meta-agent rewinds a failed run and forks recovery plans.
+- [Needle](https://github.com/shyamsn97/rlmflow/tree/main/examples/needle) and [Boids coding](https://github.com/shyamsn97/rlmflow/tree/main/examples/coding): long-context search and a multi-file coding run.
+- [Positioning](positioning.md): rlmflow next to other agent frameworks.
+- [Blog post](https://shyamsn97.github.io/blog/rlmflow/).
 
-## Use rlmflow
+## How it's built
 
-- [Command line](cli.md) — `rlmflow tui` for the coding dashboard, `run` for headless execution, `view` and `render` for a saved run, and how settings resolve.
-- [Control](control.md) — streaming loop, per-agent limits, multi-turn runs, save/load resume, forks, direct arguments, opt-in `AGENTS`, `launch_subagent`, custom tools.
-- [Streaming and scheduling](streaming.md) — detailed guide to `run_streaming(..., until=...)`, `TaskQueue`, transitions, delegation, parallel roots, boundaries, cancellation, and Pool/Runtime placement.
-- [Skills](skills.md) — workspace `SKILL.md` files, always-on skills, query-selected skills, child-only skills, run-memory skills.
-- [Node injection](injections.md) — append controller Nodes between streaming calls, then continue the same root.
-- [Observability](observability.md) — querying the Node tree, run layout, stream consumers, and reading a saved run.
-- [Node model](node_model.md) — the typed node hierarchy, its transitions, and how delegation is recorded.
-- [Runtimes](runtimes.md) — `Runtime` protocol, shipped runtimes (Local / subprocess / Docker / Modal), writing your own.
-- [Prompt customization](prompt_customization.md) — `Prompt`, Flow default factories, node prompt/message hooks, and prompt profiles.
-- [Structured outputs](structured_outputs.md) — output codecs, structured engines, explicit behavior composition, and Jev.
-- [Benchmarks](benchmarks.md) — benchmark harness and runnable sets.
-- [Security](security.md) — trust model, Docker isolation knobs, engine-level caps, proxied tools, approval gates.
-- [Example smoke runner](https://github.com/shyamsn97/rlmflow/blob/main/examples/run_examples.py) — run the offline examples and opt into optional, live, sandbox, or manual checks.
+- [Internals](internals.md): the Flow, replay, forks and persistence.
+- [Scope](design/scope.md): what the library provides and what stays in user code.
+- [File structure](design/file_structure.md) and [codebase](design/codebase.md): the package layout, its import rules, and every module.
 
-## Extend rlmflow
+## History
 
-- [**Scope**](design/scope.md) — what the library provides (Graph, Flow, coding agents), what stays in user code, and the rule that decides.
-- [**Internals**](internals.md) — Node structure, Flow transitions, the task queue and pools, Runtime identity, replay, forks, and persistence.
-- [`Node.append`](node_append.md) — `append` is inplace and returns `None`; the step returns the created node.
-- [Flow extract](flow_extract.md) — `Flow` stays the facade; restore, builtin factories, and child launch become `(flow, ...)` functions.
-- [Step table](step_table.md) — automatic transition functions and semantic guards.
-- [Historical colocation review](colocate.md) — the design audit that led to colocated default policy; its named-transition path was later removed.
+Design records kept for context. They describe code as it was, and many of the names in them no longer exist.
 
-## Historical and experimental research notes
+- [Colocation review](history/colocate.md), [Flow extract](history/flow_extract.md), [`Node.append`](history/node_append.md), [Step table](history/step_table.md), [Structured outputs](history/structured_outputs.md).
+- [Agent-directed transitions](history/self_evolving_transitions.md) and [graph-native context evolution](history/graph_context_evolution.md): unimplemented proposals.
+
+## Research notes
 
 These records explain experiments and design lineage. They are not API reference; dated sketches can use names that the current beta removed.
 

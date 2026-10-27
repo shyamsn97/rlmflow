@@ -6,7 +6,7 @@ The root Node is the control surface. Flow mutates that tree in place and `run_s
 
 ```python
 import asyncio
-from rlmflow import AgentConfig, Flow, Graph, Node, reads
+from rlmflow import AgentConfig, Flow, Graph, Node
 
 g = Graph()
 root = g.create_agent("Audit this repository.", config=AgentConfig(max_depth=2))
@@ -16,10 +16,10 @@ flow = Flow(client)
 async def drive():
     async for item in flow.run_streaming(g):
         if isinstance(item, Node):
-            print(reads.path(g, g.node(item.agent_id)), item.type)
+            print(g.path(g.node(item.agent_id)), item.type)
 
 asyncio.run(drive())
-print(reads.result(g, root))
+print(g.result(root))
 ```
 
 `flow.run("query")` and `await flow.arun("query")` return the root agent's final strict JSON value. With an `output_schema`, that value has also been parsed and validated against the schema.
@@ -72,80 +72,34 @@ root = g.create_agent(
 )
 ```
 
-### Child config
+### Named configs
 
-A launched child is a copy of its parent's `AgentConfig` with a new name.
-`child_config` overrides fields on that copy, and children inherit it, so it
-applies at every depth. For a stronger coordinator with cheaper workers:
+An agent launched without `config=` copies its parent's config. Other configs are named and live on the graph; the model picks one with `launch_agent(task, config=NAME)` and sees each config's `description`. For a stronger coordinator with cheaper workers:
 
 ```python
 flow = Flow(root_client, llm_clients={"fast": worker_client})
-root = g.create_agent(
-    "Audit this repository.",
-    config=AgentConfig(max_depth=2, child_config={"model": "fast"}),
-)
+g = Graph()
+g.add_config(AgentConfig(name="worker", model="fast", description="cheap and fast"))
+root = g.create_agent("Audit this repository.", config=AgentConfig(max_depth=2))
 ```
 
-Any field except `name` may be overridden: `model`, `prompt_profile`,
-`backend`, `output_schema`, `reuse_worker`, limits. The table lives in the
-graph, so the host decides it and the saved run shows it; model code cannot
-pass `model=` or `backend=` to `launch_subagent`.
+The table lives in the graph, so the host decides it and the saved run shows it.
 
-### External backends
+### Harnesses
 
-An agent's `AgentConfig.backend` names what runs it: `"rlmflow"`, the default,
-is the native model-and-REPL loop. Register other backends on the Flow by name,
-the way `llm_clients` registers models, and point agents at them:
+`AgentConfig.harness` names the step function that runs an agent: `"repl"`, the default, is rlmflow's model-and-REPL loop; `"claude_code"` and `"pi"` run one headless session turn per step. A harness config is just another named config:
 
 ```python
-from rlmflow import ClaudeCodeBackend, Flow
-
-flow = Flow(
-    root_client,
-    backends={
-        "claude-code": ClaudeCodeBackend(
-            permission_mode="acceptEdits",
-            allowed_tools=("Read", "Edit", "Bash(git *)"),
-        )
-    },
-)
-root = g.create_agent(
-    "Fix the failing tests.",
-    config=AgentConfig(max_depth=1, child_config={"backend": "claude-code"}),
+g.add_config(
+    AgentConfig(
+        name="claude",
+        harness="claude_code",
+        harness_options={"tools": "loose"},
+    )
 )
 ```
 
-The root still runs through rlmflow's model and REPL loop. Each
-`launch_subagent(...)` creates the same persistent handle and child
-`AgentStart`, but the child runs through `claude -p` in the Flow working
-directory. A top-level agent can run on a backend too, with
-`AgentConfig(backend="claude-code")`.
-
-Claude Code must already be installed and authenticated. The backend does not
-enable permission bypass: use `permission_mode`, `allowed_tools`, or
-`extra_args` explicitly. External children share the configured working
-directory, so concurrent jobs can observe and modify the same files.
-
-External candidates pass through the same output schema and `verify=` checks
-as native `submit(...)` calls. A rejected result opens a repair attempt.
-Interrupted invocations persist their session ID and use Claude Code
-`--resume`; completed children are read from `DoneOutput` and never relaunched
-during graph replay.
-
-Any agent runner can implement the same small configured boundary:
-
-```python
-class MyBackend:
-    async def run(self, agent, action, *, resume):
-        # agent.content, agent.resolved_args(), action.run_id
-        return await call_my_agent(...)
-
-flow = Flow(root_client, backends={"my-agent": MyBackend()})
-```
-
-`run` returns the candidate value. It must honor `resume=True` using
-`action.run_id` or fail explicitly rather than silently starting unrelated
-work.
+External sessions reach the same agent tools from the shell through `rlmflow repl`, so every cell they run lands as a `code` node. With `tools="strict"` (the default) Claude Code reads with its own tools but changes files only through `rlmflow repl`. Claude Code must already be installed and authenticated. Replaying the graph resumes the recorded session, or starts a fresh one from the REPL state when the session is gone.
 
 The module-level `start(...)` builds a root with no flow involved, which is what loading, forking, and tests do. It has nothing to inherit from, so it carries `AgentConfig`'s own defaults; pass `config=` to build on something else.
 
@@ -300,13 +254,7 @@ If the parent has already submitted, the default is to append the same `UserQuer
 
 ## Submission policy
 
-`submit(candidate)` validates the candidate and lands a durable `DoneOutput`
-without another model turn. Rejected schema or verifier checks land as
-`VerificationFailure` and return to the same agent through `RepairQuery`. The
-prompt tells agents to end any block that prints evidence, read that
-observation, and submit only in a later block. The old `finish(...)` name
-remains executable as a hidden compatibility alias but is not shown in model
-tool documentation.
+`submit(candidate)` validates the candidate and lands a durable `DoneOutput` without another model turn. Rejected schema or verifier checks land as `VerificationFailure` and return to the same agent through `RepairQuery`. The prompt tells agents to end any block that prints evidence, read that observation, and submit only in a later block. The old `finish(...)` name remains executable as a hidden compatibility alias but is not shown in model tool documentation.
 
 ## Agent tree inspection
 
@@ -427,9 +375,7 @@ def fetch_record(key: str) -> dict:
     return value
 ```
 
-Every proxied invocation also records a compact `tools.calls` receipt with its
-name, call index, duration, replay status, and error status. Metadata is durable
-through save/load/fork and visible to stream consumers through the owning node.
+Every proxied invocation also records a compact `tools.calls` receipt with its name, call index, duration, replay status, and error status. Metadata is durable through save/load/fork and visible to stream consumers through the owning node.
 
 Add or remove them later; both reach REPLs that are already open:
 
@@ -449,12 +395,7 @@ answers = await asyncio.gather(*(llm_query(prompt) for prompt in prompts))
 
 Host code can use the same pattern with `flow.llm_query(...)`.
 
-Set `Flow(..., llm_query_cache=True)` to deduplicate identical one-shot calls
-within that Flow, or override one call with `llm_query(..., cache=True|False)`.
-The key includes model, prompt, normalized schema, and sampling options.
-`llm_query.calls` metadata records the key, prompt hash, usage, and whether each
-call hit the cache. The cache is opt-in because repeated stochastic samples are
-often intentional.
+Set `Flow(..., llm_query_cache=True)` to deduplicate identical one-shot calls within that Flow, or override one call with `llm_query(..., cache=True|False)`. The key includes model, prompt, normalized schema, and sampling options. `llm_query.calls` metadata records the key, prompt hash, usage, and whether each call hit the cache. The cache is opt-in because repeated stochastic samples are often intentional.
 
 ## Cleanup
 

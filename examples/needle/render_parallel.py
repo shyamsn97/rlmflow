@@ -14,27 +14,26 @@ import io
 from collections.abc import Sequence
 from pathlib import Path
 
-from rlmflow import AgentStart, ExecAction, Graph, Node, reads
+from rlmflow import AGENT_START, DONE, Graph, Node
+from rlmflow.flow import launched_from
 from rlmflow.view.figure import graph_svg, parent_ids
 
 
-def _launch_action(root_nodes: Sequence[Node]) -> ExecAction:
-    launches = [
-        node for node in root_nodes if isinstance(node, ExecAction) and node.launch_agent_ids()
-    ]
+def _launch_turn(g: Graph, root_nodes: Sequence[Node]) -> Node:
+    launches = [node for node in root_nodes if launched_from(g, node)]
     if len(launches) != 1:
         raise ValueError(f"expected one fan-out action, found {len(launches)}")
     return launches[0]
 
 
-def _parallel_order(g: Graph, root: AgentStart) -> tuple[list[Node], list[tuple[int, str]]]:
+def _parallel_order(g: Graph, root: Node) -> tuple[list[Node], list[tuple[int, str]]]:
     """Return a parent-safe node order and reveal boundaries with frame titles."""
     root_nodes = g.nodes(agent=root)
-    launch = _launch_action(root_nodes)
+    launch = _launch_turn(g, root_nodes)
     launch_index = root_nodes.index(launch)
     prelude = root_nodes[: launch_index + 1]
     tail = root_nodes[launch_index + 1 :]
-    workers = reads.children(g, root)
+    workers = g.children(root)
     worker_nodes = [g.nodes(agent=worker) for worker in workers]
 
     ordered: list[Node] = []
@@ -61,8 +60,8 @@ def _parallel_order(g: Graph, root: AgentStart) -> tuple[list[Node], list[tuple[
     for node in tail:
         ordered.append(node)
         label = (
-            f"root combines worker results · answer {reads.result(g, root)}"
-            if node.type == "done_output"
+            f"root combines worker results · answer {g.result(root)}"
+            if node.type == DONE
             else "root combines completed worker results"
         )
         frames.append((len(ordered), label))
@@ -94,7 +93,7 @@ def render(
         raise SystemExit("rendering needs CairoSVG and Pillow: install rlmflow[image]") from exc
 
     g = Graph.load(run_dir)
-    root = next(agent for agent in g.nodes(AgentStart) if reads.launcher(g, agent) is None)
+    root = next(agent for agent in g.nodes(AGENT_START) if g.launcher(agent) is None)
     ordered, reveal_frames = _parallel_order(g, root)
     frames = []
     for revealed, label in reveal_frames:

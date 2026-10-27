@@ -5,18 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypedDict
 
-from rlmflow import (
-    AgentStart,
-    DoneOutput,
-    Flow,
-    Graph,
-    LLMOutput,
-    Node,
-    UserQuery,
-    ops,
-    reads,
-    tool,
-)
+from rlmflow import CODE, DONE, LLM_OUTPUT, MESSAGE, Flow, Graph, Node, tool
 
 
 class Plan(TypedDict):
@@ -46,39 +35,41 @@ def landed_push(output: Node | None) -> bool:
     """
     if output is None:
         return False
-    return any(line.lstrip().startswith("pushed ") for line in (output.content or "").splitlines())
+    return any(
+        line.lstrip().startswith("pushed ") for line in (output.get("output") or "").splitlines()
+    )
 
 
-def push_turns(g: Graph, agent: AgentStart) -> list[LLMOutput]:
+def push_turns(g: Graph, agent: Node) -> list[Node]:
     """Successful worker pushes, oldest first.
 
     Judged by what the turn's output reports rather than what its code called: under
     ``--simple-moves`` a shove is spelled ``move(...)``, so reading the code would
     find no pushes at all and leave the shepherd nothing to rewind.
     """
-    history = reads.history(g, agent)
+    history = g.history(agent)
     pushes = []
     for index, node in enumerate(history):
-        if not isinstance(node, LLMOutput) or not (node.code or ""):
+        if node.type != LLM_OUTPUT:
             continue
-        output = history[index + 2] if index + 2 < len(history) else None
-        if landed_push(output):
+        output = history[index + 1] if index + 1 < len(history) else None
+        if output is not None and output.type == CODE and landed_push(output):
             pushes.append(node)
     return pushes
 
 
-def rewind_point(g: Graph, agent: AgentStart, rewind: int) -> tuple[Node, int]:
+def rewind_point(g: Graph, agent: Node, rewind: int) -> tuple[Node, int]:
     pushes = push_turns(g, agent)
     if not pushes:
         raise ValueError("worker has no pushes to rewind")
     depth = max(1, min(int(rewind), len(pushes)))
-    cut = reads.prev(g, pushes[-depth])
-    while isinstance(cut, UserQuery):
-        cut = reads.prev(g, cut)
+    cut = g.prev(pushes[-depth])
+    while cut.type == MESSAGE:
+        cut = g.prev(cut)
     return cut, depth
 
 
-def snapshot(flow: Flow, agent: AgentStart, rewind: int = 0) -> dict:
+def snapshot(flow: Flow, agent: Node, rewind: int = 0) -> dict:
     """The agent's board as plain data, read from its REPL env.
 
     The game itself lives wherever its REPL runs, which is a worker process under
@@ -102,12 +93,27 @@ def snapshot(flow: Flow, agent: AgentStart, rewind: int = 0) -> dict:
 async def replayed_fork(
     flow: Flow,
     g: Graph,
-    worker: AgentStart,
+    worker: Node,
     rewind: int,
     name: str,
-) -> tuple[AgentStart, int]:
+    *,
+    extra_turns: int | None = None,
+    done: str | None = None,
+) -> tuple[Node, int]:
+    """Fork ``worker`` ``rewind`` pushes back and rebuild the fork's REPL there.
+
+    ``extra_turns`` caps the fork at that many turns past the fork point.
+    ``done`` finishes it at once, before its REPL is rebuilt, so a running flow
+    never picks it up.
+    """
     cut, depth = rewind_point(g, worker, rewind)
-    fork = ops.fork(g, cut, name=name)
+    overrides = {}
+    if extra_turns is not None:
+        turns = sum(node.type == LLM_OUTPUT for node in g.history(cut))
+        overrides["max_iters"] = turns + extra_turns
+    fork = g.fork(cut, name=name, **overrides)
+    if done is not None:
+        g.append(fork, Node(DONE, result=done))
     await flow.replay(g, fork)
     return fork, depth
 
@@ -116,7 +122,7 @@ async def replayed_fork(
 class Branch:
     flow: Flow
     g: Graph
-    agent: AgentStart
+    agent: Node
     index: int
     rewind: int
     order: list[str]
@@ -131,7 +137,7 @@ class Branch:
 
     @property
     def result(self):
-        return reads.result(self.g, self.agent)
+        return self.g.result(self.agent)
 
     @property
     def solved(self) -> bool:
@@ -156,7 +162,7 @@ class Branch:
 def recovery_tools(
     flow: Flow,
     g: Graph,
-    worker: AgentStart,
+    worker: Node,
     plans: list[Plan] | None = None,
     *,
     expected_plans: int | None = None,
@@ -169,19 +175,18 @@ def recovery_tools(
     # Both tools run on the host, not in the shepherd's REPL: ``preview`` drives a
     # graph replay and ``branch`` records into the host's ``plans`` list, and a copy
     # shipped into a worker process would replay nothing and record into the copy.
-    # A preview is a fork like any other, so it stays in the graph; it finishes
-    # with the board it showed, which keeps the run from ever driving it.
+    # A preview is a fork like any other, so it stays in the graph; it is born
+    # finished, which keeps the run from ever driving it.
     @tool("Inspect the worker after rewinding pushes, without playing.", proxy=True)
     async def preview(rewind: int) -> dict:
         nonlocal previews
-        fork, depth = await replayed_fork(flow, g, worker, rewind, f"preview{previews}")
+        name = f"preview{previews}"
         previews += 1
+        fork, depth = await replayed_fork(flow, g, worker, rewind, name, done=f"[{name}]")
         try:
-            state = snapshot(flow, fork, depth)
+            return snapshot(flow, fork, depth)
         finally:
             flow.runtime.close_repl(fork)
-        ops.append(g, fork, DoneOutput(result=state))
-        return state
 
     @tool("Record {rewind, order} recovery plans, then stop.", proxy=True)
     def branch(specs: list[Plan]) -> str:
@@ -219,36 +224,31 @@ def recovery_tools(
 async def prepare_branch(
     flow: Flow,
     g: Graph,
-    worker: AgentStart,
+    worker: Node,
     plan: Plan,
     index: int,
     budget: int,
     slack: int = 4,
 ) -> Branch:
-    fork, depth = await replayed_fork(flow, g, worker, plan["rewind"], f"branch{index}")
-    state = snapshot(flow, fork, depth)
-    order = plan["order"]
-    order_text = ", then ".join(order)
     # ``budget`` is a push allowance, not a turn count, so the branch also needs turns
     # for the ones that land nothing: a refused action ends its turn, and under
     # ``--simple-moves`` the worker routes itself and misroutes more. Too little slack
     # and a branch dies at its turn ceiling mid-solve, which reads as giving up.
-    turns = sum(isinstance(node, LLMOutput) for node in reads.history(g, fork))
-    fork.config.max_iters = turns + budget + slack
-    fork.args.pop("_worker_strategy", None)
+    fork, depth = await replayed_fork(
+        flow, g, worker, plan["rewind"], f"branch{index}", extra_turns=budget + slack
+    )
+    state = snapshot(flow, fork, depth)
+    order = plan["order"]
+    order_text = ", then ".join(order)
     fork.args["_shepherd_order"] = order_text
-    ops.append(
-        g,
+    g.send(
         fork,
-        UserQuery(
-            content=(
-                f"Rewound {depth} pushes. This is a fresh recovery attempt, so "
-                "abandon the plan you were following.\n\n"
-                f"{state['status']}\n\n"
-                f"Lock the boxes in this order: {order_text}. The routes are "
-                "yours to work out."
-            )
-        ),
+        f"Rewound {depth} pushes. This is a fresh recovery attempt, so "
+        "abandon the plan you were following.\n\n"
+        f"{state['status']}\n\n"
+        f"Lock the boxes in this order: {order_text}. The routes are "
+        "yours to work out.",
+        sender="shepherd",
     )
     return Branch(flow, g, fork, index, depth, order)
 

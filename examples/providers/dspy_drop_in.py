@@ -30,10 +30,7 @@ from common import save_example_graph  # noqa: E402
 
 def main() -> None:
     agent = FlowLLM(
-        Flow(
-            OpenAIClient(model="gpt-4o-mini"),
-            root_config=AgentConfig(max_depth=1, max_iters=5),
-        )
+        Flow(OpenAIClient(model="gpt-4o-mini")), AgentConfig(max_depth=1, max_iters=5)
     )
 
     dspy.configure(lm=DSPyFlow(agent, model="rlmflow/gpt-4o-mini"))

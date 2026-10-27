@@ -26,13 +26,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from examples.common import print_run, save_example_graph  # noqa: E402
-from rlmflow import (  # noqa: E402
-    AgentConfig,
-    Flow,
-    Graph,
-    ModalRuntime,
-    reads,
-)
+from rlmflow import AgentConfig, Flow, Graph, ModalRuntime  # noqa: E402
 from rlmflow.llm.openai import OpenAIClient  # noqa: E402
 
 REMOTE_REPO = "/opt/rlmflow"
@@ -143,7 +137,7 @@ def main() -> None:
     log("running platformer task; first run may build/start Modal sandbox")
     try:
         asyncio.run(print_run(flow, g, Path(args.out_dir) / "graph"))
-        print(reads.result(g, root))
+        print(g.result(root))
         save_example_graph(g, "sandbox-modal", out_dir=args.out_dir)
     finally:
         log("closing Flow")

@@ -1,11 +1,11 @@
-"""Skills as on-disk artifacts plus a live prompt modifier.
+"""Skills as on-disk artifacts plus a live system prompt section.
 
 This example demonstrates the intended shape for user-authored skills:
 
 1. A skill is just a file on disk you choose, e.g.
    ``skills/numpy-linear-algebra/SKILL.md``. There is no hardcoded directory.
-2. A system prompt modifier contributes one named skill section at prompt render
-   time, so edits show up on the next turn.
+2. A ``Flow.complete`` override adds one skill section to every REPL turn's
+   system prompt, reading the files each time, so edits show up on the next turn.
 3. The agent runs with a real LLM client; pass ``--print-prompt`` to inspect
    the rendered prompt before the LLM call.
 
@@ -21,14 +21,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-from rlmflow import (
-    AgentConfig,
-    Flow,
-    Graph,
-    Step,
-    reads,
-    running_step,
-)
+from rlmflow import AgentConfig, Flow, Graph, Step
+from rlmflow.harnesses.repl.prompts import system_prompt
 from rlmflow.llm.openai import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -94,11 +88,14 @@ def install_example_skill(skills_dir: Path) -> Path:
     return path
 
 
-class SkillFiles:
-    def __init__(self, skill_paths: list[Path]) -> None:
+class SkillsFlow(Flow):
+    """A Flow whose REPL turns carry the skill files in their system prompt."""
+
+    def __init__(self, llm, skill_paths: list[Path]) -> None:
+        super().__init__(llm)
         self.skill_paths = skill_paths
 
-    def _skills(self) -> str:
+    def skills(self) -> str:
         sections: list[str] = []
         for path in self.skill_paths:
             if not path.exists():
@@ -112,25 +109,22 @@ class SkillFiles:
             "file loaded into the prompt for this run.\n\n" + "\n\n".join(sections)
         )
 
-    def modify_prompt(self, prompt, flow=None, node=None):
-        extra = self._skills()
-        if extra:
-            prompt.add_section(
-                "skills.files",
-                extra,
-                order=800,
-                source=type(self).__name__,
-            )
+    def with_skills(self, system: str) -> str:
+        skills = self.skills()
+        return f"{system}\n\n## Skills\n\n{skills}" if skills else system
+
+    async def complete(self, messages, model="default", **kwargs):
+        if messages and messages[0]["role"] == "system":
+            messages = [
+                {"role": "system", "content": self.with_skills(messages[0]["content"])},
+                *messages[1:],
+            ]
+        return await super().complete(messages, model, **kwargs)
 
 
-def build_flow(skills_dir: Path, *, model: str) -> Flow:
+def build_flow(skills_dir: Path, *, model: str) -> SkillsFlow:
     """Create a flow whose prompt includes the installed skill."""
-    skill_path = install_example_skill(skills_dir)
-    skills = SkillFiles([skill_path])
-    return Flow(
-        OpenAIClient(model=model),
-        system_prompt_modifiers=skills.modify_prompt,
-    )
+    return SkillsFlow(OpenAIClient(model=model), [install_example_skill(skills_dir)])
 
 
 def main() -> None:
@@ -177,11 +171,10 @@ def main() -> None:
         print("- skills/numpy-linear-algebra/SKILL.md")
         if args.print_prompt:
             print("\n--- rendered system prompt ---\n")
-            with running_step(Step(g, root, root)):
-                print(flow.build_system_prompt(root))
+            print(flow.with_skills(system_prompt(flow, Step(g, root, root))))
             print("\n--- live run ---\n")
         asyncio.run(print_run(flow, g, args.out_dir))
-        print(reads.result(g, root))
+        print(g.result(root))
         save_example_graph(g, "skills", out_dir=args.out_dir)
         flow.runtime.close_repls()
     finally:

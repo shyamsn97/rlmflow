@@ -4,6 +4,7 @@ All notable changes to **rlmflow** are recorded here. The format follows [Keep a
 
 ## [Unreleased]
 
+- **Breaking:** `rlmflow.graph.reads` and `rlmflow.graph.ops` are removed; their functions are `Graph` methods. `reads.result(g, agent)` is `g.result(agent)`, `ops.send(g, agent, text)` is `g.send(agent, text)`, and the same for every query (`history`, `frontier`, `status`, `children`, `launched`, `path`, `usage`, `cost_usd`, ...) and history write (`append`, `spawn`, `send`, `deliver`, `fork`, `attach`). `rlmflow` no longer exports `ops` or `reads`.
 - **Breaking:** a reply with no fenced `repl` block is now the agent's final answer. It goes through the same schema and verifier checks as `submit(reply)`, so prose that fails a schema becomes a `VerificationFailure` and is repaired. Code is still the only way to act; ordinary ```` ```python ```` fences inside a prose answer are part of the answer. The core protocol prompt and the final-turn prompt now describe both ways to finish.
 - **Changed:** protocol errors run through the normal action loop. An empty reply, an empty `repl` block, an unclosed one, or several of them becomes an engine-written `ExecAction` whose code raises `MissingReplError` with the specific reason (also stored as `metadata["protocol_error"]`), and the REPL error is the observation the model recovers from. Runtimes no longer special-case empty code, and `MISSING_REPL_NOTE` is removed.
 - **Breaking:** a final-turn action that runs without calling `submit` now lands an `ErrorOutput` ending in `MissingSubmitError: ...` and the agent then ends with `[max_iters exceeded]`, instead of failing the step with `TransitionProtocolError`. `TransitionProtocolError` is removed.
@@ -14,17 +15,9 @@ All notable changes to **rlmflow** are recorded here. The format follows [Keep a
 - **Breaking:** the package is flattened (92 modules → 56) and deep import paths moved; `from rlmflow import X` is unchanged and there are no re-exports at old paths. Graph: `Edge`, the edge kinds and id helpers → `rlmflow.graph.graph`; `LLMUsage`, `AGENT_REF_KEY`, `ASK_KEY`, `new_node_id`, `new_agent_id` → `rlmflow.graph.nodes`; `rlmflow.graph.arguments` → `rlmflow.graph.config`; `ask_terms` → `rlmflow.graph.reads`. Models: `rlmflow.llm` keeps the protocol, streaming, retries, `PooledLLMClient` and `client_for`; providers are `rlmflow.llm.openai`, `.anthropic`, `.tinker` and are no longer re-exported from `rlmflow.llm`. Structured output: `rlmflow.structured` is one module (codec + engines, was also `structured_engines`); `rlmflow.instructor`/`rlmflow.jev` → `rlmflow.integrations.instructor`/`.jev`. Integrations: `adapters.FlowLLM` and `messages_to_query` → `rlmflow.flow`; `adapters.DSPyFlow` → `rlmflow.integrations.dspy`; `ClaudeCodeBackend` → `rlmflow.integrations.claude_code`; `AgentBackend`/`check_backends` → `rlmflow.engine.steps`. Engine: `engine.transitions`, `engine.semantic` and the default transitions → `rlmflow.engine.steps` (`resolve` → `resolve_transition`, `choose` → `choose_transition`); `engine.execution` and `engine.boundaries` → `rlmflow.engine.scheduler` (`resolve` → `resolve_boundary`; the `rlmflow.boundaries` export is replaced by `Boundary`); `engine.restore` → `rlmflow.runtime.runtime` (`replay` → `rebuild_repl`, `ensure_replayed` → `ensure_repl_rebuilt`, `resume` → `rebuild_unfinished_repls`); `engine.delegation` → `rlmflow.tools.launch`; `engine.completion` → `rlmflow.tools.builtins`; `engine.verification` → `rlmflow.tools.builtins` (`check` → `run_verifier`) and `rlmflow.runtime.repl_server` (`fingerprint`, `schema_hash`). Runtime: `runtime.env` and `runtime.connections` → `rlmflow.runtime.runtime`; `runtime.protocol` → `rlmflow.runtime.repl_server`; `encode_agent_references`, `AgentReference`, `AGENTS_BINDING`, `AGENT_WAIT_TOOL` and the tool metadata (`ToolMetadata`, `get_tool_metadata`) → `rlmflow.runtime.repl`. Tools: `tools.tools` → `rlmflow.tools.namespace` (with `tool_name`); `tools.agents` → `rlmflow.tools.agents_view` (`resolve` → `resolve_agent`); the send/ask/connect tools → `rlmflow.tools.messaging` and `fork_agent` → `rlmflow.tools.launch`; `tools.filesystem` and `tools.coding` → `rlmflow.tools.files`. Prompts: the `rlmflow.prompts` package is one module; `prompts.text`, `prompts.prompts`, `prompts.sections` and `prompts.messages` → `rlmflow.prompts`, except `FINAL_ANSWER_ACTION`, `TRUNCATION_SUMMARY` and `COLD_REPL_NOTE` → `rlmflow.graph.nodes`, next to the nodes they render. Apps: `rlmflow.utils.*` → `rlmflow.utils`; `rlmflow.consumers.*` → `rlmflow.consumers` (with `render_tree`/`render_forest` in `rlmflow.view.text`); `consumers.tui.FlowTUI` → `rlmflow.cli.tui`; `cli.app`, `cli.config` and `cli.options` → `rlmflow.cli` (`resolve` → `resolve_options`); `view.images` → `rlmflow.view.figure` (with `step_svg`); `view.app` → `rlmflow.view.html`; `view.steps` and `view.replay` → `rlmflow.view.timeline`. `tests/test_layers.py` keeps imports pointing down the layer stack and the REPL worker's imports minimal; `docs/design/file_structure.md` has the full table.
 - **Changed:** graph writes are explicit. History is written only through `rlmflow.graph.ops` (`append`, `spawn`, `send`, `deliver`, `fork`, `attach`), each checking its own preconditions under the graph lock; application edges through `Graph.add_edge(edge)` and `Graph.remove_edge(edge)`. `Graph.merge(other)` imports another graph's log (use it before `ops.attach` to adopt a saved run), and `Graph.as_of(seq)` copies the graph as it stood at a log position (`view.timeline.snapshot` uses it). `Graph.load` checks a saved log once with the new `check_invariants(g)`, which raises `InvariantError("invalid graph log: ...")` for a corrupted file. The generic `Graph.add` batch writer is removed.
 - **Breaking:** `Flow.start(task, graph=g)` is replaced by `g.create_agent(task, config=...)`. Creating an agent is a graph write and needs no `Flow`; output schemas are stored as JSON Schema at creation. `Flow(root_config=...)` now only applies to agents `flow.run("task")` creates. A `Flow` builds each agent's REPL the first time it steps, so graphs edited offline, loaded, or grown mid-stream all run as-is.
-- Every graph node now carries durable strict-JSON `metadata`. Proxy tools
-  automatically record call receipts and may add namespaced telemetry with
-  `record_metadata(...)`; LLM turns expose model usage and timing there for
-  consumers.
-- `llm_query` has an opt-in, Flow-local deduplication cache keyed by model,
-  prompt, normalized schema, and sampling options. Each call records cache and
-  usage evidence in its owning action's metadata.
-- RAO reward functions can score a completed `AgentStart` graph directly.
-  Environment-step evidence is persisted as tool metadata, separating graph
-  reward assignment from optimizer adapters. RLOO is the default; CISPO and
-  PPO remain selectable over the same graph advantages.
+- Every graph node now carries durable strict-JSON `metadata`. Proxy tools automatically record call receipts and may add namespaced telemetry with `record_metadata(...)`; LLM turns expose model usage and timing there for consumers.
+- `llm_query` has an opt-in, Flow-local deduplication cache keyed by model, prompt, normalized schema, and sampling options. Each call records cache and usage evidence in its owning action's metadata.
+- RAO reward functions can score a completed `AgentStart` graph directly. Environment-step evidence is persisted as tool metadata, separating graph reward assignment from optimizer adapters. RLOO is the default; CISPO and PPO remain selectable over the same graph advantages.
 
 ## [0.7.0] — 2026-10-06
 
@@ -77,18 +70,9 @@ All notable changes to **rlmflow** are recorded here. The format follows [Keep a
 
 ### Added
 
-- **Host-configured delegation backends.** `Flow(delegation_backend=...)`
-  keeps `launch_subagent(...)` unchanged while executing every child through
-  an external agent. `ClaudeCodeBackend` uses Claude Code headless mode in the
-  Flow working directory, preserves resumable run IDs as `DelegationAction`
-  nodes, and routes results through the same schema and verifier checks as
-  native `submit(...)`.
+- **Host-configured delegation backends.** `Flow(delegation_backend=...)` keeps `launch_subagent(...)` unchanged while executing every child through an external agent. `ClaudeCodeBackend` uses Claude Code headless mode in the Flow working directory, preserves resumable run IDs as `DelegationAction` nodes, and routes results through the same schema and verifier checks as native `submit(...)`.
 
-- **Candidate submission is graph-native.** `submit(value)` validates the
-  candidate and lands a durable `DoneOutput` directly; rejected candidates
-  produce `VerificationFailure`. Prompt guidance tells agents to read printed
-  evidence in a later turn before submitting. `finish(value)` remains a hidden
-  compatibility alias.
+- **Candidate submission is graph-native.** `submit(value)` validates the candidate and lands a durable `DoneOutput` directly; rejected candidates produce `VerificationFailure`. Prompt guidance tells agents to read printed evidence in a later turn before submitting. `finish(value)` remains a hidden compatibility alias.
 
 - **Durable semantic choices and submission verification.** Source-compatible string transition guards are presented together to the Flow's configured structured engine, which selects one compact transition name or `continue` in a single request. One `TransitionDecision` persists the complete candidate set, selected durable rule ID, and read-set hash for replay. This path works with Chat, Instructor, Jev, retry, and fallback engines. Launch-local submission verifiers reject candidates into `VerificationFailure` and repair the same child.
 

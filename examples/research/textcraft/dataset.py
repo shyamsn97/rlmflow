@@ -39,7 +39,7 @@ Use `await env_step(op="inspect", item="...")` to discover recipes,
 `await env_step(op="inventory")` to inspect shared inventory, and
 `await env_step(op="craft", item="...", quantity=N)` to craft. Every agent in
 the tree shares one atomic inventory. Delegate independent ingredients with
-`launch_subagent(task=..., target_items={{"item": N}})`; structured
+`launch_agent(task, target_items={{"item": N}})`; structured
 `target_items` are required for exact child verification. Retrieve useful child
 results, then call `await env_step(op="finish")` and `submit(...)`.""",
             config={"textcraft_task": self},

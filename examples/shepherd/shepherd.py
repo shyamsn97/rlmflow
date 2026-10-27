@@ -18,23 +18,9 @@ from pathlib import Path
 
 import cloudpickle
 
-from rlmflow import (
-    AgentConfig,
-    AgentStart,
-    DoneOutput,
-    Edge,
-    ExecOutput,
-    Flow,
-    Graph,
-    LLMOutput,
-    Node,
-    PromptProfile,
-    Runtime,
-    current_step,
-    ops,
-)
+from rlmflow import CODE, DONE, LLM_OUTPUT, AgentConfig, Flow, Graph, Node, Step, current_step
 from rlmflow.consumers import LiveGraphTree
-from rlmflow.engine.steps import llm_turns
+from rlmflow.harnesses.repl.prompts import llm_turns
 from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -209,11 +195,11 @@ There are more goals than boxes, so some goals stay empty and no box is owed the
 goal sharing its number. Two plans that pair the same boxes with the same goals
 are one plan however you sequence them, so spend the {n} slots on different
 pairings — including the goals an obvious plan would leave out.
-Do not call submit() or launch_subagent().
+Do not call submit() or launch_agent().
 """
 
 
-def scoreboard(state: dict, agent: AgentStart) -> str:
+def scoreboard(state: dict, step: Step) -> str:
     """How the branch is doing and what it is being judged on.
 
     Without this a worker cannot tell a short solve from a long one, does not
@@ -221,8 +207,10 @@ def scoreboard(state: dict, agent: AgentStart) -> str:
     so nothing discourages it from wandering.
     """
     dist = state.get("dist", 0)
-    limit = agent.config.max_iters
-    remaining = f"~{max(0, limit - llm_turns())} turns left" if limit is not None else "no turn cap"
+    limit = step.agent.config.max_iters
+    remaining = (
+        f"~{max(0, limit - llm_turns(step))} turns left" if limit is not None else "no turn cap"
+    )
     return (
         f"Standing: {state.get('pushes', 0)} pushes, "
         f"{state.get('placed', 0)}/{state.get('box_count', 0)} boxes locked, "
@@ -233,19 +221,19 @@ def scoreboard(state: dict, agent: AgentStart) -> str:
     )
 
 
-def board_prompt(runtime: Runtime, agent: AgentStart, *, simple: bool = False) -> str | None:
-    """The turn's board section; built inside ``agent``'s step."""
+def board_prompt(flow: Flow, step: Step, *, simple: bool = False) -> str | None:
+    """The turn's board section; built inside the agent's step."""
     # The board lives in the agent's REPL — a worker process under every runtime
     # but the in-process one — so the host reads the published state out of ENV
     # rather than reaching for the game object.
-    repl = runtime.get(agent)
+    repl = flow.runtime.get(step.agent)
     state = dict(repl.env) if repl is not None else {}
     if "status" not in state:  # the shepherd has no board
         return None
 
     # Stamp the turn the game's one-push guard keys on. It ships with the next
     # run, so the worker sees it before it executes this turn's block.
-    repl.update_env({"turn": llm_turns()})
+    repl.update_env({"turn": llm_turns(step)})
     legal = state.get("legal_pushes", [])
     here = state.get("pushes_here", [])
     doomed = state.get("doomed", [])
@@ -291,9 +279,9 @@ def board_prompt(runtime: Runtime, agent: AgentStart, *, simple: bool = False) -
             "board is current. " + action
         )
 
-    order = agent.args.get("_shepherd_order")
+    order = step.agent.args.get("_shepherd_order")
     guidance = (
-        f"\n\n{scoreboard(state, agent)}"
+        f"\n\n{scoreboard(state, step)}"
         f"\n\nStanding order: lock {order}. Each box goes to the goal named for "
         "it, even when another goal is nearer, and the routes are yours."
         if order
@@ -306,16 +294,42 @@ def board_prompt(runtime: Runtime, agent: AgentStart, *, simple: bool = False) -
     )
 
 
+class ShepherdFlow(Flow):
+    """A Flow that shows each worker its board every turn and gives the shepherd its tools."""
+
+    def __init__(self, *args, simple_moves: bool = False, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.simple_moves = simple_moves
+        #: Agent id -> extra REPL bindings, e.g. the shepherd's ``preview`` and ``branch``.
+        self.bindings: dict[str, dict] = {}
+
+    def namespace_for(self, step: Step) -> dict:
+        return self.bindings.get(step.agent.id, {})
+
+    async def complete(self, messages, model="default", **kwargs):
+        step = current_step()
+        # Only REPL turns open with the system prompt; llm_query calls get no board.
+        if step is not None and messages and messages[0]["role"] == "system":
+            board_text = board_prompt(self, step, simple=self.simple_moves)
+            if board_text:
+                last = messages[-1]
+                if last["role"] == "user":
+                    messages = [*messages[:-1], {**last, "content": f"{last['content']}\n\n{board_text}"}]
+                else:
+                    messages = [*messages, {"role": "user", "content": board_text}]
+        return await super().complete(messages, model, **kwargs)
+
+
 async def play_jam(
     flow: Flow,
     g: Graph,
-    worker: AgentStart,
+    worker: Node,
     pushes: int,
     *,
     construct: str = CONSTRUCT,
     jam_code: str = JAM_CODE,
-) -> AsyncIterator[Node]:
-    """Write the worker into its jam without an LLM, yielding each node.
+) -> AsyncIterator[Step]:
+    """Write the worker into its jam without an LLM, yielding each step.
 
     The broken plan is a script — shove B1 east until the wall — so playing it
     with a model costs tokens and a prompt that has to argue a worker out of its
@@ -325,24 +339,20 @@ async def play_jam(
     shallow rewind really does inherit a visibly bad plan.
     """
 
-    async def land() -> Node:
-        return await flow.step(g, worker)
+    def written(text: str) -> Step:
+        return Step(g, worker, g.append(worker, Node(LLM_OUTPUT, text=text)))
 
-    setup = ops.append(g, worker, LLMOutput(content="construct the Sokoban game", code=construct))
-    yield setup
-    action = await land()
-    yield action
-    setup_result = await land()
-    yield setup_result
-    if not isinstance(setup_result, ExecOutput):
-        raise RuntimeError(f"failed to construct the Sokoban worker: {setup_result.content}")
+    # Each written turn is followed by its cell, run the way the live loop runs it.
+    yield written(f"construct the Sokoban game\n\n```repl\n{construct}\n```")
+    setup = await flow.step(g, worker)
+    yield Step(g, worker, setup)
+    if setup.type != CODE or setup.get("error"):
+        raise RuntimeError(f"failed to construct the Sokoban worker: {setup.get('output')}")
 
     reply = f"{JAM_REASON}\n\n```repl\n{jam_code}\n```"
     for _ in range(pushes):
-        turn = ops.append(g, worker, LLMOutput(content=reply, code=jam_code))
-        yield turn
-        yield await land()
-        yield await land()
+        yield written(reply)
+        yield Step(g, worker, await flow.step(g, worker))
         # Read the env afresh each turn: a worker returns its published state as a
         # new mapping per run, so a reference taken once goes stale.
         env = flow.runtime.repl_for(worker).env
@@ -350,8 +360,8 @@ async def play_jam(
             return
 
 
-def board(runtime: Runtime, agent: AgentStart) -> str:
-    return runtime.get_env_var(agent, "board") or ""
+def board(flow: Flow, agent: Node) -> str:
+    return flow.runtime.get_env_var(agent, "board") or ""
 
 
 def branch_heading(branch) -> str:
@@ -394,27 +404,11 @@ async def run_shepherd(
     construct = SIMPLE_CONSTRUCT if simple_moves else CONSTRUCT
     jam_code = SIMPLE_JAM_CODE if simple_moves else JAM_CODE
 
-    def add_worker_board(user_prompt, flow: Flow, node: Node) -> None:
-        content = board_prompt(flow.runtime, current_step().agent, simple=simple_moves)
-        if content:
-            user_prompt.add_section(
-                "turn.board",
-                content,
-                order=1050,
-                source="add_worker_board",
-            )
-
-    flow = Flow(
+    flow = ShepherdFlow(
         client_for(model, reasoning_effort=effort),
         llm_clients={"worker": client_for(worker_model, reasoning_effort=worker_effort)},
-        prompt_profiles={
-            "worker": PromptProfile(
-                system=SIMPLE_WORKER_SYSTEM if simple_moves else WORKER_SYSTEM,
-                user_modifiers=add_worker_board,
-            )
-        },
+        simple_moves=simple_moves,
     )
-    runtime = flow.runtime
     # Each REPL runs in a worker process that has no examples directory on its
     # path, so ``sokoban`` is not importable there and pickling the class by
     # reference would arrive as a missing import. Sending the module by value
@@ -429,7 +423,7 @@ async def run_shepherd(
         config=AgentConfig(
             name="worker",
             model="worker",
-            prompt_profile="worker",
+            system_prompt=SIMPLE_WORKER_SYSTEM if simple_moves else WORKER_SYSTEM,
             max_depth=0,
             max_iters=max_iters,
         ),
@@ -451,7 +445,7 @@ async def run_shepherd(
         title="" if tree is not None else "shepherd — rewind ▸ parallel recovery",
         cols=min(n_branches, 4),
         status_of=lambda agent: panel_status(flow, g, agent),
-        board_of=lambda agent: board(runtime, agent),
+        board_of=lambda agent: board(flow, agent),
         frames_of=(
             (lambda agent: flow.runtime.get_env_var(agent, "frames"))
             if dashboard is not None
@@ -465,19 +459,17 @@ async def run_shepherd(
     if tree is not None:
         tree.track(g, label="run")
 
-    def announce(agent: AgentStart, name: str) -> None:
+    def announce(agent: Node, name: str) -> None:
         """Name a lane."""
         labels[agent.id] = name
         panels.label(agent, name)
 
-    def show(item: Node | Edge) -> None:
+    def show(step: Step) -> None:
         # Panels first: the tree paints straight after, and its footer reads them.
-        panels.handle(item, g)
+        panels.handle(step, g)
         if tree is not None:
-            tree.handle(item, g)
-        if not isinstance(item, Node):
-            return
-        line = trace_line(g, item, labels) if tree is None or dashboard is not None else ""
+            tree.handle(step, g)
+        line = trace_line(g, step.node, labels) if tree is None or dashboard is not None else ""
         if not line:
             return
         if dashboard is not None:
@@ -521,7 +513,8 @@ async def run_shepherd(
         # shepherd and its branches but never the worker itself. Its REPL stays
         # open: previews and branches replay from its history, and its trace is
         # exported at the end.
-        show(ops.append(g, worker, DoneOutput(result="[jammed]")))
+        jammed = g.append(worker, Node(DONE, result="[jammed]"))
+        show(Step(g, worker, jammed))
 
         plans: list[Plan] = []
         if not push_turns(g, worker):
@@ -547,17 +540,13 @@ async def run_shepherd(
             jam=json.dumps(tools["jam"]),
             max_rewind=str(tools["max_rewind"]),
         )
-        repl = flow.runtime.repl_for(shepherd, g)
-        repl.inject("preview", tools["preview"])
-        repl.inject("branch", tools["branch"])
+        flow.bindings[shepherd.id] = {"preview": tools["preview"], "branch": tools["branch"]}
         announce(shepherd, "shepherd")
         if dashboard is not None:
             dashboard.set_status("shepherd planning recovery branches…")
 
-        def planned(item, _g: Graph) -> bool:
-            return (
-                bool(plans) and isinstance(item, Node) and item.agent_id == shepherd.id
-            ) or expired()
+        def planned(step: Step) -> bool:
+            return (bool(plans) and step.agent.id == shepherd.id) or expired()
 
         async for item in checkpoint_stream(flow.run_streaming(g, until=planned), g, run_dir):
             show(item)
@@ -584,11 +573,11 @@ async def run_shepherd(
             )
             dashboard.set_status("running recovery branches in parallel…")
 
-        # The shepherd adopts every branch with one launch action, then waits on all.
-        ops.attach(g, shepherd, *(branch.agent for branch in branches))
+        # The shepherd adopts every branch; it hears from each one as it finishes.
+        g.attach(shepherd, *(branch.agent for branch in branches))
 
-        def collected(item, _g: Graph) -> bool:
-            return (isinstance(item, ExecOutput) and item.agent_id == shepherd.id) or expired()
+        def collected(step: Step) -> bool:
+            return (step.node.type == CODE and step.agent.id == shepherd.id) or expired()
 
         async for item in checkpoint_stream(flow.run_streaming(g, until=collected), g, run_dir):
             show(item)
@@ -599,7 +588,7 @@ async def run_shepherd(
             f"Picked {best.name}: solved={best.solved}, score={best.score}, "
             f"pushes={best.pushes}{cut_short}"
         )
-        ops.append(g, shepherd, DoneOutput(content=summary, result=summary))
+        g.append(shepherd, Node(DONE, result=summary))
         g.save(run_dir)
 
         final_panels = [(branch_heading(branch), branch.board()) for branch in branches]

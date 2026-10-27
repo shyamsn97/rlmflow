@@ -21,22 +21,22 @@
 
 Everything known to be broken today, independent of whether sharing ships.
 
-| # | Defect | Impact | Fix | Stage | Status |
-|---|---|---|---|---|---|
-| D1 | Nobody drains the sandbox's `stderr` pipe during a run | Permanent, uncancellable hang past ~64K | B | 0 | done |
-| D2 | `repl_timeout` defaults to `None` | Removes the only escape from D1 | backstop | 0 | done |
-| D3 | The wire lives on fd 1; subprocesses inherit it | Sandbox destroyed, all agent state lost | B | 0 | done |
-| D4 | Parse failure surfaces as a raw `ValidationError` | Agent gets no actionable signal and repeats it | backstop | 0 | done |
-| D5 | `RemoteRepl.call` never checks `resp.id` | A desync silently returns another request's response | B | 0 | done |
-| D6 | Concurrent calls on one `RemoteRepl` shred the wire | Latent today; blocks stage 2 | B | 0 | done |
-| D7 | Per-run state on the `Repl` instance | Blocks local sharing | A | 1 | shelved |
-| D8 | `seed()` stamps per-agent values into the namespace | Blocks local sharing | A | 1 | shelved |
-| D9 | `close_repl` is unconditional | One co-tenant closing kills the rest | A | 1 | shelved |
-| D10 | `env.py` and the `Repl` ABC document per-REPL isolation | Docs contradict the new contract | A | 1 | shelved |
-| D11 | The sandbox serve loop and `make_proxy` both read stdin | Deadlock under co-tenancy | B | 2 | shelved |
-| D12 | `ProxyCall` carries no scope | Host cannot attribute an inbound proxy | A | 2 | shelved |
-| D13 | Framework appends to an agent with a step in flight | `ValueError` escapes and kills the run | guard | 3 | done |
-| D14 | `_CWD_LOCK` is held across the whole run | Deadlocks co-tenant threads whenever a working directory is set | A | 1 | done |
+| #   | Defect                                                  | Impact                                                          | Fix      | Stage | Status  |
+| --- | ------------------------------------------------------- | --------------------------------------------------------------- | -------- | ----- | ------- |
+| D1  | Nobody drains the sandbox's `stderr` pipe during a run  | Permanent, uncancellable hang past ~64K                         | B        | 0     | done    |
+| D2  | `repl_timeout` defaults to `None`                       | Removes the only escape from D1                                 | backstop | 0     | done    |
+| D3  | The wire lives on fd 1; subprocesses inherit it         | Sandbox destroyed, all agent state lost                         | B        | 0     | done    |
+| D4  | Parse failure surfaces as a raw `ValidationError`       | Agent gets no actionable signal and repeats it                  | backstop | 0     | done    |
+| D5  | `RemoteRepl.call` never checks `resp.id`                | A desync silently returns another request's response            | B        | 0     | done    |
+| D6  | Concurrent calls on one `RemoteRepl` shred the wire     | Latent today; blocks stage 2                                    | B        | 0     | done    |
+| D7  | Per-run state on the `Repl` instance                    | Blocks local sharing                                            | A        | 1     | shelved |
+| D8  | `seed()` stamps per-agent values into the namespace     | Blocks local sharing                                            | A        | 1     | shelved |
+| D9  | `close_repl` is unconditional                           | One co-tenant closing kills the rest                            | A        | 1     | shelved |
+| D10 | `env.py` and the `Repl` ABC document per-REPL isolation | Docs contradict the new contract                                | A        | 1     | shelved |
+| D11 | The sandbox serve loop and `make_proxy` both read stdin | Deadlock under co-tenancy                                       | B        | 2     | shelved |
+| D12 | `ProxyCall` carries no scope                            | Host cannot attribute an inbound proxy                          | A        | 2     | shelved |
+| D13 | Framework appends to an agent with a step in flight     | `ValueError` escapes and kills the run                          | guard    | 3     | done    |
+| D14 | `_CWD_LOCK` is held across the whole run                | Deadlocks co-tenant threads whenever a working directory is set | A        | 1     | done    |
 
 Stage 0, D13 and D14 are implemented, with tests in
 `tests/test_repl_transport.py`. Everything marked shelved is the sharing feature
@@ -90,14 +90,14 @@ Its corollary, for things the OS makes process-global and no context can split:
 **refcount, never mutex.** Count the agents that want the resource, act on the
 first in and the last out, and hold a lock only around the counter.
 
-| Fixes | Because |
-|---|---|
-| D7 | `errored`, `done_result`, the stdout buffer move onto the context |
-| D8 | `seed` binds dispatchers once instead of stamping values per request |
-| D9 | close is refcounted per registration — last agent out closes |
-| D10 | the docs describe the mechanism instead of contradicting it |
-| D12 | the scope travels on the message, so the host resolves the same way |
-| D14 | the cwd becomes a refcounted scope, not a mutex held across a run |
+| Fixes | Because                                                              |
+| ----- | -------------------------------------------------------------------- |
+| D7    | `errored`, `done_result`, the stdout buffer move onto the context    |
+| D8    | `seed` binds dispatchers once instead of stamping values per request |
+| D9    | close is refcounted per registration — last agent out closes         |
+| D10   | the docs describe the mechanism instead of contradicting it          |
+| D12   | the scope travels on the message, so the host resolves the same way  |
+| D14   | the cwd becomes a refcounted scope, not a mutex held across a run    |
 
 D9 and D14 are literally the same fix applied to two different shared
 resources.
@@ -111,13 +111,13 @@ The rule: **every byte stream gets one dedicated owner that does nothing but
 read or write it. Owners never do work; they route messages to whoever is
 waiting, by id. Nothing else ever touches the stream.**
 
-| Fixes | Because |
-|---|---|
-| D1 | stderr is a stream with no owner; give it one and it cannot fill |
-| D3 | fd 1 has two writers; `dup` the wire to a private fd so it has one |
-| D5 | routing by id is how an owner demultiplexes, so the check is inherent |
-| D6 | one writer behind a lock, one reader, so bytes cannot interleave |
-| D11 | the serve loop stops competing with `make_proxy` for stdin |
+| Fixes | Because                                                               |
+| ----- | --------------------------------------------------------------------- |
+| D1    | stderr is a stream with no owner; give it one and it cannot fill      |
+| D3    | fd 1 has two writers; `dup` the wire to a private fd so it has one    |
+| D5    | routing by id is how an owner demultiplexes, so the check is inherent |
+| D6    | one writer behind a lock, one reader, so bytes cannot interleave      |
+| D11   | the serve loop stops competing with `make_proxy` for stdin            |
 
 D2 (a finite `repl_timeout`) and D4 (an error naming the real cause) are not
 part of the mechanism. They are the backstop for when something outside our
@@ -219,9 +219,10 @@ Genuinely per-agent working directories remain out of reach for `chdir` in a
 shared process. If they are ever required, agent code must resolve paths against
 a per-agent root handed to it.
 
----
+______________________________________________________________________
 
 ## Stage 0 — Transport Correctness
+
 ### *Mechanism B applied to the host and the pipes*
 
 Ships alone. No API change, no behaviour change except that things which
@@ -278,20 +279,21 @@ os.close(cap_w)
 ### Stage 0 tests
 
 1. Several hundred KB to `stderr` in one block completes rather than wedging.
-2. A sandbox that stops answering yields `DEAD` within `repl_timeout`, and the
+1. A sandbox that stops answering yields `DEAD` within `repl_timeout`, and the
    host process exits.
-3. `os.write(1, ...)`, `os.system('echo ...')`, and an uncaptured
+1. `os.write(1, ...)`, `os.system('echo ...')`, and an uncaptured
    `subprocess.run` all leave the REPL alive with its variables intact.
-4. That output is captured and attributed to the running agent.
-5. `capture_output=True` still works unchanged.
-6. A forced out-of-order response raises `ProtocolDesyncError`.
-7. Two concurrent calls on one `RemoteRepl` each get their own response, and
+1. That output is captured and attributed to the running agent.
+1. `capture_output=True` still works unchanged.
+1. A forced out-of-order response raises `ProtocolDesyncError`.
+1. Two concurrent calls on one `RemoteRepl` each get their own response, and
    every line on the wire is well-formed JSON.
-8. Existing runtime tests pass untouched.
+1. Existing runtime tests pass untouched.
 
----
+______________________________________________________________________
 
 ## Stage 1 — Local Co-Tenancy
+
 ### *Mechanism A applied in-process*
 
 The design and its validation are in `shared_repls.md`. The rule: persistent
@@ -364,9 +366,10 @@ imports, per-agent `ENV` persisting across turns, correct `RLMFLOW_*` for every
 co-tenant, refcounted close, cancellation isolation, replay fidelity, and
 non-shared runs behaving exactly as today.
 
----
+______________________________________________________________________
 
 ## Stage 2 — Remote Co-Tenancy
+
 ### *A and B together, in the sandbox*
 
 Virtual channels demultiplexed over the existing stdio pipe. Requires stage 0
@@ -417,9 +420,10 @@ A real socket per agent, if channels ever need to originate in the sandbox. It
 trades 2.1 and the routing for a new connection abstraction in every backend, so
 it is more work, not less.
 
----
+______________________________________________________________________
 
 ## Stage 3 — Frontier Safety
+
 ### *Neither mechanism; a standalone guard*
 
 Independent of sharing, and a genuine corruption bug rather than a missing
@@ -442,7 +446,7 @@ by name, extending `max_iters` on resume, and scoping `run_streaming` to a
 sub-agent — are a feature rather than a defect and stay tracked in
 `persistent_agents.md`.
 
----
+______________________________________________________________________
 
 ## Sequencing
 

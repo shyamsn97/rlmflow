@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.eval.environments.environment import Environment
-from rlmflow.tools import tool
+from rlmflow.harnesses.repl.tools import tool
 
 Perform = Callable[[str, Mapping[str, Any] | None], dict[str, Any]]
 

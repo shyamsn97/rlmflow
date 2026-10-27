@@ -117,7 +117,7 @@ useful. Register each solution state you want considered with submit_candidate()
 compare its redacted summary with list_candidates(), then explicitly call
 select_candidate(candidate_id). Only that explicit selection is graded; the
 evaluator does not silently choose the best alternative, and all mutations share
-one action budget. Execute both calls before finish(); writing a candidate ID in
+one action budget. Execute both calls before finishing; writing a candidate ID in
 the final answer does not count. If deterministic deductions make alternatives
 unnecessary, submit the current grid and select it early enough to complete the
 protocol.

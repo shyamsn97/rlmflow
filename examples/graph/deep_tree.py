@@ -11,53 +11,40 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rlmflow import (
-    AgentStart,
-    DoneOutput,
-    ExecAction,
-    ExecOutput,
-    Graph,
-    LLMOutput,
-    LLMUsage,
-    Node,
-    ops,
-    reads,
-)
+from rlmflow import AGENT_START, CODE, DONE, LLM_OUTPUT, AgentConfig, Graph, LLMUsage, Node
 from rlmflow.graph.graph import FROM, NEXT
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = EXAMPLES_DIR / "_runs" / "deep-tree"
 
 
-def grow(g: Graph, agent: AgentStart, *, depth: int, branch: int) -> None:
+def grow(g: Graph, agent: Node, *, depth: int, branch: int) -> None:
     """Grow ``agent`` into a depth-``depth`` tree with ``branch`` children per fanout.
 
-    Children are launched by the action of the agent's turn, the way a real
-    ``launch_subagent`` turn records it.
+    Children are launched by the model turn whose cell called ``launch_agent``,
+    the way a real run records it.
     """
-    path = reads.path(g, agent)
-    ops.append(
-        g,
+    path = g.path(agent)
+    turn = g.append(
         agent,
-        LLMOutput(
-            content=f"plan at {path}",
-            code=f"# depth={reads.depth(g, agent)}",
-            usage=LLMUsage(input_tokens=10, output_tokens=5),
+        Node(
+            LLM_OUTPUT,
+            text=f"plan at {path}",
+            usage=LLMUsage(input_tokens=10, output_tokens=5).as_dict(),
         ),
     )
-    action = ops.append(g, agent, ExecAction(code=f"print({path!r})"))
 
     if depth <= 0:
-        ops.append(g, agent, ExecOutput(content=f"ran {path}"))
-        ops.append(g, agent, DoneOutput(result=path))
+        g.append(agent, Node(CODE, code=f"print({path!r})", output=f"ran {path}"))
+        g.append(agent, Node(DONE, result=path))
         return
 
     for index in range(branch):
-        child = ops.spawn(g, f"subtask of {path}", by=action, name=f"c{index}")
+        child = g.spawn(f"subtask of {path}", by=turn, name=f"c{index}")
         grow(g, child, depth=depth - 1, branch=branch)
 
-    ops.append(g, agent, ExecOutput(content=f"fanout from {path}"))
-    ops.append(g, agent, DoneOutput(result=f"merged:{path}"))
+    g.append(agent, Node(CODE, code="print(await handles)", output=f"fanout from {path}"))
+    g.append(agent, Node(DONE, result=f"merged:{path}"))
 
 
 def tree_children(g: Graph) -> dict[str, list[Node]]:
@@ -66,7 +53,7 @@ def tree_children(g: Graph) -> dict[str, list[Node]]:
     for edge in g.edges(kind=NEXT):
         kids[edge.source].append(g.node(edge.target))
     for edge in g.edges(kind=FROM):
-        if edge.target in kids and isinstance(g.node(edge.source), AgentStart):
+        if edge.target in kids and g.node(edge.source).type == AGENT_START:
             kids[edge.target].append(g.node(edge.source))
     return kids
 
@@ -92,14 +79,14 @@ def render_ascii(
 
 
 def render_agents(
-    g: Graph, agent: AgentStart, *, prefix: str = "", is_last: bool = True
+    g: Graph, agent: Node, *, prefix: str = "", is_last: bool = True
 ) -> list[str]:
     """Render only the agent tree."""
     connector = "└── " if is_last else "├── "
-    label = f"{reads.path(g, agent)}  [{reads.frontier(g, agent).type}]"
+    label = f"{g.path(agent)}  [{g.frontier(agent).type}]"
     lines = [f"{prefix}{connector}{label}" if prefix or not is_last else label]
     child_prefix = prefix + ("    " if is_last else "│   ")
-    children = reads.children(g, agent)
+    children = g.children(agent)
     for index, child in enumerate(children):
         lines.extend(
             render_agents(g, child, prefix=child_prefix, is_last=index == len(children) - 1)
@@ -108,9 +95,9 @@ def render_agents(
 
 
 def _label(node: Node) -> str:
-    if isinstance(node, AgentStart):
-        return f"agent:{node.config.name}"
-    text = (node.content or "").replace("\n", " ")
+    if node.type == AGENT_START:
+        return f"agent:{node.name}"
+    text = str(node.get("text") or node.get("output") or node.get("result") or "").replace("\n", " ")
     if len(text) > 40:
         text = text[:37] + "..."
     suffix = f" {text!r}" if text else ""
@@ -235,20 +222,17 @@ def _plot_svg(
 
 
 def _color(node: Node) -> str:
-    if isinstance(node, AgentStart):
-        return "#cfe8ff"
-    if isinstance(node, ExecAction):
-        return "#ffe6a8"
-    if isinstance(node, DoneOutput):
-        return "#c8f7c5"
-    if isinstance(node, LLMOutput):
-        return "#e8d5ff"
-    return "#f0f0f0"
+    return {
+        AGENT_START: "#cfe8ff",
+        CODE: "#ffe6a8",
+        DONE: "#c8f7c5",
+        LLM_OUTPUT: "#e8d5ff",
+    }.get(node.type, "#f0f0f0")
 
 
 def _short(node: Node) -> str:
-    if isinstance(node, AgentStart):
-        return node.config.name
+    if node.type == AGENT_START:
+        return node.name
     return node.type.replace("_", "\n")
 
 
@@ -261,10 +245,10 @@ def main() -> None:
     args = parser.parse_args()
 
     g = Graph()
-    root = ops.spawn(g, "deep tree root", max_depth=args.depth + 1)
+    root = g.spawn("deep tree root", name="root", config=AgentConfig(max_depth=args.depth + 1))
     grow(g, root, depth=args.depth, branch=args.branch)
 
-    print(f"agents={len(g.nodes(AgentStart))}  nodes={len(g.nodes())}")
+    print(f"agents={len(g.nodes(AGENT_START))}  nodes={len(g.nodes())}")
     print()
     print("=== agent tree ===")
     print("\n".join(render_agents(g, root)))

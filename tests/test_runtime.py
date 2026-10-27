@@ -13,23 +13,32 @@ from rlmflow import (
     ReplStatus,
     SubprocessRuntime,
     WorkerRepl,
-    ops,
 )
-from rlmflow.graph.nodes import AgentStart, ExecAction
-from rlmflow.runtime import DEFAULT_PREIMPORTS, base_namespace, build_docker_argv
-from rlmflow.runtime.repl_client import invoke_tool_call
-from rlmflow.tools import get_tool_metadata, tool
+from rlmflow.graph import Graph
+from rlmflow.graph.nodes import CODE, Node
+from rlmflow.harnesses.repl.runtime import (
+    DEFAULT_PREIMPORTS,
+    base_namespace,
+    build_docker_argv,
+    get_tool_metadata,
+)
+from rlmflow.harnesses.repl.runtime.repl_client import invoke_tool_call
+from rlmflow.harnesses.repl.tools import tool
+
+
+def bare_agent() -> Node:
+    return Graph().create_agent("q")
 
 WRITE_A_NOTE = block(
     "from pathlib import Path\n"
     'Path("note.txt").write_text("hello")\n'
-    'finish(Path("note.txt").read_text())'
+    'submit(Path("note.txt").read_text())'
 )
 
 
 def test_tool_restore_metadata_and_saved_calls_are_generic():
     g, root = agent_graph("root")
-    action = ops.append(g, root, ExecAction(code=""))
+    action = g.append(root, Node(CODE, code=""))
     calls: list[tuple[str, str]] = []
 
     @tool("First tool.", proxy=True, restore="result")
@@ -55,10 +64,10 @@ def test_tool_restore_metadata_and_saved_calls_are_generic():
         "restored",
         "value",
     )
-    assert action.saved_tool_calls == {
-        "first": {0: {"value": "a"}},
-        "second": {0: "B"},
-        "custom": {0: "value"},
+    assert action.data["calls"] == {
+        "first": {"0": {"value": "a"}},
+        "second": {"0": "B"},
+        "custom": {"0": "value"},
     }
     assert calls == [("first", "a"), ("second", "b")]
 
@@ -93,7 +102,7 @@ class RecordingWorkerSession:
     ],
 )
 def test_process_runtimes_propagate_execution_timeout(runtime):
-    repl = runtime.open(AgentStart(content="q"))
+    repl = runtime.open(bare_agent())
     try:
         assert isinstance(repl, WorkerRepl)
         assert repl.session.execution_timeout == 17
@@ -110,9 +119,9 @@ def test_process_runtimes_propagate_execution_timeout(runtime):
     ],
 )
 def test_sandbox_runtimes_propagate_execution_timeout(monkeypatch, runtime):
-    monkeypatch.setattr("rlmflow.runtime.repl_client.WorkerSession", RecordingWorkerSession)
+    monkeypatch.setattr("rlmflow.harnesses.repl.runtime.repl_client.WorkerSession", RecordingWorkerSession)
 
-    repl = runtime.open(AgentStart(content="q"))
+    repl = runtime.open(bare_agent())
     try:
         assert isinstance(repl, WorkerRepl)
         assert repl.session.execution_timeout == 17
@@ -124,7 +133,7 @@ def test_sandbox_runtimes_propagate_execution_timeout(monkeypatch, runtime):
 def test_runtime_execution_timeout_returns_dead_and_removes_worker():
     runtime = LocalRuntime(execution_timeout=0.05)
     flow = Flow(StubLLM(lambda _messages: ""), runtime=runtime)
-    root = AgentStart(content="q")
+    root = bare_agent()
     try:
         result = asyncio.run(
             runtime.execute(
@@ -170,18 +179,17 @@ def test_subprocess_runtime_uses_selected_python_and_working_directory(tmp_path)
         asyncio.run(flow.aclose())
 
 
-def test_subprocess_runtime_exposes_opt_in_agents_tree():
+def test_subprocess_runtime_exposes_the_agents_tree():
     code = block(
-        'finish(AGENTS.get().path + "|" + str(len(AGENTS.get_siblings())) + "|" '
+        'submit(AGENTS.get().path + "|" + str(len(AGENTS.get_siblings())) + "|" '
         "+ AGENTS.render_graph())"
     )
     flow = Flow(
         StubLLM(lambda _messages: code),
         runtime=SubprocessRuntime(),
-        use_agent_tree=True,
     )
     try:
-        assert flow.run("q") == "root|0|root [running] (you)"
+        assert flow.run("q") == "default|0|default (default) [running] (you)"
     finally:
         asyncio.run(flow.aclose())
 
@@ -189,8 +197,8 @@ def test_subprocess_runtime_exposes_opt_in_agents_tree():
 def test_subprocess_runtime_supports_subagent_handles():
     def reply(messages):
         if first_user(messages) == "parent":
-            return block('child = launch_subagent(task="child")\nfinish(await child)')
-        return block('finish("child-done")')
+            return block('child = launch_agent("child")\nsubmit(await child)')
+        return block('submit("child-done")')
 
     flow = Flow(StubLLM(reply), runtime=SubprocessRuntime())
     try:
@@ -200,21 +208,21 @@ def test_subprocess_runtime_supports_subagent_handles():
 
 
 def test_worker_env_channel_round_trips():
-    code = block('ENV["solved"] = ENV["RLMFLOW_IS_ROOT"] == "1"\nfinish(ENV["RLMFLOW_AGENT_ID"])')
+    code = block('ENV["solved"] = ENV["RLMFLOW_IS_ROOT"] == "1"\nsubmit(ENV["RLMFLOW_AGENT_ID"])')
     flow = Flow(StubLLM(lambda _messages: code))
     g, root = agent_graph("q")
     try:
-        assert run_result(flow, g, root) == "root"
+        assert run_result(flow, g, root) == "default"
         published = flow.runtime.repl_for(root).env
         assert published["solved"] is True
-        assert published["RLMFLOW_AGENT_ID"] == "root"
+        assert published["RLMFLOW_AGENT_ID"] == "default"
     finally:
         asyncio.run(flow.aclose())
 
 
 def test_worker_executes_await_in_comprehensions(tmp_path):
     runtime = LocalRuntime(working_directory=tmp_path)
-    repl = runtime.repl_for(AgentStart(content="q"))
+    repl = runtime.repl_for(bare_agent())
 
     async def double(value):
         await asyncio.sleep(0)
@@ -238,7 +246,7 @@ def test_worker_executes_await_in_comprehensions(tmp_path):
 
 def test_empty_iterator_reports_stopiteration_not_coroutine_wrapper():
     runtime = LocalRuntime()
-    repl = runtime.repl_for(AgentStart(content="q"))
+    repl = runtime.repl_for(bare_agent())
 
     async def run():
         repl.seed({}, {})
@@ -254,7 +262,7 @@ def test_empty_iterator_reports_stopiteration_not_coroutine_wrapper():
 
 
 def test_get_var_reads_a_variable_out_of_the_worker():
-    flow = Flow(StubLLM(lambda _messages: block('result = {"n": 42}\nfinish("ok")')))
+    flow = Flow(StubLLM(lambda _messages: block('result = {"n": 42}\nsubmit("ok")')))
     g, root = agent_graph("q")
     try:
         assert run_result(flow, g, root) == "ok"
@@ -272,7 +280,7 @@ def test_worker_inject_ships_a_live_object_by_value(tmp_path):
             self.n += amount
 
     runtime = LocalRuntime(working_directory=tmp_path)
-    repl = runtime.repl_for(AgentStart(content="q"))
+    repl = runtime.repl_for(bare_agent())
     counter = Counter()
 
     async def run():
@@ -293,7 +301,7 @@ def test_worker_inject_ships_a_live_object_by_value(tmp_path):
 def test_worker_preimports_core_modules(tmp_path):
     # Models reach for these without importing; a NameError costs a turn to recover.
     runtime = LocalRuntime(working_directory=tmp_path)
-    repl = runtime.repl_for(AgentStart(content="q"))
+    repl = runtime.repl_for(bare_agent())
 
     async def run():
         repl.seed({}, {})
@@ -320,7 +328,7 @@ def test_worker_preimports_core_modules(tmp_path):
 
 def test_preimports_are_configurable_per_runtime(tmp_path):
     runtime = LocalRuntime(working_directory=tmp_path, preimports=["json"])
-    repl = runtime.repl_for(AgentStart(content="q"))
+    repl = runtime.repl_for(bare_agent())
 
     async def run(code):
         repl.seed({}, {})
@@ -351,7 +359,7 @@ def test_docker_argv_carries_configured_preimports(tmp_path):
     argv = build_docker_argv("rlmflow:minimal", preimports=["json", "re"])
 
     assert argv[-2:] == ["--preimport", "json,re"]
-    assert "rlmflow.runtime.repl_server" in argv
+    assert "rlmflow.harnesses.repl.runtime.repl_server" in argv
 
 
 def test_docker_argv_runs_worker(tmp_path):
@@ -361,7 +369,7 @@ def test_docker_argv_runs_worker(tmp_path):
         workdir="/workspace",
     )
 
-    assert argv[-4:] == ["python", "-u", "-m", "rlmflow.runtime.repl_server"]
+    assert argv[-4:] == ["python", "-u", "-m", "rlmflow.harnesses.repl.runtime.repl_server"]
     assert argv[:4] == ["docker", "run", "-i", "--rm"]
     assert not any(":50001" in part for part in argv)
     assert ["--network", "none"] == argv[argv.index("--network") : argv.index("--network") + 2]

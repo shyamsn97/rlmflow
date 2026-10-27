@@ -24,7 +24,6 @@ from rlmflow import (
     Flow,
     Graph,
     LocalRuntime,
-    reads,
 )
 from rlmflow.llm import client_for
 
@@ -102,17 +101,22 @@ def _run_cli(flow: Flow, workdir: Path, *, max_depth: int, max_iters: int) -> No
             break
 
         g = Graph()
-        root = g.create_agent(
-            query,
-            config=AgentConfig(
+        g.add_config(
+            AgentConfig(
+                name="worker",
+                model="fast",
+                description="implements one well-scoped change and reports the files it touched",
                 max_depth=max_depth,
                 max_iters=max_iters,
-                child_config={"output_schema": CODING_HANDOFF_SCHEMA},
-            ),
+                output_schema=CODING_HANDOFF_SCHEMA,
+            )
+        )
+        root = g.create_agent(
+            query, config=AgentConfig(max_depth=max_depth, max_iters=max_iters)
         )
         asyncio.run(print_run(flow, g, graph_dir, width=20))
 
-        print(f"\n{reads.result(g, root) or '(no result)'}\n")
+        print(f"\n{g.result(root) or '(no result)'}\n")
         print(f"Run checkpointed to {graph_dir}")
         print(f"Files written under {workdir}")
 

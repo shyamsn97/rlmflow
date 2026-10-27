@@ -4,7 +4,7 @@
 #   docker build -t rlmflow:local .
 #
 # Use:
-#   from rlmflow.runtime.docker import DockerRuntime
+#   from rlmflow.harnesses.repl.runtime.docker import DockerRuntime
 #   runtime = DockerRuntime("rlmflow:local")
 #
 # Or via any of the bundled examples:
@@ -30,4 +30,4 @@ WORKDIR /workspace
 USER 1000:1000
 
 # DockerRuntime attaches to this worker over stdin/stdout.
-CMD ["python", "-u", "-m", "rlmflow.runtime.repl_server"]
+CMD ["python", "-u", "-m", "rlmflow.harnesses.repl.runtime.repl_server"]

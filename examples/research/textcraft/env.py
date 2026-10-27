@@ -16,7 +16,7 @@ except ImportError as exc:  # pragma: no cover - optional example dependency
 
 from examples.research.textcraft.dataset import TextCraftTask
 from examples.research.textcraft.recipes import item_name, quantities
-from rlmflow import AgentStart, Graph, reads
+from rlmflow import Graph, Node
 from rlmflow.rao import RolloutTree, TaskSpec, agent_id
 
 
@@ -187,11 +187,11 @@ class TextCraftEnv(gym.Env):
         return str(self._observation("render"))
 
 
-def _environment_steps(graph: Graph, root: AgentStart) -> list[dict[str, Any]]:
+def _environment_steps(graph: Graph, root: Node) -> list[dict[str, Any]]:
     receipts = [
         receipt
-        for agent in reads.tree(graph, root)
-        for node in graph.nodes(agent=agent)
+        for agent in graph.tree(root)
+        for node in graph.nodes(agent=agent.id)
         for receipt in node.metadata.get("environment.steps", [])
         if isinstance(receipt, dict)
     ]
@@ -206,7 +206,7 @@ def _safe_quantities(value: Any) -> dict[str, int]:
         return {}
 
 
-def textcraft_graph_rewards(graph: Graph, root: AgentStart) -> dict[str, float]:
+def textcraft_graph_rewards(graph: Graph, root: Node) -> dict[str, float]:
     """Compute exact rewards for ``root``'s tree from its tool metadata."""
     steps = _environment_steps(graph, root)
     task_record = root.metadata.get("rollout.task", {})
@@ -218,7 +218,7 @@ def textcraft_graph_rewards(graph: Graph, root: AgentStart) -> dict[str, float]:
         final_observation.get("inventory") if isinstance(final_observation, Mapping) else {}
     )
     scores: dict[str, float] = {}
-    for agent in reads.tree(graph, root):
+    for agent in graph.tree(root):
         path = agent_id(graph, agent)
         if agent is root:
             scores[path] = float(

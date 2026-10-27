@@ -8,7 +8,7 @@ root or manager agent.
 [`decentralized_peers.py`](decentralized_peers.py) runs three real-model peers.
 One draws `peer` edges with `connect_agent`, asks the others for their values
 with `ask_agent`, and sends them the total with `send_agent`.
-Messages are `user_query` nodes with `from` edges to the action that sent them,
+Messages are `message` nodes with `from` edges to the turn that sent them,
 so the saved graph shows who told whom what.
 
     python examples/collaboration/decentralized_peers.py --model gpt-5-mini
@@ -21,9 +21,9 @@ the graph. Every task is an agent:
 | Board idea | In the graph |
 | --- | --- |
 | a task | a top-level agent (`g.create_agent`) |
-| follow-up work | a child from `launch_subagent(task=...)` |
+| follow-up work | a child from `launch_agent(task)` |
 | claiming a task | `Flow(workers=N)` running whichever agents are ready |
-| a finished task's result | its `DoneOutput` (`submit(...)`) |
+| a finished task's result | its `done` node (`submit(...)`) |
 | shared context | `AGENTS`, every task's status and result |
 
 Nothing lives outside the graph, so the saved run is the whole board and it

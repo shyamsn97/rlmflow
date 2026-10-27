@@ -5,29 +5,19 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from rlmflow.graph import reads
 from rlmflow.graph.graph import FROM, Graph
-from rlmflow.graph.nodes import (
-    AgentStart,
-    DoneOutput,
-    ErrorOutput,
-    ExecAction,
-    ExecOutput,
-    LLMOutput,
-    Node,
-    UserQuery,
-)
+from rlmflow.graph.nodes import AGENT_START, CODE, DONE, LLM_OUTPUT, MESSAGE, WAITING, Node
 
 
-def top_level(graph: Graph) -> list[AgentStart]:
+def top_level(graph: Graph) -> list[Node]:
     """Agents nobody launched, in creation order."""
-    return [agent for agent in graph.nodes(AgentStart) if reads.launcher(graph, agent) is None]
+    return [agent for agent in graph.agents() if graph.launcher(agent) is None]
 
 
-def launched_by(graph: Graph, node: Node) -> list[AgentStart]:
+def launched_by(graph: Graph, node: Node) -> list[Node]:
     """Agents whose ``from`` edge points at ``node``."""
     launched = (graph.node(edge.source) for edge in graph.edges(kind=FROM, target=node.id))
-    return [agent for agent in launched if isinstance(agent, AgentStart)]
+    return [agent for agent in launched if agent.type == AGENT_START]
 
 
 def render_forest(graphs: Iterable[Graph]) -> str:
@@ -36,57 +26,49 @@ def render_forest(graphs: Iterable[Graph]) -> str:
 
 
 def render_tree(graph: Graph) -> str:
-    """Render each top-level agent's query and recursive status tree."""
+    """Render each top-level agent's task and recursive status tree."""
     blocks = []
     for top in top_level(graph):
-        lines = [_clip(top.content) or "query"]
+        lines = [_clip(top.task) or "task"]
         _append_agent(graph, lines, top, prefix="", last=True)
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
 
 
-def _append_agent(
-    graph: Graph,
-    lines: list[str],
-    agent: AgentStart,
-    *,
-    prefix: str,
-    last: bool,
-) -> None:
+def _append_agent(graph: Graph, lines: list[str], agent: Node, *, prefix: str, last: bool) -> None:
     lines.append(f"{prefix}{'└── ' if last else '├── '}{_status(graph, agent)}")
     child_prefix = prefix + ("    " if last else "│   ")
-    children = reads.children(graph, agent)
+    children = graph.children(agent)
     for index, child in enumerate(children):
         _append_agent(graph, lines, child, prefix=child_prefix, last=index == len(children) - 1)
 
 
-def _status(graph: Graph, agent: AgentStart) -> str:
-    frontier = reads.frontier(graph, agent)
-    turns = sum(isinstance(node, LLMOutput) for node in reads.history(graph, agent))
+def _status(graph: Graph, agent: Node) -> str:
+    frontier = graph.frontier(agent)
+    turns = sum(node.type == LLM_OUTPUT for node in graph.own_history(agent))
     suffix = f" ({turns} turns)" if turns else ""
-    path = reads.path(graph, agent)
+    path = graph.path(agent)
 
-    if isinstance(frontier, DoneOutput):
-        return f"{path}: done {_clip(frontier.result, limit=64)}{suffix}"
-    if isinstance(frontier, ErrorOutput):
-        return f"{path}: error {_clip(frontier.content, limit=64)}{suffix}"
-    if isinstance(frontier, ExecAction):
-        children = launched_by(graph, frontier)
-        if children:
-            active = sum(not reads.terminal(graph, child) for child in children)
-            return f"{path}: children running {active}/{len(children)}{suffix}"
+    if frontier.type == DONE:
+        return f"{path}: done {_clip(frontier.data.get('result'), limit=64)}{suffix}"
+    if frontier.type == WAITING:
+        on = frontier.data.get("on") or []
+        active = sum(not graph.terminal(graph.node(a)) for a in on if a in graph)
+        return f"{path}: waiting on {active}/{len(on)}{suffix}"
+    children = [c for c in graph.children(agent) if not graph.terminal(c)]
+    if children:
+        return f"{path}: children running {len(children)}{suffix}"
+    if frontier.type == LLM_OUTPUT:
         return f"{path}: running code{suffix}"
-    if isinstance(frontier, LLMOutput):
+    if frontier.type == CODE:
         return f"{path}: planning{suffix}"
-    if isinstance(frontier, ExecOutput):
-        return f"{path}: observed output{suffix}"
-    if isinstance(frontier, UserQuery):
+    if frontier.type in (AGENT_START, MESSAGE):
         return f"{path}: working{suffix}"
     return f"{path}: pending{suffix}"
 
 
 def _clip(value: Any, *, limit: int = 80) -> str:
-    text = " ".join(str(value or "").strip().split())
+    text = " ".join(str(value if value is not None else "").strip().split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 

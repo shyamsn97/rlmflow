@@ -8,12 +8,12 @@ Run:
 
 from __future__ import annotations
 
-from rlmflow import AgentConfig, Flow, Graph, LLMUsage, reads
+from rlmflow import AgentConfig, Flow, Graph, LLMUsage
 
 ROOT_REPLY = """\
 ```repl
-alpha = launch_subagent(task="Return alpha.")
-beta = launch_subagent(task="Return beta.")
+alpha = launch_agent("Return alpha.", name="alpha")
+beta = launch_agent("Return beta.", name="beta")
 print("queued:", alpha.name, beta.name)
 ```"""
 
@@ -48,19 +48,19 @@ def main() -> None:
     )
     try:
         flow.run(g)
-        result = reads.result(g, root)
+        result = g.result(root)
         child_results = {
-            child.config.name: reads.result(g, child) for child in reads.children(g, root)
+            child.name: g.result(child) for child in g.children(root)
         }
         print("root:", result)
         print("children:", child_results)
         assert result == "alpha finished, beta finished"
         assert child_results == {
-            "child0": "alpha finished",
-            "child1": "beta finished",
+            "alpha": "alpha finished",
+            "beta": "beta finished",
         }
     finally:
-        flow.runtime.close_repls()
+        flow.runtime.close()
 
 
 if __name__ == "__main__":

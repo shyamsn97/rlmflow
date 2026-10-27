@@ -23,7 +23,7 @@ compare its public gem completion, coverage, and path-efficiency metrics using
 list_candidates(), then explicitly call select_candidate() on the best evaluated
 candidate. Only the explicitly selected candidate is scored, and all exploration
 shares one action budget. Execute submit_candidate and select_candidate as tool
-calls before finish(); writing a candidate ID in the final answer is not
+calls before finishing; writing a candidate ID in the final answer is not
 selection. If no alternative is useful, submit the current trajectory and select
 it early enough to complete the protocol.
 """

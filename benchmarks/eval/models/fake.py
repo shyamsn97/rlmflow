@@ -24,14 +24,19 @@ class FakeModel(Model):
             "output_tokens": 32,
         }
         answer = _extract_synthetic_secret(prompt)
-        wants_repl = "```repl" in prompt or "finish(" in prompt or "Python REPL" in prompt
-        # The needle task references its direct `haystack` argument (single
-        # quotes); match the key loosely so the secret hasn't-been-seen branch
-        # fires regardless of quote style before falling back to finish(...).
-        if wants_repl and answer == "UNKNOWN" and "haystack" in prompt:
-            return "```repl\nprint(haystack)\n```"
+        wants_repl = "```repl" in prompt or "submit(" in prompt or "Python REPL" in prompt
+        # The needle haystack sits in the `observation` JSON argument; print
+        # only the record after the marker so output truncation keeps it.
+        marker = re.search(r"needle-marker-[0-9]{4}-[0-9]{8}", prompt)
+        if wants_repl and answer == "UNKNOWN" and marker is not None:
+            return (
+                "```repl\nimport json\n"
+                'haystack = json.loads(observation)["haystack"]\n'
+                f'start = haystack.find("marker: {marker.group(0)}")\n'
+                "print(haystack[start:start + 300])\n```"
+            )
         if wants_repl:
-            return f'```repl\nfinish("{answer}")\n```'
+            return f'```repl\nsubmit("{answer}")\n```'
         return answer
 
     def usage(self) -> dict[str, int]:

@@ -15,16 +15,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from rlmflow.graph import reads
-from rlmflow.graph.config import NATIVE_BACKEND
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import (
-    AgentStart,
-    BackendRun,
-    Node,
-    TransitionDecision,
-    VerificationFailure,
-)
+from rlmflow.graph.nodes import Node
 from rlmflow.view.text import render_tree
 
 DETAIL_LIMIT = 1600
@@ -54,65 +46,46 @@ def timeline(g: Graph) -> list[Node]:
 
 def summarize(node: Node, limit: int = 96) -> str:
     """A single line describing what this node did."""
-    if isinstance(node, AgentStart):
-        executor = (
-            f"backend {node.config.backend}"
-            if node.config.backend != NATIVE_BACKEND
-            else f"model {node.config.model}"
-        )
-        text = f"start {node.config.name} · {executor}"
-    elif isinstance(node, BackendRun):
-        text = f"invoke {node.backend} · {node.run_id}"
-    elif isinstance(node, TransitionDecision):
-        choice = (
-            node.candidates[node.selected_rule_id]
-            if node.selected_rule_id is not None
-            else "continue"
-        )
-        text = f"selected {choice}"
-    elif isinstance(node, VerificationFailure):
-        text = f"{node.kind} rejected: {node.feedback}"
-    elif node.type == "done_output":
-        text = f"done {_stringify(getattr(node, 'result', None) or node.content)}"
-    elif node.type == "error_output":
-        text = f"{getattr(node, 'error', 'error')}: {node.content}"
-    else:
-        text = getattr(node, "code", "") or node.content or ""
+    data = node.data
+    match node.type:
+        case "agent_start":
+            config = node.config
+            text = f"start {node.name} · {config.name} · {config.harness} · model {config.model}"
+        case "message":
+            text = f"from {data.get('sender', 'user')}: {data.get('text', '')}"
+        case "llm_output":
+            text = data.get("text", "")
+        case "code":
+            text = data.get("code") or data.get("output", "")
+        case "waiting":
+            text = f"waiting on {len(data.get('on') or [])} agents"
+        case "done":
+            text = f"done {_stringify(data.get('result'))}"
+        case _:
+            text = ""
     text = " ".join(str(text).split())
     return text[: limit - 1] + "…" if len(text) > limit else text
 
 
 def node_detail(node: Node, limit: int = DETAIL_LIMIT) -> str:
     """The content worth reading for this node, trimmed."""
+    data = node.data
     blocks: list[str] = []
-    if isinstance(node, AgentStart):
-        blocks.append(f"query:\n{node.content}")
+    if node.type == "agent_start":
+        blocks.append(f"task:\n{node.task}")
         if node.args:
             blocks.append(f"args: {', '.join(node.args)}")
-    code = getattr(node, "code", "")
-    if code:
-        blocks.append(f"code:\n{code}")
-    if node.content and not isinstance(node, AgentStart):
-        blocks.append(f"content:\n{node.content}")
-    if isinstance(node, TransitionDecision):
-        choices = "\n".join(
-            f"- {rule_id}: {condition}" for rule_id, condition in node.candidates.items()
-        )
-        blocks.append(
-            f"choices:\n{choices}\n"
-            f"selected: {node.selected_rule_id or 'continue'}\n"
-            f"read set: {', '.join(node.read_set_node_ids)}"
-        )
-    if isinstance(node, VerificationFailure):
-        blocks.append(
-            f"kind: {node.kind}\ncandidate: {_stringify(node.candidate)}\nfeedback: {node.feedback}"
-        )
-    result = getattr(node, "result", None)
-    if result is not None:
-        blocks.append(f"result:\n{_stringify(result)}")
-    error = getattr(node, "error", "")
-    if error:
-        blocks.append(f"error: {error}")
+    for key in ("text", "code", "output"):
+        if data.get(key):
+            blocks.append(f"{key}:\n{data[key]}")
+    if node.type == "waiting" and data.get("on"):
+        blocks.append(f"on: {', '.join(data['on'])}")
+    if data.get("result") is not None:
+        blocks.append(f"result:\n{_stringify(data['result'])}")
+    if data.get("error") and isinstance(data["error"], str):
+        blocks.append(f"error: {data['error']}")
+    elif data.get("error"):
+        blocks.append("error: yes")
     if node.metadata:
         blocks.append(f"metadata:\n{json.dumps(node.metadata, indent=2, default=str)}")
     text = "\n\n".join(blocks).strip()
@@ -133,7 +106,7 @@ def steps(g: Graph) -> list[Step]:
         Step(
             index=index,
             node=node,
-            agent=reads.path(g, g.node(node.agent_id)),
+            agent=g.path(g.node(node.agent_id)),
             kind=node.type,
             summary=summarize(node),
             detail=node_detail(node),

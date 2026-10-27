@@ -80,3 +80,6 @@ examples/_runs/example-workspaces/*
 benchmarks/eval/runs/*
 benchmarks/eval/comparisons/*/
 docs/research/*
+# Live test runs and per-project rlmflow serve state
+tests/live/_runs/
+.rlmflow/

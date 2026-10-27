@@ -49,11 +49,11 @@ channel into one sandbox, for one additive protocol field and no new transport.
 Three tiers, and knowing which tier a thing belongs to answers every design
 question about it.
 
-| Tier | Lives in | Lifetime | Contents |
-|---|---|---|---|
-| Shared | `repl.namespace` | the REPL | variables, functions, classes, imports, `flow.inject` objects |
-| Per-agent | `repl.envs[agent_id]` | that agent | `ENV`, `RLMFLOW_*` metadata |
-| Per-step | `RunCtx` in a `ContextVar` | one action | stdout buffer, `errored`, `done_result`, current `inputs`, current `action` |
+| Tier      | Lives in                   | Lifetime   | Contents                                                                    |
+| --------- | -------------------------- | ---------- | --------------------------------------------------------------------------- |
+| Shared    | `repl.namespace`           | the REPL   | variables, functions, classes, imports, `flow.inject` objects               |
+| Per-agent | `repl.envs[agent_id]`      | that agent | `ENV`, `RLMFLOW_*` metadata                                                 |
+| Per-step  | `RunCtx` in a `ContextVar` | one action | stdout buffer, `errored`, `done_result`, current `inputs`, current `action` |
 
 `RunCtx` is the pointer, not the store. It holds a reference into
 `repl.envs[agent_id]` rather than a copy, so `ENV` writes persist across an
@@ -80,12 +80,12 @@ cause it, needing three different fixes:
    `self._buf = io.StringIO()` and `run()` opens with `self.done_result = None`.
    The second agent to enter replaces the buffer, and `outcome(self.output)`
    reads whichever was set last. `self.errored` is shared the same way.
-2. **Seeded names.** `Flow.execute_action` calls `repl.seed(...)` before every
+1. **Seeded names.** `Flow.execute_action` calls `repl.seed(...)` before every
    action, writing `namespace["done"]`, `namespace["launch_subagents"]`, and
    `namespace["INPUTS"]` bound to the current agent. The second agent's seed
    overwrites the first's, so the first then calls the wrong `done` closure and
    reads the wrong `INPUTS`.
-3. **Shared `ENV`.** `namespace["ENV"] = self.env`, one dict per `Repl`.
+1. **Shared `ENV`.** `namespace["ENV"] = self.env`, one dict per `Repl`.
 
 ### Per-agent dicts alone fix only the first
 
@@ -320,11 +320,11 @@ needs channels the host does not mint.
 
 Worth separating, because the word covers three unrelated layers here:
 
-| Layer | What it is | Status |
-|---|---|---|
+| Layer           | What it is                                        | Status                   |
+| --------------- | ------------------------------------------------- | ------------------------ |
 | Agent `print()` | captured into a per-step buffer via `_stdout_buf` | already per-agent, works |
-| The wire | JSON-line protocol on the sandbox's fd 1 | the deadlock lives here |
-| Raw fd 1 writes | subprocesses, `os.write`, C extensions | corrupts the wire today |
+| The wire        | JSON-line protocol on the sandbox's fd 1          | the deadlock lives here  |
+| Raw fd 1 writes | subprocesses, `os.write`, C extensions            | corrupts the wire today  |
 
 The deadlock is not a capture problem. Agent output is already routed per agent
 by a `ContextVar` and always has been. The problem is *who reads the pipe* — a
@@ -620,37 +620,37 @@ namespace. Fine for a scratch variable, not for a half-updated shared structure.
 ## Test Plan
 
 1. Co-tenants read their own `INPUTS` under concurrent, overlapping execution.
-2. Co-tenants get their own stdout; nothing crosses.
-3. Co-tenants get their own `done()` result, including with differing
+1. Co-tenants get their own stdout; nothing crosses.
+1. Co-tenants get their own `done()` result, including with differing
    `output_schema`.
-4. A raise in one co-tenant leaves the other's `errored` false.
-5. A co-tenant may delegate and suspend while another co-tenant runs.
-6. A co-tenant may delegate to a child that is itself a co-tenant, no deadlock.
-7. Variables and imports are genuinely shared.
-8. `ENV` is per-agent and persists across that agent's turns.
-9. `RLMFLOW_AGENT_ID` and friends are correct for every co-tenant, not just the
+1. A raise in one co-tenant leaves the other's `errored` false.
+1. A co-tenant may delegate and suspend while another co-tenant runs.
+1. A co-tenant may delegate to a child that is itself a co-tenant, no deadlock.
+1. Variables and imports are genuinely shared.
+1. `ENV` is per-agent and persists across that agent's turns.
+1. `RLMFLOW_AGENT_ID` and friends are correct for every co-tenant, not just the
    one that opened the REPL.
-10. `close_repl` on one co-tenant leaves the others working; the last one closes.
-11. Cancelling one co-tenant does not disturb another's run state.
-12. Replay of a graph whose agents shared a REPL rebuilds the same bindings.
-13. Remote: two channels into one sandbox keep separate `ENV` and shared globals.
-14. Remote: co-tenants run concurrently — two blocks overlap in wall clock.
-15. Remote: a proxied `done` on one channel resolves against that channel's
-    agent, while another channel is mid-run.
-16. Remote: a proxy round trip does not consume another agent's request.
-17. Remote: a parent parked in a proxied `launch_subagents` is freed by a child
-    co-tenant in the same sandbox.
-18. Remote: closing one channel leaves the others and the namespace working.
-19. `RemoteRepl` concurrent calls return their own responses and the wire stays
-    well-formed JSON, not merely correctly routed.
-20. Remote: `os.write(1, ...)`, `os.system('echo ...')`, and an uncaptured
-    `subprocess.run` leave the REPL alive with its variables intact, and their
-    output is captured rather than lost.
-21. Remote: writing several hundred KB to stderr in one block completes instead
-    of wedging the sandbox.
-22. Remote: a `ProxyCall` is serviced in the scope named by its `repl_id`, not
-    the reading thread's, while another agent is mid-run.
-23. Non-shared runs behave identically to today, local and remote.
+1. `close_repl` on one co-tenant leaves the others working; the last one closes.
+1. Cancelling one co-tenant does not disturb another's run state.
+1. Replay of a graph whose agents shared a REPL rebuilds the same bindings.
+1. Remote: two channels into one sandbox keep separate `ENV` and shared globals.
+1. Remote: co-tenants run concurrently — two blocks overlap in wall clock.
+1. Remote: a proxied `done` on one channel resolves against that channel's
+   agent, while another channel is mid-run.
+1. Remote: a proxy round trip does not consume another agent's request.
+1. Remote: a parent parked in a proxied `launch_subagents` is freed by a child
+   co-tenant in the same sandbox.
+1. Remote: closing one channel leaves the others and the namespace working.
+1. `RemoteRepl` concurrent calls return their own responses and the wire stays
+   well-formed JSON, not merely correctly routed.
+1. Remote: `os.write(1, ...)`, `os.system('echo ...')`, and an uncaptured
+   `subprocess.run` leave the REPL alive with its variables intact, and their
+   output is captured rather than lost.
+1. Remote: writing several hundred KB to stderr in one block completes instead
+   of wedging the sandbox.
+1. Remote: a `ProxyCall` is serviced in the scope named by its `repl_id`, not
+   the reading thread's, while another agent is mid-run.
+1. Non-shared runs behave identically to today, local and remote.
 
 ## Recommendation
 

@@ -17,9 +17,8 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
-from rlmflow.graph import reads
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import AgentStart, Node
+from rlmflow.graph.nodes import AGENT_START, Node
 from rlmflow.view.figure import BG, DIM, INK, graph_svg, node_color, run_title, step_svg
 from rlmflow.view.timeline import Step, as_graph, node_detail, steps, timeline
 
@@ -167,8 +166,8 @@ def render_html(g: Graph, *, title: str = "") -> str:
     name = run_title(g)
     figure = graph_svg(g, title=name, interactive=True)
     heading = title or f"{name} · {len(ordered)} nodes"
-    tokens = reads.usage(g)
-    agents = sum(1 for node in ordered if isinstance(node, AgentStart) and reads.launcher(g, node))
+    tokens = g.usage()
+    agents = sum(1 for node in ordered if node.type == AGENT_START and g.launcher(node))
     turns = sum(1 for node in ordered if node.type == "llm_output")
     sub = (
         f"{agents} sub-agents · {turns} model turns · "
@@ -267,7 +266,7 @@ def _panel(step: Step) -> str:
 
 def _transcript(g: Graph, nodes: list[Node], agent_path: str) -> str:
     """One agent's own nodes, in order, as of the step being shown."""
-    own = [node for node in nodes if reads.path(g, g.node(node.agent_id)) == agent_path]
+    own = [node for node in nodes if g.path(g.node(node.agent_id)) == agent_path]
     if not own:
         return f"_{escape(agent_path)} has not started yet._"
     blocks = [f"**{agent_path}** · {len(own)} nodes so far"]
@@ -294,8 +293,8 @@ def open_viewer(
     if not walked:
         raise ValueError("nothing to view: that graph has no nodes")
     ordered = [step.node for step in walked]
-    agents = [reads.path(g, node) for node in ordered if isinstance(node, AgentStart)]
-    tokens = reads.usage(g)
+    agents = [g.path(node) for node in ordered if node.type == AGENT_START]
+    tokens = g.usage()
     name = run_title(g)
 
     def figure(at: int) -> str:

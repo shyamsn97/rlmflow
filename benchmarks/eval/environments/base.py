@@ -13,23 +13,23 @@ from benchmarks.eval.environments.episode import (
 from benchmarks.eval.environments.episode import (
     EpisodeOwner as EnvironmentInstance,
 )
-from rlmflow import FROM, AgentConfig, Flow, Graph, reads
-from rlmflow.graph.nodes import LAUNCH_TOOLS, AgentStart, ExecAction, Node, agent_ref_id
-from rlmflow.runtime.repl_client import current_rpc_call_id
-from rlmflow.tools import tool
+from rlmflow import FROM, AgentConfig, Flow, Graph, Node, Step
+from rlmflow.flow import launched_from
+from rlmflow.harnesses.repl.runtime.repl_client import current_rpc_call_id
+from rlmflow.harnesses.repl.tools import tool
 
 
 def candidate_protocol_message(*, is_root: bool, selected: bool) -> str:
     if selected:
-        return "Selection recorded. The root may now finish."
+        return "Selection recorded. The root may now submit."
     if is_root:
         return (
-            "PROTOCOL REQUIRED BEFORE finish(): call submit_candidate(...), then "
+            "PROTOCOL REQUIRED BEFORE submit(): call submit_candidate(...), then "
             "select_candidate(candidate_id). Merely naming an ID in the final answer "
             "does not count."
         )
     return (
-        "Before finish(), call submit_candidate(...) for this branch and return its "
+        "Before submit(), call submit_candidate(...) for this branch and return its "
         "candidate_id so the root can execute select_candidate(candidate_id)."
     )
 
@@ -106,18 +106,19 @@ class EnvironmentEpisode:
             fork_action_count=len(selected.environment_prefix),
         )
 
-    def bind_root(self, graph: Graph, root: AgentStart) -> EnvironmentInstance:
+    def bind_root(self, graph: Graph, root: Node) -> EnvironmentInstance:
         self.graph = graph
         return self.core.start(
-            root.id, path=reads.path(graph, root), depth=reads.depth(graph, root)
+            root.id, path=graph.path(root), depth=graph.depth(root)
         )
 
     def fork_child(
         self,
-        action: ExecAction,
-        child: AgentStart,
+        action: Node,
+        child: Node,
         launch_call_id: int,
     ) -> EnvironmentInstance:
+        """Fork ``child``'s instance from its parent's state at the launch in ``action``."""
         g = self.graph
         parent = g.node(action.agent_id)
         if parent.id not in self.core.owners:
@@ -126,8 +127,8 @@ class EnvironmentEpisode:
         return self.core.fork(
             child.id,
             parent_owner_id=parent.id,
-            path=reads.path(g, child),
-            depth=reads.depth(g, child),
+            path=g.path(child),
+            depth=g.depth(child),
             exec_action_id=action.id,
             call_id=launch_call_id,
             prefix=prefix,
@@ -135,12 +136,12 @@ class EnvironmentEpisode:
 
     def perform(
         self,
-        node: Node,
+        step: Step,
         operation: str,
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if not isinstance(node, ExecAction):
-            raise TypeError("environment tools require an ExecAction")
+        """Run one operation from the cell ``step`` executes, once per call id."""
+        node = step.node
         if not operation:
             raise ValueError("environment operation must be non-empty")
         call_id = current_rpc_call_id()
@@ -150,7 +151,7 @@ class EnvironmentEpisode:
             raise RuntimeError(str(previous))
         if isinstance(previous, dict):
             return dict(previous)
-        owner = self._ensure_owner(self.graph.node(node.agent_id))
+        owner = self._ensure_owner(step.agent)
         try:
             result = self.core.perform(
                 owner.id,
@@ -179,7 +180,7 @@ class EnvironmentEpisode:
     def close(self) -> None:
         self.core.close()
 
-    def candidate_tools_for(self, node: Node) -> dict[str, Any]:
+    def candidate_tools_for(self, step: Step) -> dict[str, Any]:
         if self.candidates is None:
             return {}
 
@@ -189,9 +190,7 @@ class EnvironmentEpisode:
             proposal: Any = None,
             parent_candidate_id: str | None = None,
         ) -> dict[str, Any]:
-            if not isinstance(node, ExecAction):
-                raise TypeError("candidate tools require an ExecAction")
-            owner = self._ensure_owner(self.graph.node(node.agent_id))
+            owner = self._ensure_owner(step.agent)
             record = self.core.submit_candidate(
                 owner.id,
                 label=label,
@@ -212,9 +211,7 @@ class EnvironmentEpisode:
 
         @tool("Root only: choose the candidate used for native scoring.", proxy=True)
         def select_candidate(candidate_id: str) -> dict[str, Any]:
-            if not isinstance(node, ExecAction):
-                raise TypeError("candidate tools require an ExecAction")
-            owner = self._ensure_owner(self.graph.node(node.agent_id))
+            owner = self._ensure_owner(step.agent)
             record = self.core.select_candidate(candidate_id, owner_id=owner.id)
             return {
                 "selected_candidate_id": record.id,
@@ -228,7 +225,7 @@ class EnvironmentEpisode:
             "select_candidate": select_candidate,
         }
 
-    def _ensure_owner(self, agent: AgentStart) -> EnvironmentInstance:
+    def _ensure_owner(self, agent: Node) -> EnvironmentInstance:
         existing = self.core.owners.get(agent.id)
         if existing is not None:
             return existing
@@ -237,20 +234,8 @@ class EnvironmentEpisode:
         if not launches:
             return self.bind_root(g, agent)
         action = g.node(launches[0].target)
-        if not isinstance(action, ExecAction):
-            raise RuntimeError("environment child has no launch action")
-        call_id = next(
-            (
-                call_id
-                for tool_name in LAUNCH_TOOLS
-                for call_id, result in action.tool_calls(tool_name).items()
-                if agent_ref_id(result) == agent.id
-            ),
-            None,
-        )
-        if call_id is None:
-            raise RuntimeError(f"agent {reads.path(g, agent)!r} has no saved launch call")
-        return self.fork_child(action, agent, call_id)
+        siblings = [child.id for child in launched_from(g, action)]
+        return self.fork_child(action, agent, siblings.index(agent.id))
 
 
 class EnvironmentFlow(Flow):
@@ -267,7 +252,7 @@ class EnvironmentFlow(Flow):
         *,
         config: AgentConfig | None = None,
         **args: Any,
-    ) -> AgentStart:
+    ) -> Node:
         """Create the episode's root agent, bind it, and give it the initial observation.
 
         Binding starts the episode and keys it by agent id, so the observation joins
@@ -282,36 +267,21 @@ class EnvironmentFlow(Flow):
         )
         return root
 
-    def build_tools(self, node: Node) -> dict[str, Any]:
+    def namespace_for(self, step: Step) -> dict[str, Any]:
         from benchmarks.eval.environments.registry import bind_tools
 
-        try:
-            environment_tools = bind_tools(
-                self.environment.adapter.kind,
-                lambda operation, payload=None: self.environment.perform(
-                    node, operation, dict(payload or {})
-                ),
-                proxy=True,
-            )
-        except ValueError:
-            factory = getattr(self.environment.adapter, "tools_for", None)
-            if factory is None:
-                raise
-            environment_tools = factory(self.environment, node)
-        return {
-            **super().build_tools(node),
-            **environment_tools,
-            **self.environment.candidate_tools_for(node),
-        }
+        environment_tools = bind_tools(
+            self.environment.adapter.kind,
+            lambda operation, payload=None: self.environment.perform(
+                step, operation, dict(payload or {})
+            ),
+            proxy=True,
+        )
+        return {**environment_tools, **self.environment.candidate_tools_for(step)}
 
-    def resolve_child(
-        self,
-        action: ExecAction,
-        spec: dict[str, Any],
-        call_id: int,
-    ) -> AgentStart:
-        child = super().resolve_child(action, spec, call_id)
-        self.environment.fork_child(action, child, call_id)
+    def spawn(self, step: Step, task: str, *, config: AgentConfig, **kwargs: Any) -> Node:
+        child = super().spawn(step, task, config=config, **kwargs)
+        self.environment.fork_child(step.node, child, current_rpc_call_id())
         return child
 
     async def aclose(self) -> None:

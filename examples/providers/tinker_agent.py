@@ -14,7 +14,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import AgentConfig, Flow, Graph, reads
+from rlmflow import AgentConfig, Flow, Graph
 from rlmflow.llm.tinker import TinkerClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -63,7 +63,7 @@ def main() -> None:
     root = g.create_agent(args.query, config=AgentConfig(max_iters=args.max_iters))
     out_dir = example_run_dir("tinker-agent")
     asyncio.run(print_run(flow, g, out_dir))
-    print(reads.result(g, root))
+    print(g.result(root))
     save_example_graph(g, "tinker-agent")
     flow.runtime.close_repls()
 

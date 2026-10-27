@@ -63,7 +63,7 @@ The concrete payloads are:
 | `TransitionDecision`  | `transition_decision`  | semantic guard candidates and selected durable rule       |
 | `LLMOutput`           | `llm_output`           | `content` (the reply), `code`, `usage`, `prompt_id`       |
 | `ExecAction`          | `exec_action`          | `code`                                                    |
-| `BackendRun`    | `backend_run`    | backend, external run ID, started state                   |
+| `BackendRun`          | `backend_run`          | backend, external run ID, started state                   |
 | `ExecOutput`          | `exec_output`          | `content` (the REPL's stdout)                             |
 | `ErrorOutput`         | `error_output`         | execution error text, `error="exec"`                      |
 | `ReplDead`            | `repl_dead`            | crash text plus the cold-REPL note, `error="repl"`        |
@@ -74,23 +74,16 @@ The concrete payloads are:
 
 ## Metadata
 
-Every node has an open `metadata` dictionary for consumer-defined JSON. Use
-namespaced keys so independent integrations compose:
+Every node has an open `metadata` dictionary for consumer-defined JSON. Use namespaced keys so independent integrations compose:
 
 ```python
 node.annotate("eval.verdict", {"score": 0.8, "reason": "exact match"})
 node.annotate("tool.calls", {"name": "lookup", "cache_hit": True}, append=True)
 ```
 
-Metadata survives save/load and fork. Persisted node records place it under
-`metadata.extensions`; the rest of the record's `metadata` object remains the
-stable engine envelope for creation time, timing, model identity, and usage.
-Core graph invariants remain typed fields, while provider metrics, tool
-receipts, rewards, cache evidence, and experiment IDs can evolve independently.
+Metadata survives save/load and fork. Persisted node records place it under `metadata.extensions`; the rest of the record's `metadata` object remains the stable engine envelope for creation time, timing, model identity, and usage. Core graph invariants remain typed fields, while provider metrics, tool receipts, rewards, cache evidence, and experiment IDs can evolve independently.
 
-Host-side proxy tools may call `rlmflow.record_metadata(...)` to annotate the
-currently executing action without receiving its `Node` explicitly. Successful
-and failed proxy calls also append compact receipts to `tools.calls`.
+Host-side proxy tools may call `rlmflow.record_metadata(...)` to annotate the currently executing action without receiving its `Node` explicitly. Successful and failed proxy calls also append compact receipts to `tools.calls`.
 
 ## Navigating
 
@@ -131,8 +124,7 @@ AgentStart
   -> DoneOutput(result={"answer": ...})
 ```
 
-When the host configures an external delegation backend, launched children use
-a shorter but still durable path:
+When the host configures an external delegation backend, launched children use a shorter but still durable path:
 
 ```text
 AgentStart
@@ -140,10 +132,7 @@ AgentStart
   -> DoneOutput | VerificationFailure
 ```
 
-`VerificationFailure` produces `RepairQuery`, followed by another
-`BackendRun`. The backend identity lives in `AgentConfig`; the model
-cannot select it. A started action retains its run ID so a cold resume does not
-silently launch unrelated work.
+`VerificationFailure` produces `RepairQuery`, followed by another `BackendRun`. The backend identity lives in `AgentConfig`; the model cannot select it. A started action retains its run ID so a cold resume does not silently launch unrelated work.
 
 Without `output_schema`, `DoneOutput.result`, `Flow.run()`, and child result handles keep the strict JSON value passed to `submit` (strings stay strings; dictionaries with string keys, lists, finite numbers, booleans, and `None` stay typed). Tuples, sets, bytes, non-finite floats, arbitrary objects, dictionaries with non-string keys, and nested occurrences of those values produce an execution error rather than being stringified. With an explicit schema, a JSON value or JSON-encoded string is parsed and stored as the validated typed value.
 

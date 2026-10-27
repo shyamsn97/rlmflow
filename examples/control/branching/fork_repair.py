@@ -15,16 +15,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from rlmflow import (
-    FILE_TOOLS,
-    AgentConfig,
-    Flow,
-    Graph,
-    GraphCheckpointer,
-    LLMUsage,
-    LocalRuntime,
-    reads,
-)
+from rlmflow import FILE_TOOLS, AgentConfig, Flow, Graph, GraphCheckpointer, LLMUsage, LocalRuntime
 
 TASK = "Implement slugify(text) in slugify.py so tests/test_slugify.py passes."
 
@@ -126,7 +117,7 @@ def run_branch(root: Path, name: str, implementation: str, label: str):
     asyncio.run(drive())
     passed, output = run_tests(workdir)
     flow.runtime.close_repls()
-    return workdir, reads.result(g, agent), passed, output
+    return workdir, g.result(agent), passed, output
 
 
 def main() -> None:

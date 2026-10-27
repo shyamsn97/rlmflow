@@ -1,15 +1,6 @@
-from helpers import StubLLM, agent_graph, counting_replies, repl, run_result, stepping
+from helpers import StubLLM, agent_graph, counting_replies, repl, run_result
 
-from rlmflow import (
-    DoneOutput,
-    Flow,
-    LocalRuntime,
-    RepairQuery,
-    VerificationFailure,
-)
-from rlmflow.graph import reads
-from rlmflow.tools import format_tool_docs
-from rlmflow.tools.builtins import builtin_tools
+from rlmflow import CODE, DONE, Flow, LocalRuntime
 
 
 def test_immediate_submission_adds_no_model_turn():
@@ -17,10 +8,10 @@ def test_immediate_submission_adds_no_model_turn():
     flow = Flow(llm, runtime=LocalRuntime(repl_timeout=5))
     g, root = agent_graph("Answer.")
 
-    assert run_result(flow, g, root, close_repls=True) == "answer"
-    assert sum(node.type == "llm_output" for node in reads.history(g, root)) == 1
-    assert not any(node.type == "submission" for node in reads.history(g, root))
-    assert isinstance(reads.frontier(g, root), DoneOutput)
+    assert run_result(flow, g, root) == "answer"
+    history = g.history(root)
+    assert [node.type for node in history] == ["agent_start", "llm_output", "done"]
+    assert history[-1].data["code"] == "submit('answer')"
 
 
 def test_stdout_submission_is_accepted_without_an_extra_turn():
@@ -28,62 +19,41 @@ def test_stdout_submission_is_accepted_without_an_extra_turn():
     flow = Flow(llm, runtime=LocalRuntime(repl_timeout=5))
     g, root = agent_graph("Count the records.")
 
-    assert run_result(flow, g, root, close_repls=True) == "Answer: 4"
-    assert sum(node.type == "llm_output" for node in reads.history(g, root)) == 1
+    assert run_result(flow, g, root) == "Answer: 4"
+    assert sum(node.type == "llm_output" for node in g.history(root)) == 1
+    assert g.frontier(root).data["output"] == "count=4"
 
 
-def test_finish_remains_a_hidden_compatibility_alias():
-    flow = Flow(
-        StubLLM(counting_replies(repl("finish('legacy')"))),
-        runtime=LocalRuntime(repl_timeout=5),
-    )
+def test_finish_alias_is_gone():
+    flow = Flow(StubLLM(counting_replies(repl("finish('legacy')"), repl("submit('ok')"))))
     g, root = agent_graph("Answer.")
 
-    assert run_result(flow, g, root, close_repls=True) == "legacy"
-    with stepping(g, root):
-        docs = format_tool_docs(builtin_tools(flow, reads.frontier(g, root)))
-    assert "submit" in docs
-    assert "finish" not in docs
+    assert run_result(flow, g, root) == "ok"
+    first = next(node for node in g.history(root) if node.type == CODE)
+    assert "NameError" in first.data["output"] and first.data["error"] is True
 
 
-def test_worker_owned_async_verifier_repairs_the_same_child():
-    flow = Flow(
-        StubLLM(
-            counting_replies(
-                repl(
-                    "async def valid(value):\n"
-                    "    await asyncio.sleep(0)\n"
-                    "    return None if value.get('ok') is True else 'set ok to true'\n"
-                    "child = launch_subagent("
-                    "task='return an accepted object', verify=valid)\n"
-                    "print(await child)"
-                ),
-                repl("submit({'ok': False})"),
-                repl("submit({'ok': True})"),
-                repl("submit({'accepted': True})"),
-            )
-        ),
-        runtime=LocalRuntime(repl_timeout=5),
-    )
-    g, root = agent_graph("delegate", max_depth=1)
+def test_output_schema_failure_is_a_code_error_and_the_agent_retries():
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
+    flow = Flow(StubLLM(counting_replies(repl("submit({'nope': 1})"), repl("submit({'ok': True})"))))
+    g, root = agent_graph("Return an object.", output_schema=schema)
 
-    assert run_result(flow, g, root, close_repls=True) == {"accepted": True}
+    assert run_result(flow, g, root) == {"ok": True}
+    rejected = next(node for node in g.history(root) if node.type == CODE)
+    assert rejected.data["error"] is True and "ok" in rejected.data["output"]
+    assert g.frontier(root).type == DONE
 
-    children = reads.children(g, root)
-    assert len(children) == 1
-    child = children[0]
-    failure = next(
-        node for node in reads.history(g, child) if isinstance(node, VerificationFailure)
-    )
-    assert failure.candidate == {"ok": False}
-    assert failure.kind == "verifier"
-    assert failure.feedback == "set ok to true"
-    assert failure.verifier_hash == child.config.verifier_hash
-    assert isinstance(
-        reads.history(g, child)[reads.history(g, child).index(failure) + 1], RepairQuery
-    )
-    accepted = reads.frontier(g, child)
-    assert isinstance(accepted, DoneOutput)
-    assert accepted.result == {"ok": True}
-    assert accepted.verified is True
-    assert accepted.verifier_hash == child.config.verifier_hash
+
+def test_output_schema_accepts_a_json_text_reply():
+    flow = Flow(StubLLM(counting_replies('{"n": 3}')))
+    g, root = agent_graph("Count.", output_schema={"type": "object", "properties": {"n": {"type": "integer"}}})
+
+    assert run_result(flow, g, root) == {"n": 3}
+
+
+def test_plain_text_reply_is_the_final_answer():
+    flow = Flow(StubLLM(counting_replies("The answer is 4.")))
+    g, root = agent_graph("Answer.")
+
+    assert run_result(flow, g, root) == "The answer is 4."
+    assert [node.type for node in g.history(root)] == ["agent_start", "llm_output", "done"]

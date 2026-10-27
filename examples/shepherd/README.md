@@ -29,7 +29,7 @@ The checked-in September 2026 artifact records:
 - graph: 9 agents, 585 nodes;
 - usage: 439,855 input, 105,216 output, and 86,784 reasoning tokens.
 
-The graph retains one recoverable `ErrorOutput`: the shepherd wrote `await branch(...)` after the synchronous proxy had already recorded all eight plans. The host observed the plans and launched the recoveries normally; the error is preserved rather than edited out of the trace.
+The graph retains one recoverable error cell: the shepherd wrote `await branch(...)` after the synchronous proxy had already recorded all eight plans. The host observed the plans and launched the recoveries normally; the error is preserved rather than edited out of the trace.
 
 Add `--gradio` and the `viewer` extra for the live browser board, or `--trace` for one terminal line per landed graph node:
 
@@ -62,6 +62,6 @@ uv run --locked --python 3.12 --extra image \
   python examples/shepherd/render_rewind.py --run-dir examples/_runs/shepherd
 ```
 
-Generated run artifacts stay under `examples/_runs/shepherd/`. The make target publishes the selected recovery animation and branch traces under `docs/static/shepherd/`, plus `docs/shepherd_graph.svg` and `docs/shepherd_nodes.svg`.
+Generated run artifacts stay under `examples/_runs/shepherd/`. The make target publishes the selected recovery animation and branch traces under `docs/static/shepherd/`, plus `docs/static/shepherd_graph.svg` and `docs/static/shepherd_nodes.svg`.
 
 See [`../../docs/shepherd.md`](../../docs/shepherd.md) for the run walkthrough and the exact graph operations behind observe, rewind, fork, re-instruct, and select.

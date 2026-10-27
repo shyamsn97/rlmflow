@@ -21,7 +21,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rlmflow import AgentConfig, Flow, Graph, json_schema_for, reads
+from rlmflow import AgentConfig, Flow, Graph, json_schema_for
 from rlmflow.llm.openai import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -104,14 +104,14 @@ def main() -> None:
 
     # `submit(value)` parsed the answer against the schema, so the result is a
     # dict; the Pydantic model is the typed view of that same value.
-    plan = PackingPlan.model_validate(reads.result(g, root))
+    plan = PackingPlan.model_validate(g.result(root))
 
     print("Typed result:")
     print(type(plan).__name__)
     print(plan.model_dump_json(indent=2))
 
     print("\nRoot result:")
-    print(json.dumps(reads.result(g, root), indent=2))
+    print(json.dumps(g.result(root), indent=2))
 
     print(f"\nRun saved to {out_dir}")
 

@@ -1,0 +1,110 @@
+"""Docker provisioner for the lightweight Python worker."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from pathlib import Path
+
+from rlmflow.harnesses.repl.runtime.runtime import DEFAULT_REPL_TIMEOUT, PopenConnection, Runtime
+
+
+def build_docker_argv(
+    image: str,
+    *,
+    mounts: dict[str, str] | None = None,
+    env: dict[str, str] | None = None,
+    network: str | None = "none",
+    cpus: float | None = 1.0,
+    memory: str | None = "512m",
+    user: str | None = "1000:1000",
+    workdir: str | None = None,
+    extra_args: list[str] | None = None,
+    docker_bin: str = "docker",
+    preimports: Sequence[str] | None = None,
+) -> list[str]:
+    """Build a bounded, stdio-attached, automatically removed worker container."""
+    argv = [docker_bin, "run", "-i", "--rm"]
+    for host, container in (mounts or {}).items():
+        argv += ["-v", f"{Path(host).resolve()}:{container}"]
+    for key, value in (env or {}).items():
+        argv += ["-e", f"{key}={value}"]
+    if network is not None:
+        argv += ["--network", network]
+    if cpus is not None:
+        argv += ["--cpus", str(cpus)]
+    if memory is not None:
+        argv += ["--memory", memory]
+    if user is not None:
+        argv += ["--user", user]
+    if workdir is not None:
+        argv += ["--workdir", workdir]
+    if extra_args is None:
+        extra_args = [
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "256",
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,size=64m",
+        ]
+    argv += extra_args
+    argv += [image, "python", "-u", "-m", "rlmflow.harnesses.repl.runtime.repl_server"]
+    if preimports is not None:
+        argv += ["--preimport", ",".join(preimports)]
+    return argv
+
+
+class DockerRuntime(Runtime):
+    """Run isolated or explicitly shared agents in Docker workers."""
+
+    def __init__(
+        self,
+        image: str,
+        *,
+        working_directory: str | Path | None = None,
+        mounts: dict[str, str] | None = None,
+        env: dict[str, str] | None = None,
+        network: str | None = "none",
+        cpus: float | None = 1.0,
+        memory: str | None = "512m",
+        user: str | None = "1000:1000",
+        workdir: str | None = None,
+        extra_args: list[str] | None = None,
+        docker_bin: str = "docker",
+        repl_timeout: float | None = DEFAULT_REPL_TIMEOUT,
+        execution_timeout: float | None = None,
+        preimports: Sequence[str] | None = None,
+    ) -> None:
+        super().__init__(working_directory=working_directory, preimports=preimports)
+        self.image = image
+        if self.working_directory is not None:
+            host = str(self.working_directory.resolve())
+            mounts = mounts or {host: "/workspace"}
+            workdir = workdir or "/workspace"
+        self.repl_timeout = repl_timeout or DEFAULT_REPL_TIMEOUT
+        self.execution_timeout = execution_timeout
+        self.options = {
+            "mounts": mounts,
+            "env": env,
+            "network": network,
+            "cpus": cpus,
+            "memory": memory,
+            "user": user,
+            "workdir": workdir,
+            "extra_args": extra_args,
+            "docker_bin": docker_bin,
+        }
+
+    def connect(self, directory: Path | None = None) -> PopenConnection:
+        # The container mounts ``working_directory``; per-agent directories don't apply.
+        return PopenConnection(
+            build_docker_argv(self.image, preimports=self.preimports, **self.options),
+            cwd=self.working_directory or Path.cwd(),
+            label="Docker REPL worker",
+        )
+
+
+__all__ = ["DockerRuntime", "build_docker_argv"]

@@ -20,13 +20,7 @@ import random
 import sys
 from pathlib import Path
 
-from rlmflow import (
-    AgentConfig,
-    DockerRuntime,
-    Flow,
-    Graph,
-    reads,
-)
+from rlmflow import AgentConfig, DockerRuntime, Flow, Graph
 from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -89,12 +83,13 @@ it with a map-reduce strategy instead of reading it all at once:
 1. Split `document` into a handful of contiguous chunks (aim for ~4-8
    chunks). For example: `lines = document.splitlines()`, then slice
    into ranges.
-2. Launch all chunk summaries before collecting any result. Flow selects the
-   configured child model:
+2. Launch all chunk summaries before collecting any result, with the
+   {config} config:
    handles = [
-       launch_subagent(
-           task="Summarize `passage` in 3-4 sentences, preserving "
+       launch_agent(
+           "Summarize `passage` in 3-4 sentences, preserving "
            "any concrete facts, dates, and decisions.",
+           config={config!r},
            passage=chunk_text,
        )
        for i, chunk_text in enumerate(chunks)
@@ -152,21 +147,29 @@ def main() -> None:
         runtime=runtime,
     )
 
+    config = AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)
     g = Graph()
+    g.add_config(config)
+    if args.fast_model:
+        g.add_config(
+            AgentConfig(
+                name="fast",
+                model="fast",
+                description=f"summarizes on {args.fast_model}",
+                max_depth=args.max_depth,
+                max_iters=args.max_iters,
+            )
+        )
     root = g.create_agent(
-        SUMMARIZE_QUERY,
+        SUMMARIZE_QUERY.format(config="fast" if args.fast_model else "default"),
         document=document,
-        config=AgentConfig(
-            max_depth=args.max_depth,
-            max_iters=args.max_iters,
-            child_config={"model": "fast"} if args.fast_model else {},
-        ),
+        config=config,
     )
     out_dir = Path(args.out_dir)
     asyncio.run(print_run(flow, g, out_dir))
 
     print(f"\n{'=' * 60}\nFINAL SUMMARY\n{'=' * 60}")
-    print(reads.result(g, root))
+    print(g.result(root))
 
     print(f"\nRun saved to {out_dir}")
 

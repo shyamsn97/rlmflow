@@ -11,18 +11,7 @@ from types import SimpleNamespace
 import pytest
 from helpers import StubLLM
 
-from rlmflow import (
-    Flow,
-    Graph,
-    LLMChunk,
-    LLMOutput,
-    LLMUsage,
-    PooledLLMClient,
-    SequentialPool,
-    ThreadPool,
-    ops,
-    reads,
-)
+from rlmflow import Flow, Graph, LLMChunk, LLMUsage, PooledLLMClient, SequentialPool, ThreadPool
 from rlmflow.llm import LLMClient, as_chunk, join_chunks, stream_with_retry
 from rlmflow.llm.anthropic import AnthropicClient
 from rlmflow.llm.openai import OpenAIClient
@@ -399,7 +388,7 @@ def test_flow_consumes_the_pooled_stream_primitive():
             self.chat_calls = 0
 
         async def stream(self, messages, **_kwargs):
-            yield LLMChunk(text='```repl\nfinish("ok")\n```', usage=LLMUsage(2, 2))
+            yield LLMChunk(text='```repl\nsubmit("ok")\n```', usage=LLMUsage(2, 2))
 
         def chat(self, messages, **_kwargs):
             self.chat_calls += 1
@@ -407,28 +396,30 @@ def test_flow_consumes_the_pooled_stream_primitive():
 
     llm = StreamLLM()
     g = Graph()
-    root = ops.spawn(g, "go")
+    root = g.spawn("go")
     flow = Flow(llm)
     flow.run(g)
-    assert reads.result(g, root) == "ok"
+    assert g.result(root) == "ok"
     assert llm.chat_calls == 0
-    [output] = g.nodes(LLMOutput)
-    assert output.usage == LLMUsage(2, 2)
+    [output] = g.nodes("llm_output")
+    assert LLMUsage.of(output.data["usage"]) == LLMUsage(2, 2)
 
 
 def test_chat_only_fake_still_runs():
-    llm = StubLLM(lambda _messages: '```repl\nfinish("ok")\n```')
+    llm = StubLLM(lambda _messages: '```repl\nsubmit("ok")\n```')
     assert Flow(llm).run("go") == "ok"
 
 
 def test_hung_async_stream_hits_request_timeout():
     class Hung:
+        request_timeout = 0.01
+
         async def stream(self, messages, **_kwargs):
             await asyncio.sleep(10)
             yield LLMChunk(text="nope")
 
     with pytest.raises(TimeoutError):
-        Flow(Hung(), llm_request_timeout=0.01).run("hang")
+        Flow(Hung()).run("hang")
 
 
 def test_stream_with_retry_retries_then_gives_up():

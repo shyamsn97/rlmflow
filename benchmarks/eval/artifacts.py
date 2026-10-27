@@ -8,14 +8,14 @@ from typing import Any
 
 from benchmarks.eval.loggers.jsonl import write_json
 from benchmarks.eval.types import Example
-from rlmflow import DEPENDS_ON, AgentStart, Graph, reads
+from rlmflow import DEPENDS_ON, Graph, Node
 
 
 def render_problem_artifacts(
     example: Example,
     answer: str,
     graph: Graph,
-    root: AgentStart,
+    root: Node,
     artifact_dir: Path,
     *,
     environment: dict[str, Any] | None = None,
@@ -60,20 +60,20 @@ def render_problem_artifacts(
     return {key: str(path) for key, path in paths.items()}
 
 
-def _agent_graph_svg(g: Graph, root: AgentStart) -> str:
-    agents = reads.tree(g, root)
+def _agent_graph_svg(g: Graph, root: Node) -> str:
+    agents = g.tree(root)
     nodes = [
         {
             "id": agent.id,
-            "label": reads.path(g, agent),
-            "column": reads.depth(g, agent),
+            "label": g.path(agent),
+            "column": g.depth(agent),
             "row": index,
         }
         for index, agent in enumerate(agents)
     ]
     edges: list[tuple[str, str, str]] = []
     for agent in agents[1:]:
-        owner = reads.launcher(g, agent)
+        owner = g.launcher(agent)
         if owner is not None:
             edges.append((owner.id, agent.id, "launch"))
         edges.extend(

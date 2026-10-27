@@ -8,36 +8,21 @@ from typing import Any
 
 from benchmarks.eval.telemetry import RowTelemetry
 from benchmarks.eval.types import Row
-from rlmflow import Graph, reads
-from rlmflow.graph.nodes import AgentStart, LLMOutput, TransitionDecision
+from rlmflow import Graph
+from rlmflow.graph.nodes import AGENT_START, LLM_OUTPUT
 
 
 def graph_metrics(graph: Graph | None) -> dict[str, Any]:
     if graph is None:
         return {}
     nodes = graph.nodes()
-    agents = [node for node in nodes if isinstance(node, AgentStart)]
-    outputs = [node for node in nodes if isinstance(node, LLMOutput)]
-    decisions = [node for node in nodes if isinstance(node, TransitionDecision)]
-    decision_input_tokens = sum(node.usage.input_tokens for node in decisions)
-    decision_output_tokens = sum(node.usage.output_tokens for node in decisions)
-    decision_reasoning_tokens = sum(node.usage.reasoning_tokens for node in decisions)
-    decision_latency_seconds = sum(
-        max(0.0, node.finished_at - node.started_at)
-        for node in decisions
-        if node.started_at is not None and node.finished_at is not None
-    )
+    agents = graph.nodes(AGENT_START)
     return {
         "agents": len(agents),
         "nodes": len(nodes),
-        "llm_turns": len(outputs),
-        "decision_calls": len(decisions),
-        "decision_input_tokens": decision_input_tokens,
-        "decision_output_tokens": decision_output_tokens,
-        "decision_reasoning_tokens": decision_reasoning_tokens,
-        "decision_latency_seconds": decision_latency_seconds,
-        "max_depth": max((reads.depth(graph, agent) for agent in agents), default=0),
-        "max_branching": max((len(reads.children(graph, agent)) for agent in agents), default=0),
+        "llm_turns": len(graph.nodes(LLM_OUTPUT)),
+        "max_depth": max((graph.depth(agent) for agent in agents), default=0),
+        "max_branching": max((len(graph.children(agent)) for agent in agents), default=0),
     }
 
 
@@ -176,11 +161,6 @@ def summarize(rows: list[Row]) -> dict[str, Any]:
             "graph_nodes": graph_mean("nodes"),
             "graph_agents": graph_mean("agents"),
             "graph_llm_turns": graph_mean("llm_turns"),
-            "graph_decision_calls": graph_mean("decision_calls"),
-            "graph_decision_input_tokens": graph_mean("decision_input_tokens"),
-            "graph_decision_output_tokens": graph_mean("decision_output_tokens"),
-            "graph_decision_reasoning_tokens": graph_mean("decision_reasoning_tokens"),
-            "graph_decision_latency_seconds": graph_mean("decision_latency_seconds"),
             "environment_actions_per_llm_turn": (
                 environment_total / sum(graph.get("llm_turns", 0) for graph in graphs)
                 if graphs and sum(graph.get("llm_turns", 0) for graph in graphs)

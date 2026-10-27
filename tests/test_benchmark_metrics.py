@@ -1,61 +1,31 @@
 from benchmarks.eval.metrics import graph_metrics
 from benchmarks.eval.reporting import EnvironmentReport, report_table
 from benchmarks.eval.types import Prediction, Row, Score
-from rlmflow import (
-    Graph,
-    LLMOutput,
-    LLMUsage,
-    TransitionDecision,
-    UserQuery,
-    ops,
-    reads,
-)
+from rlmflow import CODE, LLM_OUTPUT, Graph, LLMUsage, Node
 
 
-def test_graph_metrics_count_turns_decisions_and_decision_costs():
+def test_graph_metrics_count_agents_and_turns():
     g = Graph()
-    root = ops.spawn(g, "task")
+    root = g.spawn("task")
     for node in (
-        LLMOutput(usage=LLMUsage(input_tokens=10)),
-        TransitionDecision(
-            usage=LLMUsage(input_tokens=3, output_tokens=1, reasoning_tokens=2),
-            started_at=10.0,
-            finished_at=10.25,
-        ),
-        UserQuery(),
-        LLMOutput(usage=LLMUsage(input_tokens=11)),
-        TransitionDecision(
-            selected_rule_id="retry",
-            usage=LLMUsage(input_tokens=4, output_tokens=1),
-            started_at=11.0,
-            finished_at=11.5,
-        ),
-        UserQuery(),
-        LLMOutput(usage=LLMUsage(input_tokens=12)),
+        Node(LLM_OUTPUT, text="a", usage=LLMUsage(input_tokens=10).as_dict()),
+        Node(CODE, code="x = 1", output=""),
+        Node(LLM_OUTPUT, text="b", usage=LLMUsage(input_tokens=11).as_dict()),
     ):
-        ops.append(g, root, node)
+        g.append(root, node)
 
     metrics = graph_metrics(g)
 
-    assert metrics["llm_turns"] == 3
-    assert metrics["decision_calls"] == 2
-    assert metrics["decision_input_tokens"] == 7
-    assert metrics["decision_output_tokens"] == 2
-    assert metrics["decision_reasoning_tokens"] == 2
-    assert metrics["decision_latency_seconds"] == 0.75
-    assert reads.usage(g, [root]).input_tokens == 40
+    assert metrics["agents"] == 1
+    assert metrics["llm_turns"] == 2
+    assert g.usage([root]).input_tokens == 21
 
 
-def test_environment_report_persists_decision_and_action_efficiency_metrics():
+def test_environment_report_persists_action_efficiency_metrics():
     graph = {
         "llm_turns": 4,
         "agents": 1,
         "nodes": 12,
-        "decision_calls": 2,
-        "decision_input_tokens": 7,
-        "decision_output_tokens": 2,
-        "decision_reasoning_tokens": 2,
-        "decision_latency_seconds": 0.75,
     }
     row = Row(
         run_id="run",
@@ -85,8 +55,5 @@ def test_environment_report_persists_decision_and_action_efficiency_metrics():
     restored = EnvironmentReport.from_dict(report.to_dict())
     columns, rows = report_table([restored])
 
-    assert restored.runtime.decision_calls == 2
-    assert restored.runtime.decision_input_tokens == 7
     assert restored.runtime.environment_actions_per_llm_turn == 1.5
-    assert rows[0][columns.index("decision calls")] == 2
     assert rows[0][columns.index("actions / LLM turn")] == 1.5

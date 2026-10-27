@@ -19,14 +19,7 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
-from rlmflow import (
-    AgentConfig,
-    Flow,
-    Graph,
-    LocalRuntime,
-    reads,
-    tool,
-)
+from rlmflow import AgentConfig, Flow, Graph, LocalRuntime, tool
 from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -279,7 +272,7 @@ def main() -> None:
         asyncio.run(print_run(flow, g, out_dir))
 
         print(f"\n{'=' * 60}\nWEATHER PACKING RECOMMENDATION\n{'=' * 60}")
-        print(reads.result(g, root))
+        print(g.result(root))
         print(f"\nRun saved to {out_dir}")
 
         flow.runtime.close_repls()

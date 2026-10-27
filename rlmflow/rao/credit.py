@@ -11,9 +11,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
-from rlmflow.graph import reads
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import AgentStart
+from rlmflow.graph.nodes import Node
 
 #: Weight on the mean local score of an agent's immediate children.
 DELEGATION_BONUS = 0.4
@@ -31,7 +30,7 @@ class IncompleteTreeError(RuntimeError):
 class RewardFn(Protocol):
     """Score every agent in one completed execution graph."""
 
-    def __call__(self, graph: Graph, root: AgentStart) -> Mapping[str, float]: ...
+    def __call__(self, graph: Graph, root: Node) -> Mapping[str, float]: ...
 
 
 @dataclass
@@ -56,13 +55,13 @@ class NodeScore:
         return self.advantage * self.weight
 
 
-def agent_id(graph: Graph, agent: AgentStart) -> str:
+def agent_id(graph: Graph, agent: Node) -> str:
     """The readable, tree-unique id used to key scores: ``root.child0.child1``."""
-    return reads.path(graph, agent)
+    return graph.path(agent)
 
 
-def agents(graph: Graph, root: AgentStart) -> list[AgentStart]:
-    return reads.tree(graph, root)
+def agents(graph: Graph, root: Node) -> list[Node]:
+    return graph.tree(root)
 
 
 def mean(values: Sequence[float]) -> float:
@@ -71,7 +70,7 @@ def mean(values: Sequence[float]) -> float:
 
 def score_tree(
     graph: Graph,
-    root: AgentStart,
+    root: Node,
     local: Mapping[str, float],
     *,
     delegation_bonus: float = DELEGATION_BONUS,
@@ -83,7 +82,7 @@ def score_tree(
     """
     found = agents(graph, root)
     ids = {agent.id: agent_id(graph, agent) for agent in found}
-    unfinished = [ids[agent.id] for agent in found if not reads.terminal(graph, agent)]
+    unfinished = [ids[agent.id] for agent in found if not graph.terminal(agent)]
     if unfinished:
         raise IncompleteTreeError(f"cannot score a tree with agents still running: {unfinished}")
 
@@ -91,16 +90,16 @@ def score_tree(
     if missing:
         raise KeyError(f"no local score for {missing}")
 
-    base = reads.depth(graph, root)
+    base = graph.depth(root)
     scores: dict[str, NodeScore] = {}
     for agent in found:
         # Each immediate child's *local* score, not its augmented reward, so a
         # successful grandchild credits its own parent and stops there.
-        delegation = mean([local[ids[child.id]] for child in reads.children(graph, agent)])
+        delegation = mean([local[ids[child.id]] for child in graph.children(agent)])
         own = local[ids[agent.id]]
         scores[ids[agent.id]] = NodeScore(
             agent_id=ids[agent.id],
-            depth=reads.depth(graph, agent) - base,
+            depth=graph.depth(agent) - base,
             local=own,
             delegation=delegation,
             reward=own + delegation_bonus * delegation,

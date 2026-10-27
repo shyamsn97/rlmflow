@@ -1,0 +1,6 @@
+{
+  "name": "rlmflow",
+  "version": "0.7.0",
+  "description": "Make this Claude Code session the root agent of an rlmflow run: a persistent REPL, agents you launch, and a graph of everything.",
+  "homepage": "https://github.com/shyamsn97/rlmflow"
+}

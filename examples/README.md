@@ -38,7 +38,7 @@ OOLONG and MazeBench remain in the separate [benchmark harness](../docs/benchmar
 | [`skills.py`](skills.py)                                                     | On-disk skills + dynamic prompt section                               |
 | [`structured_output.py`](structured_output.py)                               | Root + child `output_schema` validation                               |
 | [`summarizer.py`](summarizer.py)                                             | Recursive map-reduce summarization                                    |
-| [`providers/claude_code_delegation.py`](providers/claude_code_delegation.py) | Host-configured Claude Code children with unchanged `launch_subagent` |
+| [`providers/claude_code_delegation.py`](providers/claude_code_delegation.py) | Claude Code children through a named `claude_code` config |
 | [`collaboration/shared_board.py`](collaboration/shared_board.py)             | Shared task board: every task is an agent, `AGENTS` is the context   |
 
 ```bash
@@ -73,10 +73,9 @@ After a Shepherd run, `make showcase-shepherd-assets` redraws the agent summary 
 | [`sandboxes/`](sandboxes/) | Docker and Modal remote execution              |
 | [`providers/`](providers/) | DSPy, MCP, Tinker adapters                     |
 
-The worker-colocation and nonblocking delegation examples are deterministic and need no API key:
+The nonblocking delegation example is deterministic and needs no API key:
 
 ```bash
-python examples/control/delegation/reuse_repl.py
 python examples/control/delegation/nonblocking.py
 ```
 
@@ -123,11 +122,11 @@ python examples/summarizer.py        # saves to examples/_runs/summarizer/
 The saved directory holds `graph.json`, the graph's item log (plus `blobs/` for large arguments). Read it back as the same graph the run held in memory:
 
 ```python
-from rlmflow import Graph, reads
+from rlmflow import Graph
 
 g = Graph.load("examples/_runs/summarizer")
 for node in g.nodes():
-    print(reads.path(g, g.node(node.agent_id)), node.type)
+    print(g.path(g.node(node.agent_id)), node.type)
 ```
 
 ## Docker And Modal

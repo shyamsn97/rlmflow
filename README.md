@@ -25,7 +25,7 @@ The release has three complementary flagship demonstrations: **Shepherd** recove
 The example first writes a reproducible failed worker trace by scripting eight myopic Sokoban pushes. GPT-5 then reads that execution, previews earlier graph states, and proposes eight differently instructed GPT-5-mini recoveries across several rewind depths. The host forks and runs them as the shepherd's child agents, then selects the highest-scoring result. Planning and recovery play use live model calls; the fixed jam makes runs comparable, and the local deterministic game makes graph replay exact.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/shyamsn97/rlmflow/main/docs/shepherd_graph.svg" alt="The Shepherd execution graph: one jammed worker, eight rewind branches, six solved recoveries, and one selected winner" width="900" />
+  <img src="https://raw.githubusercontent.com/shyamsn97/rlmflow/main/docs/static/shepherd_graph.svg" alt="The Shepherd execution graph: one jammed worker, eight rewind branches, six solved recoveries, and one selected winner" width="900" />
 </p>
 <p align="center"><em>One failed run becomes eight recoverable branches inside the same retained graph.</em></p>
 
@@ -138,26 +138,25 @@ child = launch_subagent(
 
 The child receives the raw value as `rows`; its argument manifest includes the description. `Input(...)` also works on root arguments.
 
-The host can run every delegated child through Claude Code without changing
-that agent-facing API:
+Configs are named and live on the graph. An agent picks one with `launch_agent(task, config=NAME)`, so a config whose harness is Claude Code turns that call into a Claude Code session:
 
 ```python
-from rlmflow import AgentConfig, ClaudeCodeBackend, Flow
+from rlmflow import AgentConfig
 
-flow = Flow(
-    llm,
-    backends={"claude-code": ClaudeCodeBackend(permission_mode="acceptEdits")},
-)
-root = g.create_agent(task, config=AgentConfig(max_depth=1, child_config={"backend": "claude-code"}))
+g.add_config(AgentConfig(name="claude", harness="claude_code", harness_options={"tools": "loose"}))
+root = g.create_agent(task, config=AgentConfig(max_depth=1))
 ```
 
-The root remains an rlmflow agent; its `launch_subagent(...)` calls become
-Claude Code jobs in the Flow working directory. Native rlmflow children remain
-the default when `child_config` names no backend. Any agent, including a
-top-level one, can also name a backend directly with
-`AgentConfig(backend="claude-code")`. See the runnable
-[`claude_code_delegation.py`](examples/providers/claude_code_delegation.py)
-example for parallel structured children editing one shared demo workspace.
+The root stays an rlmflow REPL agent. Its Claude Code children reach the same agent tools from the shell through `rlmflow repl`, and every cell they run lands in the graph. See the runnable [`claude_code_delegation.py`](examples/providers/claude_code_delegation.py) example for parallel structured children editing one shared demo workspace.
+
+It works the other way round too: your own Claude Code session can be the root agent. Load the plugin and start a run:
+
+```text
+$ claude --plugin-dir "$(rlmflow plugin path)"
+> /rlmflow:run Find the magic number in haystack/
+```
+
+`/rlmflow:run` starts `rlmflow serve` for the project. Your session gets a persistent REPL through `rlmflow repl`, and the agents it launches run in the background. When you end a turn while they're still running, the plugin's Stop hook waits for their results and hands them back to the same session. The run is a normal graph under `.rlmflow/runs/`, so you can view it, replay it, or fork it with `rlmflow fork RUN NODE`. Add `--interactive` to continue the fork in your own session.
 
 Then `chunk_2` can recursively delegate again:
 
@@ -193,29 +192,25 @@ If `chunk_2` launched `candidate_a` and `candidate_b` internally, the parent can
 **rlmflow** keeps that structure alive. Every recursive call is a child agent inside one typed `Node` tree:
 
 <p align="center">
-  <img src="docs/recursive_agents_graph.svg" alt="rlmflow graph showing root, child agents, grandchild agents, and final result states" />
+  <img src="docs/static/recursive_agents_graph.svg" alt="rlmflow graph showing root, child agents, grandchild agents, and final result states" />
 </p>
 
 The graph is the run itself:
 
 ```python
-from rlmflow import Flow, Graph, Node, reads
+from rlmflow import Flow, Graph
 
 g = Graph()
 root = g.create_agent(query)          # only writes to the graph; nothing runs yet
 
 flow = Flow(client)
-async for item in flow.run_streaming(g):
-    if isinstance(item, Node):
-        print(reads.path(g, g.node(item.agent_id)), item.type)
+async for step in flow.run_streaming(g):
+    print(g.path(step.agent), step.node.type)
 ```
 
-`run_streaming(g)` appends to the graph and yields each node and edge as it lands. The graph *is* the durable state: you can edit it freely with `rlmflow.ops` (spawn, append, send, fork, attach) with no `Flow` around, save it, load it elsewhere, and hand it to any `Flow`. The flow creates each agent's REPL the first time that agent steps, replaying its recorded code if it already has history.
+`run_streaming(g)` appends to the graph and yields a `Step` (`step.agent`, `step.node`) for each node as it lands. The graph *is* the durable state: you can edit it freely with its own methods (`g.spawn`, `g.append`, `g.send`, `g.fork`, `g.attach`) with no `Flow` around, save it, load it elsewhere, and hand it to any `Flow`. The flow creates each agent's REPL the first time that agent steps, replaying its recorded code if it already has history.
 
-Start with the runnable [graph-manipulation tour](examples/graph/) for append,
-fork, subtree attachment, persistence, and traversal. See
-[`docs/internals.md`](docs/internals.md), [`docs/node_model.md`](docs/node_model.md),
-and [`docs/control.md`](docs/control.md) for the full engine and graph API.
+Start with the runnable [graph-manipulation tour](examples/graph/) for append, fork, subtree attachment, persistence, and traversal. See [`docs/internals.md`](docs/internals.md), [`docs/node_model.md`](docs/node_model.md), and [`docs/control.md`](docs/control.md) for the full engine and graph API.
 
 ## Install
 
@@ -223,6 +218,7 @@ and [`docs/control.md`](docs/control.md) for the full engine and graph API.
 pip install rlmflow               # core
 pip install rlmflow[openai]       # + OpenAI client
 pip install rlmflow[anthropic]    # + Anthropic client
+pip install rlmflow[claude]       # + Claude Code harness (Claude Agent SDK)
 pip install rlmflow[tinker]       # + Tinker inference client
 pip install rlmflow[textcraft]    # + Gymnasium TextCraft environment example
 pip install rlmflow[rao]          # + TextCraft and Tinker RAO training
@@ -253,7 +249,7 @@ This example builds a simple coding agent with file tools in a local working dir
 from pathlib import Path
 
 from rlmflow.llm import OpenAIClient
-from rlmflow import FILE_TOOLS, AgentConfig, Flow, Graph, LocalRuntime, Node, reads
+from rlmflow import FILE_TOOLS, AgentConfig, Flow, Graph, LocalRuntime
 
 workdir = Path("examples/_runs/quickstart")
 
@@ -268,17 +264,92 @@ g = Graph()
 query = "Build a Python text-based adventure game with combat and inventory."
 root = g.create_agent(query, config=AgentConfig(max_depth=2, max_iters=20))
 
-async for item in flow.run_streaming(g):
-    if isinstance(item, Node):
-        print(reads.path(g, g.node(item.agent_id)), item.type)
+async for step in flow.run_streaming(g):
+    print(g.path(step.agent), step.node.type)
 
-print(reads.result(g, root))
+print(g.result(root))
 g.save(workdir / "graph")
 ```
 
 Delegated children fan out as ordinary asyncio tasks that step alongside their parent. See [`examples/control/delegation/step_until.py`](./examples/control/delegation/step_until.py) for a deterministic demo of `Flow.run_streaming(..., until=...)` boundaries while child work runs concurrently.
 
 A saved run is a directory holding the graph's item log. Reopen it later with `Graph.load(path)` and keep running it.
+
+## Usage at a glance
+
+The short version of each thing you can do; every heading links to [Usage](docs/usage.md), and what agents do inside a run is in [Agents](docs/agents.md).
+
+**[Run a task](docs/usage.md#run-a-task).** Keyword arguments become REPL variables:
+
+```python
+flow = Flow(client_for("gpt-5-mini"))
+flow.run("Add a and b", a=2, b=3)                  # 5
+```
+
+**[Launch agents from the REPL](docs/agents.md#launching-and-waiting).** What the model writes:
+
+```python
+handles = [launch_agent("Search this chunk.", config="worker", chunk=c) for c in chunks]
+results = await asyncio.gather(*handles)
+submit(next(r for r in results if r))
+```
+
+**[Name kinds of agents](docs/usage.md#configs)** with their own [model](docs/usage.md#models), limits and output schema:
+
+```python
+g.add_config(AgentConfig(name="worker", model="fast", max_depth=0, output_schema=Finding))
+flow = Flow(client_for("gpt-5"), llm_clients={"fast": client_for("gpt-5-mini")})
+```
+
+**[Give agents tools](docs/usage.md#tools)** and a **[sandbox](docs/usage.md#runtimes-and-workspaces)**:
+
+```python
+flow = Flow(llm, tools=[FILE_TOOLS, my_tool], runtime=DockerRuntime("rlmflow:local"), workspaces=GitWorktrees("."))
+```
+
+**[Stream, stop, look, continue](docs/usage.md#stream-and-stop)** and **[query the graph](docs/usage.md#read-the-graph)**:
+
+```python
+async for step in flow.run_streaming(g, until="idle"):
+    print(g.path(step.agent), step.node.type)
+g.result(root), g.children(root), g.usage()
+```
+
+**[Message, depend on, or fork agents](docs/usage.md#change-a-run)**, then **[save and resume](docs/usage.md#save-and-resume)**:
+
+```python
+g.send(root, "Also report the file name.")
+retry = g.fork(some_node, name="retry", model="fast")
+flow.run(g); g.save("runs/x"); g = Graph.load("runs/x")
+```
+
+**[Run agents as Claude Code or pi sessions](docs/usage.md#claude-code-and-pi-as-agents):**
+
+```python
+root = g.create_agent(task, config=AgentConfig(harness="claude_code", max_depth=1))
+```
+
+**[Make your own Claude Code session the root](docs/usage.md#your-claude-code-session-as-the-root):**
+
+```text
+$ claude --plugin-dir "$(rlmflow plugin path)"
+> /rlmflow:run Find the magic number in haystack/
+```
+
+**[Fork any saved run from the shell](docs/usage.md#fork-from-the-command-line)**, headless or in your own session:
+
+```bash
+rlmflow fork runs/x NODE --harness claude_code
+rlmflow fork runs/x NODE --interactive
+```
+
+**[Use the CLI](docs/usage.md#command-line)**, **[see a run](docs/usage.md#see-a-run)**, or **[drop rlmflow in as an LLM](docs/usage.md#rlmflow-as-an-llm)**:
+
+```bash
+rlmflow tui                      # a coding agent in the dashboard
+rlmflow view show runs/x         # tree + timeline
+rlmflow render html runs/x run.html
+```
 
 ## Command line
 
@@ -369,10 +440,10 @@ def two_steps(item, _g):
 
 async for item in flow.run_streaming(g, until=two_steps):
     pass
-print(reads.frontier(g, root).type)   # ...inspect...
+print(g.frontier(root).type)   # ...inspect...
 async for item in flow.run_streaming(g, until="done"):
     pass                              # ...then run to completion
-print(reads.result(g, root))
+print(g.result(root))
 ```
 
 Every assistant turn emits exactly one REPL action:
@@ -402,22 +473,19 @@ from rlmflow import persistence
 persistence.to_document(root)           # flat, unversioned JSON document
 ```
 
-Every node's `metadata` is durable through save/load/fork. Built-in telemetry
-records LLM usage and timing; proxy tools record call receipts; custom host
-tools can call `record_metadata(...)`; benchmark layers can attach rewards and
-verdicts without changing the core node schema.
+Every node's `metadata` is durable through save/load/fork. Built-in telemetry records LLM usage and timing; proxy tools record call receipts; custom host tools can call `record_metadata(...)`; benchmark layers can attach rewards and verdicts without changing the core node schema.
 
 ## Inject controller Nodes
 
 Because the Node tree is the control surface, an external controller can append to any agent's frontier — as its node lands, or between streaming calls — and let the run continue. This is useful for human feedback, budget nudges, and forced finalization without losing traceability:
 
 ```python
-from rlmflow import ExecOutput, ops
+from rlmflow import ExecOutput
 
 # nudge a worker the moment it comes up for air, then let the run continue
 async for item in flow.run_streaming(g):
     if isinstance(item, ExecOutput) and item.agent_id != root.id:
-        ops.send(g, g.node(item.agent_id), "Answer with the best evidence.")
+        g.send(g.node(item.agent_id), "Answer with the best evidence.")
 ```
 
 Injected nodes become ordinary graph nodes with the same shape as organic ones. An append lands on an agent's frontier or it raises, so history stays append-only, and forking is how you change what an agent already did. See [`docs/injections.md`](docs/injections.md) and [`examples/control/injection/`](examples/control/injection/).
@@ -438,7 +506,7 @@ latest = Graph.load(run_dir)
 Fork an independent branch from any node and continue it with a `Flow`:
 
 ```python
-branch = ops.fork(latest, node, name="repair")   # a new agent sharing history up to node
+branch = latest.fork(node, name="repair")   # a new agent sharing history up to node
 flow.run(latest)
 latest.save("runs/shepherd_repair")
 ```
@@ -610,25 +678,14 @@ Use `--split pilot` for bring-up and `--split full` for complete frozen manifest
 
 ## Docs
 
-The top-level docs are short, user-facing guides. The deep dive lives in [`docs/internals.md`](docs/internals.md). Research notes live under [`docs/research/`](docs/research/).
+The full map is [docs/index.md](docs/index.md).
 
-- [**Upgrading to 0.7**](UPGRADING.md): breaking API and persistence changes.
-- [**Internals**](docs/internals.md): Node structure, Flow transitions, the task queue and pools, Runtime identity, replay, forks, and persistence.
-- [**Structured outputs**](docs/structured_outputs.md): output codecs, chat, Instructor, Jev, and explicit retry/fallback composition.
-- [Blog post](https://shyamsn97.github.io/blog/rlmflow/): long-form pitch — recursive agents, why graphs beat flat traces, and walkthroughs.
-- [Positioning](docs/positioning.md): when to use rlmflow vs rlm-minimal, ypi, LangGraph, CrewAI, AutoGen, SWE-agent, Aider.
-- [Command line](docs/cli.md): `rlmflow tui` for a coding agent in the dashboard, `run print` headless, `view` / `render` for a saved run, and how settings resolve.
-- [Control](docs/control.md): streaming loop, per-agent limits, multi-turn runs, save/load resume, forks, direct arguments, `launch_subagent`, custom tools.
-- [Streaming and scheduling](docs/streaming.md): `run_streaming(..., until=...)`, `TaskQueue`, transition diagrams, delegation, parallel roots, boundaries, cancellation, and Pool/Runtime placement.
-- [Node model](docs/node_model.md): the typed node hierarchy, the transitions between them, and how delegation is recorded.
-- [Skills](docs/skills.md): workspace `SKILL.md` files, query-selected skills, child-only skills, and run-memory skills.
-- [Node injection](docs/injections.md): append controller Nodes between streaming calls and continue the same root.
-- [Observability](docs/observability.md): querying the Node tree, run layout, stream consumers, reading a saved run, and stepping through one with `rlmflow view`.
-- [Runtimes](docs/runtimes.md): `Runtime` protocol, shipped runtimes (Local / subprocess / Docker / Modal), writing your own.
-- [Prompt customization](docs/prompt_customization.md): `Prompt`, Flow default factories, node prompt/message hooks, and `PromptProfile` / `prompt_profile` / `prompt_router`.
-- [Security](docs/security.md): trust model, Docker isolation knobs, engine-level caps, proxied tools, approval gates.
-- [Benchmarks](docs/benchmarks.md): the four evaluation suites, with OOLONG as the primary long-context evidence, MazeBench as the visual environment, and swarm-fanout for delegation.
-- [Changelog](CHANGELOG.md): release-by-release changes.
+- [**Usage**](docs/usage.md): running, configuring, streaming, forking, Claude Code and pi, the CLI.
+- [**Agents**](docs/agents.md): what an agent does in a run: its REPL tools, launching and waiting, Claude Code sessions, forks.
+- [Command line](docs/cli.md), [Runtimes](docs/runtimes.md), [Security](docs/security.md), [Observability](docs/observability.md).
+- [Internals](docs/internals.md): how the Flow, replay and persistence work.
+- [Upgrading to 0.7](UPGRADING.md) and the [Changelog](CHANGELOG.md).
+- [Blog post](https://shyamsn97.github.io/blog/rlmflow/) and [Positioning](docs/positioning.md).
 
 ## References
 

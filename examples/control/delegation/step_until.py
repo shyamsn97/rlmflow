@@ -22,14 +22,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import (
-    AgentConfig,
-    AgentStart,
-    Flow,
-    Graph,
-    Node,
-    reads,
-)
+from rlmflow import AGENT_START, DONE, AgentConfig, Flow, Graph, Node, Step
 from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -53,25 +46,25 @@ This example script is observing the graph stream, so keep the work small.
 
 
 def node_label(g: Graph, node: Node) -> str:
-    return f"{reads.path(g, g.node(node.agent_id))}: {node.type}"
+    return f"{g.path(g.node(node.agent_id))}: {node.type}"
 
 
-def print_tree(g: Graph, agent: AgentStart, depth: int = 0) -> None:
+def print_tree(g: Graph, agent: Node, depth: int = 0) -> None:
     """Each agent's history on one line, with its children indented below."""
-    history = " -> ".join(node.type for node in reads.history(g, agent))
-    print(f"{'  ' * depth}[{reads.path(g, agent)}] {history}")
-    for child in reads.children(g, agent):
+    history = " -> ".join(node.type for node in g.history(agent))
+    print(f"{'  ' * depth}[{g.path(agent)}] {history}")
+    for child in g.children(agent):
         print_tree(g, child, depth + 1)
 
 
-def print_nodes(title: str, nodes: list[Node], g: Graph, root: AgentStart) -> None:
+def print_nodes(title: str, nodes: list[Node], g: Graph, root: Node) -> None:
     print(f"\n=== {title} ===")
     for node in nodes:
         print(f"- {node_label(g, node)}")
     print_tree(g, root)
 
 
-async def run_example(args: argparse.Namespace) -> tuple[Graph, AgentStart]:
+async def run_example(args: argparse.Namespace) -> tuple[Graph, Node]:
     flow = Flow(client_for(args.model), workers=args.max_concurrency)
     g = Graph()
     root = g.create_agent(
@@ -83,22 +76,22 @@ async def run_example(args: argparse.Namespace) -> tuple[Graph, AgentStart]:
 
     async def collect(**flow_kwargs) -> list[Node]:
         stream = checkpoint_stream(flow.run_streaming(g, **flow_kwargs), g, out_dir)
-        return [item async for item in stream if isinstance(item, Node)]
+        return [step.node async for step in stream]
 
     events = await collect(until="next")
     observed.extend(events)
     print_nodes("until='next': first appended node", events, g, root)
 
-    def child_launched(item, _g: Graph) -> bool:
-        # The first child AgentStart is the fan-out.
-        return isinstance(item, AgentStart) and item is not root
+    def child_launched(step: Step) -> bool:
+        # The first child agent_start is the fan-out.
+        return step.node.type == AGENT_START and step.node is not root
 
     events = await collect(until=child_launched)
     observed.extend(events)
     print_nodes("until=<callable>: parent has fanned out a child", events, g, root)
 
-    def first_child_done(item, _g: Graph) -> bool:
-        return isinstance(item, Node) and item.agent_id != root.id and item.type == "done_output"
+    def first_child_done(step: Step) -> bool:
+        return step.agent.id != root.id and step.node.type == DONE
 
     events = await collect(until=first_child_done)
     observed.extend(events)
@@ -106,17 +99,16 @@ async def run_example(args: argparse.Namespace) -> tuple[Graph, AgentStart]:
 
     seen = 0
 
-    def two_more_appends(item, _g: Graph) -> bool:
+    def two_more_appends(_step: Step) -> bool:
         nonlocal seen
-        if isinstance(item, Node):
-            seen += 1
+        seen += 1
         return seen >= 2
 
     events = await collect(until=two_more_appends)
     observed.extend(events)
     print_nodes("callable boundary: consume two more global steps", events, g, root)
 
-    while not reads.terminal(g, root):
+    while not g.terminal(root):
         events = await collect(until="finished")
         print_nodes("until='finished': run to the end", events, g, root)
         observed.extend(events)
@@ -124,7 +116,7 @@ async def run_example(args: argparse.Namespace) -> tuple[Graph, AgentStart]:
     if observed:
         print(f"\nObserved {len(observed)} Nodes.")
 
-    flow.runtime.close_repls()
+    await flow.aclose()
     return g, root
 
 
@@ -147,7 +139,7 @@ def main() -> None:
     print("\n=== verdict ===")
     print("Delegated children fan out as independent scheduler tasks.")
     print("The caller chooses observation boundaries with run_streaming(..., until=...).")
-    print(f"Result: {reads.result(g, root)}")
+    print(f"Result: {g.result(root)}")
     save_example_graph(g, "step-until", out_dir=args.out_dir)
 
 

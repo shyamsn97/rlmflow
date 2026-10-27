@@ -194,7 +194,7 @@ Six of the eight branches solved the board. The shepherd selected `branch2`, whi
 
 <p align="center">
   <img
-    src="shepherd_nodes.svg"
+    src="static/shepherd_nodes.svg"
     alt="Every node of one shepherd run: a short shepherd trunk fanning into eight branch chains, each faded over the turns it inherited from the jam"
     width="920"
   />
@@ -215,4 +215,4 @@ uv run --locked --python 3.12 --extra openai --extra image \
 make showcase-shepherd-assets
 ```
 
-The run writes the failed worker graph under `examples/_runs/shepherd/worker/`, the complete v7 recovery tree (including the selected branch) under `examples/_runs/shepherd/shepherd/`, and JSON/GIF board traces under `examples/_runs/shepherd/traces/`. The make target regenerates `docs/shepherd_graph.svg`, `docs/shepherd_nodes.svg`, `docs/static/shepherd/rewind.gif`, `jam.gif`, and every `branchN.gif` from those traces. See the [example README](https://github.com/shyamsn97/rlmflow/tree/main/examples/shepherd) for the browser and direct-renderer variants.
+The run writes the failed worker graph under `examples/_runs/shepherd/worker/`, the complete v7 recovery tree (including the selected branch) under `examples/_runs/shepherd/shepherd/`, and JSON/GIF board traces under `examples/_runs/shepherd/traces/`. The make target regenerates `docs/static/shepherd_graph.svg`, `docs/static/shepherd_nodes.svg`, `docs/static/shepherd/rewind.gif`, `jam.gif`, and every `branchN.gif` from those traces. See the [example README](https://github.com/shyamsn97/rlmflow/tree/main/examples/shepherd) for the browser and direct-renderer variants.

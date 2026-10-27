@@ -13,7 +13,7 @@ from examples.research.textcraft.env import (
     textcraft_local_scores,
 )
 from examples.research.textcraft.recipes import Recipe
-from rlmflow import AgentConfig, DoneOutput, Graph, LLMUsage, ops, reads
+from rlmflow import CODE, DONE, AgentConfig, Graph, LLMUsage, Node
 from rlmflow.llm import LLMClient
 from rlmflow.rao import (
     Budget,
@@ -135,10 +135,10 @@ def test_child_finish_does_not_terminate_parent_episode():
 def _tree(task_metadata: dict, child_targets: object):
     """A finished root with one attached ``worker`` child, in a new graph."""
     g = Graph()
-    root = ops.spawn(g, "root", config=AgentConfig(max_depth=1))
+    root = g.spawn("root", name="root", config=AgentConfig(max_depth=1))
     root.annotate("rollout.task", task_metadata)
-    child = ops.spawn(g, "child", name="worker", target_items=child_targets)
-    ops.attach(g, root, child)
+    child = g.spawn("child", name="worker", target_items=child_targets)
+    g.attach(root, child)
     return g, root, child
 
 
@@ -154,8 +154,8 @@ def test_restored_child_lazily_binds_an_independent_session():
     flow = RolloutFlow(SimpleNamespace(), budget=Budget(max_depth=1))
     g = Graph()
     root = g.create_agent("root")
-    child = ops.spawn(g, "restored child", name="worker", target_items={intermediate: count})
-    ops.attach(g, root, child)
+    child = g.spawn("restored child", name="worker", target_items={intermediate: count})
+    g.attach(root, child)
     root_session = EnvSession(TextCraftEnv(task))
 
     async def exercise():
@@ -198,7 +198,7 @@ def test_textcraft_scores_child_from_subtree_provenance():
 
     asyncio.run(exercise())
     _record_steps(
-        reads.frontier(g, root),
+        g.frontier(root),
         [
             {
                 "agent_id": step.agent_id,
@@ -211,8 +211,8 @@ def test_textcraft_scores_child_from_subtree_provenance():
             for step in session.steps
         ],
     )
-    ops.append(g, child, DoneOutput(result="crafted"))
-    ops.append(g, root, DoneOutput(result="done"))
+    g.append(child, Node(DONE, result="crafted"))
+    g.append(root, Node(DONE, result="done"))
     tree = RolloutTree(task.to_spec(), g, root, 0, session)
 
     assert textcraft_graph_rewards(g, root) == {"root": 1.0, "root.worker": 1.0}
@@ -224,12 +224,12 @@ def test_textcraft_rewards_follow_environment_index_not_graph_walk_order():
         {"metadata": {"target_items": {"final": 1}, "initial_inventory": {}}},
         {"middle": 1},
     )
-    ops.append(g, child, DoneOutput(result="crafted middle"))
-    ops.append(g, root, DoneOutput(result="crafted final"))
+    g.append(child, Node(DONE, result="crafted middle"))
+    g.append(root, Node(DONE, result="crafted final"))
     # Root nodes precede child nodes in graph order, but the child acted first.
     # Reward reconstruction must honor the global environment index.
     _record_steps(
-        reads.frontier(g, root),
+        g.frontier(root),
         [
             {
                 "agent_id": "root",
@@ -242,7 +242,7 @@ def test_textcraft_rewards_follow_environment_index_not_graph_walk_order():
         ],
     )
     _record_steps(
-        reads.frontier(g, child),
+        g.frontier(child),
         [
             {
                 "agent_id": "root.worker",
@@ -263,8 +263,8 @@ def test_textcraft_malformed_child_targets_score_zero_instead_of_crashing():
         {"metadata": {"target_items": {"target": 1}, "initial_inventory": {}}},
         {"item": "target"},
     )
-    ops.append(g, child, DoneOutput(result="invalid assignment"))
-    ops.append(g, root, DoneOutput(result="done"))
+    g.append(child, Node(DONE, result="invalid assignment"))
+    g.append(root, Node(DONE, result="done"))
 
     assert textcraft_graph_rewards(g, root) == {"root": 0.0, "root.worker": 0.0}
 
@@ -447,7 +447,7 @@ class RecordingRecursiveCraftLLM(LLMClient):
         elif "crafted intermediate" not in text:
             reply = (
                 "```repl\n"
-                'worker = launch_subagent(task="Delegated intermediate", '
+                'worker = launch_agent("Delegated intermediate", '
                 f'target_items={{"{self.intermediate}": {self.count}}})\n'
                 "print(await worker)\n"
                 "```"
@@ -531,18 +531,17 @@ def test_offline_grouped_training_smoke(tmp_path: Path):
 
 
 def test_delegation_bonus_credits_immediate_children_on_the_launcher_tree():
-    from rlmflow.graph.nodes import ExecAction
     from rlmflow.rao.credit import score_tree
 
     g = Graph()
-    root = ops.spawn(g, "root")
-    launch = ops.append(g, root, ExecAction(code="launch"))
-    good = ops.spawn(g, "good", by=launch, name="good")
-    bad = ops.spawn(g, "bad", by=launch, name="bad")
-    relaunch = ops.append(g, good, ExecAction(code="launch"))
-    leaf = ops.spawn(g, "leaf", by=relaunch, name="leaf")
+    root = g.spawn("root", name="root")
+    launch = g.append(root, Node(CODE, code="launch", output=""))
+    good = g.spawn("good", by=launch, name="good")
+    bad = g.spawn("bad", by=launch, name="bad")
+    relaunch = g.append(good, Node(CODE, code="launch", output=""))
+    leaf = g.spawn("leaf", by=relaunch, name="leaf")
     for agent in (leaf, good, bad, root):
-        ops.append(g, agent, DoneOutput(result="done"))
+        g.append(agent, Node(DONE, result="done"))
 
     local = {"root": 0.0, "root.good": 1.0, "root.bad": 0.0, "root.good.leaf": 1.0}
     scores = score_tree(g, root, local, delegation_bonus=0.4)

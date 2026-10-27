@@ -8,34 +8,36 @@ from collections import Counter
 from typing import Any, ClassVar
 
 from rlmflow.consumers import StreamConsumer
-from rlmflow.graph import ops, reads
+from rlmflow.graph.config import AgentConfig
 from rlmflow.graph.graph import Edge, Graph
-from rlmflow.graph.nodes import (
-    AgentStart,
-    DoneOutput,
-    ErrorOutput,
-    ExecAction,
-    ExecOutput,
-    LLMOutput,
-    Node,
-    UserQuery,
-)
-from rlmflow.view.text import _status, launched_by, top_level
+from rlmflow.graph.nodes import AGENT_START, CODE, DONE, LLM_OUTPUT, MESSAGE, WAITING, Node, Step
+from rlmflow.view.text import _status, top_level
+
+
+def is_error(node: Node) -> bool:
+    return node.type in (CODE, DONE) and bool(node.data.get("error"))
 
 
 class FlowTUI(StreamConsumer):
-    """Interactive chat plus overview, tree, agent, error, and activity panels."""
+    """Interactive chat plus overview, tree, agent, error, and activity panels.
+
+    A new run's first agent gets ``config``; ``configs`` are added to that run.
+    """
 
     def __init__(
         self,
         graph: Graph | None = None,
         *,
+        config: AgentConfig | str | None = None,
+        configs: list[AgentConfig] = (),
         sink: StreamConsumer | None = None,
         refresh_interval_s: float = 0.10,
     ) -> None:
         if refresh_interval_s < 0:
             raise ValueError("refresh_interval_s must be non-negative")
         self.graph = graph
+        self.config = config
+        self.configs = list(configs)
         self.sink = sink
         self.refresh_interval_s = refresh_interval_s
         self.flow: Any = None
@@ -59,26 +61,26 @@ class FlowTUI(StreamConsumer):
         inputs: dict[str, str] | None = None,
         until: str = "done",
     ) -> Graph | None:
-        """Run one dashboard action: start an agent or message the first one, and stream.
-
-        Depth, iteration caps, and the rest come from the flow's own defaults, so
-        there is one place to configure a run rather than two that can disagree.
-        """
+        """Run one dashboard action: start an agent or message the first one, and stream."""
         if self.flow is None:
             raise RuntimeError("FlowTUI has no flow: call init(flow) before run().")
         if self.graph is None:
             if query is None:
                 return None
             self.graph = Graph()
-            self.graph.create_agent(query, config=self.flow.root_config, **(inputs or {}))
+            for config in self.configs:
+                self.graph.add_config(config)
+            self.graph.create_agent(query, config=self.config, **(inputs or {}))
         elif query is not None:
-            ops.send(self.graph, top_level(self.graph)[0], query)
+            self.graph.send(top_level(self.graph)[0], query)
         async for item in self.flow.run_streaming(self.graph, until=until):
             self.handle(item, self.graph)
         return self.graph
 
-    def handle(self, item: Node | Edge, graph: Graph) -> None:
+    def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
         self.graph = graph
+        if isinstance(item, Step):
+            item = item.node
         if not isinstance(item, Node):
             if self.sink is not None:
                 self.sink.handle(item, graph)
@@ -89,7 +91,7 @@ class FlowTUI(StreamConsumer):
         self._pending_chat.append(node)
         self._dirty = True
         if self.app is not None:
-            if self.refresh_interval_s == 0 or isinstance(node, (DoneOutput, ErrorOutput)):
+            if self.refresh_interval_s == 0 or node.type == DONE or is_error(node):
                 self.refresh()
             else:
                 self._request_refresh()
@@ -253,7 +255,7 @@ class FlowTUI(StreamConsumer):
                         self.query_one(selector, Static).update("No run yet.")
                     return
 
-                agents = graph.nodes(AgentStart)
+                agents = graph.agents()
                 self.query_one("#overview", Static).update(overview_table(graph, consumer.busy))
                 self.query_one("#agents", Static).update(agent_table(graph))
                 self.query_one("#counts", Static).update(node_counts_table(graph))
@@ -311,13 +313,13 @@ class FlowTUI(StreamConsumer):
 
             def _sync_tree(self, graph: Graph) -> None:
                 tree = self.query_one("#tree", Tree)
-                ids = tuple(agent.id for agent in graph.nodes(AgentStart))
+                ids = tuple(agent.id for agent in graph.agents())
                 if ids == self._tree_ids:
 
-                    def relabel(node, agent: AgentStart) -> None:
+                    def relabel(node, agent: Node) -> None:
                         node.set_label(_status(graph, agent))
                         node.data = agent
-                        children = reads.children(graph, agent)
+                        children = graph.children(agent)
                         for child_node, child in zip(node.children, children, strict=False):
                             relabel(child_node, child)
 
@@ -327,17 +329,17 @@ class FlowTUI(StreamConsumer):
                 tree.clear()
                 tree.root.expand()
 
-                def add(parent, agent: AgentStart) -> None:
+                def add(parent, agent: Node) -> None:
                     node = parent.add(_status(graph, agent), data=agent)
                     node.expand()
-                    for child in reads.children(graph, agent):
+                    for child in graph.children(agent):
                         add(node, child)
 
                 for top in top_level(graph):
                     add(tree.root, top)
                 self._tree_ids = ids
 
-            async def _sync_tabs(self, agents: list[AgentStart]) -> None:
+            async def _sync_tabs(self, agents: list[Node]) -> None:
                 tabs = self.query_one("#agent-tabs", Tabs)
                 ids = tuple(agent.id for agent in agents)
                 if ids == self._tab_ids:
@@ -355,7 +357,7 @@ class FlowTUI(StreamConsumer):
 
             def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
                 agent = event.node.data
-                if isinstance(agent, AgentStart):
+                if isinstance(agent, Node) and agent.type == AGENT_START:
                     self._select(agent.id)
 
             def on_tabs_tab_activated(self, event: Tabs.TabActivated) -> None:
@@ -430,16 +432,16 @@ class FlowTUI(StreamConsumer):
 def overview_table(graph: Graph, busy: bool = False):
     from rich.table import Table
 
-    agents = graph.nodes(AgentStart)
-    usage = reads.usage(graph)
-    finished = all(reads.terminal(graph, agent) for agent in top_level(graph))
+    agents = graph.agents()
+    usage = graph.usage()
+    finished = all(graph.terminal(agent) for agent in top_level(graph))
     table = Table.grid(expand=True)
     table.add_column(style="dim")
     table.add_column(justify="right")
     table.add_row("status", "running" if busy else ("done" if finished else "ready"))
     table.add_row("agents", str(len(agents)))
     table.add_row("nodes", str(len(graph.nodes())))
-    table.add_row("max depth", str(max(reads.depth(graph, agent) for agent in agents)))
+    table.add_row("max depth", str(max(graph.depth(agent) for agent in agents)))
     table.add_row("tokens in", str(usage.input_tokens))
     table.add_row("tokens out", str(usage.output_tokens))
     return table
@@ -453,13 +455,13 @@ def agent_table(graph: Graph):
     table.add_column("status")
     table.add_column("frontier")
     table.add_column("turns", justify="right")
-    for agent in graph.nodes(AgentStart):
-        history = reads.history(graph, agent)
+    for agent in graph.agents():
+        history = graph.history(agent)
         table.add_row(
-            reads.path(graph, agent),
-            "done" if reads.terminal(graph, agent) else "active",
+            graph.path(agent),
+            "done" if graph.terminal(agent) else "active",
             history[-1].type,
-            str(sum(isinstance(node, LLMOutput) for node in history)),
+            str(sum(node.type == LLM_OUTPUT for node in history)),
         )
     return table
 
@@ -483,15 +485,12 @@ def waiting_table(graph: Graph):
     table.add_column("agent")
     table.add_column("children")
     found = False
-    for agent in graph.nodes(AgentStart):
-        frontier = reads.frontier(graph, agent)
-        if not isinstance(frontier, ExecAction):
+    for agent in graph.agents():
+        children = graph.children(agent)
+        if graph.terminal(agent) or not children:
             continue
-        children = launched_by(graph, frontier)
-        if not children:
-            continue
-        active = sum(not reads.terminal(graph, child) for child in children)
-        table.add_row(reads.path(graph, agent), f"{active}/{len(children)} running")
+        active = sum(not graph.terminal(child) for child in children)
+        table.add_row(graph.path(agent), f"{active}/{len(children)} running")
         found = True
     if not found:
         table.add_row("-", "none")
@@ -501,12 +500,13 @@ def waiting_table(graph: Graph):
 def error_table(graph: Graph):
     from rich.table import Table
 
-    errors = graph.nodes(ErrorOutput)
+    errors = [node for node in graph.nodes() if is_error(node)]
     table = Table(show_header=True, header_style="bold dim", expand=True)
     table.add_column("agent")
     table.add_column("error", overflow="fold")
     for node in errors:
-        table.add_row(_path(graph, node), _one_line(node.content, 80))
+        detail = node.data.get("output") if node.type == CODE else node.data.get("result")
+        table.add_row(_path(graph, node), _one_line(detail, 80))
     if not errors:
         table.add_row("-", "none")
     return table
@@ -532,58 +532,46 @@ def latest_table(graph: Graph, nodes: list[Node], limit: int = 12):
 
 
 def _path(graph: Graph, node: Node) -> str:
-    return reads.path(graph, graph.node(node.agent_id))
+    return graph.path(graph.node(node.agent_id))
 
 
 def _in_chat(node: Node) -> bool:
-    """What the chat pane shows: the query, the model, what it printed, errors, the answer.
+    """What the chat pane shows: the query, the model, what cells printed, the answer.
 
-    The opening query lives on ``AgentStart``, not a ``UserQuery`` — the stream
-    never yields a top-level agent, so chat reads it from the graph. ``ExecAction``
-    stays out (that is the code, not the output). Empty ``ExecOutput`` stays out
-    too.
+    Cells that printed nothing stay out.
     """
-    if isinstance(node, ExecOutput):
-        return bool(str(node.content or "").strip())
-    return isinstance(node, (AgentStart, UserQuery, LLMOutput, ErrorOutput, DoneOutput))
+    if node.type == CODE:
+        return bool(str(node.data.get("output") or "").strip())
+    return node.type in (AGENT_START, MESSAGE, LLM_OUTPUT, WAITING, DONE)
 
 
 def node_panel(graph: Graph, node: Node):
     from rich.panel import Panel
+    from rich.text import Text
 
-    if isinstance(node, ErrorOutput):
-        style = "red"
-    elif isinstance(node, DoneOutput):
-        style = "green"
-    elif isinstance(node, ExecOutput):
-        style = "yellow"
-    elif isinstance(node, (AgentStart, UserQuery)):
-        style = "white"
-    else:
-        style = "cyan"
-
-    if isinstance(node, DoneOutput):
-        body = node.result
-        kind = node.type
-    elif isinstance(node, AgentStart):
-        body = node.content
-        args = node.args
-        if args:
-            listed = ", ".join(
-                f"{name} ({len(value)} chars)" if isinstance(value, str) else name
-                for name, value in args.items()
-            )
-            body = f"{body}\n\n[ARGS: {listed}]"
-        kind = "query"
-    elif isinstance(node, UserQuery):
-        body = node.content
-        kind = "query"
-    else:
-        body = node.content
-        kind = node.type
+    kind = node.type
+    match node.type:
+        case "agent_start":
+            style, kind, body = "white", "query", node.task
+            if node.args:
+                listed = ", ".join(
+                    f"{name} ({len(value)} chars)" if isinstance(value, str) else name
+                    for name, value in node.args.items()
+                )
+                body = f"{body}\n\n[ARGS: {listed}]"
+        case "message":
+            style, kind, body = "white", "query", node.data.get("text")
+        case "code":
+            style, body = ("red" if is_error(node) else "yellow"), node.data.get("output")
+        case "done":
+            style, body = ("red" if is_error(node) else "green"), node.data.get("result")
+        case "waiting":
+            style, body = "cyan", f"waiting on {len(node.data.get('on') or [])} agents"
+        case _:
+            style, body = "cyan", node.data.get("text")
 
     return Panel(
-        str(body or f"({kind})"),
+        Text(str(body or f"({kind})")),
         title=f"{_path(graph, node)} · {kind}",
         border_style=style,
     )

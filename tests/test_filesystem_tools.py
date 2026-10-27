@@ -1,6 +1,6 @@
 import pytest
 
-from rlmflow.tools.files import edit_file
+from rlmflow.harnesses.repl.files import edit_file
 
 
 def _write(tmp_path, text):
