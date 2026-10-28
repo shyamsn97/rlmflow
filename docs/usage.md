@@ -193,7 +193,7 @@ Claude runs with your own Claude Code settings (permissions, `CLAUDE.md`, MCP se
 
 | `claude_code` option | Meaning                                                                                                        |
 | -------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `mcp=True`           | Also offer the agent tools over MCP.                                                                           |
+| `mcp=True`           | Also offer the REPL as a `python` MCP tool.                                                                    |
 | `command`            | A `claude` executable instead of the SDK's bundled one.                                                        |
 | `sdk`                | Fields for `ClaudeAgentOptions` (`permission_mode`, `max_turns`, `plugins`, ...); `allowed_tools` is extended. |
 

@@ -55,16 +55,7 @@ A message to an agent (from you with `g.send`, or from another agent) waits unti
 
 ## Claude Code and pi sessions
 
-With the `claude_code` or `pi` harness, each step of the agent is one headless session turn. The session uses the same REPL through the `rlmflow` command, and every `rlmflow repl` call lands a `code` node:
-
-```text
-rlmflow repl 'CODE'            run a cell (or rlmflow repl -f file.py, or a heredoc on stdin)
-rlmflow spawn TASK --config C  start an agent; prints its id
-rlmflow wait [AGENT...]        wait up to a minute; prints results as JSON
-rlmflow send AGENT TEXT        message another agent
-rlmflow done VALUE             submit
-rlmflow agents                 the run's agent tree
-```
+With the `claude_code` or `pi` harness, each step of the agent is one headless session turn. The session reaches the same REPL with `rlmflow repl 'CODE'` (or `rlmflow repl -f file.py`, or a heredoc on stdin), and every call lands a `code` node. That is its only way in: `launch_agent`, `send_agent`, `AGENTS` and `submit` are called inside the REPL, as in our own harness. With `mcp=True` the same REPL is also its `python` MCP tool.
 
 ```text
 $ rlmflow repl <<'EOF'

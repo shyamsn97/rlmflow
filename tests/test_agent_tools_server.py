@@ -7,7 +7,6 @@ import pytest
 from helpers import ScriptedFlow
 
 from rlmflow import CODE, DONE, MESSAGE, WAITING, AgentConfig, Flow, Graph, Node
-from rlmflow.agent_tools.cli import json_or_text
 
 
 async def sh(command: str, env: dict[str, str]) -> tuple[int, str, str]:
@@ -82,8 +81,11 @@ def test_ending_a_turn_with_running_children_waits_then_resumes():
     g = Graph()
     root = g.create_agent("delegate")
     config = shell_config(
-        ["rlmflow repl \"h = launch_agent('add', config='worker', x=2)\"", "rlmflow agents"],
-        ["rlmflow repl 'print(h.result())'", "rlmflow done '{\"total\": 5}'"],
+        [
+            "rlmflow repl \"h = launch_agent('add', config='worker', x=2)\"",
+            "rlmflow repl 'AGENTS.print_graph()'",
+        ],
+        ["rlmflow repl 'print(h.result())'", "rlmflow repl 'submit({\"total\": 5})'"],
     )
     from helpers import StubLLM
 
@@ -98,45 +100,11 @@ def test_ending_a_turn_with_running_children_waits_then_resumes():
     [child] = g.children(root)
     assert child.config.name == "worker" and g.result(child) == 5
     types = [node.type for node in g.history(root)]
-    assert types == ["agent_start", CODE, WAITING, MESSAGE, CODE, DONE]
+    assert types == ["agent_start", CODE, CODE, WAITING, MESSAGE, CODE, CODE, DONE]
     [cell] = [n for n in g.history(root) if n.type == CODE and "launch_agent" in n.data["code"]]
     assert cell.launched() == [child.id]
-    assert "worker" in g.history(root)[2].data["text"]
-    assert g.history(root)[4].data["output"].strip() == "5"
-
-
-def test_spawn_wait_and_send_from_the_shell():
-    g = Graph()
-    root = g.create_agent("fan out")
-    config = shell_config(
-        [
-            "rlmflow spawn --config worker --name a --arg x=40 'add two'",
-            "rlmflow wait a",
-            "rlmflow wait a",
-            "rlmflow wait a",
-            "rlmflow wait a",
-            "rlmflow send nobody hi",
-            "rlmflow done finished",
-        ],
-    )
-    from helpers import StubLLM
-
-    flow = ScriptedFlow(
-        StubLLM(lambda messages: "```repl\nsubmit(x + 2)\n```"),
-        configs=[AgentConfig(name="worker")],
-    )
-    asyncio.run(flow.arun(g, root_config=config))
-    asyncio.run(flow.aclose())
-
-    assert g.result(root) == "finished"
-    [child] = g.children(root)
-    assert g.result(child) == 42
-    lines = g.frontier(root).data["text"].split("\n")
-    text = "\n".join(lines)
-    assert child.id in text
-    assert '"' + child.id + '": 42' in text
-    assert text.count("Still running. End your turn") >= 1  # the fourth wait is refused
-    assert "unknown agent" in text or "no agent" in text
+    assert "worker" in g.history(root)[2].data["output"]
+    assert g.history(root)[5].data["output"].strip() == "5"
 
 
 def test_a_token_stops_working_when_its_turn_ends():
@@ -192,30 +160,16 @@ def test_concurrent_cells_from_one_agent_run_one_at_a_time():
     assert len(cells) == 3  # all three landed in one chain, none dropped as stale
 
 
-def test_mcp_exposes_the_same_tools_with_repl_as_python():
+def test_mcp_exposes_only_the_repl_as_python():
     pytest.importorskip("mcp")
     from rlmflow.agent_tools.mcp import build_server, mcp_config
 
     tools = asyncio.run(build_server().list_tools())
-    assert sorted(tool.name for tool in tools) == [
-        "agents",
-        "done",
-        "python",
-        "send",
-        "spawn",
-        "wait",
-    ]
-    [python] = [tool for tool in tools if tool.name == "python"]
+    [python] = tools
+    assert python.name == "python"
     schema = getattr(python, "input_schema", None) or python.inputSchema
     assert list(schema["properties"]) == ["code"]
     server = mcp_config({"RLMFLOW_TOKEN": "t"})["mcpServers"]["rlmflow"]
     assert server["args"] == ["-m", "rlmflow.agent_tools.mcp"] and server["env"] == {
         "RLMFLOW_TOKEN": "t"
     }
-
-
-@pytest.mark.parametrize(
-    ("raw", "value"), [('{"a": 1}', {"a": 1}), ("42", 42), ("plain words", "plain words")]
-)
-def test_done_and_args_take_json_or_text(raw, value):
-    assert json_or_text(raw) == value

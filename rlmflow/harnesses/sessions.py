@@ -47,11 +47,10 @@ In the REPL:
 - llm_query(prompt) asks a model and returns its answer.
 - AGENTS shows the agents you started and their status.
 - submit(value) records your final result. Call it exactly once, when you're finished.
-From the shell, `rlmflow agents` prints the tree and `rlmflow done VALUE` is submit.
 
 To wait for agents you started, end your turn without submitting. You'll be resumed
-with their results. Don't poll; `rlmflow wait` gives up after a minute. A cell that
-awaits long work can hit your tool timeout, so launch agents and end the turn instead."""
+with their results. Don't poll. A cell that awaits long work can hit your tool timeout,
+so launch agents and end the turn instead."""
 
 STATE_PROMPT = """\
 Keep your working state in REPL variables, not only in your replies: put intermediate

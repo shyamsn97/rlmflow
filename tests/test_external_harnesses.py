@@ -160,8 +160,8 @@ def test_forking_a_claude_agent_resumes_at_turn_ends_and_restarts_mid_turn(claud
 
 def test_a_message_reopens_a_finished_claude_agent_in_the_same_session(claude):
     claude.script(
-        ("and now?", ["rlmflow done second"], "ok"),
-        ("first", ["rlmflow done first"], "ok"),
+        ("and now?", ["rlmflow repl \"submit('second')\""], "ok"),
+        ("first", ["rlmflow repl \"submit('first')\""], "ok"),
     )
     g = Graph()
     root = g.create_agent("first")

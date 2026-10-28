@@ -1,13 +1,12 @@
 """Delegation and REPL access as plain functions of ``(flow, step)``.
 
 ``step.agent`` is the caller and ``step.node`` its latest node. No function
-knows which harness called it: our REPL binds them as Python functions, and the
-agent-tools server exposes them to external harnesses over HTTP.
+knows which harness called it: every agent reaches them through its REPL, ours
+or the one external harnesses run with ``rlmflow repl``.
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -16,10 +15,6 @@ from rlmflow.graph.nodes import AGENT_START, Node, Step
 
 if TYPE_CHECKING:
     from rlmflow.flow import Flow
-
-#: ``rlmflow wait`` returns after at most this many seconds.
-WAIT_LIMIT = 60.0
-STILL_RUNNING = "Still running. End your turn; you'll be resumed when they finish."
 
 
 def spawn(
@@ -56,29 +51,6 @@ def resolve(g: Any, selector: object) -> Node:
     return resolve_agent(g, selector)
 
 
-async def wait(
-    flow: Flow,
-    step: Step,
-    agent_ids: list[str],
-    *,
-    timeout: float = WAIT_LIMIT,
-) -> dict[str, Any]:
-    """Each agent's result, or ``"running"`` once ``timeout`` (at most 60 s) passes."""
-    g = step.graph
-    targets = [resolve(g, agent_id) for agent_id in agent_ids] or [
-        child for child in g.launched(step.agent) if not g.terminal(child)
-    ]
-    timeout = min(max(timeout, 0.0), WAIT_LIMIT)
-    if flow.queue is not None and targets:
-        try:
-            await asyncio.wait_for(
-                flow.queue.join(lambda: all(g.terminal(t) for t in targets)), timeout
-            )
-        except TimeoutError:
-            pass
-    return {target.id: g.result(target) if g.terminal(target) else "running" for target in targets}
-
-
 def send(flow: Flow, step: Step, target: object, text: str) -> Node:
     """Queue a ``message`` for another agent; it reopens a finished agent."""
     if not isinstance(text, str):
@@ -97,13 +69,6 @@ def done(flow: Flow, step: Step, result: Any) -> Any:
     return check(result, schema) if schema is not None else as_json_value(result)
 
 
-def agents(flow: Flow, step: Step) -> str:
-    """The caller's run as a tree with each agent's config, status and result preview."""
-    from rlmflow.agent_tools.view import build_agent_directory
-
-    return build_agent_directory(step.graph, step.agent).render_graph(show_results=True)
-
-
 async def repl(flow: Flow, step: Step, code: str) -> dict[str, Any]:
     """Run ``code`` in the caller's REPL and land its ``code`` node."""
     node, run = await flow.execute(step, code)
@@ -117,13 +82,9 @@ async def repl(flow: Flow, step: Step, code: str) -> dict[str, Any]:
 
 
 __all__ = [
-    "STILL_RUNNING",
-    "WAIT_LIMIT",
-    "agents",
     "done",
     "repl",
     "resolve",
     "send",
     "spawn",
-    "wait",
 ]

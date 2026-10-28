@@ -17,9 +17,8 @@ Run an agent, or read one you already ran::
 
 Inside an agent's session (the harness sets ``RLMFLOW_URL/_AGENT/_TOKEN``)::
 
-    rlmflow repl 'print(len(haystack))'           a cell in the agent's REPL
-    rlmflow spawn --config worker "search 000-099"
-    rlmflow wait / send / done / agents
+    rlmflow repl 'print(len(haystack))'           a cell in the agent's REPL; every agent
+                                                  tool (launch_agent, submit, ...) is in there
 
 Your own Claude Code session as the root agent (see ``rlmflow plugin path``)::
 
@@ -326,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     from rlmflow.agent_tools import cli as agent_cli
 
     command = list(sys.argv[1:] if argv is None else argv)
-    if command and command[0] in agent_cli.COMMANDS:
+    if command and command[0] == "repl":
         return agent_cli.main(command)
     if command and command[0] == "hook":
         from rlmflow.agent_tools import hooks

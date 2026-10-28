@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from helpers import ScriptedFlow, trailing_user_text
 from helpers import repl as block
@@ -237,21 +235,6 @@ def test_spawn_checks_depth_task_length_and_config_names():
         agent_tools.spawn(flow, stepping_at(g, root), "ok", config=AgentConfig())
     child = agent_tools.spawn(flow, stepping_at(g, root), "ok")
     assert g.launcher(child) is root
-
-
-def test_wait_returns_results_or_running_after_the_timeout():
-    flow = ScriptedFlow(Scripted([]))
-    g = Graph()
-    root = agent(flow, g, "x", "root")
-    cell = g.append(root, Node(CODE, code=""))
-    done = g.spawn("a", by=cell)
-    g.append(done, Node(DONE, result=7))
-    running = g.spawn("b", by=cell)
-
-    result = asyncio.run(
-        agent_tools.wait(flow, stepping_at(g, root), [done.id, running.name], timeout=0.01)
-    )
-    assert result == {done.id: 7, running.id: "running"}
 
 
 def test_done_checks_the_output_schema():

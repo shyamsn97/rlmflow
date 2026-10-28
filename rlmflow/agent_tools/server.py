@@ -33,9 +33,6 @@ if TYPE_CHECKING:
     from rlmflow.graph.graph import Graph
     from rlmflow.harnesses.sessions import TurnResult
 
-#: ``rlmflow wait`` calls allowed in one turn before it refuses.
-WAITS_PER_TURN = 3
-
 REASONS = {
     200: "OK",
     400: "Bad Request",
@@ -54,7 +51,7 @@ class RequestError(Exception):
 
 @dataclass
 class Turn:
-    """One session turn of one agent: its token, its waits, and what it submitted.
+    """One session turn of one agent: its token and what it submitted.
 
     ``ended`` is for harnesses whose turn is closed from outside, by ``/stop``.
     """
@@ -62,7 +59,6 @@ class Turn:
     step: Step
     token: str
     env: dict[str, str] = field(default_factory=dict)
-    waits: int = 0
     submitted: bool = False
     result: Any = None
     ended: asyncio.Future[TurnResult] = field(
@@ -180,42 +176,6 @@ class AgentToolsServer:
             turn.submitted, turn.result = True, ran["result"]
         return ran
 
-    async def spawn(self, turn: Turn, body: dict[str, Any]) -> dict[str, Any]:
-        child = tools.spawn(
-            self.flow,
-            self._step(turn),
-            body.get("task", ""),
-            config=body.get("config"),
-            name=body.get("name"),
-            **(body.get("args") or {}),
-        )
-        return {"id": child.id, "name": child.name, "path": turn.graph.path(child)}
-
-    async def wait(self, turn: Turn, body: dict[str, Any]) -> dict[str, Any]:
-        turn.waits += 1
-        if turn.waits > WAITS_PER_TURN:
-            return {"results": {}, "note": tools.STILL_RUNNING}
-        results = await tools.wait(
-            self.flow,
-            self._step(turn),
-            list(body.get("agents") or []),
-            timeout=float(body.get("timeout", tools.WAIT_LIMIT)),
-        )
-        running = any(value == "running" for value in results.values())
-        return {"results": results, "note": tools.STILL_RUNNING if running else None}
-
-    async def send(self, turn: Turn, body: dict[str, Any]) -> dict[str, Any]:
-        message = tools.send(self.flow, self._step(turn), body.get("agent"), body.get("text"))
-        return {"id": message.id}
-
-    async def done(self, turn: Turn, body: dict[str, Any]) -> dict[str, Any]:
-        turn.result = tools.done(self.flow, self._step(turn), body.get("result"))
-        turn.submitted = True
-        return {"result": turn.result}
-
-    async def agents(self, turn: Turn, body: dict[str, Any]) -> dict[str, Any]:
-        return {"text": tools.agents(self.flow, self._step(turn))}
-
     # -- HTTP -----------------------------------------------------------------
 
     async def _serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -273,8 +233,8 @@ class AgentToolsServer:
         return turn
 
 
-ROUTES = ("repl", "spawn", "wait", "send", "done", "agents")
+ROUTES = ("repl",)
 HOST_ROUTES = ("prompt", "stop", "shutdown")
 
 
-__all__ = ["HOST_ROUTES", "ROUTES", "WAITS_PER_TURN", "AgentToolsServer", "Host", "Turn"]
+__all__ = ["HOST_ROUTES", "ROUTES", "AgentToolsServer", "Host", "Turn"]
