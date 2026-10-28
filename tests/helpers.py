@@ -7,29 +7,27 @@ import inspect
 from rlmflow import AgentConfig, Node
 from rlmflow.graph import NEXT, Graph
 from rlmflow.graph.nodes import AGENT_START, Step, current_code, running_step
-from rlmflow.harnesses.repl.runtime.repl import (
+from rlmflow.runtime.repl import (
     AGENT_WAIT_TOOL,
     AGENTS_BINDING,
     LocalRepl,
     base_namespace,
     get_tool_metadata,
 )
-from rlmflow.harnesses.repl.runtime.repl_client import invoke_tool_call
-from rlmflow.harnesses.repl.runtime.runtime import RLMFLOW_REPLAY, Runtime
+from rlmflow.runtime.repl_client import invoke_tool_call
+from rlmflow.runtime.runtime import RLMFLOW_REPLAY, Runtime
 
 
-def agent_graph(
-    task: str = "",
-    *,
-    config: AgentConfig | None = None,
-    args: dict | None = None,
-    **overrides,
-) -> tuple[Graph, Node]:
-    """A fresh graph holding one top-level agent."""
-    base = (config or AgentConfig()).to_dict()
-    configured = AgentConfig.from_dict({**base, **overrides})
+def agent_graph(task: str = "", *, args: dict | None = None) -> tuple[Graph, Node]:
+    """A fresh graph holding one root, bound to the default config as a Flow would before stepping it.
+
+    A Flow rebinds the root to its run's ``root_config``; pass ``root_config=`` to
+    ``flow.run`` for anything else.
+    """
     g = Graph()
-    return g, g.spawn(task, config=configured, **(args or {}))
+    root = g.create_agent(task, **(args or {}))
+    root.bind_config(AgentConfig())
+    return g, root
 
 
 def run_result(flow, g: Graph, agent: Node, **kwargs):

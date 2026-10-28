@@ -73,8 +73,8 @@ def run_branch(root: Path, idx: int) -> tuple[str, int, dict[str, str], int]:
     llm = MockLLM(seed=idx)
     flow = Flow(llm)
     g = Graph()
-    agent = g.create_agent(QUERY, config=AgentConfig(max_depth=1, max_iters=10))
-    flow.run(g)
+    agent = g.create_agent(QUERY)
+    flow.run(g, root_config=AgentConfig(max_iters=10))
     # Each branch persists to its own directory (graph.json).
     g.save(root / f"branch_{idx}")
     flow.runtime.close_repls()

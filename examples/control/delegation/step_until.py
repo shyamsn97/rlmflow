@@ -65,12 +65,10 @@ def print_nodes(title: str, nodes: list[Node], g: Graph, root: Node) -> None:
 
 
 async def run_example(args: argparse.Namespace) -> tuple[Graph, Node]:
-    flow = Flow(client_for(args.model), workers=args.max_concurrency)
+    config = AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)
+    flow = Flow(client_for(args.model), configs=[config], workers=args.max_concurrency)
     g = Graph()
-    root = g.create_agent(
-        QUERY,
-        config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
-    )
+    root = g.create_agent(QUERY)
     observed: list[Node] = []
     out_dir = Path(args.out_dir)
 

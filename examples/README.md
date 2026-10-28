@@ -30,16 +30,16 @@ OOLONG and MazeBench remain in the separate [benchmark harness](../docs/benchmar
 
 ## Scripts
 
-| Script                                                                       | What it shows                                                         |
-| ---------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| [`showcase.py`](showcase.py)                                                 | End-to-end `Flow` run, persistence, and gym-style stepping            |
-| [`drop_in_llm.py`](drop_in_llm.py)                                           | Minimal `FlowLLM` as a drop-in LLM                                    |
-| [`llm_query_fanout.py`](llm_query_fanout.py)                                 | Concurrent `llm_query` calls with `asyncio.gather`                    |
-| [`skills.py`](skills.py)                                                     | On-disk skills + dynamic prompt section                               |
-| [`structured_output.py`](structured_output.py)                               | Root + child `output_schema` validation                               |
-| [`summarizer.py`](summarizer.py)                                             | Recursive map-reduce summarization                                    |
-| [`providers/claude_code_delegation.py`](providers/claude_code_delegation.py) | Claude Code children through a named `claude_code` config |
-| [`collaboration/shared_board.py`](collaboration/shared_board.py)             | Shared task board: every task is an agent, `AGENTS` is the context   |
+| Script                                                                       | What it shows                                                      |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| [`showcase.py`](showcase.py)                                                 | End-to-end `Flow` run, persistence, and gym-style stepping         |
+| [`drop_in_llm.py`](drop_in_llm.py)                                           | Minimal `FlowLLM` as a drop-in LLM                                 |
+| [`llm_query_fanout.py`](llm_query_fanout.py)                                 | Concurrent `llm_query` calls with `asyncio.gather`                 |
+| [`skills.py`](skills.py)                                                     | On-disk skills + dynamic prompt section                            |
+| [`structured_output.py`](structured_output.py)                               | Root + child `output_schema` validation                            |
+| [`summarizer.py`](summarizer.py)                                             | Recursive map-reduce summarization                                 |
+| [`providers/claude_code_delegation.py`](providers/claude_code_delegation.py) | Claude Code children through a named `claude_code` config          |
+| [`collaboration/shared_board.py`](collaboration/shared_board.py)             | Shared task board: every task is an agent, `AGENTS` is the context |
 
 ```bash
 python examples/showcase.py
@@ -52,13 +52,13 @@ python examples/providers/claude_code_delegation.py
 
 ## Tasks
 
-| Folder                           | What it shows                                                                                                                                       |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`needle/`](needle/)             | Needle-in-haystack (in-memory + filesystem variants)                                                                                                |
-| [`coding/`](coding/)             | Interactive file-editing agent plus the flagship model-designed Boids browser build                                                                 |
-| [`autoresearch/`](autoresearch/) | TinyStories autoresearch loop with Modal GPU trials                                                                                                 |
-| [`research/textcraft/`](research/textcraft/) | Gymnasium TextCraft-Synth environment, grouped recursive rollouts, exact per-agent credit, and Tinker RLOO training |
-| [`shepherd/`](shepherd/)         | Live meta-agent recovers a jammed Sokoban worker by forking its graph and replaying recovery branches in parallel, with board panels + a node trace |
+| Folder                                       | What it shows                                                                                                                                       |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`needle/`](needle/)                         | Needle-in-haystack (in-memory + filesystem variants; [`harnesses/`](needle/harnesses/) runs it on every harness)                                    |
+| [`coding/`](coding/)                         | Interactive file-editing agent plus the flagship model-designed Boids browser build                                                                 |
+| [`autoresearch/`](autoresearch/)             | TinyStories autoresearch loop with Modal GPU trials                                                                                                 |
+| [`research/textcraft/`](research/textcraft/) | Gymnasium TextCraft-Synth environment, grouped recursive rollouts, exact per-agent credit, and Tinker RLOO training                                 |
+| [`shepherd/`](shepherd/)                     | Live meta-agent recovers a jammed Sokoban worker by forking its graph and replaying recovery branches in parallel, with board panels + a node trace |
 
 [`shepherd/README.md`](shepherd/README.md) has the canonical run and artifact commands. [`docs/shepherd.md`](../docs/shepherd.md) is the worked-run walkthrough: the jam, the plans the meta-agent wrote against it, what each recovery branch did, and how a profile user-prompt modifier adds the live board to the current worker turn.
 
@@ -66,12 +66,12 @@ After a Shepherd run, `make showcase-shepherd-assets` redraws the agent summary 
 
 ## Tours & integrations
 
-| Folder                     | What it shows                                  |
-| -------------------------- | ---------------------------------------------- |
+| Folder                     | What it shows                                                   |
+| -------------------------- | --------------------------------------------------------------- |
 | [`graph/`](graph/)         | Offline Node API (inspect, append, fork, attach subtrees, save) |
-| [`control/`](control/)     | Delegation, branching, injection               |
-| [`sandboxes/`](sandboxes/) | Docker and Modal remote execution              |
-| [`providers/`](providers/) | DSPy, MCP, Tinker adapters                     |
+| [`control/`](control/)     | Delegation, branching, injection                                |
+| [`sandboxes/`](sandboxes/) | Docker and Modal remote execution                               |
+| [`providers/`](providers/) | DSPy, MCP, Tinker adapters                                      |
 
 The nonblocking delegation example is deterministic and needs no API key:
 

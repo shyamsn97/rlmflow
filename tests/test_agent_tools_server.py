@@ -39,31 +39,25 @@ async def shell(flow, step):
     return Node(DONE, result=text, exits=exits)
 
 
-def shell_agent(g, task, *turns, args=None, **config):
-    return g.create_agent(
-        task,
-        config=AgentConfig(harness=shell, harness_options={"turns": [list(t) for t in turns]}, **config),
-        **(args or {}),
-    )
+def shell_config(*turns, **config):
+    return AgentConfig(harness=shell, harness_options={"turns": [list(t) for t in turns]}, **config)
 
 
 def test_repl_cells_land_code_nodes_and_keep_state():
     g = Graph()
-    root = shell_agent(
-        g,
-        "count",
+    root = g.create_agent("count", doc="one two three")
+    config = shell_config(
         [
             "rlmflow repl 'n = len(doc)'",
             "rlmflow repl <<'EOF'\nwords = doc.split()\nprint(n, len(words))\nEOF",
             "rlmflow repl '1/0'",
             "rlmflow repl 'submit(n * 2)'",
         ],
-        args={"doc": "one two three"},
     )
     flow = Flow()
 
     async def run():
-        return [step.node.type async for step in flow.run_streaming(g)]
+        return [step.node.type async for step in flow.run_streaming(g, root_config=config)]
 
     streamed = asyncio.run(run())
     asyncio.run(flow.aclose())
@@ -85,18 +79,18 @@ def test_repl_cells_land_code_nodes_and_keep_state():
 
 def test_ending_a_turn_with_running_children_waits_then_resumes():
     g = Graph()
-    g.add_config(AgentConfig(name="worker", description="adds"))
-    root = shell_agent(
-        g,
-        "delegate",
+    root = g.create_agent("delegate")
+    config = shell_config(
         ["rlmflow repl \"h = launch_agent('add', config='worker', x=2)\"", "rlmflow agents"],
         ["rlmflow repl 'print(h.result())'", "rlmflow done '{\"total\": 5}'"],
-        max_depth=1,
     )
     from helpers import StubLLM
 
-    flow = Flow(StubLLM(lambda messages: "```repl\nawait asyncio.sleep(1)\nsubmit(x + 3)\n```"))
-    asyncio.run(flow.arun(g))
+    flow = Flow(
+        StubLLM(lambda messages: "```repl\nawait asyncio.sleep(1)\nsubmit(x + 3)\n```"),
+        configs=[AgentConfig(name="worker", description="adds")],
+    )
+    asyncio.run(flow.arun(g, root_config=config))
     asyncio.run(flow.aclose())
 
     assert g.result(root) == {"total": 5}
@@ -112,10 +106,8 @@ def test_ending_a_turn_with_running_children_waits_then_resumes():
 
 def test_spawn_wait_and_send_from_the_shell():
     g = Graph()
-    g.add_config(AgentConfig(name="worker"))
-    root = shell_agent(
-        g,
-        "fan out",
+    root = g.create_agent("fan out")
+    config = shell_config(
         [
             "rlmflow spawn --config worker --name a --arg x=40 'add two'",
             "rlmflow wait a",
@@ -125,12 +117,14 @@ def test_spawn_wait_and_send_from_the_shell():
             "rlmflow send nobody hi",
             "rlmflow done finished",
         ],
-        max_depth=1,
     )
     from helpers import StubLLM
 
-    flow = Flow(StubLLM(lambda messages: "```repl\nsubmit(x + 2)\n```"))
-    asyncio.run(flow.arun(g))
+    flow = Flow(
+        StubLLM(lambda messages: "```repl\nsubmit(x + 2)\n```"),
+        configs=[AgentConfig(name="worker")],
+    )
+    asyncio.run(flow.arun(g, root_config=config))
     asyncio.run(flow.aclose())
 
     assert g.result(root) == "finished"
@@ -147,6 +141,7 @@ def test_spawn_wait_and_send_from_the_shell():
 def test_a_token_stops_working_when_its_turn_ends():
     g = Graph()
     root = g.create_agent("x")
+    root.bind_config(AgentConfig())
     flow = Flow()
     seen = {}
 
@@ -170,7 +165,8 @@ def test_a_token_stops_working_when_its_turn_ends():
 
 def test_concurrent_cells_from_one_agent_run_one_at_a_time():
     g = Graph()
-    root = shell_agent(g, "race", [])
+    root = g.create_agent("race")
+    root.bind_config(shell_config([]))
     flow = Flow()
 
     async def run():
@@ -178,7 +174,13 @@ def test_concurrent_cells_from_one_agent_run_one_at_a_time():
 
         async with flow.agent_tools.turn(Step(g, root, root)) as turn:
             results = await asyncio.gather(
-                *(sh(f"rlmflow repl 'import time; time.sleep(0.2); seen = {i}; print(seen)'", turn.env) for i in range(3))
+                *(
+                    sh(
+                        f"rlmflow repl 'import time; time.sleep(0.2); seen = {i}; print(seen)'",
+                        turn.env,
+                    )
+                    for i in range(3)
+                )
             )
         await flow.aclose()
         return results
@@ -194,14 +196,25 @@ def test_mcp_exposes_the_same_tools_with_repl_as_python():
     from rlmflow.agent_tools.mcp import build_server, mcp_config
 
     tools = asyncio.run(build_server().list_tools())
-    assert sorted(tool.name for tool in tools) == ["agents", "done", "python", "send", "spawn", "wait"]
+    assert sorted(tool.name for tool in tools) == [
+        "agents",
+        "done",
+        "python",
+        "send",
+        "spawn",
+        "wait",
+    ]
     [python] = [tool for tool in tools if tool.name == "python"]
     schema = getattr(python, "input_schema", None) or python.inputSchema
     assert list(schema["properties"]) == ["code"]
     server = mcp_config({"RLMFLOW_TOKEN": "t"})["mcpServers"]["rlmflow"]
-    assert server["args"] == ["-m", "rlmflow.agent_tools.mcp"] and server["env"] == {"RLMFLOW_TOKEN": "t"}
+    assert server["args"] == ["-m", "rlmflow.agent_tools.mcp"] and server["env"] == {
+        "RLMFLOW_TOKEN": "t"
+    }
 
 
-@pytest.mark.parametrize(("raw", "value"), [('{"a": 1}', {"a": 1}), ("42", 42), ("plain words", "plain words")])
+@pytest.mark.parametrize(
+    ("raw", "value"), [('{"a": 1}', {"a": 1}), ("42", 42), ("plain words", "plain words")]
+)
 def test_done_and_args_take_json_or_text(raw, value):
     assert json_or_text(raw) == value

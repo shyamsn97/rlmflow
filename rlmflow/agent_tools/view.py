@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from rlmflow.graph.nodes import Node, agent_ref_id
-from rlmflow.harnesses.repl.runtime.repl import AgentReference
+from rlmflow.runtime.repl import AgentReference
 
 if TYPE_CHECKING:
     from rlmflow.graph.graph import Graph
@@ -35,7 +35,8 @@ class AgentFrontier:
 
 @dataclass(frozen=True, slots=True)
 class AgentHandle(AgentReference):
-    """Future-like child selector whose observations refresh on every REPL action."""
+    """Future-like child selector. ``status``, ``done()`` and ``result()`` are a snapshot from the
+    start of the current cell; only ``await`` waits."""
 
     agent_id: str
     name: str
@@ -46,7 +47,7 @@ class AgentHandle(AgentReference):
         return self.agent_id
 
     def _current(self) -> AgentInfo | None:
-        from rlmflow.harnesses.repl.runtime.repl import current_binding
+        from rlmflow.runtime.repl import current_binding
 
         agents = current_binding().get("agents")
         if not isinstance(agents, AgentDirectory):
@@ -70,7 +71,7 @@ class AgentHandle(AgentReference):
 
     async def wait_for_result(self) -> object | None:
         """Wait for completion and return the result."""
-        from rlmflow.harnesses.repl.runtime.repl import current_binding
+        from rlmflow.runtime.repl import current_binding
 
         waiter = current_binding().get("wait_agent")
         if waiter is None:
@@ -111,7 +112,7 @@ class AgentInfo(AgentReference):
 
     async def wait_for_result(self) -> object | None:
         """Wait for completion and return the result."""
-        from rlmflow.harnesses.repl.runtime.repl import current_binding
+        from rlmflow.runtime.repl import current_binding
 
         waiter = current_binding().get("wait_agent")
         if waiter is None:
@@ -380,7 +381,7 @@ def build_agent_directory(graph: Graph, viewer: Node) -> AgentDirectory:
             AgentInfo(
                 agent_id=agent.id,
                 name=agent.name,
-                config=agent.config.name,
+                config=agent.config_name or "root",
                 path=paths[agent.id],
                 depth=graph.depth(agent),
                 parent_id=launcher.id if launcher is not None else None,

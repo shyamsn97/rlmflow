@@ -23,7 +23,8 @@ from pathlib import Path
 
 from rlmflow import AgentConfig, DockerRuntime, Flow, Graph, LocalRuntime, SubprocessRuntime
 from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
-from rlmflow.harnesses.repl.files import (
+from rlmflow.llm import client_for
+from rlmflow.tools.files import (
     append_file,
     edit_file,
     line_count,
@@ -32,7 +33,6 @@ from rlmflow.harnesses.repl.files import (
     read_lines,
     write_file,
 )
-from rlmflow.llm import client_for
 
 examples_dir = next(path for path in Path(__file__).resolve().parents if path.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -90,8 +90,8 @@ def main():
     parser.add_argument(
         "--harness",
         default="repl",
-        choices=["repl", "claude_code"],
-        help="What runs the root agent; workers always use the REPL harness.",
+        choices=["repl", "claude_code", "pi"],
+        help="What runs the root agent; workers always use the REPL harness (see harnesses/run.py).",
     )
     parser.add_argument("--no-viz", action="store_true", help="Disable the live agent tree")
     parser.add_argument(
@@ -131,37 +131,34 @@ def main():
         else:
             runtime = SubprocessRuntime(working_directory=workdir)
 
-        llm_clients = None
+        configs = [AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)]
         if args.fast_model:
-            llm_clients = {"fast": client_for(args.fast_model)}
-
-        flow = Flow(
-            client_for(args.model),
-            llm_clients=llm_clients,
-            runtime=runtime,
-            tools=NEEDLE_FILE_TOOLS,
-        )
-
-        g = Graph()
-        if args.fast_model:
-            g.add_config(
+            configs.append(
                 AgentConfig(
                     name="searcher",
-                    model="fast",
+                    model=args.fast_model,
                     description="cheap model for searching one batch of files",
                     max_iters=args.max_iters,
                     max_depth=0,
                 )
             )
+        flow = Flow(
+            client_for(args.model),
+            configs=configs,
+            runtime=runtime,
+            tools=NEEDLE_FILE_TOOLS,
+        )
+        config = AgentConfig(
+            harness=args.harness, max_depth=args.max_depth, max_iters=args.max_iters
+        )
+
+        g = Graph()
         root = g.create_agent(
             f"There are {args.num_files} text files in haystack/. "
             "Exactly one line in one file matches the pattern "
             "`The magic number is <number>`. Find and return the number. "
             "There are too many files to search manually, so split the work "
             "into batches.",
-            config=AgentConfig(
-            harness=args.harness, max_depth=args.max_depth, max_iters=args.max_iters
-        ),
         )
         out_dir = Path(args.out_dir)
         consumers = ConsumerGroup()
@@ -172,7 +169,7 @@ def main():
 
         async def drive() -> None:
             try:
-                async for item in flow.run_streaming(g):
+                async for item in flow.run_streaming(g, root_config=config):
                     consumers.handle(item, g)
             finally:
                 consumers.close()

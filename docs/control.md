@@ -9,9 +9,9 @@ import asyncio
 from rlmflow import AgentConfig, Flow, Graph, Node
 
 g = Graph()
-root = g.create_agent("Audit this repository.", config=AgentConfig(max_depth=2))
+root = g.create_agent("Audit this repository.")
 
-flow = Flow(client)
+flow = Flow(client, configs=[AgentConfig(max_depth=2)])   # "default"
 
 async def drive():
     async for item in flow.run_streaming(g):
@@ -28,91 +28,59 @@ Pass `until="next"` for one appended Node, `until="idle"` for a clean `ExecOutpu
 
 ## Per-agent limits
 
-Limits belong to the agent, not the flow. Set them on the agent's `AgentConfig` when you create it with `g.create_agent(...)`:
+Limits belong to a config, and the Flow owns the configs. Roots run with the run's `root_config`; everything else names one of `flow.configs`.
 
-The authoritative `AgentConfig` defaults are:
+The `AgentConfig` defaults are:
 
 - `max_depth=1`;
 - `max_iters=None` and `max_budget=None` (unbounded turns and tokens);
-- `child_config={}`, meaning launched children copy the parent's config (untyped unless the launch passes `schema=`);
 - `keep_n_messages=None`, meaning prompts retain the full transcript;
-- `max_output_length=20_000` and `max_query_chars=20_000` (official RLM's per-block REPL cap);
-- `resume_on_child_done=True`, so a parent that has already submitted still observes later child results; pass `False` on scored evals that must stay terminal.
-
-Passing `None` explicitly opts out of the iteration or token limit.
+- `max_output_length=20_000` and `max_query_chars=20_000`.
 
 `max_budget` is a soft threshold over recorded model usage for the complete root tree. Once crossed, new child creation stops and every unfinished agent gets one final turn. Descendants finalize first, then their parents synthesize the returned results. Calls already in flight plus one final turn per unfinished agent can exceed the threshold; use `workers` and per-provider output limits when a tighter billing bound matters.
 
 ```python
-root = g.create_agent(
-    "Audit this repository.",
-    config=AgentConfig(
-        model="fast",
-        max_depth=2,
-        max_iters=20,
-        max_budget=200_000,
-        output_schema=schema,
-    ),
-    tree=listing,
+g = Graph()
+root = g.create_agent("Audit this repository.", tree=listing)
+flow.run(
+    g,
+    root_config=AgentConfig(model="gpt-5-mini", max_depth=2, max_iters=20, max_budget=200_000, output_schema=schema),
 )
 ```
 
-`Flow(root_config=...)` is only the default for agents that `flow.run("task string")` creates. Agents you add to a graph carry their own `config=`:
+`root_config` is an `AgentConfig`, the name of one of the Flow's configs, or `None` for `"default"`. It applies to that call only, so the same graph can continue with different settings:
 
 ```python
-from rlmflow import AgentConfig, Flow
-
-flow = Flow(client, root_config=AgentConfig(max_depth=2, max_iters=20))
-flow.run("Audit this repository.")
-
-g = Graph()
-root = g.create_agent(
-    "Audit this repository.",
-    config=AgentConfig(max_depth=2, max_iters=40),
-)
+g = Graph.load("runs/audit")
+g.send(root, "Now check the tests too.")
+flow.run(g, root_config=AgentConfig(max_depth=2, max_iters=40))
 ```
+
+Each agent records the config it last ran with in `metadata["config"]`. That copy is for viewers and is never read back to drive a run.
 
 ### Named configs
 
-An agent launched without `config=` copies its parent's config. Other configs are named and live on the graph; the model picks one with `launch_agent(task, config=NAME)` and sees each config's `description`. For a stronger coordinator with cheaper workers:
+Named configs live on the Flow; the model picks one with `launch_agent(task, config=NAME)` and sees each config's `description`. `launch_agent` without `config=` uses `"default"`. For a stronger coordinator with cheaper workers:
 
 ```python
-flow = Flow(root_client, llm_clients={"fast": worker_client})
-g = Graph()
-g.add_config(AgentConfig(name="worker", model="fast", description="cheap and fast"))
-root = g.create_agent("Audit this repository.", config=AgentConfig(max_depth=2))
+flow = Flow(
+    client_for("gpt-5"),
+    configs=[AgentConfig(name="worker", model="gpt-5-mini", description="cheap and fast")],
+)
+flow.run("Audit this repository.", root_config=AgentConfig(max_depth=2))
 ```
 
-The table lives in the graph, so the host decides it and the saved run shows it.
+`model` is a model name; the Flow builds and caches its client. Register a client in `llm_clients` only when a name can't describe it. `flow.add_config(config)` adds one later; an unknown name is a `KeyError` when the Flow reaches that agent. `g.spawn(task, config="worker")` puts a top-level agent on a named config.
 
 ### Harnesses
 
 `AgentConfig.harness` names the step function that runs an agent: `"repl"`, the default, is rlmflow's model-and-REPL loop; `"claude_code"` and `"pi"` run one headless session turn per step. A harness config is just another named config:
 
 ```python
-g.add_config(
-    AgentConfig(
-        name="claude",
-        harness="claude_code",
-        harness_options={"tools": "loose"},
-    )
-)
+flow.add_config(AgentConfig(name="claude", harness="claude_code", harness_options={"mcp": True}))
 ```
 
-External sessions reach the same agent tools from the shell through `rlmflow repl`, so every cell they run lands as a `code` node. With `tools="strict"` (the default) Claude Code reads with its own tools but changes files only through `rlmflow repl`. Claude Code must already be installed and authenticated. Replaying the graph resumes the recorded session, or starts a fresh one from the REPL state when the session is gone.
-
-The module-level `start(...)` builds a root with no flow involved, which is what loading, forking, and tests do. It has nothing to inherit from, so it carries `AgentConfig`'s own defaults; pass `config=` to build on something else.
-
-A loaded v7 run keeps the complete effective `AgentConfig`, including all limits. Changing a loaded config before resuming is an explicit continuation override:
-
-```python
-from rlmflow import AgentStart
-
-loaded = AgentStart.load("runs/audit")
-loaded.config.max_iters = 40
-```
-
-Children inherit the parent's config, `max_iters` included, through `config.child(name)`, with `child_config` applied on top. A launch `schema=` wins over `child_config["output_schema"]`. Named launch arguments become direct child REPL variables.
+External sessions reach the same agent tools from the shell through `rlmflow repl`, so every cell they run lands as a `code` node. They keep their own tools and permissions: Claude Code runs with your settings, and rlmflow only allows `rlmflow` commands on top. Claude Code must already be installed and authenticated. Replaying the graph resumes the recorded session, or starts a fresh one from the REPL state when the session is gone.
 
 ## Multi-turn runs
 

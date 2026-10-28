@@ -140,6 +140,7 @@ def run_rlmflow(
     flow = Flow(
         build_rlmflow_llm(model),
         llm_clients={"fast": build_rlmflow_llm(fast_model)},
+        configs=[AgentConfig(max_depth=max_depth, max_iters=max_iters)],
         runtime=runtime,
         tools=[FILE_TOOLS],
         workers=max_concurrency,
@@ -149,17 +150,15 @@ def run_rlmflow(
     started = time.perf_counter()
     try:
         g = Graph()
-        root = g.create_agent(
-            PROMPT,
-            config=AgentConfig(
-                output_schema=json_schema_for(BoidsSimulation),
-                max_depth=max_depth,
-                max_iters=max_iters,
-            ),
-        )
+        root = g.create_agent(PROMPT)
         graph_dir = run_dir / "graph"
+        config = AgentConfig(
+            output_schema=json_schema_for(BoidsSimulation),
+            max_depth=max_depth,
+            max_iters=max_iters,
+        )
 
-        asyncio.run(print_run(flow, g, graph_dir, width=20))
+        asyncio.run(print_run(flow, g, graph_dir, width=20, root_config=config))
 
         result = g.result(root) or ""
         (run_dir / "response.txt").write_text(str(result))

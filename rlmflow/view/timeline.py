@@ -49,8 +49,9 @@ def summarize(node: Node, limit: int = 96) -> str:
     data = node.data
     match node.type:
         case "agent_start":
-            config = node.config
-            text = f"start {node.name} · {config.name} · {config.harness} · model {config.model}"
+            config = node.metadata.get("config") or {}
+            name = node.config_name or "root"
+            text = f"start {node.name} · {name} · {config.get('harness', '?')} · model {config.get('model', '?')}"
         case "message":
             text = f"from {data.get('sender', 'user')}: {data.get('text', '')}"
         case "llm_output":

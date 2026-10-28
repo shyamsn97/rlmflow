@@ -90,25 +90,27 @@ def main() -> None:
         default=str(example_run_dir("claude-code-delegation")),
         help="Saved rlmflow graph",
     )
-    parser.add_argument("--claude-command", default=None, help="claude executable (default: the SDK's bundled one)")
+    parser.add_argument(
+        "--claude-command", default=None, help="claude executable (default: the SDK's bundled one)"
+    )
     parser.add_argument("--max-iters", type=int, default=12)
     args = parser.parse_args()
 
     workdir = Path(args.workdir).resolve()
     prepare_workspace(workdir)
 
-    flow = Flow(OpenAIClient(args.model), runtime=LocalRuntime(working_directory=workdir))
-    g = Graph()
-    g.add_config(
-        AgentConfig(
-            name="claude",
-            harness="claude_code",
-            description="a Claude Code session that can read and edit the workspace",
-            max_depth=0,
-            output_schema=CHILD_SCHEMA,
-            harness_options={"tools": "loose", "command": args.claude_command},
-        )
+    claude = AgentConfig(
+        name="claude",
+        harness="claude_code",
+        description="a Claude Code session that can read and edit the workspace",
+        max_depth=0,
+        output_schema=CHILD_SCHEMA,
+        harness_options={"command": args.claude_command, "sdk": {"permission_mode": "acceptEdits"}},
     )
+    flow = Flow(
+        OpenAIClient(args.model), configs=[claude], runtime=LocalRuntime(working_directory=workdir)
+    )
+    g = Graph()
     root = g.create_agent(
         "Launch two independent child agents before awaiting either one. "
         "Child one must review calculator.py and add useful docstrings without "
@@ -117,14 +119,10 @@ def main() -> None:
         "non-overlapping tasks to launch_agent with config='claude', await both "
         "handles together, then submit a concise summary and both structured "
         "worker results.",
-        config=AgentConfig(
-            max_depth=1,
-            max_iters=args.max_iters,
-            output_schema=ROOT_SCHEMA,
-        ),
     )
+    config = AgentConfig(max_iters=args.max_iters, output_schema=ROOT_SCHEMA)
     out_dir = Path(args.out_dir)
-    asyncio.run(print_run(flow, g, out_dir))
+    asyncio.run(print_run(flow, g, out_dir, root_config=config))
 
     print("\nResult:")
     print(json.dumps(g.result(root), indent=2))

@@ -88,6 +88,7 @@ class RolloutFlow(Flow):
     def __init__(self, llm: Any, *, budget: Budget | None = None, **kwargs: Any) -> None:
         super().__init__(llm, **kwargs)
         self.budget = budget or Budget()
+        self.root_config = self.add_config(self.budget.agent_config())
         #: Agent id -> ``EnvSession``.
         self.sessions: dict[str, EnvSession] = {}
         #: ``llm_output`` node id -> ``TurnSample``, so transcript order comes for free.
@@ -164,7 +165,7 @@ class RolloutFlow(Flow):
 
     # -- Budgets ----------------------------------------------------------
 
-    def spawn(self, step: Step, task: str, *, config: AgentConfig, **kwargs: Any) -> Node:
+    def spawn(self, step: Step, task: str, *, config: str = "default", **kwargs: Any) -> Node:
         g, parent = step.graph, step.agent
         limit = self.budget.max_children_per_agent
         if limit is not None and len(g.children(parent)) >= limit:
@@ -291,7 +292,6 @@ class Collector:
             root = graph.create_agent(
                 task.goal,
                 **{OBSERVATION_INPUT: json.dumps(observation, default=str)},
-                config=self.flow.budget.agent_config(),
             )
             root.annotate(
                 "rollout.task",

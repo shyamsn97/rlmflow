@@ -104,12 +104,14 @@ def run_branch(root: Path, name: str, implementation: str, label: str):
     runtime = LocalRuntime(working_directory=workdir)
     flow = Flow(RepairLLM(implementation, label), tools=[FILE_TOOLS], runtime=runtime)
     g = Graph()
-    agent = g.create_agent(TASK, config=AgentConfig(max_depth=0, max_iters=3))
+    agent = g.create_agent(TASK)
 
     async def drive() -> None:
         checkpoint = GraphCheckpointer(workdir / "graph")
         try:
-            async for item in flow.run_streaming(g):
+            async for item in flow.run_streaming(
+                g, root_config=AgentConfig(max_depth=0, max_iters=3)
+            ):
                 checkpoint.handle(item, g)
         finally:
             checkpoint.close()

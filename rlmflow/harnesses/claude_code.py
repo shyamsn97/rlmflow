@@ -3,19 +3,20 @@
 Needs ``rlmflow[claude]`` (``claude-agent-sdk``), which bundles the Claude Code
 CLI; sign in once with ``claude`` (or set ``ANTHROPIC_API_KEY``).
 
+Claude runs with your own settings (permissions, ``CLAUDE.md``, MCP servers,
+plugins); rlmflow only allows ``rlmflow`` commands on top of them.
+
 ``harness_options``:
 
-- ``tools``: ``"strict"`` (the default) lets Claude read with its own tools but
-  change things only through ``rlmflow``, so every change is a ``code`` node.
-  ``"loose"`` also allows its edit tools and any shell command; the workspace
-  snapshot at each cell and at the turn's end still captures the files.
 - ``mcp``: also offer the agent tools over MCP, with ``repl`` as ``python(code)``.
 - ``command``: a ``claude`` executable to use instead of the SDK's bundled one.
+- ``sdk``: fields merged into ``ClaudeAgentOptions`` (``permission_mode``,
+  ``max_turns``, ``plugins``, ...). ``allowed_tools`` there is extended, not replaced.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from rlmflow.graph.nodes import Step
@@ -32,21 +33,15 @@ if TYPE_CHECKING:
     from rlmflow.agent_tools.server import Turn
     from rlmflow.flow import Flow
 
-READ_TOOLS = ["Read", "Grep", "Glob", "LS"]
-EDIT_TOOLS = ["Edit", "Write", "NotebookEdit"]
-
-
 @dataclass(frozen=True)
 class ClaudeCodeOptions(SessionOptions):
     command: str | None = None
     mcp: bool = False
+    sdk: dict[str, Any] = field(default_factory=dict)
 
-    def permissions(self) -> dict[str, Any]:
-        """The SDK's ``allowed_tools``, ``disallowed_tools`` and ``permission_mode``."""
-        extra = ["mcp__rlmflow"] if self.mcp else []
-        if self.strict:
-            return {"allowed_tools": ["Bash(rlmflow:*)", *READ_TOOLS, *extra], "disallowed_tools": EDIT_TOOLS}
-        return {"allowed_tools": ["Bash", *READ_TOOLS, *EDIT_TOOLS, *extra], "permission_mode": "acceptEdits"}
+    def allowed_tools(self) -> list[str]:
+        """The user's ``sdk`` allowed tools plus what rlmflow needs: its commands, and its MCP tools."""
+        return [*self.sdk.get("allowed_tools", []), "Bash(rlmflow:*)", *(["mcp__rlmflow"] if self.mcp else [])]
 
 
 class ClaudeCodeHarness(SessionHarness):
@@ -76,13 +71,14 @@ class ClaudeCodeHarness(SessionHarness):
         from claude_agent_sdk import ClaudeAgentOptions
 
         config = step.agent.config
-        prompt = system_prompt(flow, step, strict=options.strict)
+        prompt = system_prompt(flow, step)
         fields: dict[str, Any] = {
             "system_prompt": {"type": "preset", "preset": "claude_code", "append": prompt},
             "cwd": flow.workspaces.path(step.agent),
             "env": env,
             "cli_path": options.command,
-            **options.permissions(),
+            **options.sdk,
+            "allowed_tools": options.allowed_tools(),
         }
         if session.resume:
             fields.update(resume=session.id, fork_session=session.fork)

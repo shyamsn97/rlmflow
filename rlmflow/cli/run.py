@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -45,11 +46,10 @@ class RunCLI:
         workers: int | None = None,
         tools: str | None = None,
         resume: str | None = None,
-        agent: str | None = None,
+        flow: str | None = None,
     ) -> None:
         self.query = None if query is None else str(query)
         self.resume = resume
-        self.agent = agent
         self.options, _ = resolve_options(
             {
                 "model": model,
@@ -61,6 +61,7 @@ class RunCLI:
                 "max_iters": max_iters,
                 "workers": workers,
                 "tools": tools,
+                "flow": flow,
             }
         )
 
@@ -75,7 +76,6 @@ class RunCLI:
             self.options,
             headless=False,
             resume=self.resume,
-            agent=self.agent,
         )
 
     def print(self, query: str | None = None) -> None:
@@ -89,7 +89,6 @@ class RunCLI:
             self.options,
             headless=True,
             resume=self.resume,
-            agent=self.agent,
         )
 
     def __str__(self) -> str:
@@ -122,11 +121,10 @@ class TuiCLI:
         workers: int | None = None,
         tools: str | None = None,
         resume: str | None = None,
-        agent: str | None = None,
+        flow: str | None = None,
     ) -> None:
         self.query = None if query is None else str(query)
         self.resume = resume
-        self.agent = agent
         self.options, _ = resolve_options(
             {
                 "model": model,
@@ -138,6 +136,7 @@ class TuiCLI:
                 "max_iters": max_iters,
                 "workers": workers,
                 "tools": tools,
+                "flow": flow,
             }
         )
 
@@ -147,7 +146,6 @@ class TuiCLI:
             self.options,
             headless=False,
             resume=self.resume,
-            agent=self.agent,
         )
         return ""
 
@@ -158,7 +156,6 @@ def run_agent(
     *,
     headless: bool = False,
     resume: str | Path | None = None,
-    agent: str | None = None,
     flow: Any = None,
 ) -> None:
     """Run the coding agent. Headless streams one query; otherwise the TUI opens."""
@@ -166,44 +163,43 @@ def run_agent(
     workdir.mkdir(parents=True, exist_ok=True)
     graph_dir = workdir / "graph"
 
-    own_flow = flow is None and agent is None
+    own_flow = flow is None and options.flow is None
     if flow is None:
-        flow = build_flow(options, workdir=workdir, agent=agent)
+        flow = build_flow(options, workdir=workdir)
     root = load_root(resume) if resume is not None else None
-    config = coding_config(options) if own_flow else None
 
-    # Naming a model we did not choose would be a lie when --agent built the flow.
-    model = options.model if own_flow else (agent or "custom flow")
+    # Naming a model we did not choose would be a lie when --flow built the flow.
+    model = options.model if own_flow else (options.flow or "custom flow")
     print(f"rlmflow · {model} · {options.docker_image or 'local'} · {workdir}")
     if headless:
-        _run_headless(flow, query, root, graph_dir, config)
+        _run_headless(flow, query, root, graph_dir)
     else:
-        _run_tui(flow, query, root, graph_dir, config)
+        _run_tui(flow, query, root, graph_dir)
     print(f"run saved to {graph_dir}")
 
 
-def coding_config(options: RunOptions) -> tuple[Any, list[Any]]:
-    """The coding agent's config, and a ``worker`` config whose agents report what they changed."""
+def coding_configs(options: RunOptions) -> list[Any]:
+    """The coding agent's ``default`` config, and a ``worker`` config whose agents report what they changed."""
     from rlmflow import CODING_HANDOFF_SCHEMA, AgentConfig
 
-    root = AgentConfig(max_depth=options.max_depth, max_iters=options.max_iters)
+    default = AgentConfig(max_depth=options.max_depth, max_iters=options.max_iters)
     worker = AgentConfig(
         name="worker",
-        model="fast",
+        model=options.fast_model,
         description="Does one bounded coding task in the working directory and reports what changed.",
         max_iters=options.max_iters,
         output_schema=CODING_HANDOFF_SCHEMA if options.tools == "files" else None,
     )
-    return root, [worker]
+    return [default, worker]
 
 
-def build_flow(options: RunOptions, *, workdir: Path, agent: str | None = None) -> Any:
-    """The coding agent by default; ``module:factory`` when the caller has their own."""
+def build_flow(options: RunOptions, *, workdir: Path) -> Any:
+    """The coding agent's Flow, or ``options.flow``'s (a ``module:factory``) when the caller has their own."""
     from rlmflow import FILE_TOOLS, DockerRuntime, Flow, LocalRuntime
     from rlmflow.llm import client_for
 
-    if agent is not None:
-        return load_factory(agent)
+    if options.flow is not None:
+        return load_factory(options.flow, project=workdir)
 
     require_api_key(options.model)
     runtime = (
@@ -214,20 +210,23 @@ def build_flow(options: RunOptions, *, workdir: Path, agent: str | None = None) 
     effort = options.reasoning_effort
     return Flow(
         client_for(options.model, reasoning_effort=effort),
-        llm_clients={"fast": client_for(options.fast_model, reasoning_effort=effort)},
+        llm_clients={options.fast_model: client_for(options.fast_model, reasoning_effort=effort)},
+        configs=coding_configs(options),
         runtime=runtime,
         tools=[FILE_TOOLS] if options.tools == "files" else None,
         workers=options.workers,
     )
 
 
-def load_factory(target: str) -> Any:
-    """Import ``module:factory`` and call it; it must hand back a Flow."""
+def load_factory(target: str, *, project: Path | None = None) -> Any:
+    """Import ``module:factory`` (from ``project`` too) and call it; it must hand back a Flow."""
     from rlmflow import Flow
 
     module_name, _, attr = target.partition(":")
     if not module_name or not attr:
-        raise CliError(f"--agent wants 'module:factory', not {target!r}")
+        raise CliError(f"--flow wants 'module:factory', not {target!r}")
+    if project is not None and str(project) not in sys.path:
+        sys.path.insert(0, str(project))
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
@@ -264,7 +263,7 @@ def require_api_key(model: str, environ: dict[str, str] | None = None) -> None:
         raise CliError(f"{key} is not set, and {model} needs it")
 
 
-def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path, configs: Any) -> None:
+def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> None:
     """No dashboard: stream one query, printing the tree as it grows."""
     from rlmflow import Graph
     from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveTreeRenderer
@@ -274,11 +273,8 @@ def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path, con
     consumers = ConsumerGroup([LiveTreeRenderer(), GraphCheckpointer(graph_dir)])
     consumers.init(flow)
     if graph is None:
-        root, extra = configs if configs is not None else (None, [])
         graph = Graph()
-        for config in extra:
-            graph.add_config(config)
-        agent = graph.create_agent(query or "", config=root)
+        agent = graph.create_agent(query or "")
     else:
         agent = _first_agent(graph)
         if query:
@@ -296,7 +292,7 @@ def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path, con
     print(f"\n{graph.result(agent) or '(no result)'}\n")
 
 
-def _run_tui(flow: Any, query: str | None, graph: Any, graph_dir: Path, configs: Any) -> None:
+def _run_tui(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> None:
     """The dashboard drives its own turns; it only needs the flow and a place to save.
 
     A query here is the opening turn, not a different mode: the panels are up
@@ -305,8 +301,7 @@ def _run_tui(flow: Any, query: str | None, graph: Any, graph_dir: Path, configs:
     from rlmflow.cli.tui import FlowTUI
     from rlmflow.consumers import GraphCheckpointer
 
-    root, extra = configs if configs is not None else (None, [])
-    ui = FlowTUI(graph, config=root, configs=extra, sink=GraphCheckpointer(graph_dir))
+    ui = FlowTUI(graph, sink=GraphCheckpointer(graph_dir))
     ui.init(flow)
     try:
         ui.run(query=query)

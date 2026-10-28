@@ -2,7 +2,7 @@
 
 > **Status:** Historical design record. The current beta implements shared
 > worker placement with `reuse_repl=True`; see
-> [`docs/runtimes.md`](../runtimes.md#isolated-and-colocated-agents). API names and
+> [`docs/runtimes.md`](../runtimes.md#isolated-agents). API names and
 > stage status below describe the engine at the time of the investigation.
 >
 > **Covers** every defect found while designing shared REPLs, plus the sharing

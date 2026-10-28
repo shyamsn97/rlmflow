@@ -74,7 +74,7 @@ notes = "launched searchers over 50-file batches"
 EOF
 ```
 
-The session's system prompt explains these commands, lists the configs it can launch, and asks it to keep its working state in REPL variables and a `notes` string. With `tools="strict"`, it reads with its own tools and changes files only through `rlmflow repl`.
+The session's system prompt explains these commands, lists the configs it can launch and the Flow's own tools in the REPL, and asks it to keep its working state in REPL variables and a `notes` string. It also says that cells run through `rlmflow repl` are recorded in the run and changes made with its own tools are not, and, when the runtime is a Docker container or Modal sandbox, where the REPL runs and which paths it sees. Its own tools and permissions are whatever your Claude Code (or pi) settings allow; rlmflow only adds permission for `rlmflow` commands.
 
 To wait for agents it launched, the session ends its turn without submitting; the agent lands `waiting`. When they finish, the same session resumes (`claude --resume`) with their results. If it ends a turn with nothing to wait for and no `submit`, its last reply is the result.
 
@@ -82,7 +82,7 @@ To wait for agents it launched, the session ends its turn without submitting; th
 
 After `/rlmflow:run TASK`, your session is the root agent:
 
-1. The plugin starts `rlmflow serve` for the project and creates the root agent with your task.
+1. The plugin starts `rlmflow serve` for the project and creates the root agent with your task. The serve builds the project's Flow (the coding one, or `flow = "module:factory"` in `rlmflow.toml`) and registers an `interactive` config for your session on it.
 1. Your session is given the same instructions as a harness session and works through `rlmflow repl`.
 1. When it ends a turn while its workers run, the plugin's Stop hook waits for their results (up to about nine minutes) and hands them back to the session, which carries on.
 1. Your later messages are messages to the root. Exiting the session stops the serve and saves the run.

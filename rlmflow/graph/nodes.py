@@ -145,15 +145,30 @@ class Node:
     # -- agent_start --------------------------------------------------------
 
     @property
-    def config(self) -> AgentConfig:
-        """An ``agent_start``'s config, read from its JSON copy."""
+    def config_name(self) -> str | None:
+        """The Flow config an ``agent_start`` runs with; ``None`` for a root, which gets ``root_config``."""
         if self.type != AGENT_START:
             raise AttributeError(f"a {self.type} node has no config")
+        return self.data.get("config")
+
+    @property
+    def config(self) -> AgentConfig:
+        """The config a Flow bound to this agent, or the record of the last one that ran it."""
         if self._config is None:
+            recorded = self.metadata.get("config") if self.type == AGENT_START else None
+            if recorded is None:
+                raise AttributeError(f"agent {self.id!r} has no config until a Flow steps it")
             from rlmflow.graph.config import AgentConfig
 
-            self._config = AgentConfig.from_dict(self.data["config"])
+            self._config = AgentConfig.from_dict(recorded)
         return self._config
+
+    def bind_config(self, config: AgentConfig) -> None:
+        """Run this agent with ``config`` and record its JSON in ``metadata["config"]``."""
+        if self.type != AGENT_START:
+            raise AttributeError(f"a {self.type} node has no config")
+        self._config = config
+        self.annotate("config", config.to_dict())
 
     @property
     def name(self) -> str:

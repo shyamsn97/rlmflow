@@ -45,7 +45,7 @@ These records explain experiments and design lineage. They are not API reference
 
 - [`AGENTS` tree discovery](research/inter_agent_communication.md) — opt-in REPL view for querying and rendering agent status and results.
 - [Persistent agents](research/persistent_agents.md) — reopening a finished child with a follow-up question, why peer messaging deadlocks, and the engine constraints either would have to survive.
-- [Colocated agents](runtimes.md#isolated-and-colocated-agents) — one worker for several agents with isolated namespaces and per-agent invocation arguments, `submit`, stdout, and errors.
+- [Isolated agents](runtimes.md#isolated-agents) — one worker process and namespace per agent, and where a remote runtime runs.
 - [Historical REPL correctness and sharing plan](research/repl_plan.md) — the staged plan: the transport bugs found along the way, then local and remote co-tenancy.
 - [RAO implementation plan](research/rao_implementation_plan.md) — the design record behind the now-implemented but still experimental `rlmflow.rao` module.
 - [Speculative programmatic tool calling](research/spec_ptc.md) — implement Zhang's sPTC algorithm in `rlmflow.speculate` (shadow REPL, claim-or-run futures) without depending on the spec-ptc package.

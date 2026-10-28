@@ -60,6 +60,8 @@ class RunOptions:
     max_iters: int = 30
     workers: int = 8
     tools: str = "files"
+    #: A ``module:factory`` that returns your own Flow, used instead of the coding one.
+    flow: str | None = None
 
     def __post_init__(self) -> None:
         if self.tools not in ("files", "none"):
@@ -268,7 +270,7 @@ class RlmflowCLI:
         max_depth: int | None = None,
         workers: int | None = None,
         tools: str | None = None,
-        agent: str | None = None,
+        flow: str | None = None,
     ) -> None:
         """Serve a run whose root agent is a Claude Code session; `/rlmflow:run` starts this.
 
@@ -276,7 +278,7 @@ class RlmflowCLI:
           project: The working directory; serve.json goes in its .rlmflow/.
           graph: A run directory to continue; default: a new one in .rlmflow/runs/.
           root: The agent the session drives; default: the run's interactive agent.
-          agent: A ``module:factory`` that returns the Flow, instead of the coding agent's.
+          flow: A ``module:factory`` that returns your Flow, instead of the coding one.
         """
         from rlmflow.cli.serve import serve_main
 
@@ -287,14 +289,15 @@ class RlmflowCLI:
             "max_depth": max_depth,
             "workers": workers,
             "tools": tools,
+            "flow": flow,
         }
-        serve_main(project, graph_dir=graph, root=root, overrides=overrides, agent=agent)
+        serve_main(project, graph_dir=graph, root=root, overrides=overrides)
 
     def fork(
         self,
         run: str,
         node: str,
-        harness: str | None = None,
+        config: str | None = None,
         interactive: bool = False,
         name: str | None = None,
         project: str = ".",
@@ -305,7 +308,7 @@ class RlmflowCLI:
         Args:
           run: The run directory.
           node: The node id (or unique prefix) to branch after.
-          harness: Run the branch with this harness instead of the original's.
+          config: Run the branch with this config (a name on the project's Flow) instead of the original's.
           interactive: Continue the branch in your own Claude Code session.
           name: The branch's agent name.
           project: With --interactive, the working directory to serve.
@@ -313,7 +316,7 @@ class RlmflowCLI:
         """
         from rlmflow.cli.fork import fork_run
 
-        fork_run(run, node, harness=harness, interactive=interactive, name=name, project=project, out=out)
+        fork_run(run, node, config=config, interactive=interactive, name=name, project=project, out=out)
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -36,7 +36,12 @@ class Session:
         self.transcript.touch()
 
     def hook(self, event: str, **data):
-        data = {"cwd": str(self.project), "session_id": self.session_id, "transcript_path": str(self.transcript), **data}
+        data = {
+            "cwd": str(self.project),
+            "session_id": self.session_id,
+            "transcript_path": str(self.transcript),
+            **data,
+        }
         return asyncio.to_thread(hooks.run, event, data)
 
     def prompt(self, text: str):
@@ -57,11 +62,12 @@ class SlowLLM:
         return WORKER
 
 
-async def serving(project: Path, graph: Graph | None = None, llm=None, **kwargs) -> tuple[Serve, asyncio.Task]:
+async def serving(
+    project: Path, graph: Graph | None = None, llm=None, **kwargs
+) -> tuple[Serve, asyncio.Task]:
     if graph is None:
         graph = Graph()
-        graph.add_config(AgentConfig(name="worker"))
-    flow = Flow(llm or StubLLM(lambda messages: WORKER))
+    flow = Flow(llm or StubLLM(lambda messages: WORKER), configs=[AgentConfig(name="worker")])
     serve = Serve(flow, graph, graph_dir=project / "run", project=project, **kwargs)
     task = asyncio.create_task(serve.run())
     assert await until(lambda: serve.serve_file.exists() or None, 5)
@@ -144,7 +150,9 @@ def test_stop_with_children_lands_waiting_then_blocks_with_their_results(project
         serve, task = await serving(project)
         you = Session(project, serve)
         await you.prompt("/rlmflow:run count x's in two chunks")
-        await you.cell("handles = [launch_agent('count', config='worker', chunk=c) for c in ('xxa', 'xax')]")
+        await you.cell(
+            "handles = [launch_agent('count', config='worker', chunk=c) for c in ('xxa', 'xax')]"
+        )
         decision = json.loads(await you.stop("Launched two counters."))
         g, root = serve.graph, serve.root
         waiting = next(n for n in g.history(root) if n.type == WAITING)
@@ -162,7 +170,9 @@ def test_stop_with_children_lands_waiting_then_blocks_with_their_results(project
     asyncio.run(main())
 
 
-def test_a_stop_that_times_out_ends_the_turn_and_the_next_prompt_carries_the_results(project, monkeypatch):
+def test_a_stop_that_times_out_ends_the_turn_and_the_next_prompt_carries_the_results(
+    project, monkeypatch
+):
     monkeypatch.setattr(hooks, "STOP_WAIT", 0.1)
 
     async def main():
@@ -187,12 +197,47 @@ def test_the_turn_end_records_the_session_and_usage_from_the_transcript(project)
     async def main():
         serve, task = await serving(project)
         you = Session(project, serve)
-        you.transcript.write_text(json.dumps({"type": "user", "message": {"content": "old"}}) + "\n")
+        you.transcript.write_text(
+            json.dumps({"type": "user", "message": {"content": "old"}}) + "\n"
+        )
         await you.prompt("/rlmflow:run hi")
         entries = [
-            {"type": "assistant", "requestId": "r1", "message": {"usage": {"input_tokens": 3, "cache_read_input_tokens": 100, "output_tokens": 9}, "content": [{"type": "thinking"}]}},
-            {"type": "assistant", "requestId": "r1", "message": {"usage": {"input_tokens": 3, "cache_read_input_tokens": 100, "output_tokens": 9}, "content": [{"type": "text", "text": "hello"}]}},
-            {"type": "assistant", "requestId": "r2", "message": {"usage": {"input_tokens": 1, "cache_creation_input_tokens": 50, "output_tokens": 2}, "content": [{"type": "text", "text": "bye"}]}},
+            {
+                "type": "assistant",
+                "requestId": "r1",
+                "message": {
+                    "usage": {
+                        "input_tokens": 3,
+                        "cache_read_input_tokens": 100,
+                        "output_tokens": 9,
+                    },
+                    "content": [{"type": "thinking"}],
+                },
+            },
+            {
+                "type": "assistant",
+                "requestId": "r1",
+                "message": {
+                    "usage": {
+                        "input_tokens": 3,
+                        "cache_read_input_tokens": 100,
+                        "output_tokens": 9,
+                    },
+                    "content": [{"type": "text", "text": "hello"}],
+                },
+            },
+            {
+                "type": "assistant",
+                "requestId": "r2",
+                "message": {
+                    "usage": {
+                        "input_tokens": 1,
+                        "cache_creation_input_tokens": 50,
+                        "output_tokens": 2,
+                    },
+                    "content": [{"type": "text", "text": "bye"}],
+                },
+            },
         ]
         with you.transcript.open("a") as handle:
             handle.writelines(json.dumps(entry) + "\n" for entry in entries)
@@ -211,7 +256,9 @@ def test_the_turn_end_records_the_session_and_usage_from_the_transcript(project)
 def test_serve_json_is_found_above_the_cwd_and_the_environment_wins(project, monkeypatch):
     serve_file = project / cli.SERVE_FILE
     serve_file.parent.mkdir()
-    serve_file.write_text(json.dumps({"url": "http://127.0.0.1:1", "agent_token": "abc", "serve_token": "s"}))
+    serve_file.write_text(
+        json.dumps({"url": "http://127.0.0.1:1", "agent_token": "abc", "serve_token": "s"})
+    )
     os.chmod(serve_file, 0o600)
     nested = project / "src" / "pkg"
     nested.mkdir(parents=True)
@@ -229,8 +276,9 @@ def test_serve_json_is_found_above_the_cwd_and_the_environment_wins(project, mon
 def test_an_agent_token_acts_only_for_its_own_agent(project):
     async def main():
         g = Graph()
-        a = g.create_agent("a", config=AgentConfig(harness=INTERACTIVE))
-        b = g.create_agent("b", config=AgentConfig(harness=INTERACTIVE))
+        a, b = g.create_agent("a"), g.create_agent("b")
+        for agent in (a, b):
+            agent.bind_config(AgentConfig(harness=INTERACTIVE))
         flow = Flow(StubLLM(lambda messages: WORKER))
         server = flow.agent_tools
         url = await server.start()
@@ -238,8 +286,12 @@ def test_an_agent_token_acts_only_for_its_own_agent(project):
         try:
             async with server.turn(Step(g, b, b)) as turn_b:
                 with pytest.raises(cli.ToolError, match="no open turn"):
-                    await asyncio.to_thread(cli.request, "repl", {"code": "print(1)"}, url=url, token=token_a)
-                ran = await asyncio.to_thread(cli.request, "repl", {"code": "print('b')"}, url=url, token=turn_b.token)
+                    await asyncio.to_thread(
+                        cli.request, "repl", {"code": "print(1)"}, url=url, token=token_a
+                    )
+                ran = await asyncio.to_thread(
+                    cli.request, "repl", {"code": "print('b')"}, url=url, token=turn_b.token
+                )
                 assert ran["output"].strip() == "b"
             with pytest.raises(cli.ToolError, match="serve token"):
                 await asyncio.to_thread(cli.request, "stop", {}, url=url, token=token_a)
@@ -262,7 +314,9 @@ def test_hooks_without_a_serve_or_from_another_session_do_nothing(project):
         await you.prompt("/rlmflow:run hi")
         intruder = Session(project, serve, session_id="other")
         assert await intruder.prompt("hello") == ""
-        assert (await intruder.prompt("/rlmflow:run mine")).startswith("rlmflow: this project's serve is bound")
+        assert (await intruder.prompt("/rlmflow:run mine")).startswith(
+            "rlmflow: this project's serve is bound"
+        )
         assert await intruder.stop() == ""
         await intruder.hook("end")
         assert not task.done() and serve.flow.agent_tools.open_turn(serve.root) is not None

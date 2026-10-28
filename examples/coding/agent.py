@@ -77,18 +77,29 @@ def main():
     flow = Flow(
         client_for(args.model),
         llm_clients={"fast": client_for(args.fast_model)},
+        configs=[
+            AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
+            AgentConfig(
+                name="worker",
+                model="fast",
+                description="implements one well-scoped change and reports the files it touched",
+                max_depth=args.max_depth,
+                max_iters=args.max_iters,
+                output_schema=CODING_HANDOFF_SCHEMA,
+            ),
+        ],
         runtime=runtime,
         tools=[FILE_TOOLS],
         workers=args.max_concurrency,
     )
 
     try:
-        _run_cli(flow, workdir, max_depth=args.max_depth, max_iters=args.max_iters)
+        _run_cli(flow, workdir)
     finally:
         flow.runtime.close_repls()
 
 
-def _run_cli(flow: Flow, workdir: Path, *, max_depth: int, max_iters: int) -> None:
+def _run_cli(flow: Flow, workdir: Path) -> None:
     graph_dir = workdir / "graph"
     print("Agent ready. Type a query, or 'quit' to exit.\n")
     while True:
@@ -101,19 +112,7 @@ def _run_cli(flow: Flow, workdir: Path, *, max_depth: int, max_iters: int) -> No
             break
 
         g = Graph()
-        g.add_config(
-            AgentConfig(
-                name="worker",
-                model="fast",
-                description="implements one well-scoped change and reports the files it touched",
-                max_depth=max_depth,
-                max_iters=max_iters,
-                output_schema=CODING_HANDOFF_SCHEMA,
-            )
-        )
-        root = g.create_agent(
-            query, config=AgentConfig(max_depth=max_depth, max_iters=max_iters)
-        )
+        root = g.create_agent(query)
         asyncio.run(print_run(flow, g, graph_dir, width=20))
 
         print(f"\n{g.result(root) or '(no result)'}\n")

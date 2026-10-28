@@ -654,6 +654,7 @@ def run(args: argparse.Namespace) -> None:
 
     flow = AutoresearchFlow(
         client_for(args.model),
+        configs=[AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)],
         runtime=runtime,
         tools=[FILE_TOOLS, *build_autoresearch_tools(state)],
         workers=args.parallel,
@@ -681,7 +682,6 @@ launch the next one.
     g = Graph()
     root = g.create_agent(
         query,
-        config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters),
         task_instructions=(example_dir / "program.md").read_text(),
     )
     sync = (

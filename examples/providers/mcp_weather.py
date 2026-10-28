@@ -261,13 +261,12 @@ def main() -> None:
         # (each is already named by its MCP spec).
         flow = Flow(
             client_for(args.model),
+            configs=[AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)],
             runtime=LocalRuntime(),
             tools=mcp_tools(mcp_client),
         )
         g = Graph()
-        root = g.create_agent(
-            args.query, config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)
-        )
+        root = g.create_agent(args.query)
         out_dir = Path(args.out_dir)
         asyncio.run(print_run(flow, g, out_dir))
 

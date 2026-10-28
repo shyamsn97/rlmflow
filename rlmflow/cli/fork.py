@@ -1,7 +1,7 @@
 """``rlmflow fork RUN NODE``: branch a saved run, then run the branch or drive it yourself.
 
-Headless, the branch runs to the end with its own harness (or ``--harness``)
-and the run is saved. ``--interactive`` starts ``rlmflow serve`` on the branch
+Headless, the branch runs to the end with its own config (or ``--config``, a
+config name on the project's Flow) and the run is saved. ``--interactive`` starts ``rlmflow serve`` on the branch
 and prints the ``claude`` command that continues it: ``--resume <id>
 --fork-session`` when NODE ended a Claude session turn, otherwise a fresh
 session, which serve briefs on the REPL's cells and variables.
@@ -45,15 +45,14 @@ def fork_run(
     run: str,
     node: str,
     *,
-    harness: str | None = None,
+    config: str | None = None,
     interactive: bool = False,
     name: str | None = None,
     project: str = ".",
     out: str | None = None,
 ) -> None:
     from rlmflow import Graph
-    from rlmflow.cli.serve import INTERACTIVE
-    from rlmflow.graph.config import harness_path
+    from rlmflow.cli.serve import INTERACTIVE_CONFIG, ran_interactively
 
     run_dir = Path(run)
     if not run_dir.exists():
@@ -61,14 +60,11 @@ def fork_run(
     graph = Graph.load(run_dir)
     at = find_node(graph, node)
     owner = graph.node(at.agent_id)
-    overrides: dict[str, Any] = {}
     if interactive:
-        overrides = {"harness": INTERACTIVE, "max_iters": None}
-    elif harness is not None:
-        overrides = {"harness": harness_path(harness)}
-    elif owner.config.harness == INTERACTIVE:
-        raise CliError("this run's agent was interactive; pass --harness, or --interactive")
-    fork = graph.fork(at, name=name, **overrides)
+        config = INTERACTIVE_CONFIG
+    elif config is None and ran_interactively(owner):
+        raise CliError("this run's agent was interactive; pass --config, or --interactive")
+    fork = graph.fork(at, name=name, config=config)
     out_dir = Path(out) if out is not None else run_dir
     graph.save(out_dir)
     print(f"forked {owner.name} at {at.type} {at.id} as {fork.name} ({fork.id})")
@@ -105,7 +101,10 @@ def _run_headless(graph: Any, fork: Any, out_dir: Path, project: str) -> None:
         finally:
             await flow.aclose()
 
-    asyncio.run(drive())
+    try:
+        asyncio.run(drive())
+    except KeyError as exc:
+        raise CliError(f"{exc.args[0]}; set `flow` in rlmflow.toml to a Flow that has it") from exc
     graph.save(out_dir)
     print(f"\n{graph.result(fork) or '(no result)'}\n")
     print(f"run saved to {out_dir}")

@@ -11,7 +11,7 @@ import asyncio
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from rlmflow.graph.config import HARNESSES, AgentConfig, can_spawn
+from rlmflow.graph.config import can_spawn
 from rlmflow.graph.nodes import AGENT_START, Node, Step
 
 if TYPE_CHECKING:
@@ -20,17 +20,6 @@ if TYPE_CHECKING:
 #: ``rlmflow wait`` returns after at most this many seconds.
 WAIT_LIMIT = 60.0
 STILL_RUNNING = "Still running. End your turn; you'll be resumed when they finish."
-
-
-def child_config(flow: Flow, step: Step, config: str | None) -> AgentConfig:
-    """A config name on the graph, or the caller's own config when ``None``."""
-    if config is not None and not isinstance(config, str):
-        raise TypeError("agents started by an agent take a config name, not an AgentConfig")
-    resolved = step.agent.config if config is None else step.graph.config(config)
-    if resolved.harness == HARNESSES["repl"] and resolved.model not in flow.llms:
-        available = ", ".join(sorted(flow.llms))
-        raise ValueError(f"config {resolved.name!r} uses unknown model {resolved.model!r}; available: {available}")
-    return resolved
 
 
 def spawn(
@@ -53,8 +42,9 @@ def spawn(
         raise ValueError(f"task exceeds {parent.config.max_query_chars} characters")
     if flow.budget_exhausted(g, parent):
         raise RuntimeError("cannot start an agent after max_budget is exhausted")
-    resolved = child_config(flow, step, config)
-    return flow.spawn(step, task, config=resolved, name=name, inputs=inputs, **args)
+    if config is not None and not isinstance(config, str):
+        raise TypeError("agents started by an agent take a config name, not an AgentConfig")
+    return flow.spawn(step, task, config=config or "default", name=name, inputs=inputs, **args)
 
 
 def resolve(g: Any, selector: object) -> Node:
@@ -133,7 +123,6 @@ __all__ = [
     "STILL_RUNNING",
     "WAIT_LIMIT",
     "agents",
-    "child_config",
     "done",
     "repl",
     "resolve",

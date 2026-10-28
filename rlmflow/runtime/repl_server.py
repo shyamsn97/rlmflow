@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal, TextIO, cast
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, ValidationError
 
-from rlmflow.harnesses.repl.runtime.repl import (
+from rlmflow.runtime.repl import (
     AGENT_WAIT_TOOL,
     CurrentObject,
     DoneSignal,

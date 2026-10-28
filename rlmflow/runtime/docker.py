@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from rlmflow.harnesses.repl.runtime.runtime import DEFAULT_REPL_TIMEOUT, PopenConnection, Runtime
+from rlmflow.runtime.runtime import DEFAULT_REPL_TIMEOUT, PopenConnection, Runtime
 
 
 def build_docker_argv(
@@ -51,7 +51,7 @@ def build_docker_argv(
             "/tmp:rw,noexec,nosuid,size=64m",
         ]
     argv += extra_args
-    argv += [image, "python", "-u", "-m", "rlmflow.harnesses.repl.runtime.repl_server"]
+    argv += [image, "python", "-u", "-m", "rlmflow.runtime.repl_server"]
     if preimports is not None:
         argv += ["--preimport", ",".join(preimports)]
     return argv
@@ -97,6 +97,12 @@ class DockerRuntime(Runtime):
             "extra_args": extra_args,
             "docker_bin": docker_bin,
         }
+
+    @property
+    def location(self) -> str:
+        workdir = self.options["workdir"] or "/"
+        mounted = ", ".join(f"`{container}` is `{Path(host).resolve()}`" for host, container in (self.options["mounts"] or {}).items())
+        return f"a Docker container, working in `{workdir}`" + (f" ({mounted} on this machine)" if mounted else "")
 
     def connect(self, directory: Path | None = None) -> PopenConnection:
         # The container mounts ``working_directory``; per-agent directories don't apply.

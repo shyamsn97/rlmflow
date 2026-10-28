@@ -99,7 +99,7 @@ def react(g: Graph, agent: Node) -> Node | None:
     limit = min(HANDOFF_RESULT_MAX, agent.config.max_output_length)
     children = {child.id for child in g.launched(agent)}
     text = render(
-        [(g.path(r), r.config.name, g.result(r)) for r in ready],
+        [(g.path(r), r.config_name or "root", g.result(r)) for r in ready],
         limit,
         children=all(reporter.id in children for reporter in ready),
     )

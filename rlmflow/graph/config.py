@@ -110,7 +110,7 @@ def validate_argument_name(name: str) -> None:
 
 #: Short names for the harnesses that ship with rlmflow.
 HARNESSES = {
-    "repl": "rlmflow.harnesses.repl.loop:ReplHarness",
+    "repl": "rlmflow.harnesses.repl:ReplHarness",
     "claude_code": "rlmflow.harnesses.claude_code:ClaudeCodeHarness",
     "pi": "rlmflow.harnesses.pi:PiHarness",
     "interactive": "rlmflow.harnesses.interactive:InteractiveHarness",
@@ -154,7 +154,7 @@ class AgentConfig:
     max_iters: int | None = None
     max_depth: int = 1
     output_schema: dict[str, Any] | None = None
-    #: Harness-specific settings, e.g. Claude Code's ``{"tools": "loose"}``.
+    #: Harness-specific settings, e.g. Claude Code's ``{"mcp": True}``.
     harness_options: dict[str, Any] = field(default_factory=dict)
     #: Whole-run soft token threshold. Crossing it gives every agent a final turn.
     max_budget: int | None = None

@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 from rlmflow.graph.config import at_leaf
-from rlmflow.harnesses.repl.tools import tool
+from rlmflow.tools import tool
 
 
 def _display_path(path: Path, *, absolute: bool) -> str:

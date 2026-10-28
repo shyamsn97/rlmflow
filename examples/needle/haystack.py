@@ -72,8 +72,8 @@ def main():
     parser.add_argument(
         "--harness",
         default="repl",
-        choices=["repl", "claude_code"],
-        help="What runs the root agent; workers always use the REPL harness.",
+        choices=["repl", "claude_code", "pi"],
+        help="What runs the root agent; workers always use the REPL harness (see harnesses/run.py).",
     )
     parser.add_argument("--no-viz", action="store_true", help="Disable the live agent tree")
     parser.add_argument(
@@ -93,35 +93,30 @@ def main():
     runtime = DockerRuntime(args.docker_image) if args.docker_image else None
 
     llm = client_for(args.model)
-    llm_clients = None
+    configs = [AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)]
     if args.fast_model:
-        llm_clients = {"fast": client_for(args.fast_model)}
-
-    flow = Flow(
-        llm,
-        llm_clients=llm_clients,
-        runtime=runtime,
-    )
-
-    g = Graph()
-    if args.fast_model:
-        g.add_config(
+        configs.append(
             AgentConfig(
                 name="searcher",
-                model="fast",
+                model=args.fast_model,
                 description="cheap model for searching one chunk",
                 max_iters=args.max_iters,
                 max_depth=0,
             )
         )
+    flow = Flow(
+        llm,
+        configs=configs,
+        runtime=runtime,
+    )
+    config = AgentConfig(harness=args.harness, max_depth=args.max_depth, max_iters=args.max_iters)
+
+    g = Graph()
     root = g.create_agent(
         "I'm looking for a magic number buried somewhere in the haystack in "
         "`haystack`. What is it? Chunk the string and search the "
         "pieces in parallel.",
         haystack=haystack,
-        config=AgentConfig(
-            harness=args.harness, max_depth=args.max_depth, max_iters=args.max_iters
-        ),
     )
     out_dir = Path(args.out_dir)
     consumers = ConsumerGroup()
@@ -132,7 +127,7 @@ def main():
 
     async def drive() -> None:
         try:
-            async for item in flow.run_streaming(g):
+            async for item in flow.run_streaming(g, root_config=config):
                 consumers.handle(item, g)
         finally:
             consumers.close()

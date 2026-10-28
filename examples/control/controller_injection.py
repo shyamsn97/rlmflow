@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 from rlmflow import CODE, AgentConfig, Flow, Graph, LLMUsage, Node, Step
-from rlmflow.harnesses.repl.prompts import repl_messages
+from rlmflow.harnesses.repl import repl_messages
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -27,6 +27,7 @@ if str(examples_dir) not in sys.path:
 from common import checkpoint_stream, example_run_dir, save_example_graph  # noqa: E402
 
 OBSERVATION = "Injected controller observation: finalize using this note."
+CONFIG = AgentConfig(max_depth=0, max_iters=4)
 
 
 class DemoLLM:
@@ -67,10 +68,8 @@ def observation_injection() -> None:
 
     flow = Flow(DemoLLM())
     g = Graph()
-    agent = g.create_agent(
-        "Wait for a controller note, then submit.",
-        config=AgentConfig(max_depth=0, max_iters=4),
-    )
+    agent = g.create_agent("Wait for a controller note, then submit.")
+    agent.bind_config(CONFIG)
     assert_types(g, agent, ["agent_start"])
 
     extra = g.append(agent, Node(CODE, code="", output=OBSERVATION))
@@ -86,7 +85,7 @@ def observation_injection() -> None:
     run_dir = example_run_dir("controller-injection") / "observation-injection"
 
     async def drive() -> None:
-        async for _item in checkpoint_stream(flow.run_streaming(g), g, run_dir):
+        async for _item in checkpoint_stream(flow.run_streaming(g, root_config=CONFIG), g, run_dir):
             pass
 
     asyncio.run(drive())
@@ -105,10 +104,7 @@ def controller_stop_instruction() -> None:
 
     flow = Flow(DemoLLM())
     g = Graph()
-    agent = g.create_agent(
-        "This run will be stopped by the controller.",
-        config=AgentConfig(max_depth=0, max_iters=4),
-    )
+    agent = g.create_agent("This run will be stopped by the controller.")
     run_dir = example_run_dir("controller-injection") / "controller-stop-instruction"
 
     async def run_with_controller_stop() -> None:
@@ -116,10 +112,14 @@ def controller_stop_instruction() -> None:
         # ``until`` halts the run at the boundary (the driver does not run ahead),
         # the instruction we inject is guaranteed to be the next thing the agent
         # reads when we resume it.
-        async for _item in checkpoint_stream(flow.run_streaming(g, until="idle"), g, run_dir):
+        async for _item in checkpoint_stream(
+            flow.run_streaming(g, until="idle", root_config=CONFIG), g, run_dir
+        ):
             pass
         g.send(agent, "Controller stop request: finalize now with current state.")
-        async for _item in checkpoint_stream(flow.run_streaming(g, until="done"), g, run_dir):
+        async for _item in checkpoint_stream(
+            flow.run_streaming(g, until="done", root_config=CONFIG), g, run_dir
+        ):
             pass
 
     asyncio.run(run_with_controller_stop())

@@ -28,8 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rlmflow import AgentConfig, Flow, Graph, LLMUsage
-from rlmflow.harnesses.repl.tools import tool
 from rlmflow.llm import client_for
+from rlmflow.tools import tool
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -195,13 +195,13 @@ def main() -> None:
     flow = build_flow(library, llm)
 
     g = Graph()
-    root = g.create_agent(QUERY, config=AgentConfig(max_iters=args.max_iters))
+    root = g.create_agent(QUERY)
     if args.print_prompt:
         print("\n--- Skills section BEFORE run (empty) ---\n")
         print(library.render())
 
     print("\n--- run ---\n")
-    flow.run(g)
+    flow.run(g, root_config=AgentConfig(max_iters=args.max_iters))
 
     print(f"\nagent installed skills: {library.names()}")
     if args.print_prompt:

@@ -22,7 +22,7 @@ import tempfile
 from pathlib import Path
 
 from rlmflow import AgentConfig, Flow, Graph, Step
-from rlmflow.harnesses.repl.prompts import system_prompt
+from rlmflow.harnesses.repl import system_prompt
 from rlmflow.llm.openai import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -165,7 +165,9 @@ def main() -> None:
             "predicted values, and the L2 residual norm."
         )
         g = Graph()
-        root = g.create_agent(query, config=AgentConfig(max_iters=MAX_ITERS))
+        root = g.create_agent(query)
+        config = AgentConfig(max_iters=MAX_ITERS)
+        root.bind_config(config)
 
         print(f"Wrote skill artifact under: {skills_dir}")
         print("- skills/numpy-linear-algebra/SKILL.md")
@@ -173,7 +175,7 @@ def main() -> None:
             print("\n--- rendered system prompt ---\n")
             print(flow.with_skills(system_prompt(flow, Step(g, root, root))))
             print("\n--- live run ---\n")
-        asyncio.run(print_run(flow, g, args.out_dir))
+        asyncio.run(print_run(flow, g, args.out_dir, root_config=config))
         print(g.result(root))
         save_example_graph(g, "skills", out_dir=args.out_dir)
         flow.runtime.close_repls()

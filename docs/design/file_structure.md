@@ -138,7 +138,7 @@ The flattening pass moved these; `CHANGELOG.md` lists them for callers.
 | `rlmflow.tools.completion`                         | `rlmflow.tools.builtins`                                                                       |
 | `rlmflow.tools.graph_tools`                        | `rlmflow.tools.messaging` (`fork_agent`: `rlmflow.tools.launch`)                               |
 | `rlmflow.tools.directory`                          | `rlmflow.tools.agents_view`                                                                    |
-| `rlmflow.harnesses.repl.filesystem`, `.coding`     | `rlmflow.harnesses.repl.files`                                                                 |
+| `rlmflow.tools.filesystem`, `.coding`              | `rlmflow.tools.files`                                                                          |
 | `rlmflow.prompts.{text,prompts,sections,messages}` | `rlmflow.prompts` (turn-node text: `rlmflow.graph.nodes`)                                      |
 | `rlmflow.utils.*`                                  | `rlmflow.utils`                                                                                |
 | `rlmflow.consumers.*`                              | `rlmflow.consumers` (`FlowTUI`: `rlmflow.cli.tui`)                                             |

@@ -86,20 +86,18 @@ async def demo_next_idle_and_resume() -> None:
 
     flow = Flow(ScriptedLLM(reply))
     g = Graph()
-    root = g.create_agent(
-        "work until I inject a stop instruction",
-        config=AgentConfig(max_iters=8),
-    )
+    root = g.create_agent("work until I inject a stop instruction")
+    config = AgentConfig(max_iters=8)
 
-    events = await collect(flow, g, until=after_appends(3))
+    events = await collect(flow, g, until=after_appends(3), root_config=config)
     print_nodes("callable boundary: exactly three appended nodes", events, g, root)
 
-    events = await collect(flow, g, until="idle")
+    events = await collect(flow, g, until="idle", root_config=config)
     print_nodes("until='idle': settle after a cell ran", events, g, root)
 
     # Injecting a turn is sending the agent a message; it lands at the next turn.
     g.send(root, "STOP NOW")
-    events = await collect(flow, g, until="done")
+    events = await collect(flow, g, until="done", root_config=config)
     print_nodes("resume after injection, until='done'", events, g, root)
     g.save(RUN_DIR / "next-idle-and-resume")
 
@@ -136,7 +134,7 @@ async def demo_callable_boundary_with_child() -> None:
 
     flow = Flow(ScriptedLLM(reply))
     g = Graph()
-    root = g.create_agent("parent", config=AgentConfig(max_depth=1))
+    root = g.create_agent("parent")
 
     def child_done(step: Step) -> bool:
         return step.agent.id != root.id and step.node.type == DONE

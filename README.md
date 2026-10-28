@@ -138,13 +138,13 @@ child = launch_subagent(
 
 The child receives the raw value as `rows`; its argument manifest includes the description. `Input(...)` also works on root arguments.
 
-Configs are named and live on the graph. An agent picks one with `launch_agent(task, config=NAME)`, so a config whose harness is Claude Code turns that call into a Claude Code session:
+Configs are named and live on the Flow; the graph only records which one each agent ran with. An agent picks one with `launch_agent(task, config=NAME)`, so a config whose harness is Claude Code turns that call into a Claude Code session:
 
 ```python
 from rlmflow import AgentConfig
 
-g.add_config(AgentConfig(name="claude", harness="claude_code", harness_options={"tools": "loose"}))
-root = g.create_agent(task, config=AgentConfig(max_depth=1))
+flow = Flow(client_for("gpt-5"), configs=[AgentConfig(name="claude", harness="claude_code")])
+flow.run(task)
 ```
 
 The root stays an rlmflow REPL agent. Its Claude Code children reach the same agent tools from the shell through `rlmflow repl`, and every cell they run lands in the graph. See the runnable [`claude_code_delegation.py`](examples/providers/claude_code_delegation.py) example for parallel structured children editing one shared demo workspace.
@@ -257,14 +257,14 @@ flow = Flow(
     OpenAIClient(model="gpt-5"),
     runtime=LocalRuntime(working_directory=workdir),
     tools=[FILE_TOOLS],
-    llm_clients={"fast": OpenAIClient(model="gpt-5-mini")},
+    configs=[AgentConfig(name="worker", model="gpt-5-mini")],
 )
 
 g = Graph()
 query = "Build a Python text-based adventure game with combat and inventory."
-root = g.create_agent(query, config=AgentConfig(max_depth=2, max_iters=20))
+root = g.create_agent(query)
 
-async for step in flow.run_streaming(g):
+async for step in flow.run_streaming(g, root_config=AgentConfig(max_depth=2, max_iters=20)):
     print(g.path(step.agent), step.node.type)
 
 print(g.result(root))
@@ -297,8 +297,8 @@ submit(next(r for r in results if r))
 **[Name kinds of agents](docs/usage.md#configs)** with their own [model](docs/usage.md#models), limits and output schema:
 
 ```python
-g.add_config(AgentConfig(name="worker", model="fast", max_depth=0, output_schema=Finding))
-flow = Flow(client_for("gpt-5"), llm_clients={"fast": client_for("gpt-5-mini")})
+worker = AgentConfig(name="worker", model="gpt-5-mini", max_depth=0, output_schema=Finding)
+flow = Flow(client_for("gpt-5"), configs=[worker])
 ```
 
 **[Give agents tools](docs/usage.md#tools)** and a **[sandbox](docs/usage.md#runtimes-and-workspaces)**:
@@ -319,14 +319,14 @@ g.result(root), g.children(root), g.usage()
 
 ```python
 g.send(root, "Also report the file name.")
-retry = g.fork(some_node, name="retry", model="fast")
+retry = g.fork(some_node, name="retry", config="worker")
 flow.run(g); g.save("runs/x"); g = Graph.load("runs/x")
 ```
 
 **[Run agents as Claude Code or pi sessions](docs/usage.md#claude-code-and-pi-as-agents):**
 
 ```python
-root = g.create_agent(task, config=AgentConfig(harness="claude_code", max_depth=1))
+flow.run(task, root_config=AgentConfig(harness="claude_code", max_depth=1))
 ```
 
 **[Make your own Claude Code session the root](docs/usage.md#your-claude-code-session-as-the-root):**
@@ -362,12 +362,12 @@ rlmflow tui                                   # the dashboard, waiting for a que
 rlmflow tui --query "add a test for parse_args"
 rlmflow tui --workdir ./proj --model gpt-5 --docker-image rlmflow:local
 rlmflow tui --resume ./proj/graph             # pick a saved run back up
-rlmflow tui --agent mypkg.agents:build        # your own Flow instead of the coding one
+rlmflow tui --flow mypkg.agents:build         # your own Flow instead of the coding one
 
 rlmflow run print "fix the failing test"      # no dashboard: stream it, print the answer
 ```
 
-`--model` / `--fast-model` pick the clients (`claude*` → Anthropic, else OpenAI), `--reasoning-effort` reaches OpenAI reasoning models, and `--tools {files,none}` chooses whether the agent gets `FILE_TOOLS`. Anything the flags cannot say — custom prompts, tools, runtimes — stays in Python: point `--agent` at a `module:factory` that returns a `Flow`.
+`--model` / `--fast-model` pick the clients (`claude*` → Anthropic, else OpenAI), `--reasoning-effort` reaches OpenAI reasoning models, and `--tools {files,none}` chooses whether the agent gets `FILE_TOOLS`. Anything the flags cannot say — custom prompts, tools, runtimes — stays in Python: point `--flow` (or `flow = "..."` in `rlmflow.toml`) at a `module:factory` that returns a `Flow`. `/rlmflow:run` uses the same setting, so your own Claude Code session launches that Flow's configs.
 
 ```python
 # mypkg/agents.py
@@ -379,7 +379,7 @@ def build() -> Flow:
         client_for("gpt-5", reasoning_effort="low"),
         runtime=LocalRuntime(working_directory="."),
         tools=[FILE_TOOLS],
-    root_config=AgentConfig(max_depth=2, max_iters=40),
+        configs=[AgentConfig(max_depth=2, max_iters=40)],   # "default": roots and plain launches
     )
 ```
 
@@ -632,12 +632,10 @@ from rlmflow.llm import OpenAIClient
 from rlmflow.flow import FlowLLM
 from rlmflow.integrations.dspy import DSPyFlow
 
-flow = rlmflow.Flow(
-    OpenAIClient(model="gpt-4o-mini"),
-    root_config=AgentConfig(max_depth=1, max_iters=5),
-)
+flow = rlmflow.Flow(OpenAIClient(model="gpt-4o-mini"))
+agent = FlowLLM(flow, root_config=AgentConfig(max_depth=1, max_iters=5))
 
-dspy.configure(lm=DSPyFlow(FlowLLM(flow), model="rlmflow/gpt-4o-mini"))
+dspy.configure(lm=DSPyFlow(agent, model="rlmflow/gpt-4o-mini"))
 qa = dspy.ChainOfThought("question -> answer")
 print(qa(question="What is 17 * 23?").answer)
 ```

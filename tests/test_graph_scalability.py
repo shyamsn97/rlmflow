@@ -8,6 +8,7 @@ from rlmflow import (
     CODE,
     DEPENDS_ON,
     LLM_OUTPUT,
+    AgentConfig,
     Edge,
     Graph,
     InvariantError,
@@ -42,27 +43,28 @@ def test_deep_graph_operations_are_iterative(tmp_path):
 
 
 def test_fork_and_persistence_preserve_full_config_without_sharing_values(tmp_path):
-    g, root = agent_graph(
-        "configured",
-        args={"doc": "value"},
-        output_schema={"type": "string"},
-        model="fast",
-        max_depth=4,
-        max_iters=7,
-        max_budget=123,
-        keep_n_messages=5,
-        max_output_length=999,
-        max_query_chars=888,
+    g, root = agent_graph("configured", args={"doc": "value"})
+    root.bind_config(
+        AgentConfig(
+            output_schema={"type": "string"},
+            model="fast",
+            max_depth=4,
+            max_iters=7,
+            max_budget=123,
+            keep_n_messages=5,
+            max_output_length=999,
+            max_query_chars=888,
+        )
     )
 
-    fork = g.fork(root, name="root")
+    fork = g.fork(root, name="forked")
     g.save(tmp_path / "configured")
     loaded = Graph.load(tmp_path / "configured").node(root.id)
 
-    assert fork.config == root.config
+    assert fork.config_name == root.config_name is None
     assert loaded.config == root.config
-    assert fork.args is not root.args
-    assert fork.config.output_schema is not root.config.output_schema
+    assert fork.args == root.args and fork.args is not root.args
+    assert loaded.config.output_schema is not root.config.output_schema
 
 
 def test_reads_count_usage_agents_and_errors():
@@ -85,7 +87,7 @@ def test_saved_log_is_flat_ordered_and_strict(tmp_path):
     run = g.save(tmp_path / "run")
     document = json.loads((run / "graph.json").read_text())
 
-    assert set(document) == {"format", "id", "configs", "items"}
+    assert set(document) == {"format", "id", "items"}
     assert [item["seq"] for item in document["items"]] == list(range(len(document["items"])))
     assert all("children" not in item and "parent_id" not in item for item in document["items"])
 

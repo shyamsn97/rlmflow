@@ -14,7 +14,7 @@ from rlmflow import (
     persistence,
     record_metadata,
 )
-from rlmflow.harnesses.repl.tools import tool
+from rlmflow.tools import tool
 
 
 def test_node_metadata_is_strict_durable_and_forkable(tmp_path):
@@ -30,7 +30,8 @@ def test_node_metadata_is_strict_durable_and_forkable(tmp_path):
     forked = loaded.fork(loaded.frontier(loaded_root))
     record = persistence.node_record(root)
 
-    assert loaded_root.metadata == {"experiment": {"run": "abc", "seed": 7}}
+    assert loaded_root.metadata["experiment"] == {"run": "abc", "seed": 7}
+    assert loaded_root.metadata == root.metadata
     assert loaded.frontier(loaded_root).metadata == {"metrics": {"score": 1.0}}
     assert loaded.frontier(forked).metadata == {"metrics": {"score": 1.0}}
     assert record["metadata"] == root.metadata
@@ -88,7 +89,9 @@ def test_llm_query_calls_are_recorded_on_the_cell():
 
 
 def test_llm_output_records_usage_model_and_timing():
-    flow = Flow(StubLLM(counting_replies(repl("submit('ok')"))), runtime=LocalRuntime(repl_timeout=5))
+    flow = Flow(
+        StubLLM(counting_replies(repl("submit('ok')"))), runtime=LocalRuntime(repl_timeout=5)
+    )
     g = Graph()
     root = g.create_agent("answer")
 

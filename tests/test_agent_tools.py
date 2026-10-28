@@ -29,8 +29,10 @@ class Scripted:
         raise AssertionError(f"no scripted reply for {last!r}")
 
 
-def agent(g, task, name, **config):
-    return g.create_agent(task, config=AgentConfig(name=name, **config))
+def agent(flow, g, task, name, **config):
+    node = g.spawn(task, name=name, config=flow.add_config(AgentConfig(name=name, **config)).name)
+    node.bind_config(flow.config(name))
+    return node
 
 
 def test_send_agent_queues_a_message_that_reopens_a_finished_peer():
@@ -38,13 +40,16 @@ def test_send_agent_queues_a_message_that_reopens_a_finished_peer():
         [
             ("hello from a", block("submit('b heard')")),
             ("listen", block("submit('b idle')")),
-            ("speak", block("await AGENTS.get('b')\nsend_agent('b', 'hello from a')\nsubmit('sent')")),
+            (
+                "speak",
+                block("await AGENTS.get('b')\nsend_agent('b', 'hello from a')\nsubmit('sent')"),
+            ),
         ]
     )
     flow = Flow(llm)
     g = Graph()
-    a = agent(g, "speak", "a")
-    b = agent(g, "listen", "b")
+    a = agent(flow, g, "speak", "a")
+    b = agent(flow, g, "listen", "b")
 
     flow.run(g)
 
@@ -66,8 +71,8 @@ def test_ask_agent_waits_for_the_answer_to_its_own_question():
     )
     flow = Flow(llm)
     g = Graph()
-    a = agent(g, "be a", "a")
-    agent(g, "be b", "b")
+    a = agent(flow, g, "be a", "a")
+    agent(flow, g, "be b", "b")
 
     flow.run(g)
 
@@ -93,8 +98,8 @@ def test_connect_agent_draws_edges_and_disconnect_agent_removes_them():
     )
     flow = Flow(llm)
     g = Graph()
-    a = agent(g, "be a", "a")
-    b = agent(g, "be b", "b")
+    a = agent(flow, g, "be a", "a")
+    b = agent(flow, g, "be b", "b")
 
     flow.run(g)
 
@@ -114,7 +119,7 @@ def test_ask_agent_refuses_a_wait_that_would_deadlock():
     )
     flow = Flow(llm)
     g = Graph()
-    root = agent(g, "parent task", "root", max_depth=1)
+    root = g.create_agent("parent task")
 
     flow.run(g)
 
@@ -127,16 +132,23 @@ def test_ask_agent_refuses_a_wait_that_would_deadlock():
 
 
 def test_a_fresh_flow_rebuilds_the_repl_from_recorded_cells(tmp_path):
-    llm = Scripted([("again", block("submit(x + 1)")), ("once", block("x = 41\nprint('set')")), ("set", block("submit('first')"))])
+    llm = Scripted(
+        [
+            ("again", block("submit(x + 1)")),
+            ("once", block("x = 41\nprint('set')")),
+            ("set", block("submit('first')")),
+        ]
+    )
     g = Graph()
-    worker = agent(g, "once", "worker")
-    Flow(llm).run(g)
+    worker = g.spawn("once", config="worker")
+    configs = [AgentConfig(name="worker")]
+    Flow(llm, configs=configs).run(g)
     assert g.result(worker) == "first"
 
     g.save(tmp_path / "run")
     loaded = Graph.load(tmp_path / "run")
     loaded.send(loaded.node(worker.id), "again")
-    Flow(llm).run(loaded)
+    Flow(llm, configs=configs).run(loaded)
     assert loaded.result(loaded.node(worker.id)) == 42
 
 
@@ -151,14 +163,18 @@ def test_rebuilt_agent_tools_write_nothing():
         ]
     )
     g = Graph()
-    a = agent(g, "be a", "a", max_depth=1)
-    agent(g, "be b", "b")
-    Flow(llm).run(g)
+    flow = Flow(llm)
+    a = agent(flow, g, "be a", "a")
+    agent(flow, g, "be b", "b")
+    flow.run(g)
     before = len(g)
     agents_before = len(g.agents())
 
     g.send(a, "one more")
-    Flow(Scripted([("one more", block("print(h.name)")), ("a-0", block("submit(1)"))])).run(g)
+    Flow(
+        Scripted([("one more", block("print(h.name)")), ("default-0", block("submit(1)"))]),
+        configs=list(flow.configs.values()),
+    ).run(g)
 
     assert g.result(a) == 1
     assert len(g.agents()) == agents_before
@@ -175,14 +191,14 @@ def test_send_agent_rejects_unknown_targets():
     )
     flow = Flow(llm)
     g = Graph()
-    root = agent(g, "go", "root")
+    root = g.create_agent("go")
 
     flow.run(g)
 
     assert g.result(root) == "refused"
 
 
-def test_launch_agent_takes_a_config_name_from_the_graph():
+def test_launch_agent_takes_a_config_name_from_the_flow():
     llm = Scripted(
         [
             ("small job", block("submit('small')")),
@@ -190,10 +206,9 @@ def test_launch_agent_takes_a_config_name_from_the_graph():
         ]
     )
     g = Graph()
-    g.add_config(AgentConfig(name="cheap", description="for small jobs"))
-    root = agent(g, "go", "root", max_depth=1)
+    root = g.create_agent("go")
 
-    Flow(llm).run(g)
+    Flow(llm, configs=[AgentConfig(name="cheap", description="for small jobs")]).run(g)
 
     assert g.result(root) == "small"
     [child] = g.children(root)
@@ -207,17 +222,16 @@ def stepping_at(g: Graph, agent_node: Node) -> Step:
     return Step(g, agent_node, g.frontier(agent_node))
 
 
-def test_spawn_checks_depth_task_length_and_config_models():
+def test_spawn_checks_depth_task_length_and_config_names():
     flow = Flow(Scripted([]))
     g = Graph()
-    g.add_config(AgentConfig(name="elsewhere", model="missing"))
-    leaf = agent(g, "x", "leaf", max_depth=0)
+    leaf = agent(flow, g, "x", "leaf", max_depth=0)
     with pytest.raises(ValueError, match="max depth"):
         agent_tools.spawn(flow, stepping_at(g, leaf), "child")
-    root = agent(g, "x", "root", max_depth=1, max_query_chars=5)
+    root = agent(flow, g, "x", "root", max_query_chars=5)
     with pytest.raises(ValueError, match="exceeds 5"):
         agent_tools.spawn(flow, stepping_at(g, root), "too long a task")
-    with pytest.raises(ValueError, match="unknown model"):
+    with pytest.raises(KeyError, match="elsewhere"):
         agent_tools.spawn(flow, stepping_at(g, root), "ok", config="elsewhere")
     with pytest.raises(TypeError, match="config name"):
         agent_tools.spawn(flow, stepping_at(g, root), "ok", config=AgentConfig())
@@ -228,20 +242,22 @@ def test_spawn_checks_depth_task_length_and_config_models():
 def test_wait_returns_results_or_running_after_the_timeout():
     flow = Flow(Scripted([]))
     g = Graph()
-    root = agent(g, "x", "root", max_depth=1)
+    root = agent(flow, g, "x", "root")
     cell = g.append(root, Node(CODE, code=""))
     done = g.spawn("a", by=cell)
     g.append(done, Node(DONE, result=7))
     running = g.spawn("b", by=cell)
 
-    result = asyncio.run(agent_tools.wait(flow, stepping_at(g, root), [done.id, running.name], timeout=0.01))
+    result = asyncio.run(
+        agent_tools.wait(flow, stepping_at(g, root), [done.id, running.name], timeout=0.01)
+    )
     assert result == {done.id: 7, running.id: "running"}
 
 
 def test_done_checks_the_output_schema():
     flow = Flow(Scripted([]))
     g = Graph()
-    typed = agent(g, "x", "typed", output_schema={"type": "integer"})
+    typed = agent(flow, g, "x", "typed", output_schema={"type": "integer"})
     assert agent_tools.done(flow, stepping_at(g, typed), "3") == 3
     with pytest.raises(Exception, match="integer"):
         agent_tools.done(flow, stepping_at(g, typed), "three")

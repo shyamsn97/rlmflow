@@ -10,10 +10,14 @@ from rlmflow import Flow, SequentialPool, SubprocessRuntime
 
 def fanout(*names):
     calls = "\n".join(f"    launch_agent({name!r})," for name in names)
-    return block(f"handles = [\n{calls}\n]\nanswers = [await h for h in handles]\nsubmit(','.join(answers))")
+    return block(
+        f"handles = [\n{calls}\n]\nanswers = [await h for h in handles]\nsubmit(','.join(answers))"
+    )
 
 
-JOIN_ATTACHED = block("answers = [await c for c in AGENTS.get_children()]\nsubmit(','.join(answers))")
+JOIN_ATTACHED = block(
+    "answers = [await c for c in AGENTS.get_children()]\nsubmit(','.join(answers))"
+)
 
 
 class BarrierLLM:
@@ -31,7 +35,7 @@ class BarrierLLM:
 
 
 def test_blocking_children_get_a_thread_each():
-    g, root = agent_graph("parent", max_depth=1)
+    g, root = agent_graph("parent")
     # A pool that ran the children in turn would never clear the barrier, and the
     # first child through would break it rather than hang the suite.
     assert run_result(Flow(BarrierLLM(2), workers=2), g, root) == "c,c"
@@ -47,7 +51,7 @@ def test_ten_subprocess_children_can_launch_concurrently():
 
     flow = Flow(LLM(), runtime=SubprocessRuntime())
     try:
-        g, root = agent_graph("parent", max_depth=1)
+        g, root = agent_graph("parent")
         assert run_result(flow, g, root) == ",".join(names)
     finally:
         asyncio.run(flow.aclose())
@@ -67,7 +71,7 @@ def test_a_finished_child_keeps_its_repl():
 
     flow = Flow(LLM(), runtime=SubprocessRuntime())
     try:
-        g, root = agent_graph("parent", max_depth=1)
+        g, root = agent_graph("parent")
         assert run_result(flow, g, root) == "a,b"
         children = g.children(root)
         assert [flow.runtime.get_var(child, "kept") for child in children] == ["a", "b"]
@@ -78,7 +82,7 @@ def test_a_finished_child_keeps_its_repl():
 
 
 def test_attached_subtrees_get_a_thread_each():
-    g, root = agent_graph("parent", max_depth=1)
+    g, root = agent_graph("parent")
     a = g.spawn("a", name="a")
     b = g.spawn("b", name="b")
     g.attach(root, a, b)
@@ -100,7 +104,7 @@ def test_attached_children_with_queued_messages_step_once_each():
             await asyncio.sleep(0.05)
             return block("submit('ok')")
 
-    g, root = agent_graph("parent", max_depth=1)
+    g, root = agent_graph("parent")
     first = g.spawn("first", name="first")
     second = g.spawn("second", name="second")
     g.send(first, "recover first")
@@ -127,7 +131,7 @@ def test_sequential_pool_does_not_hold_its_slot_while_parent_awaits_children():
                 return fanout("a", "b")
             return block(f"submit({query!r})")
 
-    g, root = agent_graph("parent", max_depth=1)
+    g, root = agent_graph("parent")
     assert run_result(Flow(LLM(), workers=SequentialPool()), g, root) == "a,b"
 
 
@@ -142,7 +146,7 @@ def test_a_failing_child_does_not_cancel_its_sibling():
                 raise RuntimeError("exploded")
             return block("submit('good')")
 
-    g, root = agent_graph("parent", max_depth=1)
+    g, root = agent_graph("parent")
     failed = "[child failed: RuntimeError: exploded]"
     assert run_result(Flow(HalfBrokenLLM()), g, root) == f"good,{failed}"
     assert [g.result(child) for child in g.children(root)] == ["good", failed]
@@ -175,7 +179,7 @@ def test_cancelling_a_run_cancels_the_children_it_launched():
     async def main():
         llm = Probe()
         flow = Flow(llm)
-        run = asyncio.create_task(flow.arun(agent_graph("parent", max_depth=1)[0]))
+        run = asyncio.create_task(flow.arun(agent_graph("parent")[0]))
         await asyncio.wait_for(llm.ready.wait(), timeout=5)
         run.cancel()
         with pytest.raises(asyncio.CancelledError):

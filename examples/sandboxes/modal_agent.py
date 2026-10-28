@@ -128,12 +128,11 @@ def main() -> None:
     flow = Flow(
         OpenAIClient(model=args.model),
         llm_clients={"fast": OpenAIClient(model=args.fast_model)},
+        configs=[AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)],
         runtime=runtime,
     )
     g = Graph()
-    root = g.create_agent(
-        PLATFORMER_QUERY, config=AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)
-    )
+    root = g.create_agent(PLATFORMER_QUERY)
     log("running platformer task; first run may build/start Modal sandbox")
     try:
         asyncio.run(print_run(flow, g, Path(args.out_dir) / "graph"))

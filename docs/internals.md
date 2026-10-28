@@ -134,7 +134,7 @@ Merge is intentionally unsupported. Callers select a branch to continue and disc
 
 `rlmflow.graph.persistence` writes an unversioned flat JSON graph: one shallow record per Node with `parent_id`, in parent-before-child order. Dependencies use stable agent IDs, handle-valued input references are durable, and each `ExecAction` persists its saved tool calls. Loading validates the actual structure—node count, identities, ordering, parent links, saved values, launch targets, dependency cycles, agent ownership, and imported node classes resolved by their `type` strings—then rebuilds the tree through normal appends.
 
-The format records each agent's complete effective `AgentConfig`, including depth, iteration, budget, truncation, output, and query limits. A resumed run therefore keeps its recorded continuation contract. `Flow(root_config=...)` supplies defaults only to roots the flow creates itself; changing a loaded config is an explicit caller override.
+An agent's `agent_start` records only the name of the Flow config it runs with (none for a root). The config the Flow bound when it last stepped the agent is in `metadata["config"]` for viewers; loading never reads it back. A resumed run uses the configs of the Flow that runs it, and roots use that run's `root_config`. Format 2 runs, which stored a full config per agent and a graph-level config table, are converted on load: the config moves to metadata and the name stays only on launched agents.
 
 Per-agent projection paths accept only ASCII alphanumeric, `_`, and `-` segments, validated when a child agent is named. A save prunes agent directories left behind by an earlier, larger save.
 

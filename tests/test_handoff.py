@@ -29,8 +29,8 @@ def handoff_messages(g: Graph, agent: Node) -> list[Node]:
 
 def run_parent(flow: Flow, **config) -> tuple[Graph, Node]:
     g = Graph()
-    root = g.create_agent(PARENT_QUERY, config=AgentConfig(**config))
-    asyncio.run(asyncio.wait_for(flow.arun(g), timeout=5))
+    root = g.create_agent(PARENT_QUERY)
+    asyncio.run(asyncio.wait_for(flow.arun(g, root_config=AgentConfig(**config)), timeout=5))
     return g, root
 
 
@@ -71,10 +71,10 @@ def parent_then_child(*, parent, child=finish_child):
 
 def finished_child(*, parent_frontier: str = "code") -> tuple[Graph, Node, Node]:
     """A parent whose launched child has already answered."""
-    g, root = agent_graph(PARENT_QUERY, max_depth=1)
+    g, root = agent_graph(PARENT_QUERY)
     g.append(root, Node(LLM_OUTPUT, text="launch"))
     cell = g.append(root, Node(CODE, code="launch", output="queued: alpha"))
-    child = g.spawn(CHILD_GOAL, by=cell, name="alpha")
+    child = g.spawn(CHILD_GOAL, by=cell, name="alpha", config="default")
     g.append(child, Node(DONE, result="alpha"))
     if parent_frontier == "llm":
         g.append(root, Node(LLM_OUTPUT, text="still"))
@@ -101,13 +101,13 @@ def test_background_spawn_delivers_a_message_then_calls_model():
             return "```repl\nprint('waiting')\n```"
         return launch_print()
 
-    g, root = run_parent(Flow(StubLLM(parent_then_child(parent=parent))), max_depth=1, max_iters=10)
+    g, root = run_parent(Flow(StubLLM(parent_then_child(parent=parent))), max_iters=10)
 
     [message] = handoff_messages(g, root)
     assert g.prev(message).type == CODE
     assert next_node(g, message).type == LLM_OUTPUT
     assert "alpha" in message.data["text"]
-    assert "[handoff default.default-0]" in message.data["text"]
+    assert "[handoff root.default-0]" in message.data["text"]
     assert g.result(root) == "got-alpha"
 
 
@@ -135,14 +135,14 @@ def test_both_children_results_are_delivered():
         return parent(messages)
 
     g = Graph()
-    root = g.create_agent(PARENT_QUERY, config=AgentConfig(max_depth=1, max_iters=6))
+    root = g.create_agent(PARENT_QUERY)
     flow = Flow(StubLLM(reply), workers=3)
-    asyncio.run(asyncio.wait_for(flow.arun(g), timeout=5))
+    asyncio.run(asyncio.wait_for(flow.arun(g, root_config=AgentConfig(max_iters=6)), timeout=5))
 
     messages = handoff_messages(g, root)
     text = "\n".join(m.data["text"] for m in messages)
-    assert "[handoff default.default-0]" in text
-    assert "[handoff default.default-1]" in text
+    assert "[handoff root.default-0]" in text
+    assert "[handoff root.default-1]" in text
     assert g.result(root) == "both"
 
 
@@ -156,7 +156,7 @@ def test_child_done_during_parent_model_call_is_delivered_after_its_cell():
         return launch_print()
 
     flow = Flow(StubLLM(parent_then_child(parent=parent, child=child_reply)))
-    g, root = run_parent(flow, max_depth=1, max_iters=8)
+    g, root = run_parent(flow, max_iters=8)
 
     messages = handoff_messages(g, root)
     assert messages
@@ -171,13 +171,11 @@ def test_handoff_is_sent_once_with_from_edges_to_the_child_result():
 
     assert message is not None
     assert g.inbox(root) == [message]
-    assert [edge.target for edge in g.edges(kind=FROM, source=message.id)] == [
-        g.frontier(child).id
-    ]
+    assert [edge.target for edge in g.edges(kind=FROM, source=message.id)] == [g.frontier(child).id]
     assert handoff.react(g, root) is None
     assert g.deliver(root) == [message]
     assert handoff_messages(g, root) == [message]
-    assert "[handoff default.alpha]" in message.data["text"]
+    assert "[handoff root.alpha]" in message.data["text"]
     assert message.data["sender"] == child.id
 
 
@@ -186,6 +184,7 @@ def test_a_fork_after_a_launch_waits_for_and_receives_the_shared_child():
     cell = g.append(root, Node(CODE, code="child = launch_agent('x')", output=""))
     child = g.spawn(CHILD_GOAL, by=cell, name="alpha")
     fork = g.fork(cell, name="fork")
+    fork.bind_config(AgentConfig())
     g.append(root, Node(DONE, result="superseded"))
     g.append(fork, Node(WAITING, on=[child.id]))
 
@@ -197,7 +196,7 @@ def test_a_fork_after_a_launch_waits_for_and_receives_the_shared_child():
     g.append(child, Node(DONE, result="alpha"))
 
     message = handoff.react(g, fork)
-    assert message is not None and "[handoff default.alpha]" in message.data["text"]
+    assert message is not None and "[handoff root.alpha]" in message.data["text"]
     assert handoff.react(g, root) is None
 
 
@@ -254,7 +253,7 @@ def test_a_failed_cell_still_takes_the_handoff():
             return "```repl\nprint('recovered')\n```"
         return launch_then_error()
 
-    g, root = run_parent(Flow(StubLLM(parent_then_child(parent=parent))), max_depth=1, max_iters=8)
+    g, root = run_parent(Flow(StubLLM(parent_then_child(parent=parent))), max_iters=8)
 
     messages = handoff_messages(g, root)
     assert messages
@@ -271,13 +270,15 @@ def test_waiting_takes_results_only_once_everything_it_waits_on_is_done():
     assert handoff.react(g, root) is None
     g.append(other, Node(DONE, result="beta"))
     message = handoff.react(g, root)
-    assert "[handoff default.alpha]" in message.data["text"]
-    assert "[handoff default.beta]" in message.data["text"]
+    assert "[handoff root.alpha]" in message.data["text"]
+    assert "[handoff root.beta]" in message.data["text"]
 
 
 def test_finished_parent_is_never_reopened_by_child_results():
-    flow = Flow(StubLLM(parent_then_child(parent=lambda _m: launch_and_finish_early(), child=child_reply)))
-    g, root = run_parent(flow, max_depth=1, max_iters=4)
+    flow = Flow(
+        StubLLM(parent_then_child(parent=lambda _m: launch_and_finish_early(), child=child_reply))
+    )
+    g, root = run_parent(flow, max_iters=4)
 
     assert g.result(root) == "early"
     assert not handoff_messages(g, root)
@@ -300,7 +301,7 @@ def test_awaited_result_is_not_handed_off_again():
             return "```repl\nsubmit('got-alpha')\n```"
         return launch_wait_print()
 
-    g, root = run_parent(Flow(StubLLM(parent_then_child(parent=parent))), max_depth=1, max_iters=6)
+    g, root = run_parent(Flow(StubLLM(parent_then_child(parent=parent))), max_iters=6)
 
     assert not handoff_messages(g, root)
     assert g.result(root) == "got-alpha"
@@ -333,7 +334,7 @@ def test_rerunning_a_finished_graph_does_not_append_a_second_handoff(tmp_path):
             return "```repl\nprint('waiting')\n```"
         return launch_print()
 
-    g, root = run_parent(Flow(StubLLM(parent_then_child(parent=parent))), max_depth=1, max_iters=6)
+    g, root = run_parent(Flow(StubLLM(parent_then_child(parent=parent))), max_iters=6)
     assert len(handoff_messages(g, root)) == 1
 
     g.save(tmp_path / "done")
@@ -349,12 +350,12 @@ def test_message_after_code_or_done_calls_model_directly():
     for observation in (Node(CODE, code="", output="observed"), Node(DONE, result="early")):
         g, root = agent_graph(PARENT_QUERY)
         g.append(root, observation)
-        g.send(root, "[handoff default.alpha]\nresult: 1")
+        g.send(root, "[handoff root.alpha]\nresult: 1")
         assert asyncio.run(flow.step(g, root)).type == LLM_OUTPUT
 
 
 def test_top_level_agents_have_no_launcher():
-    g, root = agent_graph(PARENT_QUERY, max_depth=1)
+    g, root = agent_graph(PARENT_QUERY)
     cell = g.append(root, Node(CODE, code="launch"))
     child = g.spawn(CHILD_GOAL, by=cell, name="alpha")
 
@@ -364,8 +365,9 @@ def test_top_level_agents_have_no_launcher():
 
 def test_reports_to_edge_delivers_a_peer_result():
     g = Graph()
-    worker = g.create_agent("work", config=AgentConfig(name="worker"))
-    listener = g.create_agent("listen", config=AgentConfig(name="listener"))
+    worker = g.spawn("work", config="worker")
+    listener = g.spawn("listen", config="listener")
+    listener.bind_config(AgentConfig(name="listener"))
     g.add_edge(Edge(kind=REPORTS_TO, source=worker.id, target=listener.id))
     g.append(listener, Node(CODE, code="", output="waiting"))
     done = g.append(worker, Node(DONE, result=5))
@@ -382,7 +384,8 @@ def test_reports_to_edge_delivers_a_peer_result():
 
 def test_child_result_goes_to_launcher_and_reports_to_peer_once_each():
     g, root, child = finished_child()
-    peer = g.create_agent("listen", config=AgentConfig(name="peer"))
+    peer = g.spawn("listen", config="peer")
+    peer.bind_config(AgentConfig(name="peer"))
     g.append(peer, Node(CODE, code="", output="waiting"))
     g.add_edge(Edge(kind=REPORTS_TO, source=child.id, target=peer.id))
 
@@ -390,16 +393,18 @@ def test_child_result_goes_to_launcher_and_reports_to_peer_once_each():
     to_root = handoff.react(g, root)
     to_peer = handoff.react(g, peer)
 
-    assert to_root is not None and to_root.data["text"].startswith("Agents you started have finished.")
-    assert to_peer is not None and "[handoff default.alpha]" in to_peer.data["text"]
+    assert to_root is not None and to_root.data["text"].startswith(
+        "Agents you started have finished."
+    )
+    assert to_peer is not None and "[handoff root.alpha]" in to_peer.data["text"]
     assert handoff.react(g, root) is None
     assert handoff.react(g, peer) is None
 
 
 def test_removed_reports_to_edge_stops_delivery():
     g = Graph()
-    worker = g.create_agent("work", config=AgentConfig(name="worker"))
-    listener = g.create_agent("listen", config=AgentConfig(name="listener"))
+    worker = g.spawn("work", config="worker")
+    listener = g.spawn("listen", config="listener")
     edge = Edge(kind=REPORTS_TO, source=worker.id, target=listener.id)
     g.add_edge(edge)
     g.remove_edge(edge.id)
@@ -419,11 +424,15 @@ def test_finished_peer_is_not_woken_by_a_later_reported_result():
         return "```repl\nsubmit(5)\n```"
 
     g = Graph()
-    listener = g.create_agent("listen", config=AgentConfig(name="listener", max_iters=4))
-    worker = g.create_agent("work", config=AgentConfig(name="worker"), depends_on=(listener,))
+    listener = g.spawn("listen", config="listener")
+    worker = g.spawn("work", config="worker", depends_on=(listener,))
     g.add_edge(Edge(kind=REPORTS_TO, source=worker.id, target=listener.id))
 
-    asyncio.run(asyncio.wait_for(Flow(StubLLM(reply)).arun(g), timeout=5))
+    flow = Flow(
+        StubLLM(reply),
+        configs=[AgentConfig(name="listener", max_iters=4), AgentConfig(name="worker")],
+    )
+    asyncio.run(asyncio.wait_for(flow.arun(g), timeout=5))
 
     assert g.result(worker) == 5
     assert g.result(listener) == "nothing yet"

@@ -221,9 +221,9 @@ def main() -> None:
     found = re.search(r"Picked (\S+?):", summary)
     name = args.branch or (found.group(1) if found else "")
     branches = g.children(shepherd)
-    agent = next((a for a in branches if a.config.name == name), None)
+    agent = next((a for a in branches if a.name == name), None)
     if agent is None:
-        names = ", ".join(a.config.name for a in branches)
+        names = ", ".join(a.name for a in branches)
         raise SystemExit(f"no branch {name!r} in that run. Available: {names}")
 
     jam = load_frames(run_dir / "traces" / "worker.json")

@@ -25,25 +25,25 @@ rlmflow run print "fix the failing test"        # headless: stream it, print the
 rlmflow run --workdir ./proj --model gpt-5 tui
 rlmflow tui --docker-image rlmflow:local
 rlmflow tui --resume ./proj/graph               # continue a saved run
-rlmflow tui --agent mypkg.agents:build          # your own Flow instead of this one
+rlmflow tui --flow mypkg.agents:build           # your own Flow instead of this one
 ```
 
-| Flag                         | What it changes                                                                                         |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `--query`                    | Opening turn. On `run`, the verb can take this as a positional instead.                                 |
-| `--model`, `--fast-model`    | The main client and the one registered as `fast`. `claude*` goes to Anthropic, anything else to OpenAI. |
-| `--reasoning-effort`         | `minimal`, `low`, `medium`, `high`. Reaches OpenAI reasoning models; ignored elsewhere.                 |
-| `--workdir`                  | The directory the agent reads and edits, and where `graph/` lands.                                      |
-| `--docker-image`             | Swaps `LocalRuntime` for `DockerRuntime` on that image.                                                 |
-| `--max-depth`, `--max-iters` | The `AgentConfig` every root picks up.                                                                  |
-| `--workers`                  | How many agents may run at once.                                                                        |
-| `--tools`                    | `files` (the default) or `none` for a bare REPL.                                                        |
-| `--resume DIR`               | Continue a saved run instead of starting a new one.                                                     |
-| `--agent module:factory`     | Import a zero-argument callable returning a `Flow`.                                                     |
+| Flag                         | What it changes                                                                                                               |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `--query`                    | Opening turn. On `run`, the verb can take this as a positional instead.                                                       |
+| `--model`, `--fast-model`    | The root's model and the `worker` config's. `claude*` goes to Anthropic, anything else to OpenAI.                             |
+| `--reasoning-effort`         | `minimal`, `low`, `medium`, `high`. Reaches OpenAI reasoning models; ignored elsewhere.                                       |
+| `--workdir`                  | The directory the agent reads and edits, and where `graph/` lands.                                                            |
+| `--docker-image`             | Swaps `LocalRuntime` for `DockerRuntime` on that image.                                                                       |
+| `--max-depth`, `--max-iters` | The `default` config: roots and plain `launch_agent` calls.                                                                   |
+| `--workers`                  | How many agents may run at once.                                                                                              |
+| `--tools`                    | `files` (the default) or `none` for a bare REPL.                                                                              |
+| `--resume DIR`               | Continue a saved run instead of starting a new one.                                                                           |
+| `--flow module:factory`      | A zero-argument callable returning a `Flow`, from the project or an installed package. Also `flow = "..."` in `rlmflow.toml`. |
 
 `run print` is the one to reach for in a pipe, a CI job, or anywhere without a terminal. It streams the same nodes through `LiveTreeRenderer` and exits with `0` on success, `1` on a handled error, `2` on bad usage.
 
-Anything the flags cannot say stays in Python: write a factory that returns the `Flow` you want — custom prompts, tools, runtimes, profiles — and point `--agent` at it.
+Anything the flags cannot say stays in Python: write a factory that returns the `Flow` you want — custom prompts, tools, runtimes, profiles — and point `--flow` at it. Set `flow` in `rlmflow.toml` instead and `rlmflow serve` (so `/rlmflow:run` in your own Claude Code session) uses it too.
 
 ```python
 # mypkg/agents.py
@@ -55,11 +55,10 @@ def build() -> Flow:
         client_for("gpt-5", reasoning_effort="low"),
         runtime=LocalRuntime(working_directory="."),
         tools=[FILE_TOOLS, my_tool],
-        root_config=AgentConfig(
-            max_depth=1,
-            max_iters=40,
-            child_config={"output_schema": CODING_HANDOFF_SCHEMA},
-        ),
+        configs=[
+            AgentConfig(max_depth=1, max_iters=40),
+            AgentConfig(name="worker", model="gpt-5-mini", output_schema=CODING_HANDOFF_SCHEMA),
+        ],
     )
 ```
 

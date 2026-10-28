@@ -1,13 +1,19 @@
-"""The REPL harness's prompts: the system prompt and the messages built from the graph."""
+"""Our harness: a model plus a persistent Python REPL, one node per call.
+
+Each model call lands ``llm_output``; stepping that runs its one ``repl`` cell. The
+system prompt and the messages are built from the agent's history.
+"""
 
 from __future__ import annotations
 
-import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from rlmflow import schema
 from rlmflow.graph.config import DEFAULT_MAX_ITERS, can_spawn
-from rlmflow.graph.graph import DEPENDS_ON
-from rlmflow.graph.nodes import AGENT_START, DONE, LLM_OUTPUT, MESSAGE, WAITING, Node, Step
+from rlmflow.graph.nodes import AGENT_START, CODE, DONE, LLM_OUTPUT, MESSAGE, WAITING, Node, Step
+from rlmflow.harnesses.base import Harness
+from rlmflow.harnesses.prompts import argument_manifest
+from rlmflow.utils import find_repl_blocks, has_repl_fence
 
 if TYPE_CHECKING:
     from rlmflow.flow import Flow
@@ -66,41 +72,9 @@ REPL kept running, so variables, imports, and helpers defined in those turns are
 bound — reuse them instead of redefining them.]"""
 
 
-def argument_manifest(step: Step) -> str:
-    """Arguments by name and size; the values stay in the REPL."""
-    g, agent = step.graph, step.agent
-    values = {**agent.resolved_args(), **g.inputs(agent)}
-    if not values:
-        return ""
-    descriptions = {
-        **agent.argument_descriptions(),
-        **{
-            edge.data["as"]: edge.data["description"]
-            for edge in g.edges(kind=DEPENDS_ON, source=agent.id)
-            if edge.data.get("as") and edge.data.get("description")
-        },
-    }
-    lines = []
-    for name, value in values.items():
-        if isinstance(value, str):
-            size = f"str, {len(value)} chars"
-        elif isinstance(value, list):
-            size = f"list, {len(value)} items"
-        elif isinstance(value, dict):
-            size = f"object, {len(value)} fields"
-        else:
-            size = type(value).__name__
-        line = f"- `{name}`: {size}"
-        if description := descriptions.get(name):
-            line += f" — {' '.join(description.split())}"
-        lines.append(line)
-    return "Your REPL has these task arguments as direct variables:\n" + "\n".join(lines)
-
-
 def system_prompt(flow: Flow, step: Step) -> str:
     """``config.system_prompt`` (``{tools}`` is filled in), or the default prompt."""
-    from rlmflow import schema
-    from rlmflow.harnesses.repl.tools import format_tool_docs, repl_tools
+    from rlmflow.tools import format_tool_docs, repl_tools
 
     config = step.agent.config
     tools = format_tool_docs(repl_tools(flow, step))
@@ -210,13 +184,80 @@ def final_turn_spent(step: Step) -> bool:
     return False
 
 
-def preview(value: Any, limit: int = 160) -> str:
-    text = value if isinstance(value, str) else json.dumps(value, default=str)
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[: limit - 3] + "..."
+MAX_ITERS_EXCEEDED = "[max_iters exceeded]"
+MAX_BUDGET_EXCEEDED = "[max_budget exceeded]"
+
+
+def protocol_error(reply: str) -> str:
+    """What makes ``reply`` an invalid action."""
+    blocks = find_repl_blocks(reply)
+    if len(blocks) > 1:
+        return f"found {len(blocks)} ```repl blocks; send exactly one per turn"
+    if blocks:
+        return "the ```repl block is empty"
+    if has_repl_fence(reply):
+        return "the ```repl block was never closed (the reply may have been cut off)"
+    return "the reply is empty"
+
+
+def malformed(reason: str) -> Node:
+    """A ``code`` node that ran nothing, so the model sees the problem and retries."""
+    text = (
+        f"{reason}. Nothing ran. To act, reply with exactly one non-empty ```repl block. "
+        "To finish, call submit(value) in that block, or reply in plain text with no "
+        "```repl block."
+    )
+    return Node(CODE, code="", output=text, error=True)
+
+
+class ReplHarness(Harness):
+    """The REPL harness: a model call lands ``llm_output``; stepping that runs its cell."""
+
+    name = "repl"
+    handles = (*Harness.handles, LLM_OUTPUT)
+
+    async def step(self, flow: Flow, step: Step) -> Node:
+        if step.node.type == LLM_OUTPUT:
+            return await self.run_reply(flow, step)
+        return await self.call_model(flow, step)
+
+    async def call_model(self, flow: Flow, step: Step) -> Node:
+        config = step.agent.config
+        if final_turn_spent(step):
+            return Node(DONE, result=MAX_BUDGET_EXCEEDED)
+        if llm_turns(step) >= (config.max_iters or DEFAULT_MAX_ITERS):
+            return Node(DONE, result=MAX_ITERS_EXCEEDED)
+        text, usage = await flow.complete(repl_messages(flow, step), config.model)
+        return Node(LLM_OUTPUT, text=text, usage=usage.as_dict(), model=config.model)
+
+    async def run_reply(self, flow: Flow, step: Step) -> Node:
+        """Run the reply's one ``repl`` block, or take a reply without one as the answer."""
+        text = step.node.data["text"]
+        if text.strip() and not has_repl_fence(text):
+            return self.text_answer(step, text.strip())
+        blocks = find_repl_blocks(text)
+        if len(blocks) != 1 or not blocks[0]:
+            return malformed(protocol_error(text))
+        cell, run = await flow.execute(step, blocks[0])
+        if run.submitted:
+            cell.type = DONE
+            cell.data["result"] = run.answer
+        return cell
+
+    def text_answer(self, step: Step, text: str) -> Node:
+        output_schema = step.agent.config.output_schema
+        if output_schema is None:
+            return Node(DONE, result=text)
+        try:
+            return Node(DONE, result=schema.check(text, output_schema))
+        except (schema.SchemaError, TypeError) as exc:
+            return Node(CODE, code="", output=f"Your reply is not a valid final answer.\n{exc}", error=True)
 
 
 __all__ = [
+    "MAX_BUDGET_EXCEEDED",
+    "MAX_ITERS_EXCEEDED",
+    "ReplHarness",
     "AGENTS_TEXT",
     "CORE_PROTOCOL_TEXT",
     "EVIDENCE_POLICY",
@@ -224,12 +265,10 @@ __all__ = [
     "FINAL_TURN_TEXT",
     "TRUNCATION_TEXT",
     "WORKER_ADDENDUM",
-    "argument_manifest",
     "final_turn",
     "final_turn_spent",
     "llm_turns",
     "node_messages",
-    "preview",
     "repl_messages",
     "system_prompt",
 ]

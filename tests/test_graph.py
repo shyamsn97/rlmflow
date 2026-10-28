@@ -47,7 +47,7 @@ def test_a_child_agent_branches_off_the_node_that_launched_it():
     assert g.launcher(child) is root
     assert g.lineage(child) == [root, child]
     assert g.children(root) == [child]
-    assert [g.path(agent) for agent in (root, child)] == ["default", "default.worker"]
+    assert [g.path(agent) for agent in (root, child)] == ["root", "root.worker"]
     # Launching moved neither agent on: the parent still stands at the cell,
     # and the child has nothing but its own start.
     assert g.frontier(root) is cell
@@ -101,8 +101,8 @@ def test_attach_rehomes_a_complete_subtree():
     assert g.inbox(root) == [message]
     assert g.children(root) == [subtree]
     assert g.lineage(nested) == [root, subtree, nested]
-    assert g.path(subtree) == "default.branch0"
-    assert g.path(nested) == "default.branch0.nested"
+    assert g.path(subtree) == "root.branch0"
+    assert g.path(nested) == "root.branch0.nested"
 
 
 def test_attach_adds_several_agents_with_one_message():

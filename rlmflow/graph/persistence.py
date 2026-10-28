@@ -13,8 +13,9 @@ from rlmflow.graph.config import RECURSE, AgentConfig, transform_argument
 from rlmflow.graph.graph import Edge, Graph, InvariantError, check_invariants
 from rlmflow.graph.nodes import AGENT_START, NODE_TYPES, Node, isoformat, strict_json
 
-#: Bumped on any incompatible change; older runs are refused, not converted.
-FORMAT_VERSION = 2
+#: Bumped on any incompatible change. Format 2 (configs saved on the graph) is
+#: converted on load; anything older is refused.
+FORMAT_VERSION = 3
 ARG_BLOB_THRESHOLD_BYTES = 64 * 1024
 ARG_BLOB_REF_KEY = "$rlmflow_arg_blob"
 
@@ -109,7 +110,6 @@ def save_graph(graph: Graph, path: str | Path) -> Path:
     document = {
         "format": FORMAT_VERSION,
         "id": graph.id,
-        "configs": {name: config.to_dict() for name, config in graph.configs.items()},
         "items": records,
     }
     _write_json(run / "graph.json", document)
@@ -121,7 +121,7 @@ def load_graph(path: str | Path) -> Graph:
     run = Path(path)
     data = _read_json(run / "graph.json")
     version = data.get("format")
-    if version != FORMAT_VERSION:
+    if version not in (2, FORMAT_VERSION):
         raise ValueError(
             f"{run} was saved in run format {version or 1}, and this rlmflow reads only "
             f"format {FORMAT_VERSION}. Runs from before the harness refactor can't be "
@@ -134,8 +134,6 @@ def load_graph(path: str | Path) -> Graph:
     if not isinstance(graph_id, str) or not graph_id:
         raise ValueError("graph has an invalid id")
     graph = Graph(graph_id)
-    for name, config in (data.get("configs") or {}).items():
-        graph.configs[name] = AgentConfig.from_dict(config)
     try:
         for position, raw in enumerate(records):
             if not isinstance(raw, dict):
@@ -144,6 +142,8 @@ def load_graph(path: str | Path) -> Graph:
                 raise ValueError(f"graph item {position} is out of log order")
             removing = "kind" in raw and raw.get("removed_seq") is not None
             graph._append_unchecked(_log_item(graph, raw, run), removing=removing)
+        if version == 2:
+            _convert_format_2(graph)
         check_invariants(graph)
     except InvariantError as exc:
         raise InvariantError(f"invalid graph log: {exc}") from exc
@@ -183,11 +183,21 @@ def _log_item(graph: Graph, raw: dict[str, Any], run: Path) -> Node | Edge:
     node.started_at = _epoch(timing.get("started_at"))
     node.finished_at = _epoch(timing.get("finished_at"))
     if node_type == AGENT_START:
-        AgentConfig.from_dict(data.get("config") or {})
         node.data["args"] = {
             name: _resolve_arg(value, run / "blobs") for name, value in node.args.items()
         }
     return node
+
+
+def _convert_format_2(graph: Graph) -> None:
+    """Format 2 saved each agent's whole config in ``data``; keep it as the record and the name as the config."""
+    for agent in graph.agents():
+        saved = agent.data.pop("config", None)
+        if not isinstance(saved, dict):
+            continue
+        agent.metadata.setdefault("config", AgentConfig.from_dict(saved).to_dict())
+        if graph.launcher(agent) is not None:
+            agent.data["config"] = saved.get("name", "default")
 
 
 def _epoch(stamp: str | None) -> float | None:

@@ -14,20 +14,20 @@ from rlmflow import (
     SubprocessRuntime,
     WorkerRepl,
 )
-from rlmflow.graph import Graph
 from rlmflow.graph.nodes import CODE, Node
-from rlmflow.harnesses.repl.runtime import (
+from rlmflow.runtime import (
     DEFAULT_PREIMPORTS,
     base_namespace,
     build_docker_argv,
     get_tool_metadata,
 )
-from rlmflow.harnesses.repl.runtime.repl_client import invoke_tool_call
-from rlmflow.harnesses.repl.tools import tool
+from rlmflow.runtime.repl_client import invoke_tool_call
+from rlmflow.tools import tool
 
 
 def bare_agent() -> Node:
-    return Graph().create_agent("q")
+    return agent_graph("q")[1]
+
 
 WRITE_A_NOTE = block(
     "from pathlib import Path\n"
@@ -119,7 +119,7 @@ def test_process_runtimes_propagate_execution_timeout(runtime):
     ],
 )
 def test_sandbox_runtimes_propagate_execution_timeout(monkeypatch, runtime):
-    monkeypatch.setattr("rlmflow.harnesses.repl.runtime.repl_client.WorkerSession", RecordingWorkerSession)
+    monkeypatch.setattr("rlmflow.runtime.repl_client.WorkerSession", RecordingWorkerSession)
 
     repl = runtime.open(bare_agent())
     try:
@@ -189,7 +189,7 @@ def test_subprocess_runtime_exposes_the_agents_tree():
         runtime=SubprocessRuntime(),
     )
     try:
-        assert flow.run("q") == "default|0|default (default) [running] (you)"
+        assert flow.run("q") == "root|0|root (root) [running] (you)"
     finally:
         asyncio.run(flow.aclose())
 
@@ -202,7 +202,7 @@ def test_subprocess_runtime_supports_subagent_handles():
 
     flow = Flow(StubLLM(reply), runtime=SubprocessRuntime())
     try:
-        assert run_result(flow, *agent_graph("parent", max_depth=1)) == "child-done"
+        assert run_result(flow, *agent_graph("parent")) == "child-done"
     finally:
         asyncio.run(flow.aclose())
 
@@ -212,10 +212,10 @@ def test_worker_env_channel_round_trips():
     flow = Flow(StubLLM(lambda _messages: code))
     g, root = agent_graph("q")
     try:
-        assert run_result(flow, g, root) == "default"
+        assert run_result(flow, g, root) == "root"
         published = flow.runtime.repl_for(root).env
         assert published["solved"] is True
-        assert published["RLMFLOW_AGENT_ID"] == "default"
+        assert published["RLMFLOW_AGENT_ID"] == "root"
     finally:
         asyncio.run(flow.aclose())
 
@@ -359,7 +359,7 @@ def test_docker_argv_carries_configured_preimports(tmp_path):
     argv = build_docker_argv("rlmflow:minimal", preimports=["json", "re"])
 
     assert argv[-2:] == ["--preimport", "json,re"]
-    assert "rlmflow.harnesses.repl.runtime.repl_server" in argv
+    assert "rlmflow.runtime.repl_server" in argv
 
 
 def test_docker_argv_runs_worker(tmp_path):
@@ -369,7 +369,7 @@ def test_docker_argv_runs_worker(tmp_path):
         workdir="/workspace",
     )
 
-    assert argv[-4:] == ["python", "-u", "-m", "rlmflow.harnesses.repl.runtime.repl_server"]
+    assert argv[-4:] == ["python", "-u", "-m", "rlmflow.runtime.repl_server"]
     assert argv[:4] == ["docker", "run", "-i", "--rm"]
     assert not any(":50001" in part for part in argv)
     assert ["--network", "none"] == argv[argv.index("--network") : argv.index("--network") + 2]

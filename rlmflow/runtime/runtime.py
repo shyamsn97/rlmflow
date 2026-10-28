@@ -14,8 +14,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rlmflow.graph.nodes import Node
-from rlmflow.harnesses.repl.runtime.repl import Repl, ReplRun, ReplStatus
-from rlmflow.harnesses.repl.runtime.repl_server import (
+from rlmflow.runtime.repl import Repl, ReplRun, ReplStatus
+from rlmflow.runtime.repl_server import (
     ProxyCall,
     ReplResponse,
     WireModel,
@@ -25,7 +25,7 @@ from rlmflow.harnesses.repl.runtime.repl_server import (
 
 if TYPE_CHECKING:
     from rlmflow.graph.graph import Graph
-    from rlmflow.harnesses.repl.runtime.repl_client import ReplConnection
+    from rlmflow.runtime.repl_client import ReplConnection
 
 # Public ``RLMFLOW_*`` metadata an agent can read from its per-REPL ``ENV``
 # mapping (e.g. ``ENV["RLMFLOW_AGENT_ID"]``). Being per-REPL, it stays isolated
@@ -201,6 +201,11 @@ class Runtime:
     def directory(self, agent: Node) -> Path | None:
         return self.directory_for(agent) if self.directory_for is not None else self.working_directory
 
+    @property
+    def location(self) -> str | None:
+        """Where the REPL runs, for agents whose own tools run elsewhere; ``None``: on this machine."""
+        return None
+
     def worker_command(self, python: str | Path | None = None) -> list[str]:
         """Argv for one worker process, carrying this runtime's preimport choice.
 
@@ -208,7 +213,7 @@ class Runtime:
         ``DEFAULT_PREIMPORTS``; an empty sequence sends an empty value, which binds
         nothing.
         """
-        command = [str(python or sys.executable), "-u", "-m", "rlmflow.harnesses.repl.runtime.repl_server"]
+        command = [str(python or sys.executable), "-u", "-m", "rlmflow.runtime.repl_server"]
         if self.preimports is not None:
             command += ["--preimport", ",".join(self.preimports)]
         return command
@@ -218,7 +223,7 @@ class Runtime:
         raise NotImplementedError
 
     def open(self, agent: Node) -> Repl:
-        from rlmflow.harnesses.repl.runtime.repl_client import WorkerRepl, WorkerSession
+        from rlmflow.runtime.repl_client import WorkerRepl, WorkerSession
 
         session = WorkerSession(
             self.connect(self.directory(agent)),

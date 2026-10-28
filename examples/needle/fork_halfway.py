@@ -44,26 +44,25 @@ def main() -> None:
         flow = Flow(
             client_for(args.model),
             llm_clients={"fast": client_for(args.fast_model)},
+            configs=[
+                AgentConfig(
+                    name="searcher",
+                    model="fast",
+                    description="cheap model for searching one batch of files",
+                    max_depth=0,
+                    max_iters=15,
+                )
+            ],
             runtime=SubprocessRuntime(working_directory=workdir),
             tools=NEEDLE_FILE_TOOLS,
         )
+        config = AgentConfig(harness="claude_code")
         g = Graph()
-        g.add_config(
-            AgentConfig(
-                name="searcher",
-                model="fast",
-                description="cheap model for searching one batch of files",
-                max_depth=0,
-                max_iters=15,
-            )
-        )
         root = g.create_agent(
             f"There are {args.num_files} text files in haystack/. Exactly one line "
             "in one file matches `The magic number is <number>`. Find and return "
             "the number. Split the files into batches and give each batch to a "
             "searcher.",
-            config=AgentConfig(harness="claude_code", max_depth=1),
-            name="root",
         )
 
         def launched(step) -> bool:
@@ -72,7 +71,7 @@ def main() -> None:
         async def drive() -> None:
             checkpointer = GraphCheckpointer(args.out_dir)
             try:
-                async for step in flow.run_streaming(g, until=launched):
+                async for step in flow.run_streaming(g, until=launched, root_config=config):
                     checkpointer.handle(step, g)
                     print(f"{g.path(step.agent):<20} {step.node.type}")
                 cell = g.frontier(root)
@@ -80,7 +79,7 @@ def main() -> None:
                 print(f"\n--- forking at {cell.id} after {len(workers)} workers launched ---\n")
                 fork = g.fork(cell, name="fork")
                 g.append(root, Node(DONE, result="[superseded by fork]"))
-                async for step in flow.run_streaming(g):
+                async for step in flow.run_streaming(g, root_config=config):
                     checkpointer.handle(step, g)
                     print(f"{g.path(step.agent):<20} {step.node.type}")
             finally:

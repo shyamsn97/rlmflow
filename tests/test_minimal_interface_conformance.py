@@ -49,12 +49,14 @@ def test_minimal_interface_end_to_end_reruns_without_work(tmp_path):
         )
 
     g = Graph()
-    for name, schema in (("value", SCHEMA), ("ok", OK_SCHEMA), ("sum", SUM_SCHEMA)):
-        g.add_config(AgentConfig(name=name, output_schema=schema, max_iters=4))
-    root = g.create_agent("conformance root", config=AgentConfig(max_depth=1, max_iters=8))
-    flow = Flow(StubLLM(reply), runtime=TestRuntime())
+    root = g.create_agent("conformance root")
+    configs = [
+        AgentConfig(name=name, output_schema=schema, max_iters=4)
+        for name, schema in (("value", SCHEMA), ("ok", OK_SCHEMA), ("sum", SUM_SCHEMA))
+    ]
+    flow = Flow(StubLLM(reply), configs=configs, runtime=TestRuntime())
 
-    assert run_result(flow, g, root) == "done"
+    assert run_result(flow, g, root, root_config=AgentConfig(max_iters=8)) == "done"
     children = g.tree(root)[1:]
     assert [child.config.name for child in children] == ["value", "ok", "sum"]
     left, right, joined = children
@@ -72,7 +74,9 @@ def test_minimal_interface_end_to_end_reruns_without_work(tmp_path):
     def no_model_call(_messages):
         raise AssertionError("model repeated during terminal rerun")
 
-    assert Flow(StubLLM(no_model_call), runtime=TestRuntime()).run(loaded) is loaded
+    assert (
+        Flow(StubLLM(no_model_call), configs=configs, runtime=TestRuntime()).run(loaded) is loaded
+    )
     assert loaded.result(loaded.node(root.id)) == "done"
     assert len(calls) == call_count
 

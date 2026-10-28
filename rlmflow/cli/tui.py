@@ -21,23 +21,21 @@ def is_error(node: Node) -> bool:
 class FlowTUI(StreamConsumer):
     """Interactive chat plus overview, tree, agent, error, and activity panels.
 
-    A new run's first agent gets ``config``; ``configs`` are added to that run.
+    Roots run with ``root_config``; the Flow holds every other config.
     """
 
     def __init__(
         self,
         graph: Graph | None = None,
         *,
-        config: AgentConfig | str | None = None,
-        configs: list[AgentConfig] = (),
+        root_config: AgentConfig | str | None = None,
         sink: StreamConsumer | None = None,
         refresh_interval_s: float = 0.10,
     ) -> None:
         if refresh_interval_s < 0:
             raise ValueError("refresh_interval_s must be non-negative")
         self.graph = graph
-        self.config = config
-        self.configs = list(configs)
+        self.root_config = root_config
         self.sink = sink
         self.refresh_interval_s = refresh_interval_s
         self.flow: Any = None
@@ -68,12 +66,10 @@ class FlowTUI(StreamConsumer):
             if query is None:
                 return None
             self.graph = Graph()
-            for config in self.configs:
-                self.graph.add_config(config)
-            self.graph.create_agent(query, config=self.config, **(inputs or {}))
+            self.graph.create_agent(query, **(inputs or {}))
         elif query is not None:
             self.graph.send(top_level(self.graph)[0], query)
-        async for item in self.flow.run_streaming(self.graph, until=until):
+        async for item in self.flow.run_streaming(self.graph, until=until, root_config=self.root_config):
             self.handle(item, self.graph)
         return self.graph
 
@@ -351,7 +347,7 @@ class FlowTUI(StreamConsumer):
                 for agent in agents:
                     tab_id = f"tab-{agent.id}"
                     if tab_id not in have:
-                        label = agent.config.name
+                        label = agent.config_name or "root"
                         await tabs.add_tab(Tab(label, id=tab_id))
                 self._tab_ids = ids
 

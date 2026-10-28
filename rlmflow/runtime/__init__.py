@@ -1,8 +1,8 @@
 """Python-worker runtimes: where an agent's REPL runs."""
 
-from rlmflow.harnesses.repl.runtime.docker import DockerRuntime, build_docker_argv
-from rlmflow.harnesses.repl.runtime.modal import ModalRuntime
-from rlmflow.harnesses.repl.runtime.repl import (
+from rlmflow.runtime.docker import DockerRuntime, build_docker_argv
+from rlmflow.runtime.modal import ModalRuntime
+from rlmflow.runtime.repl import (
     DEFAULT_PREIMPORTS,
     DoneSignal,
     Repl,
@@ -12,8 +12,8 @@ from rlmflow.harnesses.repl.runtime.repl import (
     base_namespace,
     get_tool_metadata,
 )
-from rlmflow.harnesses.repl.runtime.repl_client import WorkerRepl, WorkerSession
-from rlmflow.harnesses.repl.runtime.runtime import (
+from rlmflow.runtime.repl_client import WorkerRepl, WorkerSession
+from rlmflow.runtime.runtime import (
     LocalRuntime,
     Runtime,
     SubprocessRuntime,

@@ -10,14 +10,14 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from rlmflow.harnesses.repl.runtime.repl_server import (
+from rlmflow.runtime.repl_server import (
     ProxyCall,
     ReplResponse,
     WireModel,
     dump_message,
     parse_client_message,
 )
-from rlmflow.harnesses.repl.runtime.runtime import STDERR_LINES, Runtime
+from rlmflow.runtime.runtime import STDERR_LINES, Runtime
 
 
 class _ModalConnection:
@@ -145,6 +145,10 @@ class ModalRuntime(Runtime):
         self.repl_timeout = repl_timeout
         self.execution_timeout = execution_timeout
         self.container_kwargs = dict(container_kwargs)
+
+    @property
+    def location(self) -> str:
+        return f"a Modal sandbox, working in `{self.remote_workdir}`; its files are not on this machine"
 
     def connect(self, directory: Path | None = None) -> _ModalConnection:
         # The sandbox has its own filesystem; per-agent directories don't apply.

@@ -20,7 +20,7 @@ import cloudpickle
 
 from rlmflow import CODE, DONE, LLM_OUTPUT, AgentConfig, Flow, Graph, Node, Step, current_step
 from rlmflow.consumers import LiveGraphTree
-from rlmflow.harnesses.repl.prompts import llm_turns
+from rlmflow.harnesses.repl import llm_turns
 from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -314,7 +314,10 @@ class ShepherdFlow(Flow):
             if board_text:
                 last = messages[-1]
                 if last["role"] == "user":
-                    messages = [*messages[:-1], {**last, "content": f"{last['content']}\n\n{board_text}"}]
+                    messages = [
+                        *messages[:-1],
+                        {**last, "content": f"{last['content']}\n\n{board_text}"},
+                    ]
                 else:
                     messages = [*messages, {"role": "user", "content": board_text}]
         return await super().complete(messages, model, **kwargs)
@@ -407,6 +410,16 @@ async def run_shepherd(
     flow = ShepherdFlow(
         client_for(model, reasoning_effort=effort),
         llm_clients={"worker": client_for(worker_model, reasoning_effort=worker_effort)},
+        configs=[
+            AgentConfig(
+                name="worker",
+                model="worker",
+                system_prompt=SIMPLE_WORKER_SYSTEM if simple_moves else WORKER_SYSTEM,
+                max_depth=0,
+                max_iters=max_iters,
+            ),
+            AgentConfig(name="shepherd", max_depth=max_depth, max_iters=max_iters),
+        ],
         simple_moves=simple_moves,
     )
     # Each REPL runs in a worker process that has no examples directory on its
@@ -418,16 +431,7 @@ async def run_shepherd(
     # One graph holds the whole run: the worker, the shepherd, its previews, and
     # the recovery branches it adopts.
     g = Graph()
-    worker = g.create_agent(
-        WORKER_QUERY,
-        config=AgentConfig(
-            name="worker",
-            model="worker",
-            system_prompt=SIMPLE_WORKER_SYSTEM if simple_moves else WORKER_SYSTEM,
-            max_depth=0,
-            max_iters=max_iters,
-        ),
-    )
+    worker = g.spawn(WORKER_QUERY, config="worker")
 
     # The terminal view is the same shape as the other examples': one live agent
     # tree, redrawn in place, whether or not a Gradio dashboard is also running.
@@ -534,9 +538,9 @@ async def run_shepherd(
             plans,
             expected_plans=n_branches,
         )
-        shepherd = g.create_agent(
+        shepherd = g.spawn(
             META_QUERY.format(n=n_branches),
-            config=AgentConfig(name="shepherd", max_depth=max_depth, max_iters=max_iters),
+            config="shepherd",
             jam=json.dumps(tools["jam"]),
             max_rewind=str(tools["max_rewind"]),
         )

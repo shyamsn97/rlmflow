@@ -45,11 +45,11 @@ Submit your number now with submit(value). Peers may message you later:
 - told the total: submit the string "{name} knows the total is N"."""
 
 
-async def run(flow: Flow, g: Graph, out_dir: str) -> None:
+async def run(flow: Flow, g: Graph, out_dir: str, config: AgentConfig) -> None:
     """Drive every peer in ``g`` until none can step, checkpointing as items land."""
     checkpointer = GraphCheckpointer(out_dir)
     try:
-        async for item in flow.run_streaming(g):
+        async for item in flow.run_streaming(g, root_config=config):
             checkpointer.handle(item, g)
             if isinstance(item, Step):
                 print(f"{item.agent.name:<6}  {item.node.type}")
@@ -71,12 +71,11 @@ def main() -> None:
         role = COLLECTOR if name == "alice" else RESPONDER.format(name=name)
         g.create_agent(
             PEERS.format(name=name) + role,
-            config=AgentConfig(max_depth=0, max_iters=args.max_iters),
             name=name,
             value=value,
         )
 
-    asyncio.run(run(flow, g, args.out_dir))
+    asyncio.run(run(flow, g, args.out_dir, AgentConfig(max_depth=0, max_iters=args.max_iters)))
 
     print("\nresults:")
     results = {peer.name: g.result(peer) for peer in g.nodes(AGENT_START)}
@@ -86,9 +85,7 @@ def main() -> None:
     print("\nedges the peers drew:")
     for edge in g.edges():
         if not edge.structural:
-            print(
-                f"  {g.node(edge.source).name} -{edge.kind}-> {g.node(edge.target).name}"
-            )
+            print(f"  {g.node(edge.source).name} -{edge.kind}-> {g.node(edge.target).name}")
 
     print("\nmessages:")
     for message in g.nodes(MESSAGE):

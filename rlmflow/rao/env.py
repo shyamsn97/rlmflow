@@ -19,7 +19,7 @@ from typing import Any, Protocol
 
 from rlmflow.graph.graph import Graph
 from rlmflow.graph.nodes import Node, record_metadata
-from rlmflow.harnesses.repl.tools import tool
+from rlmflow.tools import tool
 
 
 class Env(Protocol):

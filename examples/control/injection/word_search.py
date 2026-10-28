@@ -122,20 +122,14 @@ def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
 
 
 def run(model: str, out_dir: Path) -> None:
-    flow = Flow(client_for(model))
+    flow = Flow(client_for(model), configs=[AgentConfig(max_depth=2)])
 
     g = Graph()
-    root = g.create_agent(
-        QUERY,
-        config=AgentConfig(
-            output_schema=json_schema_for(WordSearchResult),
-            max_depth=2,
-        ),
-        puzzle=PUZZLE,
-    )
+    root = g.create_agent(QUERY, puzzle=PUZZLE)
     print_agent_tree(g, root)
 
-    asyncio.run(print_run(flow, g, out_dir))
+    config = AgentConfig(output_schema=json_schema_for(WordSearchResult), max_depth=2)
+    asyncio.run(print_run(flow, g, out_dir, root_config=config))
     flow.runtime.close_repls()
 
     print("=== TREE ===")

@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rlmflow import AGENT_START, CODE, DONE, LLM_OUTPUT, AgentConfig, Graph, LLMUsage, Node
+from rlmflow import AGENT_START, CODE, DONE, LLM_OUTPUT, Graph, LLMUsage, Node
 from rlmflow.graph.graph import FROM, NEXT
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1]
@@ -78,9 +78,7 @@ def render_ascii(
     return lines
 
 
-def render_agents(
-    g: Graph, agent: Node, *, prefix: str = "", is_last: bool = True
-) -> list[str]:
+def render_agents(g: Graph, agent: Node, *, prefix: str = "", is_last: bool = True) -> list[str]:
     """Render only the agent tree."""
     connector = "└── " if is_last else "├── "
     label = f"{g.path(agent)}  [{g.frontier(agent).type}]"
@@ -97,7 +95,9 @@ def render_agents(
 def _label(node: Node) -> str:
     if node.type == AGENT_START:
         return f"agent:{node.name}"
-    text = str(node.get("text") or node.get("output") or node.get("result") or "").replace("\n", " ")
+    text = str(node.get("text") or node.get("output") or node.get("result") or "").replace(
+        "\n", " "
+    )
     if len(text) > 40:
         text = text[:37] + "..."
     suffix = f" {text!r}" if text else ""
@@ -245,7 +245,7 @@ def main() -> None:
     args = parser.parse_args()
 
     g = Graph()
-    root = g.spawn("deep tree root", name="root", config=AgentConfig(max_depth=args.depth + 1))
+    root = g.create_agent("deep tree root")
     grow(g, root, depth=args.depth, branch=args.branch)
 
     print(f"agents={len(g.nodes(AGENT_START))}  nodes={len(g.nodes())}")

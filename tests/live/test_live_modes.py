@@ -64,6 +64,24 @@ def needle_project(tmp_path: Path, num_files: int, seed: int) -> tuple[Path, str
     return project, answer
 
 
+CLAUDE_FLOW = """\
+from dataclasses import replace
+from pathlib import Path
+
+from rlmflow import AgentConfig
+from rlmflow.cli import resolve_options
+from rlmflow.cli.run import build_flow
+
+
+def make_flow():
+    project = Path(__file__).parent
+    options, _ = resolve_options({}, cwd=project)
+    flow = build_flow(replace(options, flow=None), workdir=project)
+    flow.add_config(AgentConfig(name="claude", harness="claude_code", max_depth=1))
+    return flow
+"""
+
+
 def plugin_session(project: Path, prompt: str, *extra: str) -> dict:
     """``claude -p`` in ``project`` with the rlmflow plugin; returns its JSON result."""
     argv = ["claude", "-p", prompt, "--plugin-dir", str(PLUGIN_DIR), "--output-format", "json"]
@@ -104,6 +122,9 @@ def test_fork_halfway_through_a_claude_harness_run():
 
 def test_your_claude_session_as_the_root_finds_the_needle_and_forks(tmp_path):
     project, answer = needle_project(tmp_path, num_files=100, seed=3)
+    (project / "claude_flow.py").write_text(CLAUDE_FLOW)
+    with (project / "rlmflow.toml").open("a") as toml:
+        toml.write('flow = "claude_flow:make_flow"\n')
     result = plugin_session(project, "/rlmflow:run " + NEEDLE_TASK.format(n=100))
     assert answer in result["result"]
     assert not (project / ".rlmflow" / "serve.json").exists()
@@ -120,7 +141,7 @@ def test_your_claude_session_as_the_root_finds_the_needle_and_forks(tmp_path):
     launching = next(n for n in g.history(root) if n.type == CODE and n.launched())
     forked = subprocess.run(
         [sys.executable, "-m", "rlmflow", "fork", str(graph_dir), launching.id,
-         "--harness", "claude_code", "--name", "fork", "--project", str(project)],
+         "--config", "claude", "--name", "fork", "--project", str(project)],
         cwd=project, env=claude_env(), capture_output=True, text=True, timeout=1500,
     )
     assert forked.returncode == 0, forked.stdout[-3000:] + forked.stderr[-3000:]

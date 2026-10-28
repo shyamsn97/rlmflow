@@ -13,7 +13,6 @@ from uuid import uuid4
 
 from rlmflow.graph.config import (
     DEFAULT_QUERY,
-    AgentConfig,
     input_parts,
     validate_agent_name,
     validate_argument_name,
@@ -97,23 +96,22 @@ def agent_node(
     task: str,
     args: Mapping[str, Any] | None,
     *,
-    config: AgentConfig,
+    config: str | None,
     name: str,
 ) -> Node:
-    """An unlanded ``agent_start`` carrying a full copy of its config."""
+    """An unlanded ``agent_start`` naming the Flow config it runs with (``None``: a root)."""
+    if config is not None:
+        validate_agent_name(config)
     if not isinstance(task, str):
         raise TypeError("agent task must be a string")
     validate_agent_name(name)
     values = dict(args or {})
     for arg in values:
         validate_argument_name(arg)
-    return Node(
-        AGENT_START,
-        task=task or DEFAULT_QUERY,
-        name=name,
-        args=values,
-        config=config.to_dict(),
-    )
+    data: dict[str, Any] = {"task": task or DEFAULT_QUERY, "name": name, "args": values}
+    if config is not None:
+        data["config"] = config
+    return Node(AGENT_START, **data)
 
 
 class Graph:
@@ -124,8 +122,8 @@ class Graph:
     own preconditions. The queries below them read agents' history, status and
     results. Application edges are written with ``add_edge`` and ``remove_edge``;
     ``merge`` copies in another graph. Nothing is ever deleted: removing an edge
-    logs its updated record. ``configs`` holds the named ``AgentConfig``s that
-    agents can be created from.
+    logs its updated record. Agents name their config; a ``Flow`` decides what
+    each name means.
     """
 
     def __init__(self, id: str | None = None) -> None:
@@ -141,7 +139,6 @@ class Graph:
         self._inbox: dict[str, list[str]] = {}
         self._by_agent: dict[str, list[str]] = {}
         self._by_type: dict[str, list[str]] = {}
-        self.configs: dict[str, AgentConfig] = {}
 
     def __repr__(self) -> str:
         return f"Graph({self.id!r}, nodes={len(self._nodes)}, edges={len(self._edges)})"
@@ -176,20 +173,22 @@ class Graph:
         *,
         by: Node | None = None,
         name: str | None = None,
-        config: AgentConfig | str | None = None,
+        config: str | None = None,
         depends_on: Iterable[Node] = (),
         inputs: Mapping[str, Any] | None = None,
         **args: Any,
     ) -> Node:
         """Add an agent; ``by`` is the node that created it, ``None`` for top-level.
 
-        ``config`` is an ``AgentConfig`` or the name of one on the graph.
-        ``inputs`` binds producer results to names; a value may be an agent or
-        ``Input(agent, description=...)``.
+        ``config`` names one of the Flow's configs (``"default"`` when ``by`` is
+        given); ``None`` without ``by`` makes a root, which runs with the run's
+        ``root_config``. ``inputs`` binds producer results to names; a value may
+        be an agent or ``Input(agent, description=...)``.
         """
         self._require(by)
-        resolved = self.config(config)
-        start = agent_node(task, args, config=resolved, name=name or self._default_name(resolved, by))
+        if by is not None and config is None:
+            config = "default"
+        start = agent_node(task, args, config=config, name=name or self._default_name(config, by))
         items: list[Node | Edge] = [start]
         if by is not None:
             items.append(Edge(kind=FROM, source=start.id, target=by.id))
@@ -261,12 +260,13 @@ class Graph:
         *,
         name: str | None = None,
         by: Node | None = None,
-        **config: Any,
+        config: str | None = None,
     ) -> Node:
         """Branch a new agent whose history is everything up to ``at``.
 
         Nothing is copied: the fork shares the prefix through one ``next`` edge.
-        Keyword arguments override fields of the copied config.
+        It runs with the owner's config name unless ``config`` names another; a
+        fork of a root is a root.
         """
         self._require(at, by)
         if at.type != AGENT_START and not self.edges(kind=NEXT, target=at.id):
@@ -278,7 +278,7 @@ class Graph:
         start = agent_node(
             owner.task,
             deepcopy(owner.args),
-            config=replace(owner.config, **config),
+            config=config if config is not None else owner.config_name,
             name=name,
         )
         items: list[Node | Edge] = [start, Edge(kind=NEXT, source=at.id, target=start.id)]
@@ -310,29 +310,6 @@ class Graph:
         return message
 
     # -- other writes -----------------------------------------------------
-
-    def add_config(self, config: AgentConfig) -> AgentConfig:
-        """Name a config so agents can be created with ``config="<name>"``.
-
-        Agents copy their config when they start, so redefining a name only
-        affects agents created afterwards.
-        """
-        if not isinstance(config, AgentConfig):
-            raise TypeError(f"add_config takes an AgentConfig, not {type(config).__name__}")
-        with self._lock:
-            self.configs[config.name] = config
-        return config
-
-    def config(self, config: AgentConfig | str | None) -> AgentConfig:
-        """Resolve ``config=``: an ``AgentConfig``, a name on this graph, or the default."""
-        if config is None:
-            return self.configs.get("default", AgentConfig())
-        if isinstance(config, AgentConfig):
-            return config
-        if config not in self.configs:
-            known = ", ".join(sorted(self.configs)) or "none"
-            raise KeyError(f"no config named {config!r} on this graph (known: {known})")
-        return self.configs[config]
 
     def add_edge(self, edge: Edge) -> Edge:
         """Record one application edge between two nodes already in the graph."""
@@ -374,8 +351,6 @@ class Graph:
             shared = [i for i in (*other._nodes, *other._edges) if i in self]
             if shared:
                 raise InvariantError(f"graphs share ids: {', '.join(map(repr, shared[:3]))}")
-            for name, config in other.configs.items():
-                self.configs.setdefault(name, config)
             for item in other.items():
                 removing = isinstance(item, Edge) and not item.active
                 self._append_unchecked(
@@ -385,7 +360,6 @@ class Graph:
     def as_of(self, seq: int) -> Graph:
         """A copy of the graph as it stood once log item ``seq`` was written."""
         past = Graph(self.id)
-        past.configs = dict(self.configs)
         with self._lock:
             for item in self._log[: seq + 1]:
                 if isinstance(item, Node):
@@ -629,20 +603,17 @@ class Graph:
         self,
         task: str = "",
         *,
-        config: AgentConfig | str | None = None,
         name: str | None = None,
         depends_on: Iterable[Node] = (),
         inputs: Mapping[str, Any] | None = None,
         **args: Any,
     ) -> Node:
-        """Add a top-level agent; keyword arguments become its REPL variables.
+        """Add a root agent; keyword arguments become its REPL variables.
 
-        ``config`` is an ``AgentConfig`` or the name of one added with
-        ``add_config``. Nothing runs here: a ``Flow`` steps the agent.
+        Nothing runs here: a ``Flow`` steps the agent with the run's ``root_config``.
         """
         return self.spawn(
             task,
-            config=config,
             name=name,
             depends_on=depends_on,
             inputs=inputs,
@@ -676,8 +647,9 @@ class Graph:
         if agent.type != AGENT_START:
             raise InvariantError(f"expected an agent_start, not {agent.type} {agent.id!r}")
 
-    def _default_name(self, config: AgentConfig, by: Node | None) -> str:
-        """``config.name`` for the first top-level agent of a kind, else ``<name>-<n>``."""
+    def _default_name(self, config: str | None, by: Node | None) -> str:
+        """The config name (``root`` for a root) for the first top-level agent of a kind, else ``<name>-<n>``."""
+        base = config or "root"
         launcher = None if by is None else self.node(by.agent_id)
         peers = (
             self.children(launcher)
@@ -685,12 +657,12 @@ class Graph:
             else [a for a in self.agents() if self.launcher(a) is None]
         )
         used = {peer.name for peer in peers}
-        if launcher is None and config.name not in used:
-            return config.name
+        if launcher is None and base not in used:
+            return base
         index = 0
-        while f"{config.name}-{index}" in used:
+        while f"{base}-{index}" in used:
             index += 1
-        return f"{config.name}-{index}"
+        return f"{base}-{index}"
 
     def _last(self, agent_id: str) -> Node:
         """The agent's last own node: its ``agent_start`` until it appends."""

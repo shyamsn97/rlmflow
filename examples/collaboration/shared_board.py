@@ -60,10 +60,10 @@ def task_name(subject: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", subject.casefold()).strip("_") or "task"
 
 
-async def run(flow: Flow, g: Graph, out_dir: str) -> None:
+async def run(flow: Flow, g: Graph, out_dir: str, config: AgentConfig) -> None:
     checkpointer = GraphCheckpointer(out_dir)
     try:
-        async for item in flow.run_streaming(g):
+        async for item in flow.run_streaming(g, root_config=config):
             checkpointer.handle(item, g)
     finally:
         checkpointer.close()
@@ -90,12 +90,11 @@ def main() -> None:
     for subject, detail in args.task:
         g.create_agent(
             BOARD.format(subject=subject, detail=detail),
-            config=AgentConfig(max_depth=1, max_iters=args.max_iters),
             name=task_name(subject),
         )
 
     flow = Flow(client_for(args.model), workers=args.workers)
-    asyncio.run(run(flow, g, args.out_dir))
+    asyncio.run(run(flow, g, args.out_dir, AgentConfig(max_iters=args.max_iters)))
 
     print("board:")
     for agent in g.nodes(AGENT_START):

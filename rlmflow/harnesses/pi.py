@@ -1,19 +1,18 @@
 """pi as a harness: one ``pi -p --mode json`` session turn per step.
 
-pi has no MCP and no permission system, so it reaches the agent tools through
-the ``rlmflow`` CLI and strict tools are prompt guidance only. Its sessions are
-JSONL files, so resuming passes the same file and forking copies it.
+pi has no MCP, so it reaches the agent tools through the ``rlmflow`` CLI. Its
+sessions are JSONL files, so resuming passes the same file and forking copies it.
 
-``harness_options``: ``provider`` (pi's ``--provider``), ``tools`` (``"strict"``
-or ``"loose"``), ``session_dir`` (default ``~/.rlmflow/pi-sessions``), and
-``command`` (``"pi"`` by default).
+``harness_options``: ``provider`` (pi's ``--provider``), ``session_dir``
+(default ``~/.rlmflow/pi-sessions``), ``command`` (``"pi"`` by default), and
+``args`` (extra command-line arguments, appended as given).
 """
 
 from __future__ import annotations
 
 import shutil
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -39,6 +38,7 @@ class PiOptions(SessionOptions):
     command: str = "pi"
     provider: str | None = None
     session_dir: str = "~/.rlmflow/pi-sessions"
+    args: list[str] = field(default_factory=list)
 
 
 class PiHarness(SessionHarness):
@@ -51,11 +51,12 @@ class PiHarness(SessionHarness):
         path = self.session_file(step, session)
         argv = [options.command, "-p", await next_prompt(flow, step, session), "--mode", "json"]
         argv += ["--session", str(path)]
-        argv += ["--append-system-prompt", system_prompt(flow, step, strict=options.strict)]
+        argv += ["--append-system-prompt", system_prompt(flow, step)]
         if options.provider:
             argv += ["--provider", options.provider]
         if config.model != "default":
             argv += ["--model", config.model]
+        argv += options.args
 
         stdout = await self.run_command(flow, step, argv, turn.env)
         events = [json_payload(line, "pi") for line in stdout.splitlines() if line.strip()]

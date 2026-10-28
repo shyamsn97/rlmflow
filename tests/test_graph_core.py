@@ -26,7 +26,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 def agent(**data) -> Node:
     """A bare ``agent_start``, as a hand-written log would hold."""
-    return Node(AGENT_START, task="", name="a", args={}, config=AgentConfig().to_dict(), **data)
+    return Node(AGENT_START, task="", name="a", args={}, **data)
 
 
 def owned(node_type: str, owner: Node, **data) -> Node:
@@ -218,29 +218,36 @@ def test_fork_needs_a_landed_node():
 
 def test_names_and_paths_derive_from_configs_and_launchers():
     g = Graph()
-    g.add_config(AgentConfig(name="worker"))
     root = g.spawn("root")
     cell = g.append(root, Node(CODE, code=""))
     first = g.spawn("a", by=cell, config="worker")
     second = g.spawn("b", by=cell, config="worker")
     named = g.spawn("c", by=cell, name="checker")
 
-    assert [a.name for a in (root, first, second, named)] == ["default", "worker-0", "worker-1", "checker"]
-    assert g.path(second) == "default.worker-1"
+    assert [a.name for a in (root, first, second, named)] == [
+        "root",
+        "worker-0",
+        "worker-1",
+        "checker",
+    ]
+    assert g.path(second) == "root.worker-1"
     assert g.lineage(second) == [root, second]
-    assert second.config.name == "worker"
-    assert g.spawn("again").name == "default-0"
+    assert (root.config_name, second.config_name, named.config_name) == (None, "worker", "default")
+    assert g.spawn("again").name == "root-0"
+    top = g.spawn("solo", config="worker")
+    assert (top.name, top.config_name, g.launcher(top)) == ("worker", "worker", None)
+    assert g.spawn("more", config="worker").name == "worker-0"
 
 
-def test_create_agent_takes_a_config_or_its_name():
+def test_create_agent_makes_a_root_whose_keywords_are_repl_args():
     g = Graph()
-    with pytest.raises(KeyError):
-        g.create_agent("x", config="missing")
-    g.add_config(AgentConfig(name="lead", model="big"))
-    lead = g.create_agent("x", config="lead")
-    assert lead.config.model == "big" and lead.name == "lead"
-    inline = g.create_agent("y", config=AgentConfig(name="solo", max_iters=3))
-    assert inline.config.max_iters == 3 and "solo" not in g.configs
+    lead = g.create_agent("x", name="lead", limit=3)
+    assert (lead.name, lead.config_name, lead.args) == ("lead", None, {"limit": 3})
+    with pytest.raises(AttributeError, match="until a Flow steps it"):
+        lead.config
+    lead.bind_config(AgentConfig(model="big"))
+    assert lead.config.model == "big" and lead.metadata["config"]["model"] == "big"
+    assert g.create_agent("y").name == "root"
 
 
 def test_merge_moves_another_graph_in_log_order_and_refuses_shared_ids():
@@ -365,11 +372,17 @@ def test_check_invariants_needs_an_acyclic_launcher_tree():
         Edge(kind=FROM, source=child.id, target=cell.id),
     ]
     with pytest.raises(InvariantError, match="cannot launch itself"):
-        check_invariants(hand_written(*history, Edge(kind=FROM, source=parent.id, target=child_cell.id)))
+        check_invariants(
+            hand_written(*history, Edge(kind=FROM, source=parent.id, target=child_cell.id))
+        )
     with pytest.raises(InvariantError, match="already has a launcher"):
-        check_invariants(hand_written(*history, Edge(kind=FROM, source=child.id, target=child_cell.id)))
+        check_invariants(
+            hand_written(*history, Edge(kind=FROM, source=child.id, target=child_cell.id))
+        )
     with pytest.raises(InvariantError, match="agent_start or message"):
-        check_invariants(hand_written(*history, Edge(kind=FROM, source=cell.id, target=child_cell.id)))
+        check_invariants(
+            hand_written(*history, Edge(kind=FROM, source=cell.id, target=child_cell.id))
+        )
 
 
 def test_check_invariants_needs_acyclic_depends_on_declared_before_the_first_step():
@@ -407,7 +420,9 @@ def test_check_invariants_needs_forks_at_landed_nodes():
     queued = owned(MESSAGE, a, text="later")
     fork = agent()
     with pytest.raises(InvariantError, match="undelivered"):
-        check_invariants(hand_written(a, queued, fork, Edge(kind=NEXT, source=queued.id, target=fork.id)))
+        check_invariants(
+            hand_written(a, queued, fork, Edge(kind=NEXT, source=queued.id, target=fork.id))
+        )
 
 
 # -- ops ----------------------------------------------------------------------
@@ -439,7 +454,7 @@ def test_spawn_writes_the_agent_and_its_edges():
         (DEPENDS_ON, root.id, {}),
         (DEPENDS_ON, source.id, {"as": "data", "description": "Parsed rows."}),
     ]
-    assert g.path(consumer) == "default.consumer"
+    assert g.path(consumer) == "root.consumer"
     assert g.producers(consumer) == [root, source]
 
 
@@ -473,19 +488,20 @@ def test_send_queues_and_deliver_links_in_order_at_a_boundary():
 
 def test_fork_writes_two_or_three_items_and_shares_history():
     g = Graph()
-    base = g.spawn("task", config=AgentConfig(model="m"))
+    base = g.spawn("task", config="m")
     llm = g.append(base, Node(LLM_OUTPUT, text="plan"))
     cell = g.append(base, Node(CODE, code="x = 1", output="ran"))
     before = len(g)
 
-    fork = g.fork(llm, name="retry", model="other")
+    fork = g.fork(llm, name="retry", config="other")
     items = written(g, before)
     assert items[0] is fork and [e.kind for e in items[1:]] == [NEXT]
-    assert (fork.name, fork.config.model, base.config.model) == ("retry", "other", "m")
+    assert (fork.name, fork.config_name, base.config_name) == ("retry", "other", "m")
     assert g.frontier(fork) is llm
     assert g.history(fork)[:2] == [base, llm]
     assert g.frontier(base) is not llm
-    assert g.fork(cell).name == "default-fork1"
+    second = g.fork(cell)
+    assert (second.name, second.config_name) == ("m-fork1", "m")
 
     before = len(g)
     judged = g.fork(llm, by=cell)
@@ -524,7 +540,7 @@ def test_attach_writes_a_message_and_from_edges():
     assert [e.kind for e in items[1:]] == [FROM, FROM]
     assert "branch_a" in message.data["text"]
     assert g.children(judge) == [done_branch, open_branch]
-    assert g.path(open_branch) == "default.default-0"
+    assert g.path(open_branch) == "root.root-0"
     assert g.inbox(judge) == [message]
     with pytest.raises(ValueError, match="already has a launcher"):
         g.attach(judge, open_branch)
@@ -540,7 +556,7 @@ def test_import_a_saved_graph_and_attach_its_top_level_agents():
     g.merge(other)
     g.attach(parent, *[a for a in other.agents() if other.launcher(a) is None])
     assert g.result(g.node(sub.id)) == "ready"
-    assert g.path(sub) == "default.prepared"
+    assert g.path(sub) == "root.prepared"
 
 
 # -- persistence ----------------------------------------------------------------
@@ -563,8 +579,8 @@ def test_load_rejects_a_log_that_breaks_an_invariant(tmp_path):
 
 def test_save_and_load_round_trip_the_log_configs_and_blobs(tmp_path):
     g = Graph()
-    g.add_config(AgentConfig(name="worker", model="fast", output_schema={"type": "integer"}))
-    root = g.spawn("task", doc="x" * 70_000, config=AgentConfig(max_budget=500))
+    root = g.create_agent("task", doc="x" * 70_000)
+    root.bind_config(AgentConfig(max_budget=500))
     peer = g.spawn("peer", name="peer", config="worker")
     edge = g.add_edge(Edge(kind="peer", source=root.id, target=peer.id, data={"w": 1}))
     g.append(root, Node(LLM_OUTPUT, text="hi", usage={"input_tokens": 1}))
@@ -573,7 +589,8 @@ def test_save_and_load_round_trip_the_log_configs_and_blobs(tmp_path):
 
     run = g.save(tmp_path / "run")
     assert sorted(path.name for path in run.iterdir()) == ["blobs", "graph.json"]
-    assert json.loads((run / "graph.json").read_text())["format"] == persistence.FORMAT_VERSION
+    document = json.loads((run / "graph.json").read_text())
+    assert document["format"] == persistence.FORMAT_VERSION and "configs" not in document
     loaded = Graph.load(run)
 
     assert loaded.id == g.id
@@ -586,13 +603,45 @@ def test_save_and_load_round_trip_the_log_configs_and_blobs(tmp_path):
     ]
     loaded_root = loaded.node(root.id)
     assert loaded_root.args == {"doc": "x" * 70_000}
-    assert loaded_root.config.max_budget == 500
-    assert loaded.config("worker").output_schema == {"type": "integer"}
-    assert loaded.node(peer.id).config.model == "fast"
+    assert loaded_root.config_name is None and loaded_root.config.max_budget == 500
+    assert loaded.node(peer.id).config_name == "worker"
+    with pytest.raises(AttributeError, match="until a Flow steps it"):
+        loaded.node(peer.id).config
     assert loaded.edges(kind="peer") == []
     assert loaded.edges(kind="peer", active=False)[0].data == {"w": 1}
     assert [m.data["text"] for m in loaded.inbox(loaded.node(peer.id))] == ["queued"]
     assert loaded.frontier(loaded_root).data == {"text": "hi", "usage": {"input_tokens": 1}}
+
+
+def test_load_converts_a_format_2_graph_that_saved_whole_configs(tmp_path):
+    g = Graph()
+    root = g.create_agent("task")
+    cell = g.append(root, Node(CODE, code="launch"))
+    child = g.spawn("child", by=cell, name="child")
+    top = g.spawn("top", name="top")
+    run = g.save(tmp_path / "run")
+    saved = {
+        root.id: AgentConfig(max_iters=4),
+        child.id: AgentConfig(name="worker", model="fast"),
+        top.id: AgentConfig(name="lead", max_budget=9),
+    }
+    document = json.loads((run / "graph.json").read_text())
+    document["format"] = 2
+    document["configs"] = {"worker": saved[child.id].to_dict(), "lead": saved[top.id].to_dict()}
+    for item in document["items"]:
+        if item.get("type") == AGENT_START:
+            item["data"]["config"] = saved[item["id"]].to_dict()
+    (run / "graph.json").write_text(json.dumps(document))
+
+    loaded = Graph.load(run)
+
+    for agent_id, config in saved.items():
+        assert loaded.node(agent_id).metadata["config"] == config.to_dict()
+        assert loaded.node(agent_id).config == config
+    assert loaded.node(root.id).config_name is None
+    assert loaded.node(child.id).config_name == "worker"
+    assert loaded.node(top.id).config_name is None and "config" not in loaded.node(top.id).data
+    assert loaded.path(loaded.node(child.id)) == "root.child"
 
 
 def test_load_refuses_runs_saved_before_the_harness_refactor():

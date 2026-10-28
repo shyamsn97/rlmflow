@@ -13,10 +13,10 @@ from benchmarks.eval.environments.episode import (
 from benchmarks.eval.environments.episode import (
     EpisodeOwner as EnvironmentInstance,
 )
-from rlmflow import FROM, AgentConfig, Flow, Graph, Node, Step
+from rlmflow import FROM, Flow, Graph, Node, Step
 from rlmflow.flow import launched_from
-from rlmflow.harnesses.repl.runtime.repl_client import current_rpc_call_id
-from rlmflow.harnesses.repl.tools import tool
+from rlmflow.runtime.repl_client import current_rpc_call_id
+from rlmflow.tools import tool
 
 
 def candidate_protocol_message(*, is_root: bool, selected: bool) -> str:
@@ -108,9 +108,7 @@ class EnvironmentEpisode:
 
     def bind_root(self, graph: Graph, root: Node) -> EnvironmentInstance:
         self.graph = graph
-        return self.core.start(
-            root.id, path=graph.path(root), depth=graph.depth(root)
-        )
+        return self.core.start(root.id, path=graph.path(root), depth=graph.depth(root))
 
     def fork_child(
         self,
@@ -249,8 +247,6 @@ class EnvironmentFlow(Flow):
         self,
         graph: Graph,
         task: str,
-        *,
-        config: AgentConfig | None = None,
         **args: Any,
     ) -> Node:
         """Create the episode's root agent, bind it, and give it the initial observation.
@@ -258,7 +254,7 @@ class EnvironmentFlow(Flow):
         Binding starts the episode and keys it by agent id, so the observation joins
         the root's arguments after the root exists and before it first steps.
         """
-        root = graph.create_agent(task, config=config, **args)
+        root = graph.create_agent(task, **args)
         self.environment.bind_root(graph, root)
         root.args["environment_observation"] = json.dumps(
             self.environment.initial_observation,
@@ -279,7 +275,7 @@ class EnvironmentFlow(Flow):
         )
         return {**environment_tools, **self.environment.candidate_tools_for(step)}
 
-    def spawn(self, step: Step, task: str, *, config: AgentConfig, **kwargs: Any) -> Node:
+    def spawn(self, step: Step, task: str, *, config: str = "default", **kwargs: Any) -> Node:
         child = super().spawn(step, task, config=config, **kwargs)
         self.environment.fork_child(step.node, child, current_rpc_call_id())
         return child

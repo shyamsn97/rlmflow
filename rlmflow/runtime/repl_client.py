@@ -24,7 +24,7 @@ from rlmflow.graph.nodes import (
     running_cell,
     running_step,
 )
-from rlmflow.harnesses.repl.runtime.repl import (
+from rlmflow.runtime.repl import (
     AGENTS_BINDING,
     DoneSignal,
     Repl,
@@ -33,7 +33,7 @@ from rlmflow.harnesses.repl.runtime.repl import (
     encode_agent_references,
     get_tool_metadata,
 )
-from rlmflow.harnesses.repl.runtime.repl_server import (
+from rlmflow.runtime.repl_server import (
     DescribeRequest,
     InjectProxyRequest,
     InjectRequest,
@@ -46,7 +46,7 @@ from rlmflow.harnesses.repl.runtime.repl_server import (
     RunRequest,
     WireModel,
 )
-from rlmflow.harnesses.repl.runtime.runtime import RLMFLOW_REPLAY
+from rlmflow.runtime.runtime import RLMFLOW_REPLAY
 from rlmflow.schema import as_json_value
 from rlmflow.utils import encode_host_value
 

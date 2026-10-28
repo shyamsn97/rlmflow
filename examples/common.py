@@ -27,7 +27,7 @@ import argparse
 from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import Path
 
-from rlmflow import Flow, Graph, GraphCheckpointer, Node, Step
+from rlmflow import AgentConfig, Flow, Graph, GraphCheckpointer, Node, Step
 
 # The directory this module lives in, i.e. the repo's ``examples/`` folder.
 EXAMPLES_DIR = Path(__file__).resolve().parent
@@ -74,9 +74,17 @@ def print_agent_tree(graph: Graph, agent: Node, depth: int = 0) -> None:
         print_agent_tree(graph, child, depth + 1)
 
 
-async def print_run(flow: Flow, graph: Graph, path: str | Path, *, width: int = 0) -> None:
+async def print_run(
+    flow: Flow,
+    graph: Graph,
+    path: str | Path,
+    *,
+    width: int = 0,
+    root_config: AgentConfig | str | None = None,
+) -> None:
     """Run ``graph`` to quiescence, checkpointing it and printing each node as it lands."""
-    async for step in checkpoint_stream(flow.run_streaming(graph), graph, path):
+    stream = flow.run_streaming(graph, root_config=root_config)
+    async for step in checkpoint_stream(stream, graph, path):
         print(f"{graph.path(step.agent):<{width}}  {step.node.type}")
 
 

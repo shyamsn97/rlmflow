@@ -21,7 +21,7 @@ from rlmflow import schema
 from rlmflow.engine import handoff
 from rlmflow.graph.nodes import AGENT_START, CODE, DONE, MESSAGE, WAITING, Node, Step
 from rlmflow.harnesses.base import Harness
-from rlmflow.harnesses.repl.prompts import argument_manifest, preview
+from rlmflow.harnesses.prompts import argument_manifest, preview
 
 if TYPE_CHECKING:
     from rlmflow.agent_tools.server import Turn
@@ -41,8 +41,9 @@ between calls. Your inputs are already variables: {arguments}.
 Only printed output comes back, so print summaries, not whole values.
 
 In the REPL:
-- launch_agent(task, config=NAME, **args) starts an agent and returns a handle. Configs: {configs}
-  A handle has `.status`, `.done()` and `.result()`; `await handle` waits for its result.
+- launch_agent(task, config=NAME, **args) starts an agent and returns a handle. Configs (default `default`): {configs}
+  A handle's `.status`, `.done()` and `.result()` are as of when the cell started, so they
+  never change inside a loop; `await handle` waits for its result.
 - llm_query(prompt) asks a model and returns its answer.
 - AGENTS shows the agents you started and their status.
 - submit(value) records your final result. Call it exactly once, when you're finished.
@@ -59,9 +60,13 @@ and keep a `notes` string with your plan and what you've ruled out. Update `note
 before ending a turn. A later session may continue from this REPL without your
 conversation."""
 
-STRICT_PROMPT = """\
-Change files and run programs only through `rlmflow repl`; your own tools are for
-reading. That keeps every change in the run's record."""
+RECORD_PROMPT = """\
+Cells you run with `rlmflow repl` are recorded in this run, so it can be replayed and
+forked from them; changes you make with your own tools are not."""
+
+LOCATION_PROMPT = """\
+Your REPL runs in {location}. Your own tools run on this machine; reach the REPL's
+files and programs through `rlmflow repl`, with paths as the REPL sees them."""
 
 RESUME_PROMPT = """\
 You are continuing an earlier session on this task. Its conversation is gone, but its
@@ -145,35 +150,30 @@ class TurnResult:
 class SessionOptions:
     """``harness_options`` every command-line session harness takes."""
 
-    #: ``"strict"``: change things only through ``rlmflow``; ``"loose"``: the session's own tools too.
-    tools: str = "strict"
+    #: The executable to run instead of the harness's default.
     command: str = ""
 
-    def __post_init__(self) -> None:
-        if self.tools not in ("strict", "loose"):
-            raise ValueError(f"tools must be 'strict' or 'loose', not {self.tools!r}")
 
-    @property
-    def strict(self) -> bool:
-        return self.tools == "strict"
-
-
-def config_list(step: Step) -> str:
-    configs = step.graph.configs
-    if not configs:
-        return "(only your own; omit config)"
+def config_list(flow: Flow) -> str:
     return "; ".join(
-        f"`{name}`" + (f" ({config.description})" if config.description else "") for name, config in configs.items()
+        f"`{name}`" + (f" ({config.description})" if config.description else "")
+        for name, config in flow.configs.items()
     )
 
 
-def system_prompt(flow: Flow, step: Step, *, strict: bool = True) -> str:
+def system_prompt(flow: Flow, step: Step) -> str:
     """The prompt appended to every session: the tools, then keeping state, then ``config.system_prompt``."""
     names = list({**step.agent.resolved_args(), **step.graph.inputs(step.agent)})
     arguments = ", ".join(f"`{name}`" for name in ["task", *names])
-    parts = [TOOLS_PROMPT.format(arguments=arguments, configs=config_list(step)), STATE_PROMPT]
-    if strict:
-        parts.append(STRICT_PROMPT)
+    from rlmflow.tools import format_tool_line, tool_allowed
+
+    parts = [TOOLS_PROMPT.format(arguments=arguments, configs=config_list(flow))]
+    own_tools = [line for fn in flow.tools.values() if tool_allowed(fn, flow, step.node) and (line := format_tool_line(fn))]
+    if own_tools:
+        parts.append("Also in the REPL:\n" + "\n".join(own_tools))
+    if flow.runtime.location is not None:
+        parts.append(LOCATION_PROMPT.format(location=flow.runtime.location))
+    parts += [STATE_PROMPT, RECORD_PROMPT]
     if step.agent.config.output_schema is not None:
         parts.append(schema.contract(step.agent.config.output_schema))
     if step.agent.config.system_prompt:
@@ -298,9 +298,10 @@ def json_payload(text: str, what: str) -> Any:
 
 
 __all__ = [
+    "LOCATION_PROMPT",
+    "RECORD_PROMPT",
     "RESUME_PROMPT",
     "STATE_PROMPT",
-    "STRICT_PROMPT",
     "TOOLS_PROMPT",
     "Session",
     "SessionHarness",

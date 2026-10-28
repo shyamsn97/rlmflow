@@ -77,10 +77,9 @@ def demo_nested_flow():
     g = Graph()
     root = g.create_agent(
         "What's the 7th Fibonacci number? Use ```repl``` to compute.",
-        config=AgentConfig(max_iters=3),
     )
     run_dir = example_run_dir("drop-in-llm") / "nested-flow"
-    asyncio.run(print_run(outer, g, run_dir))
+    asyncio.run(print_run(outer, g, run_dir, root_config=AgentConfig(max_iters=3)))
     print(g.result(root))
     save_example_graph(
         g,

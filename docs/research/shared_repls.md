@@ -2,7 +2,7 @@
 
 > **Status:** Historical pre-0.5 design record. Shared worker placement is now
 > implemented as `reuse_repl=True`; use
-> [`docs/runtimes.md`](../runtimes.md#isolated-and-colocated-agents) for the current
+> [`docs/runtimes.md`](../runtimes.md#isolated-agents) for the current
 > behavior and API. Names such as `done` and implementation sketches below are
 > retained as design evidence, not supported API documentation.
 >

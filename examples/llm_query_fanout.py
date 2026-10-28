@@ -80,12 +80,12 @@ def main() -> None:
     root = g.create_agent(
         "Classify the reviews. Fan out `llm_query(prompt)` with "
         "`await asyncio.gather(...)`, then call submit(...) with one line per review.",
-        config=AgentConfig(max_depth=0, max_iters=3),
     )
+    config = AgentConfig(max_depth=0, max_iters=3)
     out_dir = example_run_dir("llm-query-fanout")
 
     async def drive() -> None:
-        async for step in checkpoint_stream(flow.run_streaming(g), g, out_dir):
+        async for step in checkpoint_stream(flow.run_streaming(g, root_config=config), g, out_dir):
             print(f"{g.path(step.agent)}  {step.node.type}")
 
     asyncio.run(drive())

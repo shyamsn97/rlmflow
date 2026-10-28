@@ -90,17 +90,14 @@ def main() -> None:
     )
 
     g = Graph()
-    root = g.create_agent(
-        query,
-        config=AgentConfig(
-            max_depth=args.max_depth,
-            max_iters=args.max_iters,
-            output_schema=json_schema_for(PackingPlan),
-        ),
-        trip_brief=TRIP_BRIEF,
+    root = g.create_agent(query, trip_brief=TRIP_BRIEF)
+    config = AgentConfig(
+        max_depth=args.max_depth,
+        max_iters=args.max_iters,
+        output_schema=json_schema_for(PackingPlan),
     )
     out_dir = Path(args.out_dir)
-    asyncio.run(print_run(flow, g, out_dir))
+    asyncio.run(print_run(flow, g, out_dir, root_config=config))
 
     # `submit(value)` parsed the answer against the schema, so the result is a
     # dict; the Pydantic model is the typed view of that same value.

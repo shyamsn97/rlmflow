@@ -48,6 +48,8 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 INTERACTIVE = harness_path("interactive")
+#: The config ``serve`` registers on its Flow: its root's, and what ``fork --interactive`` picks.
+INTERACTIVE_CONFIG = "interactive"
 
 #: How long ``/prompt`` waits for Flow to open the root's turn.
 OPEN_TIMEOUT = 30.0
@@ -75,7 +77,7 @@ class Serve:
         self.graph_dir = Path(graph_dir)
         self.project = Path(project).resolve()
         self.root = root if root is not None else interactive_root(graph)
-        self.root_config = root_config
+        self.root_config = flow.add_config(interactive_config(root_config or flow.configs["default"]))
         self.session_id = session_id or (last_session(graph, self.root) if self.root else None)
         self.checkpointer = GraphCheckpointer(self.graph_dir)
         self.wakeup = asyncio.Event()
@@ -146,7 +148,7 @@ class Serve:
 
     async def _stream(self) -> None:
         try:
-            async for step in self.flow.run_streaming(self.graph):
+            async for step in self.flow.run_streaming(self.graph, root_config=self.root_config):
                 self.checkpointer.handle(step, self.graph)
         except asyncio.CancelledError:
             raise
@@ -172,7 +174,7 @@ class Serve:
             return {"bound": False}
         if self.root is None:
             task = text.removeprefix(RUN_COMMAND).strip() if text.startswith(RUN_COMMAND) else text
-            self.root = self.graph.create_agent(task, config=self.root_config or interactive_config(), name="root")
+            self.root = self.graph.create_agent(task, name="root")
             self.agent_token = self.flow.agent_tools.attach(self.root)
         elif self.flow.agent_tools.open_turn(self.root) is None:
             self.graph.send(self.root, text, sender="user")
@@ -191,7 +193,7 @@ class Serve:
         parts = []
         if session_id not in self._briefed:
             self._briefed.add(session_id)
-            parts.append(system_prompt(self.flow, turn.step, strict=False))
+            parts.append(system_prompt(self.flow, turn.step))
             has_cells = any(node.type == CODE for node in self.graph.history(turn.step.node))
             if has_cells and not Session.for_step(turn.step).resume:
                 parts.append(await resume_prompt(self.flow, turn.step))
@@ -266,12 +268,20 @@ def pending(step: Step) -> list[Node]:
 def interactive_config(base: AgentConfig | None = None) -> AgentConfig:
     from rlmflow.graph.config import AgentConfig
 
-    return replace(base or AgentConfig(), harness=INTERACTIVE, max_iters=None)
+    return replace(base or AgentConfig(), name=INTERACTIVE_CONFIG, harness=INTERACTIVE, max_iters=None)
+
+
+def ran_interactively(agent: Node) -> bool:
+    """An ``interactive`` fork, or a root a serve ran with the interactive harness."""
+    if agent.config_name == INTERACTIVE_CONFIG:
+        return True
+    recorded = agent.metadata.get("config") or {}
+    return agent.config_name is None and recorded.get("harness") == INTERACTIVE
 
 
 def interactive_root(graph: Graph) -> Node | None:
-    """The latest agent in ``graph`` that runs interactively."""
-    found = [agent for agent in graph.agents() if agent.config.harness == INTERACTIVE]
+    """The latest agent in ``graph`` your session drives."""
+    found = [agent for agent in graph.agents() if ran_interactively(agent)]
     return found[-1] if found else None
 
 
@@ -289,29 +299,24 @@ def serve_main(
     graph_dir: str | Path | None = None,
     root: str | None = None,
     overrides: dict[str, Any] | None = None,
-    agent: str | None = None,
 ) -> None:
-    """Build the coding Flow for ``project`` (or ``agent``'s, a ``module:factory``) and serve it."""
+    """Build the project's Flow (the coding one, or ``flow = "module:factory"``'s) and serve it."""
     from rlmflow.cli import resolve_options
-    from rlmflow.cli.run import build_flow, coding_config
+    from rlmflow.cli.run import build_flow
 
     project = Path(project).expanduser().resolve()
     options, _ = resolve_options({**(overrides or {}), "workdir": str(project)}, cwd=project)
-    root_config, workers = coding_config(options)
     if graph_dir is not None and Path(graph_dir).exists():
         graph = Graph.load(graph_dir)
     else:
         graph_dir = graph_dir or project / ".rlmflow" / "runs" / time.strftime("%Y%m%d-%H%M%S")
         graph = Graph()
-    for config in workers:
-        if config.name not in graph.configs:
-            graph.add_config(config)
     root_agent = None
     if root is not None:
         from rlmflow.agent_tools.tools import resolve
 
         root_agent = resolve(graph, root)
-    flow = build_flow(options, workdir=project, agent=agent)
+    flow = build_flow(options, workdir=project)
 
     async def main() -> None:
         serve = Serve(
@@ -320,7 +325,6 @@ def serve_main(
             graph_dir=graph_dir,
             project=project,
             root=root_agent,
-            root_config=interactive_config(root_config),
         )
         loop = asyncio.get_running_loop()
         for signum in (signal.SIGINT, signal.SIGTERM):
@@ -332,6 +336,7 @@ def serve_main(
 
 
 __all__ = [
+    "INTERACTIVE_CONFIG",
     "Serve",
     "interactive_config",
     "interactive_root",

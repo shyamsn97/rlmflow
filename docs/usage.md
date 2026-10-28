@@ -26,8 +26,8 @@ To keep the run, build the graph yourself:
 from rlmflow import AgentConfig, Graph
 
 g = Graph()
-root = g.create_agent("Count the x's in doc.", config=AgentConfig(max_depth=1), doc="xxaaxbxx", name="root")
-flow.run(g)                             # returns the graph
+root = g.create_agent("Count the x's in doc.", doc="xxaaxbxx")
+flow.run(g, root_config=AgentConfig(max_iters=10))   # returns the graph
 g.result(root)                   # 5
 g.save("runs/count")
 ```
@@ -36,18 +36,18 @@ Inside async code, use `await flow.arun(g)` and `await flow.aclose()` when done.
 
 ## Configs
 
-An `AgentConfig` is a kind of agent. Named configs go on the graph, and agents launch each other by config name.
+An `AgentConfig` is a kind of agent: its harness, model, limits and prompt. The Flow holds them by name, and agents launch each other by that name. The graph only records which config each agent ran with (in its metadata, for display); running a saved graph uses the configs of the Flow you run it with.
 
 | Field             | Default     | Meaning                                                                |
 | ----------------- | ----------- | ---------------------------------------------------------------------- |
 | `name`            | `"default"` | What `launch_agent(config=...)` refers to.                             |
 | `harness`         | `"repl"`    | `"repl"`, `"claude_code"`, `"pi"`, `"interactive"`, or an import path. |
-| `model`           | `"default"` | A model registered on the Flow.                                        |
+| `model`           | `"default"` | A model name, like `"gpt-5-mini"` or `"claude-sonnet-4-5"`.            |
 | `description`     | `""`        | Shown to agents choosing a config.                                     |
 | `max_depth`       | `1`         | Levels of agents below this one; `0` can't launch.                     |
 | `max_iters`       | `None`      | Model turns before it must finish.                                     |
 | `output_schema`   | `None`      | JSON schema or Pydantic model the result must match.                   |
-| `harness_options` | `{}`        | Harness settings, e.g. `{"tools": "loose"}`.                           |
+| `harness_options` | `{}`        | Harness settings, e.g. `{"mcp": True}`.                                |
 | `max_budget`      | `None`      | Whole-run token threshold; crossing it gives every agent a final turn. |
 
 ```python
@@ -57,22 +57,26 @@ class Finding(BaseModel):
     file: str
     line: int
 
-g.add_config(AgentConfig(name="searcher", model="fast", max_depth=0, description="searches one batch of files", output_schema=Finding))
-root = g.create_agent("Find the magic number in haystack/.", config=AgentConfig(max_depth=1))
+searcher = AgentConfig(name="searcher", model="gpt-5-mini", max_depth=0, description="searches one batch of files", output_schema=Finding)
+flow = Flow(client_for("gpt-5"), configs=[searcher])     # or flow.add_config(searcher)
+flow.run("Find the magic number in haystack/.", root_config=AgentConfig(max_depth=1))
 ```
+
+Roots (agents made with `g.create_agent`) run with the run's `root_config`: an `AgentConfig`, a config name, or `None` for the Flow's `"default"`. Everything else names a Flow config. `launch_agent(...)` without `config=` uses `"default"`, not its parent's. To put a top-level agent on a named config, use `g.spawn(task, config="searcher")`. An unknown name is a `KeyError` when the Flow reaches the agent.
 
 ## Models
 
 ```python
-from rlmflow.llm import AnthropicClient, client_for
+from rlmflow.llm import OpenAIClient, client_for
 
 flow = Flow(
     client_for("gpt-5"),                                  # the "default" model
-    llm_clients={"fast": client_for("gpt-5-mini"), "claude": AnthropicClient("claude-sonnet-4-5")},
+    configs=[AgentConfig(name="cheap", model="gpt-5-mini"), AgentConfig(name="claude", model="claude-sonnet-4-5")],
+    llm_clients={"local": OpenAIClient(model="qwen3", base_url="http://localhost:8000/v1")},
 )
 ```
 
-`client_for` picks Anthropic for `claude*` names and OpenAI otherwise. Any object with `chat(messages)` works as a client.
+A config's `model` is a model name; the Flow builds the client the first time it's used, Anthropic for `claude*` names and OpenAI otherwise. `llm_clients` is for clients a name can't describe (a local server, custom settings); a config names them by their key. Any object with `chat(messages)` works as a client.
 
 ## Tools
 
@@ -149,7 +153,7 @@ from rlmflow import Input
 
 g.send(root, "Also report the file name.")      # a message; reopens a finished agent
 writer = g.create_agent("Summarize research.", inputs={"research": Input(research_agent)})  # runs after it
-retry = g.fork(some_node, name="retry", model="fast")   # branch from any node
+retry = g.fork(some_node, name="retry", config="cheap") # branch from any node, optionally on another config
 flow.run(g)
 ```
 
@@ -160,7 +164,7 @@ A fork shares the history up to its node and doesn't redo work that already fini
 ```python
 g.save("runs/x")
 g = Graph.load("runs/x")
-flow.run(g)                 # unfinished agents continue
+flow.run(g)                 # unfinished agents continue, with this Flow's configs
 ```
 
 ## Claude Code and pi as agents
@@ -168,18 +172,20 @@ flow.run(g)                 # unfinished agents continue
 The harness is per config, so one run can mix them:
 
 ```python
-g.add_config(AgentConfig(name="claude", harness="claude_code", harness_options={"tools": "loose"}))
-root = g.create_agent(task, config=AgentConfig(harness="claude_code", max_depth=1))
+claude = AgentConfig(name="claude", harness="claude_code", harness_options={"sdk": {"permission_mode": "acceptEdits"}})
+flow = Flow(client_for("gpt-5"), configs=[claude])
+flow.run(task, root_config=AgentConfig(harness="claude_code", max_depth=1))
 ```
 
-| `claude_code` option       | Meaning                                                               |
-| -------------------------- | --------------------------------------------------------------------- |
-| `tools="strict"` (default) | Changes only through `rlmflow repl`, so every change is in the graph. |
-| `tools="loose"`            | Also Claude's edit tools and any shell command.                       |
-| `mcp=True`                 | Also offer the agent tools over MCP.                                  |
-| `command`                  | A `claude` executable instead of the SDK's bundled one.               |
+Claude runs with your own Claude Code settings (permissions, `CLAUDE.md`, MCP servers, plugins); rlmflow only adds permission to run `rlmflow` commands. It reaches the agent tools through `rlmflow repl`, and those cells are recorded in the graph. Changes it makes with its own tools are not recorded, but the workspace snapshot at the end of each turn still has the files.
 
-`pi` takes `tools`, `provider`, `session_dir` and `command`. Unknown options are an error. To write your own harness, subclass `Harness`; see [Internals](internals.md) and [`claude_code.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/harnesses/claude_code.py).
+| `claude_code` option | Meaning                                                                                                        |
+| -------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `mcp=True`           | Also offer the agent tools over MCP.                                                                           |
+| `command`            | A `claude` executable instead of the SDK's bundled one.                                                        |
+| `sdk`                | Fields for `ClaudeAgentOptions` (`permission_mode`, `max_turns`, `plugins`, ...); `allowed_tools` is extended. |
+
+`pi` takes `provider`, `session_dir`, `command`, and `args` (extra command-line arguments). Unknown options are an error. To write your own harness, subclass `Harness`; see [Internals](internals.md) and [`claude_code.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/harnesses/claude_code.py).
 
 ## Your Claude Code session as the root
 
@@ -189,13 +195,13 @@ $ claude --plugin-dir "$(rlmflow plugin path)"
 > /rlmflow:run Find the magic number in haystack/ and tell me which file it's in.
 ```
 
-`rlmflow plugin path` prints the plugin directory inside the installed package; `--plugin-dir` loads it for that session. Your session becomes the root agent and can launch workers; the run is saved under `.rlmflow/runs/<timestamp>/`. Workers use the models in `rlmflow.toml`. The plugin does nothing in sessions that didn't run `/rlmflow:run`. What the session does during a run is in [Agents](agents.md#your-own-claude-code-session).
+`rlmflow plugin path` prints the plugin directory inside the installed package; `--plugin-dir` loads it for that session. Your session becomes the root agent and can launch workers; the run is saved under `.rlmflow/runs/<timestamp>/`. Workers use the coding Flow built from `rlmflow.toml`, or your own: set `flow = "mypkg.agents:build"` there (a function returning a `Flow`), and your session can launch that Flow's configs. The plugin does nothing in sessions that didn't run `/rlmflow:run`. What the session does during a run is in [Agents](agents.md#your-own-claude-code-session).
 
 ## Fork from the command line
 
 ```bash
 rlmflow view show runs/x --step 14                          # the header has the node id
-rlmflow fork runs/x NODE --harness claude_code              # headless, saved back (or --out)
+rlmflow fork runs/x NODE --config worker                    # headless, saved back (or --out)
 rlmflow fork runs/x NODE --interactive                      # prints the claude command to continue it
 ```
 
@@ -229,7 +235,7 @@ More in [Observability](observability.md).
 ```python
 from rlmflow.flow import FlowLLM
 
-agent = FlowLLM(Flow(client_for("gpt-5-mini")), AgentConfig(max_depth=1))
+agent = FlowLLM(Flow(client_for("gpt-5-mini")), root_config=AgentConfig(max_depth=1))
 agent.chat([{"role": "user", "content": "Summarize this repo's README."}])
 agent.last_graph
 ```

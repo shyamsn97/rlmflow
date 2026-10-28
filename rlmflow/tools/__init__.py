@@ -29,7 +29,7 @@ from rlmflow.graph.config import (
 )
 from rlmflow.graph.graph import STRUCTURAL, Edge
 from rlmflow.graph.nodes import AGENT_REF_KEY, Node, Step, agent_ref_id, current_code
-from rlmflow.harnesses.repl.runtime.repl import (
+from rlmflow.runtime.repl import (
     AGENT_WAIT_TOOL,
     AGENTS_BINDING,
     DoneSignal,
@@ -148,7 +148,7 @@ def as_tool_items(tools: Any) -> list[Any]:
 
 LAUNCH_DESCRIPTION = """\
 Start an agent and return its handle immediately. `config=` names one of the \
-configs listed below (default: your own). JSON keyword arguments, or other agents' \
+configs listed below (default: `default`). JSON keyword arguments, or other agents' \
 handles, become the new agent's REPL variables; wrap one as `Input(value, \
 description="...")` to explain it. `await handle` returns its result.
 
@@ -231,7 +231,7 @@ def launch_tool(flow: Flow, step: Step):
 
     configs = ", ".join(
         f"`{name}` (model `{config.model}`" + (f"; {config.description}" if config.description else "") + ")"
-        for name, config in g.configs.items()
+        for name, config in flow.configs.items()
     )
     description = LAUNCH_DESCRIPTION + (f"\nConfigs: {configs}" if configs else "")
 
@@ -254,7 +254,7 @@ def launch_tool(flow: Flow, step: Step):
 
 def _model_help(flow: Flow, default_model: str) -> str:
     names = ", ".join(f"`{key}`" for key in sorted(flow.llms))
-    return f" Available `model=` values: {names}. Omitting `model` uses `{default_model}`."
+    return f" `model=` takes a model name (configured: {names}). Omitting `model` uses `{default_model}`."
 
 
 async def query(

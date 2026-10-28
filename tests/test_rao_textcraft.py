@@ -13,7 +13,7 @@ from examples.research.textcraft.env import (
     textcraft_local_scores,
 )
 from examples.research.textcraft.recipes import Recipe
-from rlmflow import CODE, DONE, AgentConfig, Graph, LLMUsage, Node
+from rlmflow import CODE, DONE, Graph, LLMUsage, Node
 from rlmflow.llm import LLMClient
 from rlmflow.rao import (
     Budget,
@@ -135,7 +135,7 @@ def test_child_finish_does_not_terminate_parent_episode():
 def _tree(task_metadata: dict, child_targets: object):
     """A finished root with one attached ``worker`` child, in a new graph."""
     g = Graph()
-    root = g.spawn("root", name="root", config=AgentConfig(max_depth=1))
+    root = g.create_agent("root")
     root.annotate("rollout.task", task_metadata)
     child = g.spawn("child", name="worker", target_items=child_targets)
     g.attach(root, child)

@@ -141,17 +141,9 @@ def main() -> None:
     if args.fast_model:
         llm_clients = {"fast": client_for(args.fast_model)}
 
-    flow = Flow(
-        client_for(args.model),
-        llm_clients=llm_clients,
-        runtime=runtime,
-    )
-
-    config = AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)
-    g = Graph()
-    g.add_config(config)
+    configs = [AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)]
     if args.fast_model:
-        g.add_config(
+        configs.append(
             AgentConfig(
                 name="fast",
                 model="fast",
@@ -160,10 +152,17 @@ def main() -> None:
                 max_iters=args.max_iters,
             )
         )
+    flow = Flow(
+        client_for(args.model),
+        llm_clients=llm_clients,
+        configs=configs,
+        runtime=runtime,
+    )
+
+    g = Graph()
     root = g.create_agent(
         SUMMARIZE_QUERY.format(config="fast" if args.fast_model else "default"),
         document=document,
-        config=config,
     )
     out_dir = Path(args.out_dir)
     asyncio.run(print_run(flow, g, out_dir))

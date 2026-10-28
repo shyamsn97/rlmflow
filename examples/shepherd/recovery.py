@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TypedDict
 
 from rlmflow import CODE, DONE, LLM_OUTPUT, MESSAGE, Flow, Graph, Node, tool
@@ -107,11 +107,12 @@ async def replayed_fork(
     never picks it up.
     """
     cut, depth = rewind_point(g, worker, rewind)
-    overrides = {}
+    config = None
     if extra_turns is not None:
         turns = sum(node.type == LLM_OUTPUT for node in g.history(cut))
-        overrides["max_iters"] = turns + extra_turns
-    fork = g.fork(cut, name=name, **overrides)
+        capped = replace(flow.config(worker.config_name), name=name, max_iters=turns + extra_turns)
+        config = flow.add_config(capped).name
+    fork = g.fork(cut, name=name, config=config)
     if done is not None:
         g.append(fork, Node(DONE, result=done))
     await flow.replay(g, fork)

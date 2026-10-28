@@ -9,7 +9,7 @@ from helpers import reasoning_repl as block
 
 from rlmflow import CODE, AgentConfig, Flow, GitWorktrees, Graph
 from rlmflow.engine.workspaces import git
-from rlmflow.harnesses.repl.runtime import LocalRuntime
+from rlmflow.runtime import LocalRuntime
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
@@ -44,7 +44,9 @@ def test_cells_run_in_the_agents_worktree_and_carry_snapshots(repo):
             return block("open('notes.txt', 'a').write('second\\n')\nprint('second')")
         if "second" in last:
             return block("submit(open('notes.txt').read())")
-        return block("import os\nopen('notes.txt', 'a').write('first\\n')\nprint('first', os.getcwd())")
+        return block(
+            "import os\nopen('notes.txt', 'a').write('first\\n')\nprint('first', os.getcwd())"
+        )
 
     workspaces = GitWorktrees(repo)
     flow = Flow(StubLLM(reply), runtime=LocalRuntime(repl_timeout=10), workspaces=workspaces)
@@ -65,7 +67,9 @@ def test_children_start_from_the_parents_files_in_their_own_worktrees(repo):
     def reply(messages):
         task = first_user(messages)
         if task == "lead":
-            if "['base\\nlead\\nchild a\\n', 'base\\nlead\\nchild b\\n']" in trailing_user_text(messages):
+            if "['base\\nlead\\nchild a\\n', 'base\\nlead\\nchild b\\n']" in trailing_user_text(
+                messages
+            ):
                 return block("submit(open('notes.txt').read())")
             return block(
                 "open('notes.txt', 'a').write('lead\\n')\n"
@@ -73,12 +77,19 @@ def test_children_start_from_the_parents_files_in_their_own_worktrees(repo):
                 "b = launch_agent('child b', config='worker')\n"
                 "print(await asyncio.gather(a, b))"
             )
-        return block(f"open('notes.txt', 'a').write({task + chr(10)!r})\nsubmit(open('notes.txt').read())")
+        return block(
+            f"open('notes.txt', 'a').write({task + chr(10)!r})\nsubmit(open('notes.txt').read())"
+        )
 
     g = Graph()
-    g.add_config(AgentConfig(name="worker"))
-    root = g.create_agent("lead", config=AgentConfig(max_depth=1))
-    run(Flow(StubLLM(reply), runtime=LocalRuntime(repl_timeout=10), workspaces=GitWorktrees(repo)), g)
+    root = g.create_agent("lead")
+    flow = Flow(
+        StubLLM(reply),
+        configs=[AgentConfig(name="worker")],
+        runtime=LocalRuntime(repl_timeout=10),
+        workspaces=GitWorktrees(repo),
+    )
+    run(flow, g)
 
     assert g.result(root) == "base\nlead\n"
     assert [g.result(c) for c in g.children(root)] == [
@@ -100,7 +111,10 @@ def test_a_fork_rebuilds_its_repl_then_restores_the_files_at_the_fork_point(repo
 
     g = Graph()
     root = g.create_agent("edit")
-    run(Flow(StubLLM(reply), runtime=LocalRuntime(repl_timeout=10), workspaces=GitWorktrees(repo)), g)
+    run(
+        Flow(StubLLM(reply), runtime=LocalRuntime(repl_timeout=10), workspaces=GitWorktrees(repo)),
+        g,
+    )
     assert g.result(root) == "original"
 
     first = next(n for n in g.history(root) if n.type == CODE)

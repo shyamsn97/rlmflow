@@ -1,6 +1,6 @@
 from helpers import StubLLM, agent_graph, counting_replies, repl, run_result
 
-from rlmflow import CODE, DONE, Flow, LocalRuntime
+from rlmflow import CODE, DONE, AgentConfig, Flow, LocalRuntime
 
 
 def test_immediate_submission_adds_no_model_turn():
@@ -35,10 +35,12 @@ def test_finish_alias_is_gone():
 
 def test_output_schema_failure_is_a_code_error_and_the_agent_retries():
     schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
-    flow = Flow(StubLLM(counting_replies(repl("submit({'nope': 1})"), repl("submit({'ok': True})"))))
-    g, root = agent_graph("Return an object.", output_schema=schema)
+    flow = Flow(
+        StubLLM(counting_replies(repl("submit({'nope': 1})"), repl("submit({'ok': True})")))
+    )
+    g, root = agent_graph("Return an object.")
 
-    assert run_result(flow, g, root) == {"ok": True}
+    assert run_result(flow, g, root, root_config=AgentConfig(output_schema=schema)) == {"ok": True}
     rejected = next(node for node in g.history(root) if node.type == CODE)
     assert rejected.data["error"] is True and "ok" in rejected.data["output"]
     assert g.frontier(root).type == DONE
@@ -46,9 +48,10 @@ def test_output_schema_failure_is_a_code_error_and_the_agent_retries():
 
 def test_output_schema_accepts_a_json_text_reply():
     flow = Flow(StubLLM(counting_replies('{"n": 3}')))
-    g, root = agent_graph("Count.", output_schema={"type": "object", "properties": {"n": {"type": "integer"}}})
+    g, root = agent_graph("Count.")
+    config = AgentConfig(output_schema={"type": "object", "properties": {"n": {"type": "integer"}}})
 
-    assert run_result(flow, g, root) == {"n": 3}
+    assert run_result(flow, g, root, root_config=config) == {"n": 3}
 
 
 def test_plain_text_reply_is_the_final_answer():

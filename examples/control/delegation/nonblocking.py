@@ -42,16 +42,11 @@ class ScriptedLLM:
 def main() -> None:
     flow = Flow(ScriptedLLM(), workers=3)
     g = Graph()
-    root = g.create_agent(
-        "Queue two children, then collect them on a later turn.",
-        config=AgentConfig(max_depth=1, max_iters=3),
-    )
+    root = g.create_agent("Queue two children, then collect them on a later turn.")
     try:
-        flow.run(g)
+        flow.run(g, root_config=AgentConfig(max_iters=3))
         result = g.result(root)
-        child_results = {
-            child.name: g.result(child) for child in g.children(root)
-        }
+        child_results = {child.name: g.result(child) for child in g.children(root)}
         print("root:", result)
         print("children:", child_results)
         assert result == "alpha finished, beta finished"

@@ -76,11 +76,13 @@ class RLMFlowLocalRunner(Runner):
         if self.divide_budget_by_best_of_n and max_budget is not None:
             max_budget = max(1, max_budget // max(1, best_of_n))
         llm_clients = {}
-        config = AgentConfig(max_iters=self.max_iters, max_depth=max_depth, max_budget=max_budget)
+        configs = [
+            AgentConfig(max_iters=self.max_iters, max_depth=max_depth, max_budget=max_budget)
+        ]
         graph = Graph()
         if self.worker_model is not None:
             llm_clients["worker"] = OpenAIClient(self.worker_model)
-            graph.add_config(
+            configs.append(
                 AgentConfig(
                     name="worker",
                     model="worker",
@@ -94,6 +96,7 @@ class RLMFlowLocalRunner(Runner):
             runtime=LocalRuntime(working_directory=prepared.work_dir),
             tools=_example_tools(example),
             llm_clients=llm_clients or None,
+            configs=configs,
         )
         environment = prepared.environment
         environment_episode = None
@@ -110,11 +113,13 @@ class RLMFlowLocalRunner(Runner):
                 candidate_budget=candidate_budget(built),
                 expected_observation_sha256=environment.get("observation_sha256"),
             )
-            flow = EnvironmentFlow(_ModelClient(model), environment=environment_episode, **flow_kwargs)
-            root = flow.create_root(graph, prompt, config=config, **inputs)
+            flow = EnvironmentFlow(
+                _ModelClient(model), environment=environment_episode, **flow_kwargs
+            )
+            root = flow.create_root(graph, prompt, **inputs)
         else:
             flow = Flow(_ModelClient(model), **flow_kwargs)
-            root = graph.create_agent(prompt, config=config, **inputs)
+            root = graph.create_agent(prompt, **inputs)
         cap = self.max_steps or max(200, self.max_iters * max(1, max_depth + 1) * 25)
         steps = 0
         error = None

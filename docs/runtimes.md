@@ -13,23 +13,13 @@ The core installation needs `cloudpickle` for value transfer. `ModalRuntime` add
 
 Agent Python always crosses a process boundary. This provides fault and state isolation, but local subprocesses are not security sandboxes.
 
-## Isolated and colocated agents
+## Isolated agents
 
-Each root and child gets an isolated worker by default. Placement is host-owned; set `child_config={"reuse_worker": True}` to place launched children in their caller's worker process while retaining a separate Python namespace:
+Each agent gets its own worker process and Python namespace. User code can use ordinary top-level `await` and `asyncio.gather(...)`.
 
-```python
-root = g.create_agent(task, config=AgentConfig(max_depth=1, child_config={"reuse_worker": True}))
+`Runtime.location` says where the REPL runs when that isn't this machine: `DockerRuntime` and `ModalRuntime` describe the container or sandbox and its working directory. Claude Code and pi sessions run their own tools on your machine, so their prompt includes that line and tells them to reach the REPL's files through `rlmflow repl`.
 
-# In agent REPL code:
-analyst = launch_subagent(task="Analyze records.", records=records)
-result = await analyst
-```
-
-Colocated agents have separate namespaces, transcripts, model turns, invocation arguments, `ENV`, completion, and output attribution. They share only the interpreter process and host connection. Worker termination affects every tenant in that worker.
-
-The worker can execute multiple isolated tenants concurrently. Per-execution context routes `ENV`, output, completion, and host-tool calls back to the correct agent. Invocation arguments are rebound as direct variables before each action. User code can use ordinary top-level `await` and `asyncio.gather(...)`.
-
-A worker outlives the agent that answered in it: finishing does not close a REPL. Without colocation a fan-out holds one worker per child until you close them. Close a run's REPLs with `close_repls=True` on `run`/`arun`/`run_streaming`, one with `flow.runtime.close_repl(agent)`, or everything the Flow owns with `await flow.aclose()` — see [Control](control.md#cleanup).
+A worker outlives the agent that answered in it: finishing does not close a REPL. A fan-out holds one worker per child until you close them. Close a run's REPLs with `close_repls=True` on `run`/`arun`/`run_streaming`, one with `flow.runtime.close_repl(agent)`, or everything the Flow owns with `await flow.aclose()` — see [Control](control.md#cleanup).
 
 ## Working directory and tools
 
@@ -41,7 +31,7 @@ flow = rlmflow.Flow(
 )
 ```
 
-The working directory belongs to the worker. A shared child necessarily inherits its caller's directory.
+The working directory belongs to the worker.
 
 Tools marked `@tool(proxy=True)` execute on the host through the worker's private protocol stream. Their arguments travel from worker to host as JSON data only. Other values and functions are copied in the trusted host-to-worker direction with `cloudpickle`.
 
