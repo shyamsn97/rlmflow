@@ -26,12 +26,12 @@ from rlmflow.harnesses.sessions import (
     SessionOptions,
     TurnResult,
     next_prompt,
-    system_prompt,
 )
 
 if TYPE_CHECKING:
     from rlmflow.agent_tools.server import Turn
     from rlmflow.flow import Flow
+
 
 @dataclass(frozen=True)
 class ClaudeCodeOptions(SessionOptions):
@@ -41,7 +41,11 @@ class ClaudeCodeOptions(SessionOptions):
 
     def allowed_tools(self) -> list[str]:
         """The user's ``sdk`` allowed tools plus what rlmflow needs: its commands, and its MCP tools."""
-        return [*self.sdk.get("allowed_tools", []), "Bash(rlmflow:*)", *(["mcp__rlmflow"] if self.mcp else [])]
+        return [
+            *self.sdk.get("allowed_tools", []),
+            "Bash(rlmflow:*)",
+            *(["mcp__rlmflow"] if self.mcp else []),
+        ]
 
 
 class ClaudeCodeHarness(SessionHarness):
@@ -52,13 +56,17 @@ class ClaudeCodeHarness(SessionHarness):
         try:
             from claude_agent_sdk import ResultMessage, query
         except ImportError as exc:
-            raise RuntimeError("the claude_code harness needs `pip install 'rlmflow[claude]'`") from exc
+            raise RuntimeError(
+                "the claude_code harness needs `pip install 'rlmflow[claude]'`"
+            ) from exc
 
         options = self.options(step)
         session = Session.for_step(step)
         prompt = await next_prompt(flow, step, session)
         result = None
-        async for message in query(prompt=prompt, options=self.sdk_options(flow, step, options, session, turn.env)):
+        async for message in query(
+            prompt=prompt, options=self.sdk_options(flow, step, options, session, turn.env)
+        ):
             if isinstance(message, ResultMessage):
                 result = message
         if result is None:
@@ -66,12 +74,17 @@ class ClaudeCodeHarness(SessionHarness):
         return self.parse(result)
 
     def sdk_options(
-        self, flow: Flow, step: Step, options: ClaudeCodeOptions, session: Session, env: dict[str, str]
+        self,
+        flow: Flow,
+        step: Step,
+        options: ClaudeCodeOptions,
+        session: Session,
+        env: dict[str, str],
     ) -> Any:
         from claude_agent_sdk import ClaudeAgentOptions
 
         config = step.agent.config
-        prompt = system_prompt(flow, step)
+        prompt = self.prompt(flow, step)
         fields: dict[str, Any] = {
             "system_prompt": {"type": "preset", "preset": "claude_code", "append": prompt},
             "cwd": flow.workspaces.path(step.agent),
@@ -84,7 +97,7 @@ class ClaudeCodeHarness(SessionHarness):
             fields.update(resume=session.id, fork_session=session.fork)
         else:
             fields["session_id"] = session.id
-        if config.model != "default":
+        if config.model is not None:
             fields["model"] = config.model
         if config.output_schema is not None:
             fields["output_format"] = {"type": "json_schema", "schema": config.output_schema}
@@ -98,7 +111,9 @@ class ClaudeCodeHarness(SessionHarness):
     def parse(result: Any) -> TurnResult:
         """A ``TurnResult`` from the SDK's ``ResultMessage``."""
         if result.is_error:
-            raise RuntimeError(f"claude failed: {result.result or '; '.join(result.errors or []) or result.subtype}")
+            raise RuntimeError(
+                f"claude failed: {result.result or '; '.join(result.errors or []) or result.subtype}"
+            )
         usage = result.usage or {}
         return TurnResult(
             session_id=result.session_id,

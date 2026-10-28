@@ -22,7 +22,6 @@ import sys
 from pathlib import Path
 
 from rlmflow import AgentConfig, Flow, Graph, LocalRuntime
-from rlmflow.llm.openai import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -107,9 +106,7 @@ def main() -> None:
         output_schema=CHILD_SCHEMA,
         harness_options={"command": args.claude_command, "sdk": {"permission_mode": "acceptEdits"}},
     )
-    flow = Flow(
-        OpenAIClient(args.model), configs=[claude], runtime=LocalRuntime(working_directory=workdir)
-    )
+    flow = Flow(configs=[claude], runtime=LocalRuntime(working_directory=workdir))
     g = Graph()
     root = g.create_agent(
         "Launch two independent child agents before awaiting either one. "
@@ -120,7 +117,7 @@ def main() -> None:
         "handles together, then submit a concise summary and both structured "
         "worker results.",
     )
-    config = AgentConfig(max_iters=args.max_iters, output_schema=ROOT_SCHEMA)
+    config = AgentConfig(model=args.model, max_iters=args.max_iters, output_schema=ROOT_SCHEMA)
     out_dir = Path(args.out_dir)
     asyncio.run(print_run(flow, g, out_dir, root_config=config))
 

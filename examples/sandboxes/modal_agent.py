@@ -27,7 +27,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from examples.common import print_run, save_example_graph  # noqa: E402
 from rlmflow import AgentConfig, Flow, Graph, ModalRuntime  # noqa: E402
-from rlmflow.llm.openai import OpenAIClient  # noqa: E402
 
 REMOTE_REPO = "/opt/rlmflow"
 
@@ -57,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--fast-model",
         default="gpt-5-mini",
-        help="Cheaper model exposed to delegates as `model='fast'`.",
+        help="Cheaper model for the `fast` config delegates can launch.",
     )
     parser.add_argument("--max-iters", type=int, default=5)
     parser.add_argument(
@@ -126,9 +125,16 @@ def main() -> None:
         f"max_iters={args.max_iters}, max_depth={args.max_depth}"
     )
     flow = Flow(
-        OpenAIClient(model=args.model),
-        llm_clients={"fast": OpenAIClient(model=args.fast_model)},
-        configs=[AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)],
+        configs=[
+            AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters),
+            AgentConfig(
+                name="fast",
+                model=args.fast_model,
+                description="cheaper model for a bounded piece of the game",
+                max_depth=args.max_depth,
+                max_iters=args.max_iters,
+            ),
+        ],
         runtime=runtime,
     )
     g = Graph()

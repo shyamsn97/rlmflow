@@ -29,6 +29,8 @@ from rlmflow.rao.env import Env, EnvSession, env_tool, environment_rewards
 
 #: Direct root argument containing the initial environment observation.
 OBSERVATION_INPUT = "observation"
+#: The model name the policy being trained is registered under.
+POLICY = "policy"
 
 
 @dataclass(frozen=True)
@@ -74,7 +76,12 @@ class Budget:
     max_wall_time: float | None = None
 
     def agent_config(self) -> AgentConfig:
-        return AgentConfig(max_depth=self.max_depth, max_iters=self.max_iters, max_budget=self.max_budget)
+        return AgentConfig(
+            model=POLICY,
+            max_depth=self.max_depth,
+            max_iters=self.max_iters,
+            max_budget=self.max_budget,
+        )
 
 
 class RolloutFlow(Flow):
@@ -85,8 +92,8 @@ class RolloutFlow(Flow):
     refuses launches past the budget.
     """
 
-    def __init__(self, llm: Any, *, budget: Budget | None = None, **kwargs: Any) -> None:
-        super().__init__(llm, **kwargs)
+    def __init__(self, policy: Any, *, budget: Budget | None = None, **kwargs: Any) -> None:
+        super().__init__(llm_clients={POLICY: policy, **kwargs.pop("llm_clients", {})}, **kwargs)
         self.budget = budget or Budget()
         self.root_config = self.add_config(self.budget.agent_config())
         #: Agent id -> ``EnvSession``.
@@ -139,7 +146,7 @@ class RolloutFlow(Flow):
         return bool(getattr(self.llms.get(model), "records_tokens", False))
 
     async def complete(
-        self, messages: list[dict[str, str]], model: str = "default", **kwargs: Any
+        self, messages: list[dict[str, str]], model: str, **kwargs: Any
     ) -> tuple[str, LLMUsage]:
         step = current_step()
         if step is None or not self.records(model):
@@ -345,6 +352,7 @@ class Collector:
 
 __all__ = [
     "OBSERVATION_INPUT",
+    "POLICY",
     "Budget",
     "Collector",
     "RolloutFlow",

@@ -23,7 +23,6 @@ import sys
 from pathlib import Path
 
 from rlmflow import AGENT_START, DONE, AgentConfig, Flow, Graph, Node, Step
-from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -65,8 +64,8 @@ def print_nodes(title: str, nodes: list[Node], g: Graph, root: Node) -> None:
 
 
 async def run_example(args: argparse.Namespace) -> tuple[Graph, Node]:
-    config = AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)
-    flow = Flow(client_for(args.model), configs=[config], workers=args.max_concurrency)
+    config = AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)
+    flow = Flow(configs=[config], workers=args.max_concurrency)
     g = Graph()
     root = g.create_agent(QUERY)
     observed: list[Node] = []

@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from helpers import StubLLM
+from helpers import ScriptedFlow, StubLLM
 from helpers import reasoning_repl as block
 
 from rlmflow import (
@@ -24,7 +24,7 @@ from rlmflow import (
 from rlmflow.graph.nodes import Step
 from rlmflow.harnesses.claude_code import ClaudeCodeOptions
 from rlmflow.harnesses.pi import PiHarness
-from rlmflow.harnesses.sessions import Session, system_prompt
+from rlmflow.harnesses.sessions import Session
 
 FAKE_CLAUDE = Path(__file__).parent / "fixtures" / "fake_claude.py"
 
@@ -93,7 +93,7 @@ def test_a_claude_lead_delegates_from_cells_waits_and_resumes_its_session(claude
     g = Graph()
     root = g.create_agent("Count the x's", doc="xxaaxbxx")
     worker = AgentConfig(name="worker", description="Counts x's in one chunk.")
-    run(Flow(StubLLM(lambda messages: WORKER), configs=[worker]), g, claude.config())
+    run(ScriptedFlow(StubLLM(lambda messages: WORKER), configs=[worker]), g, claude.config())
 
     assert g.result(root) == 5
     types = [n.type for n in g.history(root)]
@@ -134,7 +134,7 @@ def test_forking_a_claude_agent_resumes_at_turn_ends_and_restarts_mid_turn(claud
     g = Graph()
     root = g.create_agent("Plan")
     configs = [AgentConfig(name="worker")]
-    run(Flow(StubLLM(lambda messages: WORKER), configs=configs), g, claude.config())
+    run(ScriptedFlow(StubLLM(lambda messages: WORKER), configs=configs), g, claude.config())
     assert g.result(root) == 1
 
     history = g.history(root)
@@ -144,7 +144,7 @@ def test_forking_a_claude_agent_resumes_at_turn_ends_and_restarts_mid_turn(claud
     g.send(at_turn_end, "Continue")
     mid_turn = g.fork(first_cell, name="mid-turn")
     calls_before = len(claude.calls())
-    run(Flow(StubLLM(lambda messages: WORKER), configs=configs), g, claude.config())
+    run(ScriptedFlow(StubLLM(lambda messages: WORKER), configs=configs), g, claude.config())
 
     assert g.result(at_turn_end) == "plan: count"
     assert g.result(mid_turn) == "plan: count!"
@@ -236,14 +236,26 @@ def test_the_session_prompt_lists_the_flows_tools_and_where_the_repl_runs():
     agent.bind_config(AgentConfig())
     step = Step(g, agent, agent)
 
-    local = system_prompt(Flow(tools=[FILE_TOOLS, define]), step)
+    local = PiHarness().prompt(Flow(tools=[FILE_TOOLS, define]), step)
     assert "Also in the REPL:" in local
     assert "- `read_file(" in local and "- `define(word: str) -> str`: Look up a word." in local
     assert "Your REPL runs in" not in local
 
-    remote = system_prompt(Flow(runtime=RemoteRuntime()), step)
+    remote = PiHarness().prompt(Flow(runtime=RemoteRuntime()), step)
     assert "Your REPL runs in a Docker container." in remote
     assert "Also in the REPL:" not in remote
+
+
+def test_config_prompt_replaces_drops_and_adds_sections():
+    g = Graph()
+    agent = g.create_agent("t")
+    agent.bind_config(
+        AgentConfig(prompt={"state": "KEEP NOTES.", "record": None, "style": "BE TERSE."})
+    )
+    prompt = PiHarness().prompt(Flow(), Step(g, agent, agent))
+    assert "KEEP NOTES." in prompt and "REPL variables, not only" not in prompt
+    assert "are recorded in this run" not in prompt
+    assert prompt.endswith("BE TERSE.")
 
 
 def test_a_session_starts_fresh_resumes_or_forks():

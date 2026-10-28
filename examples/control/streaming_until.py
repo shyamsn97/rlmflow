@@ -84,10 +84,10 @@ async def demo_next_idle_and_resume() -> None:
             return '```repl\nsubmit("stopped")\n```'
         return "```repl\nprint('working')\n```"
 
-    flow = Flow(ScriptedLLM(reply))
+    flow = Flow(llm_clients={"scripted": ScriptedLLM(reply)})
     g = Graph()
     root = g.create_agent("work until I inject a stop instruction")
-    config = AgentConfig(max_iters=8)
+    config = AgentConfig(model="scripted", max_iters=8)
 
     events = await collect(flow, g, until=after_appends(3), root_config=config)
     print_nodes("callable boundary: exactly three appended nodes", events, g, root)
@@ -103,14 +103,13 @@ async def demo_next_idle_and_resume() -> None:
 
 
 async def demo_idle_heals_errors() -> None:
+    replies = scripted_replies(
+        "```repl\n```",
+        "```repl\nprint('fixed')\n```",
+        "```repl\nsubmit('ok')\n```",
+    )
     flow = Flow(
-        ScriptedLLM(
-            scripted_replies(
-                "```repl\n```",
-                "```repl\nprint('fixed')\n```",
-                "```repl\nsubmit('ok')\n```",
-            )
-        )
+        llm_clients={"scripted": ScriptedLLM(replies)}, configs=[AgentConfig(model="scripted")]
     )
     g = Graph()
     root = g.create_agent("recover from a bad response")
@@ -132,7 +131,9 @@ async def demo_callable_boundary_with_child() -> None:
             )
         return "```repl\nsubmit('child done')\n```"
 
-    flow = Flow(ScriptedLLM(reply))
+    flow = Flow(
+        llm_clients={"scripted": ScriptedLLM(reply)}, configs=[AgentConfig(model="scripted")]
+    )
     g = Graph()
     root = g.create_agent("parent")
 

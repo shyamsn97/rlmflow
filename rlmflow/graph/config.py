@@ -146,9 +146,12 @@ class AgentConfig:
     name: str = "default"
     #: A short name, a harness class or function, or its import path; saved as the path.
     harness: Any = "repl"
-    model: str = "default"
-    #: ``None``: the harness's default prompt.
-    system_prompt: str | None = None
+    #: A model name, or an ``llm_clients`` key on the Flow. ``None``: the harness's own
+    #: default where it has one (Claude Code, pi); the REPL harness needs a model.
+    model: str | None = None
+    #: Overrides for the harness's ``prompt_sections()`` by key: a string replaces that
+    #: section, ``None`` drops it, and a new key is added at the end.
+    prompt: dict[str, str | None] = field(default_factory=dict)
     #: Shown to other agents choosing a config.
     description: str = ""
     max_iters: int | None = None
@@ -171,6 +174,7 @@ class AgentConfig:
 
             self.output_schema = json_schema_for(self.output_schema)
         self.harness_options = dict(self.harness_options)
+        self.prompt = dict(self.prompt)
 
     def load_harness(self) -> Callable[..., Any]:
         return load_harness(self.harness)

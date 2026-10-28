@@ -2,8 +2,8 @@
 
 Two pieces work together here:
 
-1. A **``Flow.complete`` override**. Every model turn goes through it, so a
-   system prompt section that reads a mutable ``SkillLibrary`` is always live.
+1. A **``ReplHarness`` subclass** whose ``prompt_sections`` add a ``skills``
+   section read from a ``SkillLibrary`` directory on every turn, so it is always live.
 2. An **``add_skill`` tool**. A plain ``@tool``-decorated function passed via
    ``tools=[...]`` lands in the REPL namespace and auto-documents itself in the
    prompt. Because it closes over the same ``SkillLibrary``, the agent can
@@ -24,11 +24,12 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from rlmflow import AgentConfig, Flow, Graph, LLMUsage
-from rlmflow.llm import client_for
+from rlmflow.harnesses.repl import ReplHarness
 from rlmflow.tools import tool
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -38,41 +39,50 @@ if str(examples_dir) not in sys.path:
 from common import example_run_dir  # noqa: E402
 
 
-@dataclass(frozen=True)
-class Skill:
-    name: str
-    body: str
-
-
 class SkillLibrary:
-    """A mutable set of skills the prompt section reads on every render."""
+    """Skills as ``<name>.md`` files in one directory, read on every render."""
 
-    def __init__(self, skills: list[Skill] | None = None) -> None:
-        self._skills: dict[str, Skill] = {}
-        for skill in skills or []:
-            self.add(skill.name, skill.body)
+    def __init__(self, directory: str | Path) -> None:
+        self.directory = Path(directory)
+        self.directory.mkdir(parents=True, exist_ok=True)
 
     def add(self, name: str, body: str) -> None:
-        self._skills[name] = Skill(name, body.strip())
+        (self.directory / f"{name}.md").write_text(body.strip())
 
     def names(self) -> list[str]:
-        return list(self._skills)
+        return sorted(path.stem for path in self.directory.glob("*.md"))
 
     def render(self) -> str:
-        skills = list(self._skills.values())
+        skills = [(name, (self.directory / f"{name}.md").read_text()) for name in self.names()]
         if not skills:
             return (
                 "No skills installed yet. Call `add_skill(name, body)` to teach "
                 "yourself one; it will appear here on your next turn."
             )
-        blocks = [f"### {skill.name}\n\n{skill.body}" for skill in skills]
+        blocks = [f"### {name}\n\n{body}" for name, body in skills]
         return (
             "Use these skills when they match the task. Each was installed into "
             "this run via `add_skill` and is now part of your prompt.\n\n" + "\n\n".join(blocks)
         )
 
     def __len__(self) -> int:
-        return len(self._skills)
+        return len(self.names())
+
+
+@dataclass(frozen=True)
+class SkillsOptions:
+    directory: str
+
+
+class SkillsHarness(ReplHarness):
+    """The REPL harness, plus a ``skills`` section read from ``harness_options["directory"]``."""
+
+    name = "dynamic_skills"
+    Options = SkillsOptions
+
+    def prompt_sections(self, flow, step):
+        library = SkillLibrary(self.options(step).directory)
+        return {**super().prompt_sections(flow, step), "skills": f"## Skills\n\n{library.render()}"}
 
 
 def make_add_skill(library: SkillLibrary):
@@ -145,24 +155,6 @@ class ScriptedLLM:
         )
 
 
-class SkillsFlow(Flow):
-    """A Flow whose REPL turns carry the library's skills in their system prompt."""
-
-    def __init__(self, llm, library: SkillLibrary) -> None:
-        super().__init__(llm, tools=[make_add_skill(library)])
-        self.library = library
-
-    async def complete(self, messages, model="default", **kwargs):
-        if messages and messages[0]["role"] == "system":
-            system = f"{messages[0]['content']}\n\n## Skills\n\n{self.library.render()}"
-            messages = [{"role": "system", "content": system}, *messages[1:]]
-        return await super().complete(messages, model, **kwargs)
-
-
-def build_flow(library: SkillLibrary, llm) -> Flow:
-    return SkillsFlow(llm, library)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="gpt-4o-mini", help="Model to use.")
@@ -185,14 +177,21 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    library = SkillLibrary()
+    library = SkillLibrary(tempfile.mkdtemp(prefix="skills-"))
     if args.scripted:
-        llm = ScriptedLLM()
+        flow = Flow(llm_clients={"scripted": ScriptedLLM()}, tools=[make_add_skill(library)])
+        model = "scripted"
         print("Using the deterministic ScriptedLLM (offline).")
     else:
-        llm = client_for(args.model)
+        flow = Flow(tools=[make_add_skill(library)])
+        model = args.model
         print(f"Using live client ({args.model}).")
-    flow = build_flow(library, llm)
+    config = AgentConfig(
+        harness=SkillsHarness,
+        model=model,
+        max_iters=args.max_iters,
+        harness_options={"directory": str(library.directory)},
+    )
 
     g = Graph()
     root = g.create_agent(QUERY)
@@ -201,7 +200,7 @@ def main() -> None:
         print(library.render())
 
     print("\n--- run ---\n")
-    flow.run(g, root_config=AgentConfig(max_iters=args.max_iters))
+    flow.run(g, root_config=config)
 
     print(f"\nagent installed skills: {library.names()}")
     if args.print_prompt:

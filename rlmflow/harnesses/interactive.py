@@ -33,10 +33,14 @@ def read_transcript(path: str | Path, start: int = 0) -> tuple[dict[str, int], s
         if not isinstance(entry, dict) or entry.get("type") != "assistant":
             continue
         message = entry.get("message") or {}
-        usage_by_request[entry.get("requestId") or entry.get("uuid") or str(len(usage_by_request))] = (
-            message.get("usage") or {}
-        )
-        texts = [block.get("text", "") for block in message.get("content") or [] if block.get("type") == "text"]
+        usage_by_request[
+            entry.get("requestId") or entry.get("uuid") or str(len(usage_by_request))
+        ] = message.get("usage") or {}
+        texts = [
+            block.get("text", "")
+            for block in message.get("content") or []
+            if block.get("type") == "text"
+        ]
         if any(texts):
             text = "\n".join(t for t in texts if t)
     usage = {"input_tokens": 0, "output_tokens": 0}

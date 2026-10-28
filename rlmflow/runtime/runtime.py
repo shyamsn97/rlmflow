@@ -199,7 +199,9 @@ class Runtime:
         self.directory_for: Callable[[Node], Path] | None = None
 
     def directory(self, agent: Node) -> Path | None:
-        return self.directory_for(agent) if self.directory_for is not None else self.working_directory
+        return (
+            self.directory_for(agent) if self.directory_for is not None else self.working_directory
+        )
 
     @property
     def location(self) -> str | None:

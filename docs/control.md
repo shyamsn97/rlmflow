@@ -11,7 +11,7 @@ from rlmflow import AgentConfig, Flow, Graph, Node
 g = Graph()
 root = g.create_agent("Audit this repository.")
 
-flow = Flow(client, configs=[AgentConfig(max_depth=2)])   # "default"
+flow = Flow(configs=[AgentConfig(model="gpt-5", max_depth=2)])   # "default"
 
 async def drive():
     async for item in flow.run_streaming(g):
@@ -64,13 +64,15 @@ Named configs live on the Flow; the model picks one with `launch_agent(task, con
 
 ```python
 flow = Flow(
-    client_for("gpt-5"),
-    configs=[AgentConfig(name="worker", model="gpt-5-mini", description="cheap and fast")],
+    configs=[
+        AgentConfig(model="gpt-5"),
+        AgentConfig(name="worker", model="gpt-5-mini", description="cheap and fast"),
+    ],
 )
-flow.run("Audit this repository.", root_config=AgentConfig(max_depth=2))
+flow.run("Audit this repository.", root_config=AgentConfig(model="gpt-5", max_depth=2))
 ```
 
-`model` is a model name; the Flow builds and caches its client. Register a client in `llm_clients` only when a name can't describe it. `flow.add_config(config)` adds one later; an unknown name is a `KeyError` when the Flow reaches that agent. `g.spawn(task, config="worker")` puts a top-level agent on a named config.
+`model` is a model name; the Flow builds and caches its client. Register a client in `llm_clients` only when a name can't describe it (a reasoning effort, a base URL, a Tinker sampler), under the name configs use: `Flow(llm_clients={"fast": client_for("gpt-5-mini", reasoning_effort="low")})` and `AgentConfig(model="fast")`. A config without a model raises when it reaches the REPL harness; Claude Code and pi use their own default. `flow.add_config(config)` adds one later; an unknown name is a `KeyError` when the Flow reaches that agent. `g.spawn(task, config="worker")` puts a top-level agent on a named config.
 
 ### Harnesses
 
@@ -229,7 +231,7 @@ If the parent has already submitted, the default is to append the same `UserQuer
 Opt into a read-only snapshot of the recursive tree:
 
 ```python
-flow = Flow(client, use_agent_tree=True)
+flow = Flow(use_agent_tree=True)
 ```
 
 Every REPL action then receives `AGENTS` alongside its direct invocation variables:
@@ -292,7 +294,6 @@ def migrate(sql: str) -> str: ...
 
 
 flow = Flow(
-    client,
     tools=[FILE_TOOLS, migrate],
     runtime=LocalRuntime(working_directory="."),
 )
@@ -315,7 +316,7 @@ def query(sql: str) -> list[dict]: ...
 
 
 DATABASE_TOOLS = (list_tables, query)
-flow = Flow(client, tools=[DATABASE_TOOLS])
+flow = Flow(tools=[DATABASE_TOOLS])
 ```
 
 Host-side tools can preserve a successful JSON result across namespace reconstruction:

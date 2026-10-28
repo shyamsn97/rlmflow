@@ -30,7 +30,6 @@ from pathlib import Path
 
 from rlmflow import AgentConfig, DockerRuntime, Flow, Graph, SubprocessRuntime
 from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
-from rlmflow.llm import client_for
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from filesystem import NEEDLE_FILE_TOOLS, generate_haystack
@@ -80,7 +79,7 @@ def config(harness: str, args: argparse.Namespace, **fields) -> AgentConfig:
             **({"provider": args.pi_provider} if args.pi_provider else {}),
         }
         return AgentConfig(harness=harness, model=args.pi_model, harness_options=options, **fields)
-    return AgentConfig(harness=harness, **fields)
+    return AgentConfig(harness=harness, model=args.model, **fields)
 
 
 def run_one(root_harness: str, worker_harness: str, args: argparse.Namespace) -> Outcome:
@@ -102,7 +101,6 @@ def run_one(root_harness: str, worker_harness: str, args: argparse.Namespace) ->
         if worker_harness == "repl":
             searcher = replace(searcher, model=args.worker_model)
         flow = Flow(
-            client_for(args.model),
             configs=[searcher],
             runtime=DockerRuntime(args.docker_image, working_directory=workdir)
             if args.docker_image
@@ -161,10 +159,10 @@ def main() -> None:
     parser.add_argument("--worker-model", default="gpt-5-nano", help="repl searchers' model")
     parser.add_argument(
         "--claude-model",
-        default="default",
+        default=None,
         help="Claude Code's model; default: your Claude setting",
     )
-    parser.add_argument("--pi-model", default="default", help="pi's --model; default: pi's own")
+    parser.add_argument("--pi-model", default=None, help="pi's --model; default: pi's own")
     parser.add_argument("--pi-provider", default=None, help="pi's --provider")
     parser.add_argument("--pi-command", default="pi")
     parser.add_argument(

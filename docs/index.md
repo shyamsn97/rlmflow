@@ -15,7 +15,7 @@
 - [Node injection](injections.md): add nodes between streaming calls and continue the run.
 - [Observability](observability.md): querying the graph, consumers, reading a saved run.
 - [Node model](node_model.md): node types, their data, and edges.
-- [Prompt customization](prompt_customization.md): prompts, sections and profiles.
+- [Prompt customization](prompt_customization.md): each harness's prompt sections, and overriding them from a config or a harness subclass.
 - [Skills](skills.md): `SKILL.md` files in prompts.
 - [Benchmarks](benchmarks.md): the evaluation suites and how to run them.
 

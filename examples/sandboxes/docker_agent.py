@@ -23,7 +23,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from examples.common import print_run  # noqa: E402
 from rlmflow import AgentConfig, DockerRuntime, Flow, Graph  # noqa: E402
-from rlmflow.llm import client_for  # noqa: E402
 
 PLATFORMER_QUERY = """\
 Build a simple 2D side-scrolling platformer in plain HTML/CSS/JS under output/.
@@ -57,9 +56,16 @@ def main() -> None:
     args = parse_args()
     runtime = DockerRuntime(args.docker_image)
     flow = Flow(
-        client_for(args.model),
-        llm_clients={"fast": client_for(args.fast_model)},
-        configs=[AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)],
+        configs=[
+            AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters),
+            AgentConfig(
+                name="fast",
+                model=args.fast_model,
+                description="cheaper model for a bounded piece of the game",
+                max_depth=args.max_depth,
+                max_iters=args.max_iters,
+            ),
+        ],
         runtime=runtime,
     )
     g = Graph()

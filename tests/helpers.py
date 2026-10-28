@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 
-from rlmflow import AgentConfig, Node
+from rlmflow import AgentConfig, Flow, Node, PooledLLMClient
 from rlmflow.graph import NEXT, Graph
 from rlmflow.graph.nodes import AGENT_START, Step, current_code, running_step
 from rlmflow.runtime.repl import (
@@ -111,6 +111,19 @@ class TestRuntime(Runtime):
             if item is not None:
                 binding[target] = item
         return await repl.run(code, binding=binding)
+
+
+class ScriptedFlow(Flow):
+    """A Flow whose every model is ``llm``, unless ``llm_clients`` names that model."""
+
+    def __init__(self, llm, **kwargs):
+        super().__init__(**kwargs)
+        self.test_llm = llm
+        self.llms.setdefault("scripted", llm)
+
+    def llm(self, model):
+        client = self.llms.get(model, self.test_llm)
+        return PooledLLMClient(client, self.pool, timeout=getattr(client, "request_timeout", None))
 
 
 class StubLLM:

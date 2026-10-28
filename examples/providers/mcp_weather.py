@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 from rlmflow import AgentConfig, Flow, Graph, LocalRuntime, tool
-from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -260,8 +259,9 @@ def main() -> None:
         # Expose the MCP-backed tools to every agent by handing them to the Flow
         # (each is already named by its MCP spec).
         flow = Flow(
-            client_for(args.model),
-            configs=[AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)],
+            configs=[
+                AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)
+            ],
             runtime=LocalRuntime(),
             tools=mcp_tools(mcp_client),
         )

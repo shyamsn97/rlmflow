@@ -101,17 +101,26 @@ def parser() -> argparse.ArgumentParser:
     repl = commands.add_parser("repl", help="run Python in this agent's persistent REPL")
     repl.add_argument("code", nargs="?", help="the code; read from stdin when omitted")
     repl.add_argument("-f", "--file", help="read the code from this file")
-    repl.add_argument("--timeout", type=float, default=REPL_TIMEOUT, help="seconds to wait for the cell")
+    repl.add_argument(
+        "--timeout", type=float, default=REPL_TIMEOUT, help="seconds to wait for the cell"
+    )
 
     spawn = commands.add_parser("spawn", help="start an agent; prints its id")
     spawn.add_argument("task")
     spawn.add_argument("--config", help="a config name on the run; defaults to your own")
     spawn.add_argument("--name")
-    spawn.add_argument("--arg", action="append", default=[], metavar="NAME=VALUE",
-                       help="an argument for the agent; VALUE is JSON or text")
+    spawn.add_argument(
+        "--arg",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="an argument for the agent; VALUE is JSON or text",
+    )
 
     wait = commands.add_parser("wait", help="wait up to a minute for agents; prints JSON")
-    wait.add_argument("agents", nargs="*", help="agent ids, paths or names; default: your running children")
+    wait.add_argument(
+        "agents", nargs="*", help="agent ids, paths or names; default: your running children"
+    )
     wait.add_argument("--timeout", type=float, default=60.0)
 
     send = commands.add_parser("send", help="put a message in another agent's inbox")
@@ -150,7 +159,9 @@ def run(argv: list[str]) -> int:
             body = {"task": args.task, "config": args.config, "name": args.name, "args": values}
             print(request("spawn", body)["id"])
         case "wait":
-            waited = request("wait", {"agents": args.agents, "timeout": args.timeout}, timeout=args.timeout + 30)
+            waited = request(
+                "wait", {"agents": args.agents, "timeout": args.timeout}, timeout=args.timeout + 30
+            )
             print(json.dumps(waited["results"], indent=2, default=str))
             if waited.get("note"):
                 print(waited["note"])

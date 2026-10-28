@@ -28,8 +28,7 @@ def build_graph() -> tuple[Graph, Node]:
     g.append(writer, Node(DONE, result="wrote pkg/__init__.py"))
 
     tester = g.spawn("run pytest", by=turn, name="test")
-    g.append(tester, Node(CODE, code="import pkg", output="ModuleNotFoundError: pkg", error=True)
-    )
+    g.append(tester, Node(CODE, code="import pkg", output="ModuleNotFoundError: pkg", error=True))
     g.append(tester, Node(DONE, result="3 passed"))
 
     g.append(

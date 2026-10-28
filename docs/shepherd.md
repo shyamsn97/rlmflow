@@ -42,26 +42,26 @@ walked (3, 2)->(4, 3) in 2 cells
 pushed B1 up: (3, 3)->(2, 3)
 ```
 
-#### Live board context through the user prompt
+#### Live board context in each request
 
-The worker needs the current board in every model request, but that state lives in its REPL rather than in the durable node graph. The worker profile therefore uses a live user-prompt modifier:
+The worker's system prompt is only its Sokoban rules: its config uses a `ReplHarness` subclass whose `prompt_sections` are empty, with the rules as the config's `prompt`. The current board changes every turn and lives in the worker's REPL rather than in the graph, so `ShepherdFlow.complete` appends it to the latest user message of each request:
 
 ```python
-def add_worker_board(user_prompt, flow: Flow, node: Node) -> None:
-    content = board_prompt(flow.runtime, node.parent_agent, simple=simple_moves)
-    if content:
-        user_prompt.add_section("turn.board", content, order=1050)
+class WorkerHarness(ReplHarness):
+    def prompt_sections(self, flow, step):
+        return {}
 
 
-flow = Flow(
-    client,
-    prompt_profiles={
-        "worker": PromptProfile(user_modifiers=add_worker_board),
-    },
-)
+class ShepherdFlow(Flow):
+    async def complete(self, messages, model, **kwargs):
+        step = current_step()
+        if step is not None and messages and messages[0]["role"] == "system":
+            board_text = board_prompt(self, step, simple=self.simple_moves)
+            ...  # appended to the last user message
+        return await super().complete(messages, model, **kwargs)
 ```
 
-The modifier receives Flow explicitly and can read the live REPL `ENV` for the node currently being sent. `board_prompt` also stamps the upcoming turn in `ENV` so the game's one-push guard applies to the next live action; replay does not need that live-turn guard.
+`board_prompt` reads the live REPL `ENV` for the agent being stepped. `board_prompt` also stamps the upcoming turn in `ENV` so the game's one-push guard applies to the next live action; replay does not need that live-turn guard.
 
 This run starts jammed on purpose: the worker shoves `B1` right eight times until it sits flat against the wall, where nothing can stand behind it.
 

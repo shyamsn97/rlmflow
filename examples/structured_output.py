@@ -22,7 +22,6 @@ from typing import Literal
 from pydantic import BaseModel
 
 from rlmflow import AgentConfig, Flow, Graph, json_schema_for
-from rlmflow.llm.openai import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -81,7 +80,9 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    flow = Flow(OpenAIClient(args.model))
+    flow = Flow(
+        configs=[AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)]
+    )
 
     query = (
         "Build a packing plan for my upcoming trip. The important weather info "
@@ -92,6 +93,7 @@ def main() -> None:
     g = Graph()
     root = g.create_agent(query, trip_brief=TRIP_BRIEF)
     config = AgentConfig(
+        model=args.model,
         max_depth=args.max_depth,
         max_iters=args.max_iters,
         output_schema=json_schema_for(PackingPlan),

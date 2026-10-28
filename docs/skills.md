@@ -1,155 +1,56 @@
-# Customizable Skills
+# Skills
 
-Skills are ordinary repo files that become part of an agent's prompt when they matter. Use them for stable guidance you want to reuse across runs: project style guides, domain playbooks, child-agent contracts, benchmark heuristics, or lessons distilled from previous traces.
+Skills are ordinary files that become part of an agent's prompt: project style guides, domain playbooks, a contract for workers, lessons from earlier runs. Each one goes in a prompt section of its own, so it can change without touching the rest of the prompt ([Prompt customization](prompt_customization.md)).
 
-rlmflow keeps skills as files. Add them to the system `Prompt` under stable keys so a live library can update one skill without rewriting the protocol. See [`examples/skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/skills.py) for a small runnable version.
+## Fixed skills: a config section
 
-## Suggested Layout
-
-```text
-skills/
-+-- project-style/
-|   `-- SKILL.md
-+-- numpy-linear-algebra/
-|   `-- SKILL.md
-+-- child-agent-contract/
-|   `-- SKILL.md
-`-- run-memory/
-    +-- debugging.md
-    `-- eval-lessons.md
-```
-
-Each `SKILL.md` should be short, concrete, and action-oriented. Prefer rules the agent can follow during a run over long background explanations.
-
-## Always-On Project Skills
-
-Load project conventions into every agent:
+When the skill text is known before the run, put it in the config's `prompt`. It applies to every agent launched with that config and is saved with the run:
 
 ```python
 from pathlib import Path
 
-import rlmflow
-from rlmflow.llm import OpenAIClient
+from rlmflow import AgentConfig, Flow
 
+style = Path("skills/project-style/SKILL.md").read_text()
+contract = Path("skills/worker-contract/SKILL.md").read_text()
 
-def add_project_skill(prompt, flow=None, node=None):
-    skill = Path("skills/project-style/SKILL.md").read_text(encoding="utf-8")
-    prompt.add_section("skills.project", skill, order=800)
-
-
-flow = rlmflow.Flow(
-    OpenAIClient(model="gpt-4o-mini"),
-    system_prompt_modifiers=add_project_skill,
+flow = Flow(
+    configs=[
+        AgentConfig(model="gpt-5", prompt={"skills": style}),
+        AgentConfig(name="worker", model="gpt-5-mini", prompt={"skills": f"{style}\n\n{contract}"}),
+    ]
 )
 ```
 
-## Query-Selected Skills
+Different configs get different skills, so a worker-only contract is a section on the worker config.
 
-Choose domain skills from the current task:
+## Live skills: a harness section
+
+When the files can change during the run, read them each turn in a harness subclass. Put their location in `harness_options`, which the run records:
 
 ```python
+from dataclasses import dataclass
 from pathlib import Path
 
-import rlmflow
-from rlmflow.llm import OpenAIClient
-
-SKILL_DIR = Path("skills")
+from rlmflow import AgentConfig
+from rlmflow.harnesses.repl import ReplHarness
 
 
-def _read_skill(name: str) -> str:
-    path = SKILL_DIR / name / "SKILL.md"
-    if not path.exists():
-        return ""
-    body = path.read_text(encoding="utf-8").strip()
-    return f"### {name}\n{body}"
+@dataclass(frozen=True)
+class SkillsOptions:
+    directory: str
 
 
-def add_workspace_skills(prompt, flow=None, node=None):
-    agent = None if node is None else node.parent_agent
-    query = (agent.content if agent is not None else "").lower()
-    skills = [_read_skill("project-style")]
-    if "numpy" in query or "linear algebra" in query:
-        skills.append(_read_skill("numpy-linear-algebra"))
-    if agent is not None and agent.config.depth > 0:
-        skills.append(_read_skill("child-agent-contract"))
-    extra = "\n\n".join(skill for skill in skills if skill)
-    if extra:
-        prompt.add_section("skills.workspace", extra, order=800)
+class SkillsHarness(ReplHarness):
+    Options = SkillsOptions
+
+    def prompt_sections(self, flow, step):
+        directory = Path(self.options(step).directory)
+        skills = "\n\n".join(f"### {path.stem}\n\n{path.read_text()}" for path in sorted(directory.glob("*.md")))
+        return {**super().prompt_sections(flow, step), "skills": skills or None}
 
 
-flow = rlmflow.Flow(
-    OpenAIClient(model="gpt-4o-mini"),
-    system_prompt_modifiers=add_workspace_skills,
-)
+AgentConfig(model="gpt-5-mini", harness=SkillsHarness, harness_options={"directory": "skills/run-memory"})
 ```
 
-## Child-Only Skills
-
-Give spawned agents a tighter contract than the root planner:
-
-```python
-from pathlib import Path
-
-import rlmflow
-from rlmflow.llm import OpenAIClient
-
-
-def add_child_contract(prompt, flow=None, node=None):
-    agent = None if node is None else node.parent_agent
-    if agent is None or agent.config.depth == 0:
-        return
-    contract = Path("skills/child-agent-contract/SKILL.md").read_text(
-        encoding="utf-8"
-    )
-    prompt.add_section("skills.child_contract", contract, order=800)
-
-
-flow = rlmflow.Flow(
-    OpenAIClient(model="gpt-4o-mini"),
-    system_prompt_modifiers=add_child_contract,
-)
-```
-
-## Run-Memory Skills
-
-Turn lessons from previous runs into reusable guidance:
-
-```python
-from pathlib import Path
-
-import rlmflow
-from rlmflow.llm import OpenAIClient
-
-MEMORY_DIR = Path("skills/run-memory")
-
-
-def add_run_memory(prompt, flow=None, node=None):
-    blocks = []
-    for path in sorted(MEMORY_DIR.glob("*.md")):
-        text = path.read_text(encoding="utf-8").strip()
-        if text:
-            blocks.append(f"### {path.stem}\n{text}")
-    extra = "\n\n".join(blocks)
-    if extra:
-        prompt.add_section("memory.run", extra, order=800)
-
-
-flow = rlmflow.Flow(
-    OpenAIClient(model="gpt-4o-mini"),
-    system_prompt_modifiers=add_run_memory,
-)
-```
-
-## Combining Skills With Other Prompt Changes
-
-Skills compose by stable key. Different sources add different keys; a later source updates an existing non-pinned key:
-
-```python
-def add_combined_prompt(prompt, flow=None, node=None):
-    prompt.add_section(
-        "skills.workspace", workspace_skills(flow, node), order=800
-    )
-    prompt.add_section("memory.run", run_memory(), order=810)
-```
-
-For lower-level prompt mechanics, see [`prompt_customization.md`](prompt_customization.md).
+[`examples/skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/skills.py) loads `SKILL.md` files this way. [`examples/dynamic_skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/dynamic_skills.py) adds an `add_skill` tool that writes into the directory, so the agent sees the skill it installed in its own prompt on the next turn.

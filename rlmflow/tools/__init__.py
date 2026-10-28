@@ -136,7 +136,11 @@ def as_tool_items(tools: Any) -> list[Any]:
     if isinstance(tools, Iterable) and not isinstance(tools, (str, bytes)):
         items: list[Any] = []
         for item in tools:
-            if not callable(item) and isinstance(item, Iterable) and not isinstance(item, (str, bytes)):
+            if (
+                not callable(item)
+                and isinstance(item, Iterable)
+                and not isinstance(item, (str, bytes))
+            ):
                 items.extend(item)
             else:
                 items.append(item)
@@ -230,7 +234,9 @@ def launch_tool(flow: Flow, step: Step):
         return agent_handle(g, g.node(agent_id))
 
     configs = ", ".join(
-        f"`{name}` (model `{config.model}`" + (f"; {config.description}" if config.description else "") + ")"
+        f"`{name}` (model `{config.model}`"
+        + (f"; {config.description}" if config.description else "")
+        + ")"
         for name, config in flow.configs.items()
     )
     description = LAUNCH_DESCRIPTION + (f"\nConfigs: {configs}" if configs else "")
@@ -252,16 +258,20 @@ def launch_tool(flow: Flow, step: Step):
     return launch_agent
 
 
-def _model_help(flow: Flow, default_model: str) -> str:
+def _model_help(flow: Flow, default_model: str | None) -> str:
     names = ", ".join(f"`{key}`" for key in sorted(flow.llms))
-    return f" `model=` takes a model name (configured: {names}). Omitting `model` uses `{default_model}`."
+    configured = f" (configured: {names})" if names else ""
+    default = (
+        f"Omitting `model` uses `{default_model}`." if default_model else "Pass `model` every call."
+    )
+    return f" `model=` takes a model name{configured}. {default}"
 
 
 async def query(
     flow: Flow,
     prompt: str,
     *,
-    model: str = "default",
+    model: str | None,
     schema: Any = None,
     **sampling: Any,
 ) -> Any:
@@ -271,7 +281,11 @@ async def query(
     if not isinstance(prompt, str):
         raise TypeError("llm_query(prompt) takes a str")
     normalized = schemas.json_schema_for(schema) if schema is not None else None
-    text = prompt if normalized is None else f"{prompt}\n\n{schemas.contract(normalized, source='query')}"
+    text = (
+        prompt
+        if normalized is None
+        else f"{prompt}\n\n{schemas.contract(normalized, source='query')}"
+    )
     reply, usage = await flow.complete([{"role": "user", "content": text}], model, **sampling)
     value = reply if normalized is None else schemas.parse(reply, normalized)
     code = current_code()
@@ -318,8 +332,7 @@ def llm_query_tool(flow: Flow, step: Step):
 
 def submit_tool(flow: Flow, step: Step):
     @tool(
-        "Submit your final result as a string or strict JSON value. A valid "
-        "result completes you.",
+        "Submit your final result as a string or strict JSON value. A valid result completes you.",
         proxy=True,
     )
     def submit(answer: object) -> NoReturn:
@@ -362,7 +375,9 @@ def ask_tool(flow: Flow, step: Step):
             def answered() -> bool:
                 delivered = g.edges(kind="next", target=sent.id)
                 frontier = g.frontier(agent)
-                return bool(delivered) and frontier.type == "done" and frontier.seq > delivered[0].seq
+                return (
+                    bool(delivered) and frontier.type == "done" and frontier.seq > delivered[0].seq
+                )
 
             await flow.queue.join(answered)
         return g.result(agent)
@@ -452,9 +467,7 @@ def repl_tools(flow: Flow, step: Step) -> dict[str, Any]:
     tools["ask_agent"] = ask_tool(flow, step)
     tools["connect_agent"] = connect_tool(flow, step)
     tools["disconnect_agent"] = disconnect_tool(flow, step)
-    tools.update(
-        {name: fn for name, fn in flow.tools.items() if tool_allowed(fn, flow, step.node)}
-    )
+    tools.update({name: fn for name, fn in flow.tools.items() if tool_allowed(fn, flow, step.node)})
     return tools
 
 

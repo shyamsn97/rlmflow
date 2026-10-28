@@ -27,7 +27,6 @@ from rlmflow import (
     tool,
 )
 from rlmflow.consumers import WorkspaceSync
-from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -201,16 +200,6 @@ results = await asyncio.gather(*handles)
 print(results, list_runs(), best_run(), submission_status())
 ```
 """
-
-
-class AutoresearchFlow(Flow):
-    """A Flow whose REPL turns carry the autoresearch loop policy in their system prompt."""
-
-    async def complete(self, messages, model="default", **kwargs):
-        if messages and messages[0]["role"] == "system":
-            system = f"{messages[0]['content']}\n\n{ADAPTER_PROMPT}"
-            messages = [{"role": "system", "content": system}, *messages[1:]]
-        return await super().complete(messages, model, **kwargs)
 
 
 class ExperimentCrashed(RuntimeError):
@@ -652,9 +641,15 @@ def run(args: argparse.Namespace) -> None:
 
     runtime = build_runtime(args.agent_runtime, args.docker_image, args.out)
 
-    flow = AutoresearchFlow(
-        client_for(args.model),
-        configs=[AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)],
+    flow = Flow(
+        configs=[
+            AgentConfig(
+                model=args.model,
+                max_depth=args.max_depth,
+                max_iters=args.max_iters,
+                prompt={"autoresearch": ADAPTER_PROMPT},
+            )
+        ],
         runtime=runtime,
         tools=[FILE_TOOLS, *build_autoresearch_tools(state)],
         workers=args.parallel,

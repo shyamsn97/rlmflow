@@ -102,7 +102,11 @@ def run_branch(root: Path, name: str, implementation: str, label: str):
     setup_project(workdir)
     # File tools run inside this branch's own working directory.
     runtime = LocalRuntime(working_directory=workdir)
-    flow = Flow(RepairLLM(implementation, label), tools=[FILE_TOOLS], runtime=runtime)
+    flow = Flow(
+        llm_clients={"repair": RepairLLM(implementation, label)},
+        tools=[FILE_TOOLS],
+        runtime=runtime,
+    )
     g = Graph()
     agent = g.create_agent(TASK)
 
@@ -110,7 +114,7 @@ def run_branch(root: Path, name: str, implementation: str, label: str):
         checkpoint = GraphCheckpointer(workdir / "graph")
         try:
             async for item in flow.run_streaming(
-                g, root_config=AgentConfig(max_depth=0, max_iters=3)
+                g, root_config=AgentConfig(model="repair", max_depth=0, max_iters=3)
             ):
                 checkpoint.handle(item, g)
         finally:

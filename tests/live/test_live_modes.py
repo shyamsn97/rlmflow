@@ -60,7 +60,9 @@ def needle_project(tmp_path: Path, num_files: int, seed: int) -> tuple[Path, str
     project = tmp_path / "project"
     (project / "haystack").mkdir(parents=True)
     answer = generate_haystack(project / "haystack", num_files=num_files)
-    (project / "rlmflow.toml").write_text('[run]\nfast_model = "gpt-5-mini"\ntools = "none"\nmax_depth = 1\n')
+    (project / "rlmflow.toml").write_text(
+        '[run]\nfast_model = "gpt-5-mini"\ntools = "none"\nmax_depth = 1\n'
+    )
     return project, answer
 
 
@@ -86,7 +88,9 @@ def plugin_session(project: Path, prompt: str, *extra: str) -> dict:
     """``claude -p`` in ``project`` with the rlmflow plugin; returns its JSON result."""
     argv = ["claude", "-p", prompt, "--plugin-dir", str(PLUGIN_DIR), "--output-format", "json"]
     argv += ["--allowedTools", "Bash(rlmflow:*)", "Read", "Grep", "Glob", *extra]
-    done = subprocess.run(argv, cwd=project, env=claude_env(), capture_output=True, text=True, timeout=1500)
+    done = subprocess.run(
+        argv, cwd=project, env=claude_env(), capture_output=True, text=True, timeout=1500
+    )
     assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-3000:]
     return json.loads(done.stdout)
 
@@ -101,13 +105,25 @@ def saved_run(project: Path, name: str) -> Path:
 
 def test_claude_harness_roots_find_the_needles():
     out = example(
-        "needle/haystack.py", "--harness", "claude_code", "--num-lines", "50000", "--no-viz",
-        "--out-dir", str(RUNS / "mode2-haystack"),
+        "needle/haystack.py",
+        "--harness",
+        "claude_code",
+        "--num-lines",
+        "50000",
+        "--no-viz",
+        "--out-dir",
+        str(RUNS / "mode2-haystack"),
     )
     assert "Correct:        True" in out
     out = example(
-        "needle/filesystem.py", "--harness", "claude_code", "--num-files", "100", "--no-viz",
-        "--out-dir", str(RUNS / "mode2-filesystem"),
+        "needle/filesystem.py",
+        "--harness",
+        "claude_code",
+        "--num-files",
+        "100",
+        "--no-viz",
+        "--out-dir",
+        str(RUNS / "mode2-filesystem"),
     )
     assert "Correct:        True" in out
     g = Graph.load(RUNS / "mode2-filesystem")
@@ -116,7 +132,13 @@ def test_claude_harness_roots_find_the_needles():
 
 
 def test_fork_halfway_through_a_claude_harness_run():
-    out = example("needle/fork_halfway.py", "--num-files", "100", "--out-dir", str(RUNS / "mode2-fork-halfway"))
+    out = example(
+        "needle/fork_halfway.py",
+        "--num-files",
+        "100",
+        "--out-dir",
+        str(RUNS / "mode2-fork-halfway"),
+    )
     assert "correct:          True" in out and "new launches: 0" in out
 
 
@@ -135,14 +157,32 @@ def test_your_claude_session_as_the_root_finds_the_needle_and_forks(tmp_path):
     assert root.config.harness == INTERACTIVE and root.name == "root"
     assert g.children(root), "the root should have launched workers"
     assert answer in str(g.result(root))
-    turn_ends = [n for n in g.history(root) if n.type in ("waiting", "done") and n.data.get("session_id")]
+    turn_ends = [
+        n for n in g.history(root) if n.type in ("waiting", "done") and n.data.get("session_id")
+    ]
     assert {n.data["session_id"] for n in turn_ends} == {result["session_id"]}
 
     launching = next(n for n in g.history(root) if n.type == CODE and n.launched())
     forked = subprocess.run(
-        [sys.executable, "-m", "rlmflow", "fork", str(graph_dir), launching.id,
-         "--config", "claude", "--name", "fork", "--project", str(project)],
-        cwd=project, env=claude_env(), capture_output=True, text=True, timeout=1500,
+        [
+            sys.executable,
+            "-m",
+            "rlmflow",
+            "fork",
+            str(graph_dir),
+            launching.id,
+            "--config",
+            "claude",
+            "--name",
+            "fork",
+            "--project",
+            str(project),
+        ],
+        cwd=project,
+        env=claude_env(),
+        capture_output=True,
+        text=True,
+        timeout=1500,
     )
     assert forked.returncode == 0, forked.stdout[-3000:] + forked.stderr[-3000:]
     g = Graph.load(graph_dir)
@@ -156,8 +196,10 @@ def test_your_claude_session_as_the_root_finds_the_needle_and_forks(tmp_path):
 def test_claude_code_children_of_a_repl_root():
     out = example(
         "providers/claude_code_delegation.py",
-        "--workdir", str(RUNS / "delegation-workspace"),
-        "--out-dir", str(RUNS / "delegation"),
+        "--workdir",
+        str(RUNS / "delegation-workspace"),
+        "--out-dir",
+        str(RUNS / "delegation"),
     )
     assert "Result:" in out
     g = Graph.load(RUNS / "delegation")

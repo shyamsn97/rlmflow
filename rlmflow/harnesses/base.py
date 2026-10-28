@@ -38,6 +38,15 @@ class Harness:
     async def step(self, flow: Flow, step: Step) -> Node:
         raise NotImplementedError
 
+    def prompt_sections(self, flow: Flow, step: Step) -> dict[str, str | None]:
+        """The default system prompt as named sections, in order."""
+        return {}
+
+    def prompt(self, flow: Flow, step: Step) -> str:
+        """``prompt_sections`` with ``config.prompt`` on top, joined into the system prompt."""
+        sections = {**self.prompt_sections(flow, step), **step.agent.config.prompt}
+        return "\n\n".join(text.strip() for text in sections.values() if text and text.strip())
+
     def options(self, step: Step) -> Any:
         try:
             return self.Options(**step.agent.config.harness_options)

@@ -19,7 +19,6 @@ from pathlib import Path
 
 from rlmflow import AGENT_START, MESSAGE, AgentConfig, Flow, Graph, GraphCheckpointer, Step
 from rlmflow.graph.graph import FROM
-from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -65,7 +64,7 @@ def main() -> None:
     parser.add_argument("--out-dir", default=str(example_run_dir("decentralized-peers")))
     args = parser.parse_args()
 
-    flow = Flow(client_for(args.model))
+    flow = Flow()
     g = Graph()
     for name, value in VALUES.items():
         role = COLLECTOR if name == "alice" else RESPONDER.format(name=name)
@@ -75,7 +74,14 @@ def main() -> None:
             value=value,
         )
 
-    asyncio.run(run(flow, g, args.out_dir, AgentConfig(max_depth=0, max_iters=args.max_iters)))
+    asyncio.run(
+        run(
+            flow,
+            g,
+            args.out_dir,
+            AgentConfig(model=args.model, max_depth=0, max_iters=args.max_iters),
+        )
+    )
 
     print("\nresults:")
     results = {peer.name: g.result(peer) for peer in g.nodes(AGENT_START)}

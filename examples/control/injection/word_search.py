@@ -29,7 +29,6 @@ from typing import Literal
 from pydantic import BaseModel
 
 from rlmflow import AGENT_START, AgentConfig, Flow, Graph, json_schema_for
-from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -122,13 +121,13 @@ def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
 
 
 def run(model: str, out_dir: Path) -> None:
-    flow = Flow(client_for(model), configs=[AgentConfig(max_depth=2)])
+    flow = Flow(configs=[AgentConfig(model=model, max_depth=2)])
 
     g = Graph()
     root = g.create_agent(QUERY, puzzle=PUZZLE)
     print_agent_tree(g, root)
 
-    config = AgentConfig(output_schema=json_schema_for(WordSearchResult), max_depth=2)
+    config = AgentConfig(model=model, output_schema=json_schema_for(WordSearchResult), max_depth=2)
     asyncio.run(print_run(flow, g, out_dir, root_config=config))
     flow.runtime.close_repls()
 

@@ -60,15 +60,14 @@ class Flow:
     agent that ``launch_agent(config=...)`` picks from (``"default"`` is
     ``AgentConfig()`` unless given); a root runs with the run's ``root_config``.
     The graph only names each agent's config and records the JSON of the one
-    that ran it. ``llm`` is the ``"default"`` model; a config's ``model`` is any
-    model name, or a name in ``llm_clients`` for clients a name can't describe.
+    that ran it. A config's ``model`` is any model name, or a name in
+    ``llm_clients`` for clients a name can't describe.
     ``workers`` sizes the thread pool blocking model calls run on, or is a
     ``Pool``.
     """
 
     def __init__(
         self,
-        llm: Any = None,
         *,
         llm_clients: dict[str, Any] | None = None,
         configs: Iterable[AgentConfig] = (),
@@ -77,7 +76,9 @@ class Flow:
         workspaces: Any = None,
         workers: int | Pool | None = None,
     ) -> None:
-        self.llms: dict[str, Any] = {**({"default": llm} if llm is not None else {}), **(llm_clients or {})}
+        #: Clients a model name can't describe (a reasoning effort, a base URL, Tinker), by
+        #: the name configs use; any other name gets ``client_for(name)``.
+        self.llms: dict[str, Any] = dict(llm_clients or {})
         self.pool = workers if isinstance(workers, Pool) else ThreadPool(workers)
         self.runtime = runtime or LocalRuntime()
         self.workspaces = workspaces or LocalWorkspace(self.runtime.working_directory)
@@ -104,29 +105,29 @@ class Flow:
 
     # -- models -------------------------------------------------------------
 
-    def llm(self, model: str = "default") -> PooledLLMClient:
-        """The client for ``model`` on this Flow's pool; a client's ``request_timeout`` caps each call.
-
-        A name in ``llm_clients`` (or ``"default"``) is that client; any other
-        name is a model name, and gets ``client_for(model)`` once.
-        """
+    def llm(self, model: str | None) -> PooledLLMClient:
+        """The client for ``model`` on this Flow's pool; a client's ``request_timeout`` caps each call."""
+        if model is None:
+            raise ValueError(
+                "no model: set AgentConfig(model=...) on the config this agent runs with"
+            )
         if model not in self.llms:
-            if model == "default":
-                raise ValueError("this Flow has no default model; pass Flow(llm) or name a model")
             self.llms[model] = client_for(model)
         client = self.llms[model]
         return PooledLLMClient(client, self.pool, timeout=getattr(client, "request_timeout", None))
 
     async def complete(
-        self, messages: list[dict[str, str]], model: str = "default", **kwargs: Any
+        self, messages: list[dict[str, str]], model: str | None, **kwargs: Any
     ) -> tuple[str, LLMUsage]:
         return await self.llm(model).completion(messages, **kwargs)
 
-    async def llm_query(self, prompt: str, *, model: str = "default", schema: Any = None) -> Any:
-        """One context-free model call from host code."""
+    async def llm_query(self, prompt: str, *, model: str | None = None, schema: Any = None) -> Any:
+        """One context-free model call from host code; ``model`` defaults to the ``default`` config's."""
         from rlmflow.tools import query
 
-        return await query(self, prompt, model=model, schema=schema)
+        return await query(
+            self, prompt, model=model or self.configs["default"].model, schema=schema
+        )
 
     # -- configs ------------------------------------------------------------
 
@@ -139,7 +140,9 @@ class Flow:
 
     def config(self, name: str) -> AgentConfig:
         if name not in self.configs:
-            raise KeyError(f"no config named {name!r} on this Flow (known: {', '.join(sorted(self.configs))})")
+            raise KeyError(
+                f"no config named {name!r} on this Flow (known: {', '.join(sorted(self.configs))})"
+            )
         return self.configs[name]
 
     def resolve_config(self, config: AgentConfig | str | None) -> AgentConfig:
@@ -190,7 +193,9 @@ class Flow:
     ) -> Node:
         """Create an agent launched by ``step.node``; every harness's launches land here."""
         self.config(config)
-        child = step.graph.spawn(task, by=step.node, config=config, name=name, inputs=inputs, **args)
+        child = step.graph.spawn(
+            task, by=step.node, config=config, name=name, inputs=inputs, **args
+        )
         self.config_for(step.graph, child)
         self.workspaces.branch(child, step.agent)
         self.wake()
@@ -242,7 +247,11 @@ class Flow:
                     repl.update_env({RLMFLOW_REPLAY: "0"})
             # Files last: rerun cells may have written to them.
             snapshot = next(
-                (n.data["workspace"] for n in reversed(g.history(agent)) if n.data.get("workspace")),
+                (
+                    n.data["workspace"]
+                    for n in reversed(g.history(agent))
+                    if n.data.get("workspace")
+                ),
                 None,
             )
             if snapshot is not None:
@@ -318,7 +327,9 @@ class Flow:
             harness = config.load_harness()
             landed = await harness(self, step)
             if not isinstance(landed, Node):
-                raise TypeError(f"harness {config.harness} returned {type(landed).__name__}, not a Node")
+                raise TypeError(
+                    f"harness {config.harness} returned {type(landed).__name__}, not a Node"
+                )
             _stamp(landed, started)
             g.append(agent, landed, after=self._anchors[agent.id])
         except asyncio.CancelledError:
@@ -400,7 +411,11 @@ class Flow:
                 if stop:
                     return
                 await queue.notify()
-                if result is not None and result.error is not None and g.launcher(result.agent) is None:
+                if (
+                    result is not None
+                    and result.error is not None
+                    and g.launcher(result.agent) is None
+                ):
                     raise result.error
                 await self._schedule(g)
         finally:
@@ -451,7 +466,9 @@ class Flow:
             pass
         return g if agent is None else g.result(agent)
 
-    def run(self, target: Graph | str, *, root_config: AgentConfig | str | None = None, **args: Any) -> Any:
+    def run(
+        self, target: Graph | str, *, root_config: AgentConfig | str | None = None, **args: Any
+    ) -> Any:
         return asyncio.run(self.arun(target, root_config=root_config, **args))
 
     async def aclose(self) -> None:
@@ -462,7 +479,9 @@ class Flow:
             self._agent_tools.close()
             self._agent_tools = None
         owners = {id(client): client for client in self.llms.values()}
-        closing = [close() for client in owners.values() if (close := getattr(client, "aclose", None))]
+        closing = [
+            close() for client in owners.values() if (close := getattr(client, "aclose", None))
+        ]
         try:
             await asyncio.gather(*closing)
         finally:
@@ -533,4 +552,11 @@ class FlowLLM:
         self.flow.runtime.close_repls()
 
 
-__all__ = ["BUDGET_FINAL_TEXT", "Flow", "FlowLLM", "StepUntil", "messages_to_query", "recorded_cells"]
+__all__ = [
+    "BUDGET_FINAL_TEXT",
+    "Flow",
+    "FlowLLM",
+    "StepUntil",
+    "messages_to_query",
+    "recorded_cells",
+]

@@ -20,7 +20,7 @@ import cloudpickle
 
 from rlmflow import CODE, DONE, LLM_OUTPUT, AgentConfig, Flow, Graph, Node, Step, current_step
 from rlmflow.consumers import LiveGraphTree
-from rlmflow.harnesses.repl import llm_turns
+from rlmflow.harnesses.repl import ReplHarness, llm_turns
 from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -294,6 +294,13 @@ def board_prompt(flow: Flow, step: Step, *, simple: bool = False) -> str | None:
     )
 
 
+class WorkerHarness(ReplHarness):
+    """The REPL loop whose whole system prompt is the config's ``prompt``: the Sokoban rules."""
+
+    def prompt_sections(self, flow: Flow, step: Step) -> dict[str, str | None]:
+        return {}
+
+
 class ShepherdFlow(Flow):
     """A Flow that shows each worker its board every turn and gives the shepherd its tools."""
 
@@ -306,7 +313,7 @@ class ShepherdFlow(Flow):
     def namespace_for(self, step: Step) -> dict:
         return self.bindings.get(step.agent.id, {})
 
-    async def complete(self, messages, model="default", **kwargs):
+    async def complete(self, messages, model, **kwargs):
         step = current_step()
         # Only REPL turns open with the system prompt; llm_query calls get no board.
         if step is not None and messages and messages[0]["role"] == "system":
@@ -408,17 +415,22 @@ async def run_shepherd(
     jam_code = SIMPLE_JAM_CODE if simple_moves else JAM_CODE
 
     flow = ShepherdFlow(
-        client_for(model, reasoning_effort=effort),
-        llm_clients={"worker": client_for(worker_model, reasoning_effort=worker_effort)},
+        llm_clients={
+            "shepherd": client_for(model, reasoning_effort=effort),
+            "worker": client_for(worker_model, reasoning_effort=worker_effort),
+        },
         configs=[
             AgentConfig(
                 name="worker",
+                harness=WorkerHarness,
                 model="worker",
-                system_prompt=SIMPLE_WORKER_SYSTEM if simple_moves else WORKER_SYSTEM,
+                prompt={"rules": SIMPLE_WORKER_SYSTEM if simple_moves else WORKER_SYSTEM},
                 max_depth=0,
                 max_iters=max_iters,
             ),
-            AgentConfig(name="shepherd", max_depth=max_depth, max_iters=max_iters),
+            AgentConfig(
+                name="shepherd", model="shepherd", max_depth=max_depth, max_iters=max_iters
+            ),
         ],
         simple_moves=simple_moves,
     )

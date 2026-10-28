@@ -21,7 +21,6 @@ import sys
 from pathlib import Path
 
 from rlmflow import AgentConfig, DockerRuntime, Flow, Graph
-from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -137,27 +136,18 @@ def main() -> None:
 
     runtime = DockerRuntime(args.docker_image) if args.docker_image else None
 
-    llm_clients = None
-    if args.fast_model:
-        llm_clients = {"fast": client_for(args.fast_model)}
-
-    configs = [AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)]
+    configs = [AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)]
     if args.fast_model:
         configs.append(
             AgentConfig(
                 name="fast",
-                model="fast",
+                model=args.fast_model,
                 description=f"summarizes on {args.fast_model}",
                 max_depth=args.max_depth,
                 max_iters=args.max_iters,
             )
         )
-    flow = Flow(
-        client_for(args.model),
-        llm_clients=llm_clients,
-        configs=configs,
-        runtime=runtime,
-    )
+    flow = Flow(configs=configs, runtime=runtime)
 
     g = Graph()
     root = g.create_agent(

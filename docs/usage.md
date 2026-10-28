@@ -16,7 +16,7 @@ Set `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY` for `claude*` models). The Claude C
 from rlmflow import Flow
 from rlmflow.llm import client_for
 
-flow = Flow(client_for("gpt-5-mini"))
+flow = Flow(configs=[AgentConfig(model="gpt-5-mini")])   # "default": roots and plain launches
 flow.run("Add a and b", a=2, b=3)       # 5; keyword arguments become REPL variables
 ```
 
@@ -58,8 +58,8 @@ class Finding(BaseModel):
     line: int
 
 searcher = AgentConfig(name="searcher", model="gpt-5-mini", max_depth=0, description="searches one batch of files", output_schema=Finding)
-flow = Flow(client_for("gpt-5"), configs=[searcher])     # or flow.add_config(searcher)
-flow.run("Find the magic number in haystack/.", root_config=AgentConfig(max_depth=1))
+flow = Flow(configs=[searcher])     # or flow.add_config(searcher)
+flow.run("Find the magic number in haystack/.", root_config=AgentConfig(model="gpt-5", max_depth=1))
 ```
 
 Roots (agents made with `g.create_agent`) run with the run's `root_config`: an `AgentConfig`, a config name, or `None` for the Flow's `"default"`. Everything else names a Flow config. `launch_agent(...)` without `config=` uses `"default"`, not its parent's. To put a top-level agent on a named config, use `g.spawn(task, config="searcher")`. An unknown name is a `KeyError` when the Flow reaches the agent.
@@ -70,13 +70,17 @@ Roots (agents made with `g.create_agent`) run with the run's `root_config`: an `
 from rlmflow.llm import OpenAIClient, client_for
 
 flow = Flow(
-    client_for("gpt-5"),                                  # the "default" model
-    configs=[AgentConfig(name="cheap", model="gpt-5-mini"), AgentConfig(name="claude", model="claude-sonnet-4-5")],
+    configs=[
+        AgentConfig(model="gpt-5"),                       # "default"
+        AgentConfig(name="cheap", model="gpt-5-mini"),
+        AgentConfig(name="claude", model="claude-sonnet-4-5"),
+        AgentConfig(name="local", model="local"),
+    ],
     llm_clients={"local": OpenAIClient(model="qwen3", base_url="http://localhost:8000/v1")},
 )
 ```
 
-A config's `model` is a model name; the Flow builds the client the first time it's used, Anthropic for `claude*` names and OpenAI otherwise. `llm_clients` is for clients a name can't describe (a local server, custom settings); a config names them by their key. Any object with `chat(messages)` works as a client.
+A config's `model` is a model name; the Flow builds the client the first time it's used, Anthropic for `claude*` names and OpenAI otherwise. `llm_clients` is for clients a name can't describe (a local server, a reasoning effort, a Tinker sampler); a config names them by their key. Any object with `chat(messages)` works as a client. A config with no `model` raises when the REPL harness reaches it; Claude Code and pi use their own default model.
 
 ## Tools
 
@@ -87,11 +91,19 @@ from rlmflow import FILE_TOOLS, tool
 def customer(customer_id: str) -> dict:
     return db.get(customer_id)
 
-flow = Flow(client_for("gpt-5"), tools=[FILE_TOOLS, customer])
+flow = Flow(tools=[FILE_TOOLS, customer])
 flow.inject("TODAY", "2026-10-25")      # a value bound in every REPL
 ```
 
-Prompts and skills: [Prompt customization](prompt_customization.md), [Skills](skills.md).
+## Prompts
+
+Each harness builds its system prompt from named sections. A config's `prompt` replaces a section by key, drops it with `None`, or adds a new key at the end:
+
+```python
+AgentConfig(name="worker", model="gpt-5-mini", prompt={"agents": None, "style": "Be terse."})
+```
+
+For text that depends on the turn, subclass the harness and override `prompt_sections(flow, step)`. See [Prompt customization](prompt_customization.md) for each harness's sections, and [Skills](skills.md).
 
 ## Runtimes and workspaces
 
@@ -100,7 +112,7 @@ The runtime is where agent code runs; the workspace is where each agent's files 
 ```python
 from rlmflow import DockerRuntime, GitWorktrees
 
-flow = Flow(client_for("gpt-5"), runtime=DockerRuntime("rlmflow:local", working_directory="./proj"), workspaces=GitWorktrees("."))
+flow = Flow(runtime=DockerRuntime("rlmflow:local", working_directory="./proj"), workspaces=GitWorktrees("."))
 ```
 
 | Runtime                  | For                                                  |
@@ -173,7 +185,7 @@ The harness is per config, so one run can mix them:
 
 ```python
 claude = AgentConfig(name="claude", harness="claude_code", harness_options={"sdk": {"permission_mode": "acceptEdits"}})
-flow = Flow(client_for("gpt-5"), configs=[claude])
+flow = Flow(configs=[claude])
 flow.run(task, root_config=AgentConfig(harness="claude_code", max_depth=1))
 ```
 
@@ -235,7 +247,7 @@ More in [Observability](observability.md).
 ```python
 from rlmflow.flow import FlowLLM
 
-agent = FlowLLM(Flow(client_for("gpt-5-mini")), root_config=AgentConfig(max_depth=1))
+agent = FlowLLM(Flow(), root_config=AgentConfig(model="gpt-5-mini", max_depth=1))
 agent.chat([{"role": "user", "content": "Summarize this repo's README."}])
 agent.last_graph
 ```

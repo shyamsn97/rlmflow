@@ -80,7 +80,7 @@ def file_flow(workdir: Path, config: AgentConfig) -> Flow:
     """A Flow whose agents get the filesystem tools, running inside ``workdir``."""
     runtime = LocalRuntime(working_directory=workdir)
     return Flow(
-        DemoLLM(),
+        llm_clients={"demo": DemoLLM()},
         configs=[config],
         runtime=runtime,
         tools=[FILE_TOOLS],
@@ -142,7 +142,9 @@ def main() -> None:
         shutil.rmtree(workdir)
     workdir.mkdir(parents=True)
 
-    flow = file_flow(workdir, AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters))
+    flow = file_flow(
+        workdir, AgentConfig(model="demo", max_depth=args.max_depth, max_iters=args.max_iters)
+    )
 
     banner("1. Step-by-step execution")
     g = Graph()
@@ -178,7 +180,7 @@ def main() -> None:
     print(f"Final:   {g.frontier(root).type}")
 
     banner("6. Gym-style loop")
-    flow3 = file_flow(workdir, AgentConfig(max_depth=0, max_iters=args.max_iters))
+    flow3 = file_flow(workdir, AgentConfig(model="demo", max_depth=0, max_iters=args.max_iters))
     g3 = Graph()
     root3 = g3.create_agent("Write a haiku about recursion to haiku.txt")
     rewards = asyncio.run(gym_loop(flow3, g3, root3, workdir / "gym-run"))

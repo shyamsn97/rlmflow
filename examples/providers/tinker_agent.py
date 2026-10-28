@@ -55,14 +55,16 @@ def main() -> None:
         renderer=args.renderer,
         max_tokens=args.max_tokens,
     )
-    flow = Flow(
-        llm,
-    )
+    flow = Flow(llm_clients={"tinker": llm})
     print(f"Query: {args.query}\n")
     g = Graph()
     root = g.create_agent(args.query)
     out_dir = example_run_dir("tinker-agent")
-    asyncio.run(print_run(flow, g, out_dir, root_config=AgentConfig(max_iters=args.max_iters)))
+    asyncio.run(
+        print_run(
+            flow, g, out_dir, root_config=AgentConfig(model="tinker", max_iters=args.max_iters)
+        )
+    )
     print(g.result(root))
     save_example_graph(g, "tinker-agent")
     flow.runtime.close_repls()

@@ -4,8 +4,9 @@ This example demonstrates the intended shape for user-authored skills:
 
 1. A skill is just a file on disk you choose, e.g.
    ``skills/numpy-linear-algebra/SKILL.md``. There is no hardcoded directory.
-2. A ``Flow.complete`` override adds one skill section to every REPL turn's
-   system prompt, reading the files each time, so edits show up on the next turn.
+2. A ``ReplHarness`` subclass adds a ``skills`` section to its ``prompt_sections``,
+   reading the files each turn, so edits show up on the next turn. The paths are
+   ``harness_options``, so the run's graph records them.
 3. The agent runs with a real LLM client; pass ``--print-prompt`` to inspect
    the rendered prompt before the LLM call.
 
@@ -19,11 +20,11 @@ import argparse
 import asyncio
 import sys
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from rlmflow import AgentConfig, Flow, Graph, Step
-from rlmflow.harnesses.repl import system_prompt
-from rlmflow.llm.openai import OpenAIClient
+from rlmflow.harnesses.repl import ReplHarness
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -88,43 +89,30 @@ def install_example_skill(skills_dir: Path) -> Path:
     return path
 
 
-class SkillsFlow(Flow):
-    """A Flow whose REPL turns carry the skill files in their system prompt."""
+@dataclass(frozen=True)
+class SkillsOptions:
+    paths: list[str] = field(default_factory=list)
 
-    def __init__(self, llm, skill_paths: list[Path]) -> None:
-        super().__init__(llm)
-        self.skill_paths = skill_paths
 
-    def skills(self) -> str:
-        sections: list[str] = []
-        for path in self.skill_paths:
-            if not path.exists():
-                continue
-            body = path.read_text().strip()
-            sections.append(f"### `{path.name}`\n\n{body}")
-        if not sections:
-            return ""
-        return (
-            "Use these skills when they match the user's task. Each skill is a "
-            "file loaded into the prompt for this run.\n\n" + "\n\n".join(sections)
+class SkillsHarness(ReplHarness):
+    """The REPL harness, plus a ``skills`` section read from ``harness_options["paths"]``."""
+
+    name = "skills"
+    Options = SkillsOptions
+
+    def prompt_sections(self, flow, step):
+        bodies = [
+            f"### `{Path(path).name}`\n\n{Path(path).read_text().strip()}"
+            for path in self.options(step).paths
+            if Path(path).exists()
+        ]
+        skills = (
+            "## Skills\n\nUse these skills when they match the user's task. Each skill is a "
+            "file loaded into the prompt for this run.\n\n" + "\n\n".join(bodies)
+            if bodies
+            else None
         )
-
-    def with_skills(self, system: str) -> str:
-        skills = self.skills()
-        return f"{system}\n\n## Skills\n\n{skills}" if skills else system
-
-    async def complete(self, messages, model="default", **kwargs):
-        if messages and messages[0]["role"] == "system":
-            messages = [
-                {"role": "system", "content": self.with_skills(messages[0]["content"])},
-                *messages[1:],
-            ]
-        return await super().complete(messages, model, **kwargs)
-
-
-def build_flow(skills_dir: Path, *, model: str) -> SkillsFlow:
-    """Create a flow whose prompt includes the installed skill."""
-    return SkillsFlow(OpenAIClient(model=model), [install_example_skill(skills_dir)])
+        return {**super().prompt_sections(flow, step), "skills": skills}
 
 
 def main() -> None:
@@ -157,7 +145,7 @@ def main() -> None:
         skills_dir = args.skills_dir
 
     try:
-        flow = build_flow(skills_dir, model=args.model)
+        flow = Flow()
 
         query = (
             "Fit the least-squares line y = m*x + b through points "
@@ -166,14 +154,19 @@ def main() -> None:
         )
         g = Graph()
         root = g.create_agent(query)
-        config = AgentConfig(max_iters=MAX_ITERS)
+        config = AgentConfig(
+            harness=SkillsHarness,
+            model=args.model,
+            max_iters=MAX_ITERS,
+            harness_options={"paths": [str(install_example_skill(skills_dir))]},
+        )
         root.bind_config(config)
 
         print(f"Wrote skill artifact under: {skills_dir}")
         print("- skills/numpy-linear-algebra/SKILL.md")
         if args.print_prompt:
             print("\n--- rendered system prompt ---\n")
-            print(flow.with_skills(system_prompt(flow, Step(g, root, root))))
+            print(SkillsHarness().prompt(flow, Step(g, root, root)))
             print("\n--- live run ---\n")
         asyncio.run(print_run(flow, g, args.out_dir, root_config=config))
         print(g.result(root))

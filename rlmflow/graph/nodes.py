@@ -285,7 +285,9 @@ _active_step: contextvars.ContextVar[Step | None] = contextvars.ContextVar(
 _active_code: contextvars.ContextVar[Node | None] = contextvars.ContextVar(
     "rlmflow_active_code", default=None
 )
-_replaying: contextvars.ContextVar[bool] = contextvars.ContextVar("rlmflow_replaying", default=False)
+_replaying: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "rlmflow_replaying", default=False
+)
 
 
 def current_step() -> Step | None:
@@ -328,7 +330,9 @@ def replaying(enabled: bool = True) -> Iterator[None]:
         _replaying.reset(token)
 
 
-def record_metadata(key: str, value: Any, *, append: bool = False, node: Node | None = None) -> None:
+def record_metadata(
+    key: str, value: Any, *, append: bool = False, node: Node | None = None
+) -> None:
     """Attach metadata to ``node``, the running cell, or the current step's node."""
     if _replaying.get():
         return

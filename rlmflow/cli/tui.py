@@ -69,7 +69,9 @@ class FlowTUI(StreamConsumer):
             self.graph.create_agent(query, **(inputs or {}))
         elif query is not None:
             self.graph.send(top_level(self.graph)[0], query)
-        async for item in self.flow.run_streaming(self.graph, until=until, root_config=self.root_config):
+        async for item in self.flow.run_streaming(
+            self.graph, until=until, root_config=self.root_config
+        ):
             self.handle(item, self.graph)
         return self.graph
 

@@ -40,11 +40,13 @@ class ScriptedLLM:
 
 
 def main() -> None:
-    flow = Flow(ScriptedLLM(), workers=3)
+    flow = Flow(
+        llm_clients={"scripted": ScriptedLLM()}, configs=[AgentConfig(model="scripted")], workers=3
+    )
     g = Graph()
     root = g.create_agent("Queue two children, then collect them on a later turn.")
     try:
-        flow.run(g, root_config=AgentConfig(max_iters=3))
+        flow.run(g, root_config=AgentConfig(model="scripted", max_iters=3))
         result = g.result(root)
         child_results = {child.name: g.result(child) for child in g.children(root)}
         print("root:", result)

@@ -160,7 +160,9 @@ class Graph:
         source = self._last(agent.id)
         if after is not None and after is not source:
             if not (source is agent and self.prev(agent) is after):
-                raise StaleFrontier(f"{after.type} {after.id!r} is not the frontier of {agent.id!r}")
+                raise StaleFrontier(
+                    f"{after.type} {after.id!r} is not the frontier of {agent.id!r}"
+                )
             source = agent  # an empty fork extends from its own agent_start
         node.agent_id = agent.id
         self._append_unchecked(node, Edge(kind=NEXT, source=source.id, target=node.id))
@@ -306,7 +308,9 @@ class Graph:
                 raise ValueError(f"agent {agent.id!r} already has a launcher")
         listing = "\n".join(f"- {agent.name} ({agent.id}): {agent.task[:200]}" for agent in agents)
         message = self.send(parent, f"These agents now report to you:\n{listing}", sender="rlmflow")
-        self._append_unchecked(*(Edge(kind=FROM, source=agent.id, target=message.id) for agent in agents))
+        self._append_unchecked(
+            *(Edge(kind=FROM, source=agent.id, target=message.id) for agent in agents)
+        )
         return message
 
     # -- other writes -----------------------------------------------------
@@ -528,7 +532,11 @@ class Graph:
         found: dict[str, Node] = {}
         for i, node in enumerate(nodes):
             following = nodes[i + 1] if i + 1 < len(nodes) else None
-            skipped = self._skipped_launches(node) if following is not None and following.agent_id != node.agent_id else ()
+            skipped = (
+                self._skipped_launches(node)
+                if following is not None and following.agent_id != node.agent_id
+                else ()
+            )
             for edge in self.edges(kind=FROM, target=node.id):
                 child = self.node(edge.source)
                 if child.type == AGENT_START and child.id not in skipped:
@@ -579,12 +587,19 @@ class Graph:
         Our harness records it on ``llm_output`` nodes; external harnesses on the
         ``waiting`` or ``done`` node that ends each session turn.
         """
-        nodes = self.nodes() if agents is None else [n for a in agents for n in self.nodes(agent=a.id)]
-        return sum((LLMUsage.of(node.data["usage"]) for node in nodes if node.data.get("usage")), LLMUsage())
+        nodes = (
+            self.nodes() if agents is None else [n for a in agents for n in self.nodes(agent=a.id)]
+        )
+        return sum(
+            (LLMUsage.of(node.data["usage"]) for node in nodes if node.data.get("usage")),
+            LLMUsage(),
+        )
 
     def cost_usd(self, agents: list[Node] | None = None) -> float:
         """Dollar cost reported by external harnesses on their turn-ending nodes."""
-        nodes = self.nodes() if agents is None else [n for a in agents for n in self.nodes(agent=a.id)]
+        nodes = (
+            self.nodes() if agents is None else [n for a in agents for n in self.nodes(agent=a.id)]
+        )
         return sum(float(node.data.get("cost_usd") or 0) for node in nodes)
 
     def __contains__(self, item: object) -> bool:

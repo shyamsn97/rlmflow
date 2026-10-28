@@ -6,10 +6,10 @@ import os
 from pathlib import Path
 
 import pytest
-from helpers import StubLLM
+from helpers import ScriptedFlow, StubLLM
 from helpers import reasoning_repl as block
 
-from rlmflow import CODE, DONE, MESSAGE, WAITING, AgentConfig, Flow, Graph
+from rlmflow import CODE, DONE, MESSAGE, WAITING, AgentConfig, Graph
 from rlmflow.agent_tools import cli, hooks
 from rlmflow.cli.serve import INTERACTIVE, Serve, until
 from rlmflow.graph.nodes import Step
@@ -67,7 +67,9 @@ async def serving(
 ) -> tuple[Serve, asyncio.Task]:
     if graph is None:
         graph = Graph()
-    flow = Flow(llm or StubLLM(lambda messages: WORKER), configs=[AgentConfig(name="worker")])
+    flow = ScriptedFlow(
+        llm or StubLLM(lambda messages: WORKER), configs=[AgentConfig(name="worker")]
+    )
     serve = Serve(flow, graph, graph_dir=project / "run", project=project, **kwargs)
     task = asyncio.create_task(serve.run())
     assert await until(lambda: serve.serve_file.exists() or None, 5)
@@ -279,7 +281,7 @@ def test_an_agent_token_acts_only_for_its_own_agent(project):
         a, b = g.create_agent("a"), g.create_agent("b")
         for agent in (a, b):
             agent.bind_config(AgentConfig(harness=INTERACTIVE))
-        flow = Flow(StubLLM(lambda messages: WORKER))
+        flow = ScriptedFlow(StubLLM(lambda messages: WORKER))
         server = flow.agent_tools
         url = await server.start()
         token_a = server.attach(a)

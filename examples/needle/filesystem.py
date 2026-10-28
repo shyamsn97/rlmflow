@@ -23,7 +23,6 @@ from pathlib import Path
 
 from rlmflow import AgentConfig, DockerRuntime, Flow, Graph, LocalRuntime, SubprocessRuntime
 from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
-from rlmflow.llm import client_for
 from rlmflow.tools.files import (
     append_file,
     edit_file,
@@ -131,7 +130,9 @@ def main():
         else:
             runtime = SubprocessRuntime(working_directory=workdir)
 
-        configs = [AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)]
+        configs = [
+            AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)
+        ]
         if args.fast_model:
             configs.append(
                 AgentConfig(
@@ -142,14 +143,13 @@ def main():
                     max_depth=0,
                 )
             )
-        flow = Flow(
-            client_for(args.model),
-            configs=configs,
-            runtime=runtime,
-            tools=NEEDLE_FILE_TOOLS,
-        )
+        flow = Flow(configs=configs, runtime=runtime, tools=NEEDLE_FILE_TOOLS)
+        # Claude Code and pi pick their own model; --model is the REPL harness's.
         config = AgentConfig(
-            harness=args.harness, max_depth=args.max_depth, max_iters=args.max_iters
+            harness=args.harness,
+            model=args.model if args.harness == "repl" else None,
+            max_depth=args.max_depth,
+            max_iters=args.max_iters,
         )
 
         g = Graph()

@@ -149,7 +149,11 @@ def describe_namespace(tenant: LocalRepl, limit: int = 40) -> str:
             continue
         kind = type(value).__name__
         if isinstance(value, str):
-            size = f"{len(value)} chars" if len(value) < 1_000_000 else f"{len(value) / 1e6:.1f}M chars"
+            size = (
+                f"{len(value)} chars"
+                if len(value) < 1_000_000
+                else f"{len(value) / 1e6:.1f}M chars"
+            )
         elif hasattr(value, "__len__"):
             try:
                 size = f"{len(value)} items"

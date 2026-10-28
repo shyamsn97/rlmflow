@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from helpers import StubLLM, agent_graph, next_node
+from helpers import ScriptedFlow, StubLLM, agent_graph, next_node
 
 from rlmflow import CODE, DONE, FROM, LLM_OUTPUT, WAITING, AgentConfig, Flow, Graph, Node
 from rlmflow.engine import handoff
@@ -101,7 +101,7 @@ def test_background_spawn_delivers_a_message_then_calls_model():
             return "```repl\nprint('waiting')\n```"
         return launch_print()
 
-    g, root = run_parent(Flow(StubLLM(parent_then_child(parent=parent))), max_iters=10)
+    g, root = run_parent(ScriptedFlow(StubLLM(parent_then_child(parent=parent))), max_iters=10)
 
     [message] = handoff_messages(g, root)
     assert g.prev(message).type == CODE
@@ -136,7 +136,7 @@ def test_both_children_results_are_delivered():
 
     g = Graph()
     root = g.create_agent(PARENT_QUERY)
-    flow = Flow(StubLLM(reply), workers=3)
+    flow = ScriptedFlow(StubLLM(reply), workers=3)
     asyncio.run(asyncio.wait_for(flow.arun(g, root_config=AgentConfig(max_iters=6)), timeout=5))
 
     messages = handoff_messages(g, root)
@@ -155,7 +155,7 @@ def test_child_done_during_parent_model_call_is_delivered_after_its_cell():
             return "```repl\nprint('still-here')\n```"
         return launch_print()
 
-    flow = Flow(StubLLM(parent_then_child(parent=parent, child=child_reply)))
+    flow = ScriptedFlow(StubLLM(parent_then_child(parent=parent, child=child_reply)))
     g, root = run_parent(flow, max_iters=8)
 
     messages = handoff_messages(g, root)
@@ -253,7 +253,7 @@ def test_a_failed_cell_still_takes_the_handoff():
             return "```repl\nprint('recovered')\n```"
         return launch_then_error()
 
-    g, root = run_parent(Flow(StubLLM(parent_then_child(parent=parent))), max_iters=8)
+    g, root = run_parent(ScriptedFlow(StubLLM(parent_then_child(parent=parent))), max_iters=8)
 
     messages = handoff_messages(g, root)
     assert messages
@@ -275,7 +275,7 @@ def test_waiting_takes_results_only_once_everything_it_waits_on_is_done():
 
 
 def test_finished_parent_is_never_reopened_by_child_results():
-    flow = Flow(
+    flow = ScriptedFlow(
         StubLLM(parent_then_child(parent=lambda _m: launch_and_finish_early(), child=child_reply))
     )
     g, root = run_parent(flow, max_iters=4)
@@ -301,7 +301,7 @@ def test_awaited_result_is_not_handed_off_again():
             return "```repl\nsubmit('got-alpha')\n```"
         return launch_wait_print()
 
-    g, root = run_parent(Flow(StubLLM(parent_then_child(parent=parent))), max_iters=6)
+    g, root = run_parent(ScriptedFlow(StubLLM(parent_then_child(parent=parent))), max_iters=6)
 
     assert not handoff_messages(g, root)
     assert g.result(root) == "got-alpha"
@@ -334,19 +334,19 @@ def test_rerunning_a_finished_graph_does_not_append_a_second_handoff(tmp_path):
             return "```repl\nprint('waiting')\n```"
         return launch_print()
 
-    g, root = run_parent(Flow(StubLLM(parent_then_child(parent=parent))), max_iters=6)
+    g, root = run_parent(ScriptedFlow(StubLLM(parent_then_child(parent=parent))), max_iters=6)
     assert len(handoff_messages(g, root)) == 1
 
     g.save(tmp_path / "done")
     loaded = Graph.load(tmp_path / "done")
-    asyncio.run(Flow(StubLLM(parent_then_child(parent=parent))).arun(loaded))
+    asyncio.run(ScriptedFlow(StubLLM(parent_then_child(parent=parent))).arun(loaded))
 
     assert len(handoff_messages(loaded, loaded.node(root.id))) == 1
     assert loaded.result(loaded.node(root.id)) == "got-alpha"
 
 
 def test_message_after_code_or_done_calls_model_directly():
-    flow = Flow(StubLLM(lambda _messages: "reply"))
+    flow = ScriptedFlow(StubLLM(lambda _messages: "reply"))
     for observation in (Node(CODE, code="", output="observed"), Node(DONE, result="early")):
         g, root = agent_graph(PARENT_QUERY)
         g.append(root, observation)
@@ -428,7 +428,7 @@ def test_finished_peer_is_not_woken_by_a_later_reported_result():
     worker = g.spawn("work", config="worker", depends_on=(listener,))
     g.add_edge(Edge(kind=REPORTS_TO, source=worker.id, target=listener.id))
 
-    flow = Flow(
+    flow = ScriptedFlow(
         StubLLM(reply),
         configs=[AgentConfig(name="listener", max_iters=4), AgentConfig(name="worker")],
     )

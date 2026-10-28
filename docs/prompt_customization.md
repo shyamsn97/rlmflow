@@ -1,318 +1,93 @@
-# Prompt Customization
+# Prompt customization
 
-rlmflow uses one mutable `Prompt` class for both system and user prompts. A `Prompt` owns ordered, keyed sections and renders to one string. Message roles are assigned only when the prompts are converted into chat messages.
+Every harness builds its system prompt from named sections. `prompt_sections(flow, step)` returns them as a dict, in order, and `prompt(flow, step)` puts the config's `prompt` overrides on top and joins them:
 
 ```python
-system = flow.build_system_prompt(node)
-user = flow.default_user_prompt(node)
-
-print(system)
-print(user)
+sections = {**harness.prompt_sections(flow, step), **step.agent.config.prompt}
+"\n\n".join(text.strip() for text in sections.values() if text and text.strip())
 ```
 
-The model still receives ordinary messages:
+So a config override does one of three things by key:
+
+- a string under an existing key replaces that section, in place;
+- `None` drops it;
+- a new key is added at the end.
+
+## From config
+
+`AgentConfig.prompt` is plain JSON, so it's saved with the run, works from `rlmflow.toml`, and applies to every agent launched with that config:
 
 ```python
-[
-    {"role": "system", "content": str(system)},
-    *history,
-    *node.message_dicts(),
-    *live_request_overlays,
-]
-```
+from rlmflow import AgentConfig, Flow
 
-`Node.build_messages(user, flow)` creates `node.messages` once. Later requests, save/load, and forks reuse that immutable snapshot instead of rerunning prompt or runtime-dependent code.
-
-## Default Shape
-
-The default system `Prompt` contains independently variable concerns:
-
-- `protocol.core`: the pinned REPL-only action and completion contract;
-- `policy.evidence`: evidence acquisition, validation, and failure transparency;
-- `policy.execution`: spawn-capable or assigned-work policy;
-- `capabilities.tools`: active REPL tools, when present;
-- `context.arguments`: direct argument names, sizes, and optional caller-supplied `Input(..., description=...)` context, when present;
-- `contract.output_schema`: the pinned structured-output contract, when required;
-- `capabilities.depth`: recursion information, when recursion is enabled.
-
-The current user `Prompt` normally contains `turn.instruction`: the query, continuation, or final-turn instruction. When the agent has children, a `Background subagents:` status list is appended to the request only; it is never stored in the node's message snapshot.
-
-The exactly-one-REPL-block rule appears once in `protocol.core`. Ordinary turns do not repeat it.
-
-## The `Prompt` API
-
-Callers normally add text without constructing `PromptSection` themselves:
-
-```python
-prompt = rlmflow.Prompt()
-prompt.add_section(
-    "project.rules",
-    "Preserve API compatibility and run focused tests.",
-    order=800,
-    source="project",
-)
-
-prompt.update_section(
-    "project.rules",
-    "Preserve compatibility, run tests, and verify generated artifacts.",
-)
-prompt.remove_section("project.rules")
-```
-
-Inspection is keyed:
-
-```python
-section = prompt.get("protocol.core")
-for section in prompt.sections():
-    print(section.key, section.order, section.source, section.pinned)
-```
-
-Replacing or removing a pinned section raises `PinnedPromptSectionError`.
-
-## Reusable System Prompt Modifiers
-
-Use a modifier to add reusable policy to Flow's fresh default system `Prompt`:
-
-```python
-from pathlib import Path
-
-def add_project_prompt(prompt, flow=None, node=None):
-    prompt.add_section(
-        "project.rules",
-        Path("AGENTS.md").read_text(),
-        order=800,
-        source="add_project_prompt",
-    )
-```
-
-```python
-flow = rlmflow.Flow(llm, system_prompt_modifiers=add_project_prompt)
-```
-
-`Flow.default_system_prompt(node)` creates a fresh default and applies configured and profile modifiers. `Flow.build_system_prompt(node)` then passes that prompt through the node's system hook.
-
-## Flow-Level Modifiers
-
-A modifier edits a `Prompt` in place:
-
-```python
-def add_project_rules(prompt, flow, node):
-    prompt.add_section(
-        "project.rules",
-        "Prefer small patches with focused validation.",
-        order=800,
-        source="project",
-    )
-
-
-flow = rlmflow.Flow(
-    llm,
-    system_prompt_modifiers=add_project_rules,
-)
-```
-
-Pass one modifier or an ordered iterable:
-
-```python
-flow = rlmflow.Flow(
-    llm,
-    system_prompt_modifiers=[
-        add_project_rules,
-        add_domain_playbook,
-    ],
-)
-```
-
-User-prompt modifiers use the same `Prompt` API:
-
-```python
-def add_review_instruction(prompt, flow, node):
-    prompt.add_section(
-        "review.requirements",
-        "Check correctness and API compatibility.",
-        order=1050,
-        source="review",
-    )
-
-
-flow = rlmflow.Flow(
-    llm,
-    user_prompt_modifiers=add_review_instruction,
-)
-```
-
-## Node-Owned Current-Turn Messages
-
-Flow prepares the user `Prompt`; query nodes may edit it and decide how many current-turn messages to emit:
-
-```python
-from dataclasses import dataclass
-
-from rlmflow import UserQuery
-
-
-@dataclass
-class ReviewQuery(UserQuery):
-    def build_messages(self, user_prompt, flow):
-        user_prompt.add_section(
-            "review.policy",
-            "Review carefully and report only actionable findings.",
-            order=1010,
-            source=type(self).__name__,
-        )
-        return super().build_messages(user_prompt, flow)
-```
-
-Nodes return only current-turn messages. Flow remains responsible for the system message, projected history, and truncation.
-
-## Profiles
-
-Profiles may replace the system source and independently modify system and user prompts:
-
-```python
-from rlmflow import PromptProfile
-
-
-def add_research_policy(prompt, flow, node):
-    prompt.add_section(
-        "profile.research",
-        "Prefer primary sources and record publication dates.",
-        order=800,
-        source="research",
-    )
-
-
-flow = rlmflow.Flow(
-    llm,
-    prompt_profiles={
-        "research": PromptProfile(
-            system_modifiers=add_research_policy,
-        )
+reviewer = AgentConfig(
+    name="reviewer",
+    model="gpt-5-mini",
+    prompt={
+        "agents": None,                                      # drop the AGENTS section
+        "style": "Report only actionable findings, most severe first.",  # added last
     },
 )
+flow = Flow(configs=[reviewer])
 ```
 
-Global modifiers apply first; profile modifiers may update the same non-pinned key.
+## From code
 
-## Live Harness State
-
-Keep mutable state in the harness and project it into each newly built `Prompt`:
+Subclass the harness when the text depends on the step, such as a board, a budget, or files that change during the run:
 
 ```python
-memory: dict[str, str] = {}
+from rlmflow.harnesses.repl import ReplHarness, llm_turns
 
 
-def apply_memory(prompt, flow, node):
-    for key, lesson in memory.items():
-        prompt.add_section(
-            f"memory.{key}",
-            lesson,
-            order=850,
-            source="live-memory",
-        )
+class BudgetHarness(ReplHarness):
+    def prompt_sections(self, flow, step):
+        left = step.agent.config.max_iters - llm_turns(step)
+        return {**super().prompt_sections(flow, step), "budget": f"{left} turns left."}
 
 
-flow = rlmflow.Flow(
-    llm,
-    system_prompt_modifiers=apply_memory,
-)
+AgentConfig(name="worker", model="gpt-5-mini", max_iters=20, harness=BudgetHarness)
 ```
 
-ACE-style CRUD is ordinary host mutation:
+The config's `prompt` still applies on top of a subclass's sections. To own the whole prompt, return only your own sections:
 
 ```python
-memory["inspection"] = "Inspect bounded samples before drawing conclusions."
-memory["inspection"] = "Inspect bounded samples and verify writes afterward."
-del memory["inspection"]
+class RulesOnly(ReplHarness):
+    def prompt_sections(self, flow, step):
+        return {}
+
+
+AgentConfig(name="worker", model="gpt-5-mini", harness=RulesOnly, prompt={"rules": RULES})
 ```
 
-Every model turn builds fresh system and user `Prompt` instances, so the next turn observes current harness state without a special collection abstraction.
+Or override `prompt(flow, step)` to return the final string, which skips the config's overrides as well. Settings a subclass needs can go in `harness_options`, read with `self.options(step)`; see [`examples/skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/skills.py) and [`examples/dynamic_skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/dynamic_skills.py).
 
-## Whole-System Overrides
+## Default sections
 
-A string still owns the complete system protocol:
+The REPL harness (`rlmflow.harnesses.repl`):
 
-````python
-flow = rlmflow.Flow(
-    llm,
-    system_prompt="""
-Use the persistent REPL for every turn.
+| key         | what it says                                                                                   |
+| ----------- | ---------------------------------------------------------------------------------------------- |
+| `protocol`  | one fenced `repl` block per turn; `submit(value)`, or a reply with no block, finishes          |
+| `verify`    | check the answer against the inputs before submitting; surface failures, don't paper over them |
+| `tools`     | the REPL tools this agent can call, including the configs `launch_agent` takes                 |
+| `agents`    | `AGENTS`, `send_agent` and `ask_agent`                                                         |
+| `arguments` | the task arguments by name and size; their values are REPL variables                           |
+| `schema`    | the output schema, when the config has one                                                     |
 
-Include exactly one non-empty fenced ```repl``` block. Call submit(value)
-inside that block to complete the run.
-""",
-)
-````
+The session harnesses (`claude_code`, `pi`, `interactive`) append their sections to the session's own system prompt:
 
-A `(flow, node) -> str` callable is also supported. Flow-level system modifiers may add sections after the override.
+| key        | what it says                                                                 |
+| ---------- | ---------------------------------------------------------------------------- |
+| `protocol` | running code with `rlmflow repl`, the REPL tools, and how to wait for agents |
+| `configs`  | the configs `launch_agent` takes                                             |
+| `tools`    | the Flow's own REPL tools                                                    |
+| `location` | where the REPL runs, for Docker and Modal runtimes                           |
+| `state`    | keeping working state in REPL variables                                      |
+| `record`   | which changes the run records                                                |
+| `schema`   | the output schema, when the config has one                                   |
 
-Use whole-system replacement only when you intentionally own the runtime contract. For normal customization, modify the default `Prompt`.
+## What the prompt doesn't change
 
-## Composition Order
+The harness's behaviour is in its `step()`, not its prompt. The REPL harness runs exactly one fenced `repl` block per reply and takes a reply with no block as the final answer, whatever the prompt says, so a prompt that replaces `protocol` has to explain that to the model.
 
-System prompt:
-
-```text
-Flow.default_system_prompt(node)
-→ global system modifiers
-→ profile system modifiers
-→ node.build_system_prompt(system_prompt, flow)
-```
-
-User prompt:
-
-```text
-Flow.default_user_prompt(node)
-→ global user modifiers
-→ profile user modifiers
-→ node.build_messages(user_prompt, flow)
-→ durable node message snapshot
-
-Flow.build_messages(node)
-→ copy durable current messages
-→ append live background-agent state
-```
-
-Adding the same non-pinned key updates it without duplicating text. Pinned runtime and schema sections reject conflicting updates.
-
-## Multiple Current-Turn Messages
-
-Override `Node.build_messages` when one turn needs more than one message:
-
-```python
-class BoardQuery(UserQuery):
-    def build_messages(self, user_prompt, flow):
-        return [
-            {"role": "user", "content": render_board(flow.runtime, self)},
-            {"role": "user", "content": str(user_prompt)},
-        ]
-```
-
-The supplied `user_prompt` already contains configured/profile modifiers. The result is snapshotted, so later history sees the same board rather than recomputing it from current runtime state. Live background and transition sections are added afterward by Flow and are not persisted. A node may use `flow` for runtime state, but must not assemble history or call `flow.default_*_prompt()` itself.
-
-## Arguments and tools
-
-Argument values are not copied into the system prompt. The prompt contains names and sizes plus any caller-supplied `Input(..., description=...)` text; the underlying values are direct variables in the persistent REPL.
-
-Tool documentation is rendered directly from `Flow.build_tools(node)`, the complete map of Flow-owned, application, and dynamically bound environment tools. `Flow.build_namespace(node)` adds non-tool execution bindings afterward. `when=` predicates hide application tools from both the prompt and execution.
-
-## Actions and Completion
-
-The prompt architecture does not override runtime routing:
-
-```text
-exactly one non-empty repl     → execute block
-non-empty reply, no repl fence → final answer, checked like submit(reply)
-any other repl fence           → raise MissingReplError; execute nothing else
-submit(value)                  → submit the final JSON-compatible value
-```
-
-`submit` is available from an agent's first block. The pinned `protocol.core` asks the model to look first when the inputs' size, format, or contents are unknown, and to read any printed evidence in a later turn before submitting. Prompt modifiers can refine the replaceable evidence policy, but cannot remove the pinned protocol or make an unavailable tool appear in the rendered tool list.
-
-System and user prompts use the same `Prompt` class, but their message roles and owners remain distinct:
-
-```text
-Flow builds fresh system/user defaults
-node hooks customize system and shape current-turn messages
-Flow assembles system, history, and current messages
-```
+Turn-level notes aren't part of the system prompt either. The final-turn notice, the list of background agents, and the truncation notice for `keep_n_messages` are added to the messages.

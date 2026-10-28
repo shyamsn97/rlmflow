@@ -38,7 +38,6 @@ from rlmflow.harnesses.sessions import (
     TurnResult,
     pending_messages,
     resume_prompt,
-    system_prompt,
 )
 
 if TYPE_CHECKING:
@@ -77,7 +76,9 @@ class Serve:
         self.graph_dir = Path(graph_dir)
         self.project = Path(project).resolve()
         self.root = root if root is not None else interactive_root(graph)
-        self.root_config = flow.add_config(interactive_config(root_config or flow.configs["default"]))
+        self.root_config = flow.add_config(
+            interactive_config(root_config or flow.configs["default"])
+        )
         self.session_id = session_id or (last_session(graph, self.root) if self.root else None)
         self.checkpointer = GraphCheckpointer(self.graph_dir)
         self.wakeup = asyncio.Event()
@@ -185,21 +186,31 @@ class Serve:
         self.kick()
         turn = await until(lambda: self.flow.agent_tools.open_turn(self.root), OPEN_TIMEOUT)
         if turn is None:
-            raise RuntimeError(f"the root's turn did not open: {self.error or 'nothing stepped it'}")
-        return {"bound": True, "root": self.root.id, "context": await self._context(session_id, turn)}
+            raise RuntimeError(
+                f"the root's turn did not open: {self.error or 'nothing stepped it'}"
+            )
+        return {
+            "bound": True,
+            "root": self.root.id,
+            "context": await self._context(session_id, turn),
+        }
 
     async def _context(self, session_id: Any, turn: Turn) -> str:
         """What the session hasn't seen: the tools prompt, old cells if it can't resume, and agents' results."""
         parts = []
         if session_id not in self._briefed:
             self._briefed.add(session_id)
-            parts.append(system_prompt(self.flow, turn.step))
+            parts.append(turn.step.agent.config.load_harness().prompt(self.flow, turn.step))
             has_cells = any(node.type == CODE for node in self.graph.history(turn.step.node))
             if has_cells and not Session.for_step(turn.step).resume:
                 parts.append(await resume_prompt(self.flow, turn.step))
         if turn.token not in self._shown:
             self._shown.add(turn.token)
-            parts += [node.data["text"] for node in pending(turn.step) if node.data.get("sender") != "user"]
+            parts += [
+                node.data["text"]
+                for node in pending(turn.step)
+                if node.data.get("sender") != "user"
+            ]
         return "\n\n".join(parts)
 
     async def stop(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -209,10 +220,14 @@ class Serve:
         turn = self.flow.agent_tools.open_turn(self.root)
         if turn is None:
             return {"bound": True, "landed": None}
-        usage, text, self._transcript_line = read_transcript(body.get("transcript_path") or "", self._transcript_line)
+        usage, text, self._transcript_line = read_transcript(
+            body.get("transcript_path") or "", self._transcript_line
+        )
         mark = len(self.graph)
         turn.ended.set_result(
-            TurnResult(session_id=session_id, text=body.get("last_assistant_message") or text, usage=usage)
+            TurnResult(
+                session_id=session_id, text=body.get("last_assistant_message") or text, usage=usage
+            )
         )
         landed = await until(lambda: self._turn_end_since(mark), LAND_TIMEOUT)
         if landed is None:
@@ -268,7 +283,9 @@ def pending(step: Step) -> list[Node]:
 def interactive_config(base: AgentConfig | None = None) -> AgentConfig:
     from rlmflow.graph.config import AgentConfig
 
-    return replace(base or AgentConfig(), name=INTERACTIVE_CONFIG, harness=INTERACTIVE, max_iters=None)
+    return replace(
+        base or AgentConfig(), name=INTERACTIVE_CONFIG, harness=INTERACTIVE, max_iters=None
+    )
 
 
 def ran_interactively(agent: Node) -> bool:

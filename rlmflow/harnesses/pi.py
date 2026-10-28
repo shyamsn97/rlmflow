@@ -25,7 +25,6 @@ from rlmflow.harnesses.sessions import (
     TurnResult,
     json_payload,
     next_prompt,
-    system_prompt,
 )
 
 if TYPE_CHECKING:
@@ -51,10 +50,10 @@ class PiHarness(SessionHarness):
         path = self.session_file(step, session)
         argv = [options.command, "-p", await next_prompt(flow, step, session), "--mode", "json"]
         argv += ["--session", str(path)]
-        argv += ["--append-system-prompt", system_prompt(flow, step)]
+        argv += ["--append-system-prompt", self.prompt(flow, step)]
         if options.provider:
             argv += ["--provider", options.provider]
-        if config.model != "default":
+        if config.model is not None:
             argv += ["--model", config.model]
         argv += options.args
 
@@ -78,16 +77,22 @@ class PiHarness(SessionHarness):
     @staticmethod
     def final_reply(events: list[dict[str, Any]]) -> tuple[str, dict[str, int]]:
         """The last assistant message's text, and the tokens every assistant message used."""
-        messages = next((e["messages"] for e in reversed(events) if e.get("type") == "agent_end"), None)
+        messages = next(
+            (e["messages"] for e in reversed(events) if e.get("type") == "agent_end"), None
+        )
         if messages is None:
-            messages = [e["message"] for e in events if e.get("type") == "message_end" and "message" in e]
+            messages = [
+                e["message"] for e in events if e.get("type") == "message_end" and "message" in e
+            ]
         replies = [m for m in messages if m.get("role") == "assistant"]
         if not replies:
             raise RuntimeError("pi returned no assistant message")
         last = replies[-1]
         if last.get("stopReason") == "error":
             raise RuntimeError(f"pi failed: {last.get('errorMessage') or 'unknown error'}")
-        text = "".join(part.get("text", "") for part in last.get("content") or [] if part.get("type") == "text")
+        text = "".join(
+            part.get("text", "") for part in last.get("content") or [] if part.get("type") == "text"
+        )
         usage = {
             "input_tokens": sum(int((m.get("usage") or {}).get("input") or 0) for m in replies),
             "output_tokens": sum(int((m.get("usage") or {}).get("output") or 0) for m in replies),

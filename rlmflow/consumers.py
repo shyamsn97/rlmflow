@@ -313,7 +313,9 @@ class LiveGraphTree(StreamConsumer):
                 if frontier.data.get("error"):
                     return Text.assemble(("✗ ", "red"), (text, "red"))
                 return Text.assemble(("✓ ", "green"), (text, "green"))
-            if frontier.type == WAITING or any(not graph.terminal(c) for c in graph.children(agent)):
+            if frontier.type == WAITING or any(
+                not graph.terminal(c) for c in graph.children(agent)
+            ):
                 return Text.assemble(("◌ ", "magenta"), (text, "magenta"))
             if self.spinners:
                 return Spinner("dots", text=Text(text, style="cyan"))

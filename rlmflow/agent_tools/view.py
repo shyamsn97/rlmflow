@@ -391,9 +391,7 @@ def build_agent_directory(graph: Graph, viewer: Node) -> AgentDirectory:
                 dependency_paths=tuple(paths[producer.id] for producer in producers),
                 dependent_paths=tuple(dependents.get(agent.id, ())),
                 blocked_on_paths=tuple(
-                    paths[producer.id]
-                    for producer in producers
-                    if not graph.terminal(producer)
+                    paths[producer.id] for producer in producers if not graph.terminal(producer)
                 ),
                 _result=_json_safe(graph.result(agent)) if terminal else None,
             )

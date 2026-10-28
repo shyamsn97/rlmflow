@@ -9,9 +9,9 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
-from helpers import StubLLM
+from helpers import ScriptedFlow, StubLLM
 
-from rlmflow import Flow, Graph, LLMChunk, LLMUsage, PooledLLMClient, SequentialPool, ThreadPool
+from rlmflow import Graph, LLMChunk, LLMUsage, PooledLLMClient, SequentialPool, ThreadPool
 from rlmflow.llm import LLMClient, as_chunk, join_chunks, stream_with_retry
 from rlmflow.llm.anthropic import AnthropicClient
 from rlmflow.llm.openai import OpenAIClient
@@ -397,7 +397,7 @@ def test_flow_consumes_the_pooled_stream_primitive():
     llm = StreamLLM()
     g = Graph()
     root = g.spawn("go")
-    flow = Flow(llm)
+    flow = ScriptedFlow(llm)
     flow.run(g)
     assert g.result(root) == "ok"
     assert llm.chat_calls == 0
@@ -407,7 +407,7 @@ def test_flow_consumes_the_pooled_stream_primitive():
 
 def test_chat_only_fake_still_runs():
     llm = StubLLM(lambda _messages: '```repl\nsubmit("ok")\n```')
-    assert Flow(llm).run("go") == "ok"
+    assert ScriptedFlow(llm).run("go") == "ok"
 
 
 def test_hung_async_stream_hits_request_timeout():
@@ -419,7 +419,7 @@ def test_hung_async_stream_hits_request_timeout():
             yield LLMChunk(text="nope")
 
     with pytest.raises(TimeoutError):
-        Flow(Hung()).run("hang")
+        ScriptedFlow(Hung()).run("hang")
 
 
 def test_stream_with_retry_retries_then_gives_up():

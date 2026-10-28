@@ -58,7 +58,7 @@ def demo_plain_llm():
 
 def demo_flow_as_llm():
     print("=== Flow as LLMClient (drop-in) ===")
-    agent = FlowLLM(Flow(OpenAIClient(model="gpt-4o-mini")), AgentConfig(max_iters=5))
+    agent = FlowLLM(Flow(), AgentConfig(model="gpt-4o-mini", max_iters=5))
     answer = ask(agent, "Compute 17 * 23 using a ```repl``` block, then call submit().")
     print(answer, "\n")
     if agent.last_graph is not None:
@@ -72,14 +72,16 @@ def demo_flow_as_llm():
 
 def demo_nested_flow():
     print("=== nested Flow (outer agent uses inner agent as its LLM) ===")
-    inner = FlowLLM(Flow(OpenAIClient(model="gpt-4o-mini")), AgentConfig(max_iters=3))
-    outer = Flow(inner)
+    inner = FlowLLM(Flow(), AgentConfig(model="gpt-4o-mini", max_iters=3))
+    outer = Flow(llm_clients={"inner-agent": inner})
     g = Graph()
     root = g.create_agent(
         "What's the 7th Fibonacci number? Use ```repl``` to compute.",
     )
     run_dir = example_run_dir("drop-in-llm") / "nested-flow"
-    asyncio.run(print_run(outer, g, run_dir, root_config=AgentConfig(max_iters=3)))
+    asyncio.run(
+        print_run(outer, g, run_dir, root_config=AgentConfig(model="inner-agent", max_iters=3))
+    )
     print(g.result(root))
     save_example_graph(
         g,

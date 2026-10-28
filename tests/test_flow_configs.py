@@ -1,7 +1,7 @@
 """The Flow owns configs; the graph only records which one ran."""
 
 import pytest
-from helpers import StubLLM, TestRuntime, counting_replies
+from helpers import ScriptedFlow, StubLLM, TestRuntime, counting_replies
 from helpers import reasoning_repl as block
 
 from rlmflow import AgentConfig, Flow, Graph
@@ -26,40 +26,44 @@ def test_resuming_runs_the_root_with_this_runs_config_not_the_recorded_one(tmp_p
     llm = RecordingLLM(block("submit('one')"), block("submit('two')"))
     g = Graph()
     root = g.create_agent("answer")
-    Flow(llm, runtime=TestRuntime()).run(g, root_config=AgentConfig(system_prompt="FIRST RULES"))
-    assert root.metadata["config"]["system_prompt"] == "FIRST RULES"
+    ScriptedFlow(llm, runtime=TestRuntime()).run(
+        g, root_config=AgentConfig(prompt={"rules": "FIRST RULES"})
+    )
+    assert root.metadata["config"]["prompt"]["rules"] == "FIRST RULES"
     g.save(tmp_path)
 
     loaded = Graph.load(tmp_path)
     again = loaded.node(root.id)
     loaded.send(again, "and again")
-    Flow(llm, runtime=TestRuntime()).run(
-        loaded, root_config=AgentConfig(system_prompt="SECOND RULES")
+    ScriptedFlow(llm, runtime=TestRuntime()).run(
+        loaded, root_config=AgentConfig(prompt={"rules": "SECOND RULES"})
     )
 
     assert "SECOND RULES" in system_message(llm.calls[-1])
     assert "FIRST RULES" not in system_message(llm.calls[-1])
-    assert again.metadata["config"]["system_prompt"] == "SECOND RULES"
+    assert again.metadata["config"]["prompt"]["rules"] == "SECOND RULES"
     assert loaded.result(again) == "two"
 
 
 def test_a_registered_config_wins_over_what_the_graph_recorded():
     llm = RecordingLLM(block("submit('done')"))
-    flow = Flow(
-        llm, runtime=TestRuntime(), configs=[AgentConfig(name="worker", system_prompt="CURRENT")]
+    flow = ScriptedFlow(
+        llm,
+        runtime=TestRuntime(),
+        configs=[AgentConfig(name="worker", prompt={"rules": "CURRENT"})],
     )
     g = Graph()
     worker = g.spawn("work", config="worker")
-    worker.annotate("config", AgentConfig(name="worker", system_prompt="STALE").to_dict())
+    worker.annotate("config", AgentConfig(name="worker", prompt={"rules": "STALE"}).to_dict())
 
     flow.run(g)
 
     assert "CURRENT" in system_message(llm.calls[0])
-    assert worker.config.system_prompt == "CURRENT"
+    assert worker.config.prompt["rules"] == "CURRENT"
 
 
 def test_an_unknown_config_name_raises():
-    flow = Flow(StubLLM(lambda _: block("submit(1)")), runtime=TestRuntime())
+    flow = ScriptedFlow(StubLLM(lambda _: block("submit(1)")), runtime=TestRuntime())
     g = Graph()
     g.spawn("work", config="nope")
 
@@ -73,11 +77,11 @@ def test_launch_agent_without_a_config_uses_default_not_the_roots():
     llm = RecordingLLM(
         block("h = launch_agent('sub task')\nsubmit(await h)"), block("submit('child')")
     )
-    flow = Flow(llm, runtime=TestRuntime())
+    flow = ScriptedFlow(llm, runtime=TestRuntime())
     g = Graph()
     root = g.create_agent("delegate")
 
-    flow.run(g, root_config=AgentConfig(system_prompt="ROOT ONLY", max_depth=1))
+    flow.run(g, root_config=AgentConfig(prompt={"rules": "ROOT ONLY"}, max_depth=1))
 
     [child] = g.children(root)
     assert child.config_name == "default"
@@ -96,16 +100,24 @@ def test_a_config_model_is_a_model_name(monkeypatch):
         return named
 
     monkeypatch.setattr("rlmflow.flow.client_for", client_for)
-    flow = Flow(StubLLM(lambda _: block("submit('from default')")), runtime=TestRuntime())
+    flow = Flow(runtime=TestRuntime())
 
     assert flow.run("which model", root_config=AgentConfig(model="gpt-x")) == "from gpt-x"
     flow.llm("gpt-x")
     assert built == ["gpt-x"]
 
 
-def test_a_flow_without_a_default_model_says_so():
-    with pytest.raises(ValueError, match="no default model"):
-        Flow().llm("default")
+def test_a_config_without_a_model_says_so():
+    with pytest.raises(ValueError, match=r"set AgentConfig\(model=\.\.\.\)"):
+        Flow(runtime=TestRuntime()).run("which model")
+
+
+def test_a_custom_client_is_named_like_a_model():
+    custom = StubLLM(lambda _: block("submit('custom')"))
+    flow = Flow(
+        llm_clients={"tuned": custom}, configs=[AgentConfig(model="tuned")], runtime=TestRuntime()
+    )
+    assert flow.run("which model") == "custom"
 
 
 def test_the_flow_factory_comes_from_rlmflow_toml(tmp_path):

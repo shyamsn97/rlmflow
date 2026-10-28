@@ -23,7 +23,6 @@ from pathlib import Path
 
 from rlmflow import AgentConfig, DockerRuntime, Flow, Graph
 from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
-from rlmflow.llm import client_for
 
 examples_dir = next(path for path in Path(__file__).resolve().parents if path.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -92,8 +91,7 @@ def main():
 
     runtime = DockerRuntime(args.docker_image) if args.docker_image else None
 
-    llm = client_for(args.model)
-    configs = [AgentConfig(max_depth=args.max_depth, max_iters=args.max_iters)]
+    configs = [AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)]
     if args.fast_model:
         configs.append(
             AgentConfig(
@@ -104,12 +102,14 @@ def main():
                 max_depth=0,
             )
         )
-    flow = Flow(
-        llm,
-        configs=configs,
-        runtime=runtime,
+    flow = Flow(configs=configs, runtime=runtime)
+    # Claude Code and pi pick their own model; --model is the REPL harness's.
+    config = AgentConfig(
+        harness=args.harness,
+        model=args.model if args.harness == "repl" else None,
+        max_depth=args.max_depth,
+        max_iters=args.max_iters,
     )
-    config = AgentConfig(harness=args.harness, max_depth=args.max_depth, max_iters=args.max_iters)
 
     g = Graph()
     root = g.create_agent(

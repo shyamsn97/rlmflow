@@ -2,12 +2,11 @@ import asyncio
 import sys
 
 import pytest
-from helpers import StubLLM, agent_graph, first_user, run_result
+from helpers import ScriptedFlow, StubLLM, agent_graph, first_user, run_result
 from helpers import repl as block
 
 from rlmflow import (
     DockerRuntime,
-    Flow,
     LocalRuntime,
     ModalRuntime,
     ReplStatus,
@@ -132,7 +131,7 @@ def test_sandbox_runtimes_propagate_execution_timeout(monkeypatch, runtime):
 
 def test_runtime_execution_timeout_returns_dead_and_removes_worker():
     runtime = LocalRuntime(execution_timeout=0.05)
-    flow = Flow(StubLLM(lambda _messages: ""), runtime=runtime)
+    flow = ScriptedFlow(StubLLM(lambda _messages: ""), runtime=runtime)
     root = bare_agent()
     try:
         result = asyncio.run(
@@ -151,7 +150,7 @@ def test_runtime_execution_timeout_returns_dead_and_removes_worker():
 
 
 def test_local_runtime_uses_worker_and_working_directory(tmp_path):
-    flow = Flow(
+    flow = ScriptedFlow(
         StubLLM(lambda _messages: WRITE_A_NOTE),
         runtime=LocalRuntime(working_directory=tmp_path),
     )
@@ -165,7 +164,7 @@ def test_local_runtime_uses_worker_and_working_directory(tmp_path):
 
 
 def test_subprocess_runtime_uses_selected_python_and_working_directory(tmp_path):
-    flow = Flow(
+    flow = ScriptedFlow(
         StubLLM(lambda _messages: WRITE_A_NOTE),
         runtime=SubprocessRuntime(
             working_directory=tmp_path,
@@ -184,7 +183,7 @@ def test_subprocess_runtime_exposes_the_agents_tree():
         'submit(AGENTS.get().path + "|" + str(len(AGENTS.get_siblings())) + "|" '
         "+ AGENTS.render_graph())"
     )
-    flow = Flow(
+    flow = ScriptedFlow(
         StubLLM(lambda _messages: code),
         runtime=SubprocessRuntime(),
     )
@@ -200,7 +199,7 @@ def test_subprocess_runtime_supports_subagent_handles():
             return block('child = launch_agent("child")\nsubmit(await child)')
         return block('submit("child-done")')
 
-    flow = Flow(StubLLM(reply), runtime=SubprocessRuntime())
+    flow = ScriptedFlow(StubLLM(reply), runtime=SubprocessRuntime())
     try:
         assert run_result(flow, *agent_graph("parent")) == "child-done"
     finally:
@@ -209,7 +208,7 @@ def test_subprocess_runtime_supports_subagent_handles():
 
 def test_worker_env_channel_round_trips():
     code = block('ENV["solved"] = ENV["RLMFLOW_IS_ROOT"] == "1"\nsubmit(ENV["RLMFLOW_AGENT_ID"])')
-    flow = Flow(StubLLM(lambda _messages: code))
+    flow = ScriptedFlow(StubLLM(lambda _messages: code))
     g, root = agent_graph("q")
     try:
         assert run_result(flow, g, root) == "root"
@@ -262,7 +261,7 @@ def test_empty_iterator_reports_stopiteration_not_coroutine_wrapper():
 
 
 def test_get_var_reads_a_variable_out_of_the_worker():
-    flow = Flow(StubLLM(lambda _messages: block('result = {"n": 42}\nsubmit("ok")')))
+    flow = ScriptedFlow(StubLLM(lambda _messages: block('result = {"n": 42}\nsubmit("ok")')))
     g, root = agent_graph("q")
     try:
         assert run_result(flow, g, root) == "ok"

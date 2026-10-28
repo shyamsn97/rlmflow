@@ -161,9 +161,7 @@ def board_rows(text: str) -> list[str]:
     return [line for line in text.splitlines() if line and set(line) <= BOARD_CHARS]
 
 
-def read_branches(
-    g: Graph, shepherd: Node, winner: str, boards: dict[str, str]
-) -> list[Branch]:
+def read_branches(g: Graph, shepherd: Node, winner: str, boards: dict[str, str]) -> list[Branch]:
     return [
         Branch(
             name=agent.name,

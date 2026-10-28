@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 from rlmflow import CODE, AgentConfig, Flow, Graph, LLMUsage, Node, Step
-from rlmflow.harnesses.repl import repl_messages
+from rlmflow.harnesses.repl import ReplHarness
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -27,7 +27,7 @@ if str(examples_dir) not in sys.path:
 from common import checkpoint_stream, example_run_dir, save_example_graph  # noqa: E402
 
 OBSERVATION = "Injected controller observation: finalize using this note."
-CONFIG = AgentConfig(max_depth=0, max_iters=4)
+CONFIG = AgentConfig(model="demo", max_depth=0, max_iters=4)
 
 
 class DemoLLM:
@@ -66,7 +66,7 @@ def print_states(label: str, g: Graph, agent: Node) -> None:
 def observation_injection() -> None:
     banner("1. Inject an observation and let the LLM react")
 
-    flow = Flow(DemoLLM())
+    flow = Flow(llm_clients={"demo": DemoLLM()})
     g = Graph()
     agent = g.create_agent("Wait for a controller note, then submit.")
     agent.bind_config(CONFIG)
@@ -78,7 +78,7 @@ def observation_injection() -> None:
 
     print_states("after the controller appended its observation", g, agent)
 
-    projected = repl_messages(flow, Step(g, agent, extra))[-1]["content"]
+    projected = ReplHarness().messages(flow, Step(g, agent, extra))[-1]["content"]
     assert OBSERVATION in projected
     print("message projection contains the controller observation.")
 
@@ -102,7 +102,7 @@ def observation_injection() -> None:
 def controller_stop_instruction() -> None:
     banner("2. Inject a controller stop instruction")
 
-    flow = Flow(DemoLLM())
+    flow = Flow(llm_clients={"demo": DemoLLM()})
     g = Graph()
     agent = g.create_agent("This run will be stopped by the controller.")
     run_dir = example_run_dir("controller-injection") / "controller-stop-instruction"

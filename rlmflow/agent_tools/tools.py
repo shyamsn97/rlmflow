@@ -76,10 +76,7 @@ async def wait(
             )
         except TimeoutError:
             pass
-    return {
-        target.id: g.result(target) if g.terminal(target) else "running"
-        for target in targets
-    }
+    return {target.id: g.result(target) if g.terminal(target) else "running" for target in targets}
 
 
 def send(flow: Flow, step: Step, target: object, text: str) -> Node:

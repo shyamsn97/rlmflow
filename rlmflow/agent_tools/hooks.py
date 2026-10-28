@@ -55,7 +55,9 @@ def start_serve(project: Path, args: list[str] | None = None) -> dict[str, Any]:
             return found
         if process.poll() is not None:
             tail = log_path.read_text(errors="replace").strip().splitlines()[-5:]
-            raise ToolError("rlmflow serve exited: " + (" | ".join(tail) or f"status {process.returncode}"))
+            raise ToolError(
+                "rlmflow serve exited: " + (" | ".join(tail) or f"status {process.returncode}")
+            )
         time.sleep(0.1)
     raise ToolError(f"rlmflow serve did not start within {START_TIMEOUT:.0f}s; see {log_path}")
 
@@ -93,7 +95,9 @@ def stop(data: dict[str, Any]) -> str:
     serve = find_serve(data.get("cwd") or Path.cwd())
     if serve is None:
         return ""
-    body = {key: data.get(key) for key in ("session_id", "transcript_path", "last_assistant_message")}
+    body = {
+        key: data.get(key) for key in ("session_id", "transcript_path", "last_assistant_message")
+    }
     reply = call(serve, "stop", {**body, "timeout": STOP_WAIT}, timeout=STOP_WAIT + 60)
     if reply.get("block"):
         return json.dumps({"decision": "block", "reason": reply["block"]})
@@ -131,4 +135,15 @@ def main(argv: list[str]) -> int:
     return 0
 
 
-__all__ = ["EVENTS", "PLUGIN_DIR", "RUN_COMMAND", "STOP_WAIT", "end", "main", "prompt", "run", "start_serve", "stop"]
+__all__ = [
+    "EVENTS",
+    "PLUGIN_DIR",
+    "RUN_COMMAND",
+    "STOP_WAIT",
+    "end",
+    "main",
+    "prompt",
+    "run",
+    "start_serve",
+    "stop",
+]

@@ -66,7 +66,12 @@ def headless(argv):
         message = json.loads(line)
         if message.get("type") == "control_request":
             request_id = message["request_id"]
-            write({"type": "control_response", "response": {"subtype": "success", "request_id": request_id, "response": {}}})
+            write(
+                {
+                    "type": "control_response",
+                    "response": {"subtype": "success", "request_id": request_id, "response": {}},
+                }
+            )
         elif message.get("type") == "user":
             prompt = message["message"]["content"]
             break
@@ -160,10 +165,15 @@ def interactive(argv):
                 entry = {
                     "type": "assistant",
                     "requestId": str(uuid.uuid4()),
-                    "message": {"usage": {"input_tokens": 10, "output_tokens": 5}, "content": [{"type": "text", "text": text}]},
+                    "message": {
+                        "usage": {"input_tokens": 10, "output_tokens": 5},
+                        "content": [{"type": "text", "text": text}],
+                    },
                 }
                 handle.write(json.dumps(entry) + "\n")
-            decisions = plugin.fire("Stop", {**base, "stop_hook_active": active, "last_assistant_message": text})
+            decisions = plugin.fire(
+                "Stop", {**base, "stop_hook_active": active, "last_assistant_message": text}
+            )
             blocks = [json.loads(d) for d in decisions if d.startswith("{")]
             blocks = [d for d in blocks if d.get("decision") == "block"]
             if not blocks:

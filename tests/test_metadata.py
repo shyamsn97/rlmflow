@@ -1,11 +1,11 @@
 import math
 
 import pytest
-from helpers import StubLLM, agent_graph, counting_replies, repl, run_result
+from helpers import ScriptedFlow, StubLLM, agent_graph, counting_replies, repl, run_result
 
 from rlmflow import (
     CODE,
-    Flow,
+    AgentConfig,
     Graph,
     LLMClient,
     LLMUsage,
@@ -46,7 +46,7 @@ def test_custom_proxy_tool_can_annotate_its_cell():
         record_metadata("custom.tags", {"value": value}, append=True)
         return value.upper()
 
-    flow = Flow(
+    flow = ScriptedFlow(
         StubLLM(counting_replies(repl("print(await tag('alpha'))\nsubmit('done')"))),
         runtime=LocalRuntime(repl_timeout=5),
         tools=[tag],
@@ -76,7 +76,7 @@ class QueryLLM(LLMClient):
 
 def test_llm_query_calls_are_recorded_on_the_cell():
     llm = QueryLLM()
-    flow = Flow(llm, runtime=LocalRuntime(repl_timeout=5))
+    flow = ScriptedFlow(llm, runtime=LocalRuntime(repl_timeout=5), configs=[AgentConfig(model="m")])
     g = Graph()
     root = g.create_agent("use llm_query")
 
@@ -84,13 +84,15 @@ def test_llm_query_calls_are_recorded_on_the_cell():
     assert llm.calls == 2
     cell = g.frontier(root)
     [call] = cell.metadata["llm_query.calls"]
-    assert call["model"] == "default" and call["usage"]["input_tokens"] == 3
+    assert call["model"] == "m" and call["usage"]["input_tokens"] == 3
     assert cell.calls("llm_query") == {0: "an answer"}
 
 
 def test_llm_output_records_usage_model_and_timing():
-    flow = Flow(
-        StubLLM(counting_replies(repl("submit('ok')"))), runtime=LocalRuntime(repl_timeout=5)
+    flow = ScriptedFlow(
+        StubLLM(counting_replies(repl("submit('ok')"))),
+        runtime=LocalRuntime(repl_timeout=5),
+        configs=[AgentConfig(model="m")],
     )
     g = Graph()
     root = g.create_agent("answer")
@@ -99,5 +101,5 @@ def test_llm_output_records_usage_model_and_timing():
     llm_node = next(node for node in g.history(root) if node.type == "llm_output")
 
     assert llm_node.data["usage"]["input_tokens"] >= 0
-    assert llm_node.data["model"] == "default"
+    assert llm_node.data["model"] == "m"
     assert llm_node.timing()["duration_ms"] >= 0

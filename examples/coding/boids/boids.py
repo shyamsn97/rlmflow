@@ -62,12 +62,6 @@ def pushd(path: Path) -> Iterator[None]:
         os.chdir(previous)
 
 
-def build_rlmflow_llm(model: str):
-    from rlmflow.llm import client_for
-
-    return client_for(model)
-
-
 def reset_run_dir(path: Path, *, force: bool) -> None:
     if path.exists():
         if not force:
@@ -138,9 +132,16 @@ def run_rlmflow(
 
     runtime = LocalRuntime(working_directory=run_dir)
     flow = Flow(
-        build_rlmflow_llm(model),
-        llm_clients={"fast": build_rlmflow_llm(fast_model)},
-        configs=[AgentConfig(max_depth=max_depth, max_iters=max_iters)],
+        configs=[
+            AgentConfig(model=model, max_depth=max_depth, max_iters=max_iters),
+            AgentConfig(
+                name="fast",
+                model=fast_model,
+                description="cheaper model for a bounded piece of the simulation",
+                max_depth=max_depth,
+                max_iters=max_iters,
+            ),
+        ],
         runtime=runtime,
         tools=[FILE_TOOLS],
         workers=max_concurrency,
@@ -153,6 +154,7 @@ def run_rlmflow(
         root = g.create_agent(PROMPT)
         graph_dir = run_dir / "graph"
         config = AgentConfig(
+            model=model,
             output_schema=json_schema_for(BoidsSimulation),
             max_depth=max_depth,
             max_iters=max_iters,

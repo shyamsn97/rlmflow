@@ -22,7 +22,6 @@ import sys
 from pathlib import Path
 
 from rlmflow import AGENT_START, AgentConfig, Flow, Graph, GraphCheckpointer
-from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -93,8 +92,8 @@ def main() -> None:
             name=task_name(subject),
         )
 
-    flow = Flow(client_for(args.model), workers=args.workers)
-    asyncio.run(run(flow, g, args.out_dir, AgentConfig(max_iters=args.max_iters)))
+    flow = Flow(workers=args.workers)
+    asyncio.run(run(flow, g, args.out_dir, AgentConfig(model=args.model, max_iters=args.max_iters)))
 
     print("board:")
     for agent in g.nodes(AGENT_START):

@@ -316,7 +316,9 @@ class RlmflowCLI:
         """
         from rlmflow.cli.fork import fork_run
 
-        fork_run(run, node, config=config, interactive=interactive, name=name, project=project, out=out)
+        fork_run(
+            run, node, config=config, interactive=interactive, name=name, project=project, out=out
+        )
 
 
 def main(argv: list[str] | None = None) -> int:

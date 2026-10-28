@@ -65,7 +65,9 @@ class Turn:
     waits: int = 0
     submitted: bool = False
     result: Any = None
-    ended: asyncio.Future[TurnResult] = field(default_factory=lambda: asyncio.get_running_loop().create_future())
+    ended: asyncio.Future[TurnResult] = field(
+        default_factory=lambda: asyncio.get_running_loop().create_future()
+    )
 
     @property
     def graph(self) -> Graph:
@@ -107,7 +109,7 @@ class AgentToolsServer:
             shim = Path(self._bin.name) / "rlmflow"
             package_root = shlex.quote(str(Path(__file__).resolve().parents[2]))
             shim.write_text(
-                f'#!/bin/sh\nPYTHONPATH={package_root}${{PYTHONPATH:+:$PYTHONPATH}} '
+                f"#!/bin/sh\nPYTHONPATH={package_root}${{PYTHONPATH:+:$PYTHONPATH}} "
                 f'exec {shlex.quote(sys.executable)} -m rlmflow "$@"\n'
             )
             shim.chmod(0o755)
@@ -257,7 +259,6 @@ class AgentToolsServer:
             return exc.status, {"error": str(exc)}
         except (ValueError, TypeError, KeyError, RuntimeError, LookupError) as exc:
             return 400, {"error": str(exc)}
-
 
     def _turn_for(self, token: str) -> Turn:
         turn = self._turns.get(token)

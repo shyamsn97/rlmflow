@@ -42,7 +42,9 @@ def git(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
         check=False,
     )
     if done.returncode:
-        raise RuntimeError(f"git {' '.join(args)} failed: {done.stderr.strip() or done.stdout.strip()}")
+        raise RuntimeError(
+            f"git {' '.join(args)} failed: {done.stderr.strip() or done.stdout.strip()}"
+        )
     return done.stdout.strip()
 
 
@@ -89,7 +91,9 @@ class GitWorktrees:
         head = git(tree_dir, "rev-parse", "HEAD")
         with tempfile.TemporaryDirectory() as scratch:
             index = Path(scratch) / "index"
-            real_index = Path(git(tree_dir, "rev-parse", "--path-format=absolute", "--git-path", "index"))
+            real_index = Path(
+                git(tree_dir, "rev-parse", "--path-format=absolute", "--git-path", "index")
+            )
             if real_index.exists():
                 shutil.copyfile(real_index, index)
             env = {"GIT_INDEX_FILE": str(index)}
@@ -97,7 +101,9 @@ class GitWorktrees:
             tree = git(tree_dir, "write-tree", env=env)
         if tree == git(tree_dir, "rev-parse", "HEAD^{tree}"):
             return head
-        commit = git(tree_dir, "commit-tree", tree, "-p", head, "-m", f"rlmflow snapshot of {agent.name}")
+        commit = git(
+            tree_dir, "commit-tree", tree, "-p", head, "-m", f"rlmflow snapshot of {agent.name}"
+        )
         git(self.repo, "update-ref", f"refs/rlmflow/{commit}", commit)
         return commit
 

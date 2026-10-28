@@ -41,7 +41,7 @@ between calls. Your inputs are already variables: {arguments}.
 Only printed output comes back, so print summaries, not whole values.
 
 In the REPL:
-- launch_agent(task, config=NAME, **args) starts an agent and returns a handle. Configs (default `default`): {configs}
+- launch_agent(task, config=NAME, **args) starts an agent and returns a handle.
   A handle's `.status`, `.done()` and `.result()` are as of when the cell started, so they
   never change inside a loop; `await handle` waits for its result.
 - llm_query(prompt) asks a model and returns its answer.
@@ -161,26 +161,6 @@ def config_list(flow: Flow) -> str:
     )
 
 
-def system_prompt(flow: Flow, step: Step) -> str:
-    """The prompt appended to every session: the tools, then keeping state, then ``config.system_prompt``."""
-    names = list({**step.agent.resolved_args(), **step.graph.inputs(step.agent)})
-    arguments = ", ".join(f"`{name}`" for name in ["task", *names])
-    from rlmflow.tools import format_tool_line, tool_allowed
-
-    parts = [TOOLS_PROMPT.format(arguments=arguments, configs=config_list(flow))]
-    own_tools = [line for fn in flow.tools.values() if tool_allowed(fn, flow, step.node) and (line := format_tool_line(fn))]
-    if own_tools:
-        parts.append("Also in the REPL:\n" + "\n".join(own_tools))
-    if flow.runtime.location is not None:
-        parts.append(LOCATION_PROMPT.format(location=flow.runtime.location))
-    parts += [STATE_PROMPT, RECORD_PROMPT]
-    if step.agent.config.output_schema is not None:
-        parts.append(schema.contract(step.agent.config.output_schema))
-    if step.agent.config.system_prompt:
-        parts.append(step.agent.config.system_prompt)
-    return "\n\n".join(parts)
-
-
 def first_prompt(step: Step) -> str:
     """The task, and the arguments by name and size; their values are REPL variables."""
     manifest = argument_manifest(step)
@@ -212,7 +192,9 @@ async def resume_prompt(flow: Flow, step: Step) -> str:
         f"[cell {i}] {preview(c.data['code'], 80)} -> {preview(c.data.get('output') or '(no output)', 100)}"
         for i, c in enumerate(cells, 1)
     ]
-    return RESUME_PROMPT.format(cells="\n".join(lines), variables=await describe_variables(flow, step))
+    return RESUME_PROMPT.format(
+        cells="\n".join(lines), variables=await describe_variables(flow, step)
+    )
 
 
 async def next_prompt(flow: Flow, step: Step, session: Session) -> str:
@@ -224,11 +206,36 @@ async def next_prompt(flow: Flow, step: Step, session: Session) -> str:
     if not has_cells and step.node.type == AGENT_START:
         return first_prompt(step)
     opening = await resume_prompt(flow, step) if has_cells else ""
-    return "\n\n".join(part for part in (f"Your task: {step.agent.task}", opening, *messages) if part)
+    return "\n\n".join(
+        part for part in (f"Your task: {step.agent.task}", opening, *messages) if part
+    )
 
 
 class SessionHarness(Harness):
     """A harness that runs one session turn per step; subclasses implement ``run_turn``."""
+
+    def prompt_sections(self, flow: Flow, step: Step) -> dict[str, str | None]:
+        """Appended to the session's own system prompt."""
+        from rlmflow.tools import format_tool_line, tool_allowed
+
+        names = list({**step.agent.resolved_args(), **step.graph.inputs(step.agent)})
+        arguments = ", ".join(f"`{name}`" for name in ["task", *names])
+        own_tools = [
+            line
+            for fn in flow.tools.values()
+            if tool_allowed(fn, flow, step.node) and (line := format_tool_line(fn))
+        ]
+        location = flow.runtime.location
+        output_schema = step.agent.config.output_schema
+        return {
+            "protocol": TOOLS_PROMPT.format(arguments=arguments),
+            "configs": f"Configs for launch_agent (default `default`): {config_list(flow)}",
+            "tools": "Also in the REPL:\n" + "\n".join(own_tools) if own_tools else None,
+            "location": LOCATION_PROMPT.format(location=location) if location is not None else None,
+            "state": STATE_PROMPT,
+            "record": RECORD_PROMPT,
+            "schema": schema.contract(output_schema) if output_schema is not None else None,
+        }
 
     async def step(self, flow: Flow, step: Step) -> Node:
         async with flow.agent_tools.turn(step) as turn:
@@ -258,9 +265,13 @@ class SessionHarness(Harness):
             return Node(WAITING, on=on, **data)
         answer = result.structured if result.structured is not None else result.text
         output_schema = agent.config.output_schema
-        return Node(DONE, result=schema.check(answer, output_schema) if output_schema else answer, **data)
+        return Node(
+            DONE, result=schema.check(answer, output_schema) if output_schema else answer, **data
+        )
 
-    async def run_command(self, flow: Flow, step: Step, argv: list[str], env: dict[str, str]) -> str:
+    async def run_command(
+        self, flow: Flow, step: Step, argv: list[str], env: dict[str, str]
+    ) -> str:
         """Run one headless session turn in the agent's workspace and return its stdout; cancelling kills it."""
         if "/" not in argv[0] and shutil.which(argv[0], path=env.get("PATH")) is None:
             raise RuntimeError(f"{argv[0]!r} was not found; install it and sign in first")
@@ -286,7 +297,9 @@ class SessionHarness(Harness):
             raise
         out, err = stdout.decode(errors="replace").strip(), stderr.decode(errors="replace").strip()
         if process.returncode:
-            raise RuntimeError(f"{argv[0]} failed: {err or out or f'exit status {process.returncode}'}")
+            raise RuntimeError(
+                f"{argv[0]} failed: {err or out or f'exit status {process.returncode}'}"
+            )
         return out
 
 
@@ -311,5 +324,4 @@ __all__ = [
     "next_prompt",
     "pending_messages",
     "resume_prompt",
-    "system_prompt",
 ]

@@ -1,6 +1,6 @@
-from helpers import StubLLM, TestRuntime, first_user, run_result
+from helpers import ScriptedFlow, StubLLM, TestRuntime, first_user, run_result
 
-from rlmflow import DEPENDS_ON, AgentConfig, Flow, Graph
+from rlmflow import DEPENDS_ON, AgentConfig, Graph
 
 SCHEMA = {
     "type": "object",
@@ -54,7 +54,7 @@ def test_minimal_interface_end_to_end_reruns_without_work(tmp_path):
         AgentConfig(name=name, output_schema=schema, max_iters=4)
         for name, schema in (("value", SCHEMA), ("ok", OK_SCHEMA), ("sum", SUM_SCHEMA))
     ]
-    flow = Flow(StubLLM(reply), configs=configs, runtime=TestRuntime())
+    flow = ScriptedFlow(StubLLM(reply), configs=configs, runtime=TestRuntime())
 
     assert run_result(flow, g, root, root_config=AgentConfig(max_iters=8)) == "done"
     children = g.tree(root)[1:]
@@ -75,7 +75,8 @@ def test_minimal_interface_end_to_end_reruns_without_work(tmp_path):
         raise AssertionError("model repeated during terminal rerun")
 
     assert (
-        Flow(StubLLM(no_model_call), configs=configs, runtime=TestRuntime()).run(loaded) is loaded
+        ScriptedFlow(StubLLM(no_model_call), configs=configs, runtime=TestRuntime()).run(loaded)
+        is loaded
     )
     assert loaded.result(loaded.node(root.id)) == "done"
     assert len(calls) == call_count

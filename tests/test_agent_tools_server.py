@@ -4,6 +4,7 @@ import asyncio
 import os
 
 import pytest
+from helpers import ScriptedFlow
 
 from rlmflow import CODE, DONE, MESSAGE, WAITING, AgentConfig, Flow, Graph, Node
 from rlmflow.agent_tools.cli import json_or_text
@@ -86,7 +87,7 @@ def test_ending_a_turn_with_running_children_waits_then_resumes():
     )
     from helpers import StubLLM
 
-    flow = Flow(
+    flow = ScriptedFlow(
         StubLLM(lambda messages: "```repl\nawait asyncio.sleep(1)\nsubmit(x + 3)\n```"),
         configs=[AgentConfig(name="worker", description="adds")],
     )
@@ -120,7 +121,7 @@ def test_spawn_wait_and_send_from_the_shell():
     )
     from helpers import StubLLM
 
-    flow = Flow(
+    flow = ScriptedFlow(
         StubLLM(lambda messages: "```repl\nsubmit(x + 2)\n```"),
         configs=[AgentConfig(name="worker")],
     )

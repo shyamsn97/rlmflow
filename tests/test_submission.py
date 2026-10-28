@@ -1,11 +1,11 @@
-from helpers import StubLLM, agent_graph, counting_replies, repl, run_result
+from helpers import ScriptedFlow, StubLLM, agent_graph, counting_replies, repl, run_result
 
-from rlmflow import CODE, DONE, AgentConfig, Flow, LocalRuntime
+from rlmflow import CODE, DONE, AgentConfig, LocalRuntime
 
 
 def test_immediate_submission_adds_no_model_turn():
     llm = StubLLM(counting_replies(repl("submit('answer')")))
-    flow = Flow(llm, runtime=LocalRuntime(repl_timeout=5))
+    flow = ScriptedFlow(llm, runtime=LocalRuntime(repl_timeout=5))
     g, root = agent_graph("Answer.")
 
     assert run_result(flow, g, root) == "answer"
@@ -16,7 +16,7 @@ def test_immediate_submission_adds_no_model_turn():
 
 def test_stdout_submission_is_accepted_without_an_extra_turn():
     llm = StubLLM(counting_replies(repl("print('count=4')\nsubmit('Answer: 4')")))
-    flow = Flow(llm, runtime=LocalRuntime(repl_timeout=5))
+    flow = ScriptedFlow(llm, runtime=LocalRuntime(repl_timeout=5))
     g, root = agent_graph("Count the records.")
 
     assert run_result(flow, g, root) == "Answer: 4"
@@ -25,7 +25,7 @@ def test_stdout_submission_is_accepted_without_an_extra_turn():
 
 
 def test_finish_alias_is_gone():
-    flow = Flow(StubLLM(counting_replies(repl("finish('legacy')"), repl("submit('ok')"))))
+    flow = ScriptedFlow(StubLLM(counting_replies(repl("finish('legacy')"), repl("submit('ok')"))))
     g, root = agent_graph("Answer.")
 
     assert run_result(flow, g, root) == "ok"
@@ -35,7 +35,7 @@ def test_finish_alias_is_gone():
 
 def test_output_schema_failure_is_a_code_error_and_the_agent_retries():
     schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}
-    flow = Flow(
+    flow = ScriptedFlow(
         StubLLM(counting_replies(repl("submit({'nope': 1})"), repl("submit({'ok': True})")))
     )
     g, root = agent_graph("Return an object.")
@@ -47,7 +47,7 @@ def test_output_schema_failure_is_a_code_error_and_the_agent_retries():
 
 
 def test_output_schema_accepts_a_json_text_reply():
-    flow = Flow(StubLLM(counting_replies('{"n": 3}')))
+    flow = ScriptedFlow(StubLLM(counting_replies('{"n": 3}')))
     g, root = agent_graph("Count.")
     config = AgentConfig(output_schema={"type": "object", "properties": {"n": {"type": "integer"}}})
 
@@ -55,7 +55,7 @@ def test_output_schema_accepts_a_json_text_reply():
 
 
 def test_plain_text_reply_is_the_final_answer():
-    flow = Flow(StubLLM(counting_replies("The answer is 4.")))
+    flow = ScriptedFlow(StubLLM(counting_replies("The answer is 4.")))
     g, root = agent_graph("Answer.")
 
     assert run_result(flow, g, root) == "The answer is 4."

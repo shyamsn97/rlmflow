@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from helpers import ScriptedFlow, trailing_user_text
 from helpers import repl as block
-from helpers import trailing_user_text
 
-from rlmflow import CODE, DONE, AgentConfig, Flow, Graph, Node, Step
+from rlmflow import CODE, DONE, AgentConfig, Graph, Node, Step
 from rlmflow.agent_tools import tools as agent_tools
 from rlmflow.engine.handoff import recipients
 
@@ -46,7 +46,7 @@ def test_send_agent_queues_a_message_that_reopens_a_finished_peer():
             ),
         ]
     )
-    flow = Flow(llm)
+    flow = ScriptedFlow(llm)
     g = Graph()
     a = agent(flow, g, "speak", "a")
     b = agent(flow, g, "listen", "b")
@@ -69,7 +69,7 @@ def test_ask_agent_waits_for_the_answer_to_its_own_question():
             ("be a", block("submit(await ask_agent('b', 'ping'))")),
         ]
     )
-    flow = Flow(llm)
+    flow = ScriptedFlow(llm)
     g = Graph()
     a = agent(flow, g, "be a", "a")
     agent(flow, g, "be b", "b")
@@ -96,7 +96,7 @@ def test_connect_agent_draws_edges_and_disconnect_agent_removes_them():
             ),
         ]
     )
-    flow = Flow(llm)
+    flow = ScriptedFlow(llm)
     g = Graph()
     a = agent(flow, g, "be a", "a")
     b = agent(flow, g, "be b", "b")
@@ -117,7 +117,7 @@ def test_ask_agent_refuses_a_wait_that_would_deadlock():
             ("parent task", block("submit(await launch_agent('child task'))")),
         ]
     )
-    flow = Flow(llm)
+    flow = ScriptedFlow(llm)
     g = Graph()
     root = g.create_agent("parent task")
 
@@ -142,13 +142,13 @@ def test_a_fresh_flow_rebuilds_the_repl_from_recorded_cells(tmp_path):
     g = Graph()
     worker = g.spawn("once", config="worker")
     configs = [AgentConfig(name="worker")]
-    Flow(llm, configs=configs).run(g)
+    ScriptedFlow(llm, configs=configs).run(g)
     assert g.result(worker) == "first"
 
     g.save(tmp_path / "run")
     loaded = Graph.load(tmp_path / "run")
     loaded.send(loaded.node(worker.id), "again")
-    Flow(llm, configs=configs).run(loaded)
+    ScriptedFlow(llm, configs=configs).run(loaded)
     assert loaded.result(loaded.node(worker.id)) == 42
 
 
@@ -163,7 +163,7 @@ def test_rebuilt_agent_tools_write_nothing():
         ]
     )
     g = Graph()
-    flow = Flow(llm)
+    flow = ScriptedFlow(llm)
     a = agent(flow, g, "be a", "a")
     agent(flow, g, "be b", "b")
     flow.run(g)
@@ -171,7 +171,7 @@ def test_rebuilt_agent_tools_write_nothing():
     agents_before = len(g.agents())
 
     g.send(a, "one more")
-    Flow(
+    ScriptedFlow(
         Scripted([("one more", block("print(h.name)")), ("default-0", block("submit(1)"))]),
         configs=list(flow.configs.values()),
     ).run(g)
@@ -189,7 +189,7 @@ def test_send_agent_rejects_unknown_targets():
             ("go", block("send_agent('nobody', 'hi')")),
         ]
     )
-    flow = Flow(llm)
+    flow = ScriptedFlow(llm)
     g = Graph()
     root = g.create_agent("go")
 
@@ -208,7 +208,7 @@ def test_launch_agent_takes_a_config_name_from_the_flow():
     g = Graph()
     root = g.create_agent("go")
 
-    Flow(llm, configs=[AgentConfig(name="cheap", description="for small jobs")]).run(g)
+    ScriptedFlow(llm, configs=[AgentConfig(name="cheap", description="for small jobs")]).run(g)
 
     assert g.result(root) == "small"
     [child] = g.children(root)
@@ -223,7 +223,7 @@ def stepping_at(g: Graph, agent_node: Node) -> Step:
 
 
 def test_spawn_checks_depth_task_length_and_config_names():
-    flow = Flow(Scripted([]))
+    flow = ScriptedFlow(Scripted([]))
     g = Graph()
     leaf = agent(flow, g, "x", "leaf", max_depth=0)
     with pytest.raises(ValueError, match="max depth"):
@@ -240,7 +240,7 @@ def test_spawn_checks_depth_task_length_and_config_names():
 
 
 def test_wait_returns_results_or_running_after_the_timeout():
-    flow = Flow(Scripted([]))
+    flow = ScriptedFlow(Scripted([]))
     g = Graph()
     root = agent(flow, g, "x", "root")
     cell = g.append(root, Node(CODE, code=""))
@@ -255,7 +255,7 @@ def test_wait_returns_results_or_running_after_the_timeout():
 
 
 def test_done_checks_the_output_schema():
-    flow = Flow(Scripted([]))
+    flow = ScriptedFlow(Scripted([]))
     g = Graph()
     typed = agent(flow, g, "x", "typed", output_schema={"type": "integer"})
     assert agent_tools.done(flow, stepping_at(g, typed), "3") == 3

@@ -44,12 +44,25 @@ Each run is saved in `examples/_runs/needle-harnesses/<root>-<workers>/`. Look a
 The whole setup is a few lines of the Python API. The searcher config lives on the Flow, and the root's config is passed to the run:
 
 ```python
-searcher = AgentConfig(name="searcher", harness="claude_code", max_depth=0, description="searches one batch of files")
-flow = Flow(client_for("gpt-5-mini"), configs=[searcher], runtime=SubprocessRuntime(working_directory=workdir), tools=NEEDLE_FILE_TOOLS)
+searcher = AgentConfig(
+    name="searcher", harness="claude_code", max_depth=0, description="searches one batch of files"
+)
+flow = Flow(
+    configs=[searcher],
+    runtime=SubprocessRuntime(working_directory=workdir),
+    tools=NEEDLE_FILE_TOOLS,
+)
 
 g = Graph()
-root = g.create_agent("There are 100 text files in haystack/ ... give each batch to a `searcher` agent.")
-flow.run(g, root_config=AgentConfig(harness="pi", model="gpt-5-mini", max_depth=1, harness_options={"provider": "openai"}))
+root = g.create_agent(
+    "There are 100 text files in haystack/ ... give each batch to a `searcher` agent."
+)
+flow.run(
+    g,
+    root_config=AgentConfig(
+        harness="pi", model="gpt-5-mini", max_depth=1, harness_options={"provider": "openai"}
+    ),
+)
 ```
 
 A config's `model` means whatever its harness takes:

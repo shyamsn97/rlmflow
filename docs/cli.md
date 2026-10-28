@@ -52,11 +52,11 @@ from rlmflow.llm import client_for
 
 def build() -> Flow:
     return Flow(
-        client_for("gpt-5", reasoning_effort="low"),
+        llm_clients={"gpt-5": client_for("gpt-5", reasoning_effort="low")},
         runtime=LocalRuntime(working_directory="."),
         tools=[FILE_TOOLS, my_tool],
         configs=[
-            AgentConfig(max_depth=1, max_iters=40),
+            AgentConfig(model="gpt-5", max_depth=1, max_iters=40),
             AgentConfig(name="worker", model="gpt-5-mini", output_schema=CODING_HANDOFF_SCHEMA),
         ],
     )

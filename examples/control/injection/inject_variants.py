@@ -32,9 +32,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rlmflow import AGENT_START, LLM_OUTPUT, Flow, Graph, Node
+from rlmflow import AGENT_START, LLM_OUTPUT, AgentConfig, Flow, Graph, Node, json_schema_for
 from rlmflow.graph.graph import FROM
-from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -95,9 +94,7 @@ def default_source() -> Path:
 def delegating_turn(g: Graph, agent: Node) -> Node:
     """The most recent model turn of this agent whose block launched sub-agents."""
     launchers = {
-        edge.target
-        for child in g.children(agent)
-        for edge in g.edges(kind=FROM, source=child.id)
+        edge.target for child in g.children(agent) for edge in g.edges(kind=FROM, source=child.id)
     }
     for node in reversed(g.history(agent)):
         if node.type == LLM_OUTPUT and node.id in launchers:
@@ -186,11 +183,15 @@ def main() -> None:
     direct = steer(g, baseline, ROOT_DIRECT_SCAN_PROMPT, "variant_root")
 
     # One run drives every unfinished agent in the graph: both forks, in parallel.
-    flow = Flow(client_for(args.model))
+    flow = Flow(configs=[AgentConfig(model=args.model, max_depth=2)])
+    # The roots run with the baseline's root config, so they answer in its schema.
+    root_config = AgentConfig(
+        model=args.model, output_schema=json_schema_for(WordSearchResult), max_depth=2
+    )
     out_dir = args.out.resolve() / "variants"
 
     async def run_variants() -> None:
-        stream = checkpoint_stream(flow.run_streaming(g), g, out_dir)
+        stream = checkpoint_stream(flow.run_streaming(g, root_config=root_config), g, out_dir)
         async for step in stream:
             print(f"step: {g.path(step.agent)} -> {step.node.type}")
 

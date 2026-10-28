@@ -182,7 +182,9 @@ def coding_configs(options: RunOptions) -> list[Any]:
     """The coding agent's ``default`` config, and a ``worker`` config whose agents report what they changed."""
     from rlmflow import CODING_HANDOFF_SCHEMA, AgentConfig
 
-    default = AgentConfig(max_depth=options.max_depth, max_iters=options.max_iters)
+    default = AgentConfig(
+        model=options.model, max_depth=options.max_depth, max_iters=options.max_iters
+    )
     worker = AgentConfig(
         name="worker",
         model=options.fast_model,
@@ -209,8 +211,10 @@ def build_flow(options: RunOptions, *, workdir: Path) -> Any:
     )
     effort = options.reasoning_effort
     return Flow(
-        client_for(options.model, reasoning_effort=effort),
-        llm_clients={options.fast_model: client_for(options.fast_model, reasoning_effort=effort)},
+        llm_clients={
+            name: client_for(name, reasoning_effort=effort)
+            for name in (options.model, options.fast_model)
+        },
         configs=coding_configs(options),
         runtime=runtime,
         tools=[FILE_TOOLS] if options.tools == "files" else None,

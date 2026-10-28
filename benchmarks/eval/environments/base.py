@@ -239,9 +239,9 @@ class EnvironmentEpisode:
 class EnvironmentFlow(Flow):
     """Flow binding graph ownership to a shared environment episode."""
 
-    def __init__(self, *args: Any, environment: EnvironmentEpisode, **kwargs: Any) -> None:
+    def __init__(self, *, environment: EnvironmentEpisode, **kwargs: Any) -> None:
         self.environment = environment
-        super().__init__(*args, **kwargs)
+        super().__init__(**kwargs)
 
     def create_root(
         self,

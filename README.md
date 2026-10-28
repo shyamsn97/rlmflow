@@ -143,7 +143,7 @@ Configs are named and live on the Flow; the graph only records which one each ag
 ```python
 from rlmflow import AgentConfig
 
-flow = Flow(client_for("gpt-5"), configs=[AgentConfig(name="claude", harness="claude_code")])
+flow = Flow(configs=[AgentConfig(model="gpt-5"), AgentConfig(name="claude", harness="claude_code")])
 flow.run(task)
 ```
 
@@ -198,12 +198,12 @@ If `chunk_2` launched `candidate_a` and `candidate_b` internally, the parent can
 The graph is the run itself:
 
 ```python
-from rlmflow import Flow, Graph
+from rlmflow import AgentConfig, Flow, Graph
 
 g = Graph()
 root = g.create_agent(query)          # only writes to the graph; nothing runs yet
 
-flow = Flow(client)
+flow = Flow(configs=[AgentConfig(model="gpt-5-mini")])
 async for step in flow.run_streaming(g):
     print(g.path(step.agent), step.node.type)
 ```
@@ -248,13 +248,11 @@ This example builds a simple coding agent with file tools in a local working dir
 ```python
 from pathlib import Path
 
-from rlmflow.llm import OpenAIClient
 from rlmflow import FILE_TOOLS, AgentConfig, Flow, Graph, LocalRuntime
 
 workdir = Path("examples/_runs/quickstart")
 
 flow = Flow(
-    OpenAIClient(model="gpt-5"),
     runtime=LocalRuntime(working_directory=workdir),
     tools=[FILE_TOOLS],
     configs=[AgentConfig(name="worker", model="gpt-5-mini")],
@@ -264,7 +262,7 @@ g = Graph()
 query = "Build a Python text-based adventure game with combat and inventory."
 root = g.create_agent(query)
 
-async for step in flow.run_streaming(g, root_config=AgentConfig(max_depth=2, max_iters=20)):
+async for step in flow.run_streaming(g, root_config=AgentConfig(model="gpt-5", max_depth=2, max_iters=20)):
     print(g.path(step.agent), step.node.type)
 
 print(g.result(root))
@@ -282,7 +280,7 @@ The short version of each thing you can do; every heading links to [Usage](docs/
 **[Run a task](docs/usage.md#run-a-task).** Keyword arguments become REPL variables:
 
 ```python
-flow = Flow(client_for("gpt-5-mini"))
+flow = Flow(configs=[AgentConfig(model="gpt-5-mini")])  # "default": roots and plain launches
 flow.run("Add a and b", a=2, b=3)                  # 5
 ```
 
@@ -298,13 +296,13 @@ submit(next(r for r in results if r))
 
 ```python
 worker = AgentConfig(name="worker", model="gpt-5-mini", max_depth=0, output_schema=Finding)
-flow = Flow(client_for("gpt-5"), configs=[worker])
+flow = Flow(configs=[AgentConfig(model="gpt-5"), worker])
 ```
 
 **[Give agents tools](docs/usage.md#tools)** and a **[sandbox](docs/usage.md#runtimes-and-workspaces)**:
 
 ```python
-flow = Flow(llm, tools=[FILE_TOOLS, my_tool], runtime=DockerRuntime("rlmflow:local"), workspaces=GitWorktrees("."))
+flow = Flow(tools=[FILE_TOOLS, my_tool], runtime=DockerRuntime("rlmflow:local"), workspaces=GitWorktrees("."))
 ```
 
 **[Stream, stop, look, continue](docs/usage.md#stream-and-stop)** and **[query the graph](docs/usage.md#read-the-graph)**:
@@ -376,10 +374,10 @@ from rlmflow.llm import client_for
 
 def build() -> Flow:
     return Flow(
-        client_for("gpt-5", reasoning_effort="low"),
+        llm_clients={"gpt-5": client_for("gpt-5", reasoning_effort="low")},
         runtime=LocalRuntime(working_directory="."),
         tools=[FILE_TOOLS],
-        configs=[AgentConfig(max_depth=2, max_iters=40)],   # "default": roots and plain launches
+        configs=[AgentConfig(model="gpt-5", max_depth=2, max_iters=40)],   # "default": roots and plain launches
     )
 ```
 
@@ -414,11 +412,11 @@ from rlmflow.flow import FlowLLM
 def ask(llm: LLMClient, q: str) -> str:
     return llm.chat([{"role": "user", "content": q}])
 
-ask(OpenAIClient(model="gpt-4o-mini"), "2+2?")                      # one LLM call
-ask(FlowLLM(rlmflow.Flow(OpenAIClient(model="gpt-4o-mini"))), "2+2?")  # full agent loop
+ask(OpenAIClient(model="gpt-4o-mini"), "2+2?")                                        # one LLM call
+ask(FlowLLM(rlmflow.Flow(), rlmflow.AgentConfig(model="gpt-4o-mini")), "2+2?")  # full agent loop
 ```
 
-Nest agents by passing one `FlowLLM(inner_flow)` as another flow's `llm`. See [`examples/drop_in_llm.py`](examples/drop_in_llm.py).
+Nest agents by registering one `FlowLLM` in another flow's `llm_clients` and naming it as a config's `model`. See [`examples/drop_in_llm.py`](examples/drop_in_llm.py).
 
 ## Stream and inspect
 
@@ -628,12 +626,11 @@ Because a run is a durable graph rather than a one-way transcript, a second agen
 import dspy
 import rlmflow
 from rlmflow import AgentConfig
-from rlmflow.llm import OpenAIClient
 from rlmflow.flow import FlowLLM
 from rlmflow.integrations.dspy import DSPyFlow
 
-flow = rlmflow.Flow(OpenAIClient(model="gpt-4o-mini"))
-agent = FlowLLM(flow, root_config=AgentConfig(max_depth=1, max_iters=5))
+flow = rlmflow.Flow()
+agent = FlowLLM(flow, root_config=AgentConfig(model="gpt-4o-mini", max_depth=1, max_iters=5))
 
 dspy.configure(lm=DSPyFlow(agent, model="rlmflow/gpt-4o-mini"))
 qa = dspy.ChainOfThought("question -> answer")
@@ -644,9 +641,9 @@ Install it with `pip install rlmflow[openai,dspy]`. See [`examples/providers/dsp
 
 ## Customizable skills
 
-Give agents reusable know-how without baking it into the core prompt. Put project conventions, domain playbooks, child-agent contracts, benchmark heuristics, or lessons from previous runs in `SKILL.md` files, then load the right ones for each root or child agent.
+Give agents reusable know-how without baking it into the core prompt. Put project conventions, domain playbooks, worker contracts or lessons from previous runs in `SKILL.md` files, and add them as a prompt section: `AgentConfig(prompt={"skills": text})` for fixed text, or a harness subclass that reads them each turn.
 
-See [`docs/skills.md`](docs/skills.md) for examples of always-on skills, query-selected skills, child-only skills, and run-memory skills. [`examples/skills.py`](examples/skills.py) is the runnable minimal version.
+See [`docs/skills.md`](docs/skills.md) and [`docs/prompt_customization.md`](docs/prompt_customization.md). [`examples/skills.py`](examples/skills.py) is the runnable minimal version.
 
 ## Examples
 

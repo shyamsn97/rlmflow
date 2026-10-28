@@ -4,10 +4,10 @@ import asyncio
 import shutil
 
 import pytest
-from helpers import StubLLM, first_user, trailing_user_text
+from helpers import ScriptedFlow, StubLLM, first_user, trailing_user_text
 from helpers import reasoning_repl as block
 
-from rlmflow import CODE, AgentConfig, Flow, GitWorktrees, Graph
+from rlmflow import CODE, AgentConfig, GitWorktrees, Graph
 from rlmflow.engine.workspaces import git
 from rlmflow.runtime import LocalRuntime
 
@@ -49,7 +49,9 @@ def test_cells_run_in_the_agents_worktree_and_carry_snapshots(repo):
         )
 
     workspaces = GitWorktrees(repo)
-    flow = Flow(StubLLM(reply), runtime=LocalRuntime(repl_timeout=10), workspaces=workspaces)
+    flow = ScriptedFlow(
+        StubLLM(reply), runtime=LocalRuntime(repl_timeout=10), workspaces=workspaces
+    )
     g = Graph()
     root = g.create_agent("edit")
     run(flow, g)
@@ -83,7 +85,7 @@ def test_children_start_from_the_parents_files_in_their_own_worktrees(repo):
 
     g = Graph()
     root = g.create_agent("lead")
-    flow = Flow(
+    flow = ScriptedFlow(
         StubLLM(reply),
         configs=[AgentConfig(name="worker")],
         runtime=LocalRuntime(repl_timeout=10),
@@ -112,7 +114,9 @@ def test_a_fork_rebuilds_its_repl_then_restores_the_files_at_the_fork_point(repo
     g = Graph()
     root = g.create_agent("edit")
     run(
-        Flow(StubLLM(reply), runtime=LocalRuntime(repl_timeout=10), workspaces=GitWorktrees(repo)),
+        ScriptedFlow(
+            StubLLM(reply), runtime=LocalRuntime(repl_timeout=10), workspaces=GitWorktrees(repo)
+        ),
         g,
     )
     assert g.result(root) == "original"
@@ -121,7 +125,10 @@ def test_a_fork_rebuilds_its_repl_then_restores_the_files_at_the_fork_point(repo
     fork = g.fork(first, name="fork")
     g.send(fork, "resume here")
     workspaces = GitWorktrees(repo)
-    run(Flow(StubLLM(reply), runtime=LocalRuntime(repl_timeout=10), workspaces=workspaces), g)
+    run(
+        ScriptedFlow(StubLLM(reply), runtime=LocalRuntime(repl_timeout=10), workspaces=workspaces),
+        g,
+    )
 
     # The rebuilt cell appended to notes.txt again; the checkout undid that.
     assert g.result(fork) == [1, "base\none\n"]

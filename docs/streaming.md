@@ -8,7 +8,7 @@ from rlmflow import Flow, Graph, Node
 g = Graph()
 root = g.create_agent("Audit this repository.")
 
-flow = Flow(client)
+flow = Flow(configs=[AgentConfig(model="gpt-5-mini")])
 async for item in flow.run_streaming(g):
     if isinstance(item, Node):
         print(g.path(g.node(item.agent_id)), item.type)
@@ -425,7 +425,7 @@ TaskQueue._run
 `TaskQueue` invokes orchestration directly. `Pool` is used only around compute calls, so a parent awaiting children cannot reserve a scarce compute slot.
 
 ```python
-flow = Flow(client, workers=16)
+flow = Flow(workers=16)
 ```
 
 `workers=16` bounds synchronous model calls to sixteen threads. A custom Pool can apply a different capacity or placement policy.

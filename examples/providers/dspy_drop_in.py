@@ -19,7 +19,6 @@ import dspy
 from rlmflow import AgentConfig, Flow
 from rlmflow.flow import FlowLLM
 from rlmflow.integrations.dspy import DSPyFlow
-from rlmflow.llm.openai import OpenAIClient
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -29,9 +28,7 @@ from common import save_example_graph  # noqa: E402
 
 
 def main() -> None:
-    agent = FlowLLM(
-        Flow(OpenAIClient(model="gpt-4o-mini")), AgentConfig(max_depth=1, max_iters=5)
-    )
+    agent = FlowLLM(Flow(), AgentConfig(model="gpt-4o-mini", max_depth=1, max_iters=5))
 
     dspy.configure(lm=DSPyFlow(agent, model="rlmflow/gpt-4o-mini"))
 

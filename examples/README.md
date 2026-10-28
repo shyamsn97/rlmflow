@@ -143,11 +143,10 @@ The Docker runtime needs only the core package and the host `docker` CLI. Instal
 For fully locked-down local runs, pass a `DockerRuntime`:
 
 ```python
-from rlmflow import DockerRuntime, Flow
-from rlmflow.llm import OpenAIClient
+from rlmflow import AgentConfig, DockerRuntime, Flow
 
 runtime = DockerRuntime("rlmflow:local", working_directory="./proj")
-flow = Flow(OpenAIClient(model="gpt-4o"), runtime=runtime)
+flow = Flow(configs=[AgentConfig(model="gpt-4o")], runtime=runtime)
 ```
 
 ## Smoke runner

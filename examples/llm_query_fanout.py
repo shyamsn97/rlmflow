@@ -74,14 +74,14 @@ def root_repl_block() -> str:
 
 def main() -> None:
     llm = GuidedLLM()
-    flow = Flow(llm, workers=3)
+    flow = Flow(llm_clients={"guided": llm}, workers=3)
 
     g = Graph()
     root = g.create_agent(
         "Classify the reviews. Fan out `llm_query(prompt)` with "
         "`await asyncio.gather(...)`, then call submit(...) with one line per review.",
     )
-    config = AgentConfig(max_depth=0, max_iters=3)
+    config = AgentConfig(model="guided", max_depth=0, max_iters=3)
     out_dir = example_run_dir("llm-query-fanout")
 
     async def drive() -> None:

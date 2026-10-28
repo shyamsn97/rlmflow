@@ -101,8 +101,13 @@ class DockerRuntime(Runtime):
     @property
     def location(self) -> str:
         workdir = self.options["workdir"] or "/"
-        mounted = ", ".join(f"`{container}` is `{Path(host).resolve()}`" for host, container in (self.options["mounts"] or {}).items())
-        return f"a Docker container, working in `{workdir}`" + (f" ({mounted} on this machine)" if mounted else "")
+        mounted = ", ".join(
+            f"`{container}` is `{Path(host).resolve()}`"
+            for host, container in (self.options["mounts"] or {}).items()
+        )
+        return f"a Docker container, working in `{workdir}`" + (
+            f" ({mounted} on this machine)" if mounted else ""
+        )
 
     def connect(self, directory: Path | None = None) -> PopenConnection:
         # The container mounts ``working_directory``; per-agent directories don't apply.

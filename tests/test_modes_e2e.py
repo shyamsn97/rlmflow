@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from helpers import StubLLM
+from helpers import ScriptedFlow, StubLLM
 from helpers import reasoning_repl as block
 
 from rlmflow import CODE, WAITING, AgentConfig, Flow, Graph
@@ -73,7 +73,7 @@ def env(tmp_path, monkeypatch):
 
 
 def worker_flow() -> Flow:
-    return Flow(
+    return ScriptedFlow(
         StubLLM(lambda messages: WORKER),
         configs=[AgentConfig(name="worker", description="Counts x's in one chunk.")],
     )
