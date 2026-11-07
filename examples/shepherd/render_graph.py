@@ -28,8 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from rlmflow import AGENT_START, DONE, LLM_OUTPUT, MESSAGE, Graph, Node
-from rlmflow.graph.graph import FROM
+from rlmflow import DONE, LLM, MESSAGE, SPAWN, Agent, Graph
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1]
 RUN_DIR = EXAMPLES_DIR / "_runs" / "shepherd"
@@ -69,11 +68,10 @@ BOARD_CHARS = frozenset("# .$*@+") | frozenset(BOX_IDS) | frozenset(BOX_ON_GOAL_
 
 # One colour per Node type, for the node-level figure.
 NODE_COLORS = {
-    "agent_start": "#4285f4",
-    "llm_output": "#a855f7",
+    "llm": "#a855f7",
     "code": "#94a3b8",
     "message": "#0ea5a4",
-    "waiting": "#f5a524",
+    "idle": "#f5a524",
     "done": "#34a853",
 }
 NODE_FALLBACK = "#cbd5e1"
@@ -109,20 +107,20 @@ class Branch:
         return "fresh board" if kept == 0 else f"keeps {kept} push{'es' if kept > 1 else ''}"
 
 
-def load_run(run_dir: Path) -> tuple[Graph, Node, Node]:
+def load_run(run_dir: Path) -> tuple[Graph, Agent, Agent]:
     """The saved run graph, with its worker and shepherd agents."""
     g = Graph.load(run_dir / "graph")
-    tops = {a.name: a for a in g.nodes(AGENT_START) if g.launcher(a) is None}
+    tops = {a.name: a for a in g.roots()}
     if "worker" not in tops or "shepherd" not in tops:
         raise SystemExit(f"{run_dir} holds no shepherd run")
     return g, tops["worker"], tops["shepherd"]
 
 
-def llm_turns(g: Graph, agent: Node) -> int:
-    return sum(node.type == LLM_OUTPUT for node in g.history(agent))
+def llm_turns(g: Graph, agent: Agent) -> int:
+    return sum(node.type == LLM for node in g.history(agent))
 
 
-def rewind_depth(g: Graph, agent: Node) -> int | None:
+def rewind_depth(g: Graph, agent: Agent) -> int | None:
     """How far this branch rewound, per the note ``prepare_branch`` left it."""
     for node in g.nodes(MESSAGE, agent=agent):
         found = re.search(r"Rewound (\d+) pushes", node["text"])
@@ -131,7 +129,7 @@ def rewind_depth(g: Graph, agent: Node) -> int | None:
     return None
 
 
-def picked_summary(g: Graph, shepherd: Node) -> str:
+def picked_summary(g: Graph, shepherd: Agent) -> str:
     for node in g.nodes(DONE, agent=shepherd):
         return str(node.get("result") or "")
     return ""
@@ -161,7 +159,7 @@ def board_rows(text: str) -> list[str]:
     return [line for line in text.splitlines() if line and set(line) <= BOARD_CHARS]
 
 
-def read_branches(g: Graph, shepherd: Node, winner: str, boards: dict[str, str]) -> list[Branch]:
+def read_branches(g: Graph, shepherd: Agent, winner: str, boards: dict[str, str]) -> list[Branch]:
     return [
         Branch(
             name=agent.name,
@@ -491,7 +489,7 @@ def build_svg(
     return c.render()
 
 
-def agent_chain(g: Graph, agent: Node) -> list:
+def agent_chain(g: Graph, agent: Agent) -> list:
     """The agent's history, in order, without descending into children."""
     return g.history(agent)
 
@@ -504,7 +502,7 @@ def rewind_marker(chain: list) -> int:
     return 0
 
 
-def build_nodes_svg(g: Graph, shepherd: Node, branches: list[Branch]) -> str:
+def build_nodes_svg(g: Graph, shepherd: Agent, branches: list[Branch]) -> str:
     """Every saved Node, one square each: the trunk, the fan, and eight chains."""
     margin, pitch, dot = 28.0, 9.0, 7.0
     label_w, row_h, note_size = 74.0, 26.0, 11.0
@@ -564,7 +562,7 @@ def build_nodes_svg(g: Graph, shepherd: Node, branches: list[Branch]) -> str:
     draw_chain(y_trunk, trunk, "shepherd", trunk_note, MUTED)
 
     # The action that launched the branches is where they hang.
-    launchers = {edge.target for child in children for edge in g.edges(kind=FROM, source=child.id)}
+    launchers = {edge.source for child in children for edge in g.edges(kind=SPAWN, target=child.id)}
     fan = next((i for i, node in enumerate(trunk) if node.id in launchers), len(trunk) - 1)
     fan_x = lane_x + fan * pitch + dot / 2
     bus_x, bus_top = lane_x - 12, y_first - 9

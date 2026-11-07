@@ -73,7 +73,7 @@
   <text x="410" y="162" class="sans eyebrow" fill="#c7d2fe">ROOT AGENT</text>
   <text x="376" y="205" class="sans heading" fill="#f8fafc">LLM + Python REPL</text>
   <rect x="376" y="225" width="208" height="39" rx="9" fill="#0f172a" stroke="#334155"/>
-  <text x="392" y="250" class="mono body" fill="#a5f3fc">launch_subagent(...)</text>
+  <text x="392" y="250" class="mono body" fill="#a5f3fc">launch_agent(...)</text>
   <text x="376" y="290" class="sans small" fill="#a5b4fc">plan  |  inspect  |  compute  |  delegate</text>
 
   <!-- Fan-out paths -->

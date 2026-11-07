@@ -6,15 +6,15 @@ import asyncio
 import concurrent.futures
 import inspect
 import threading
-import time
 import uuid
 from collections.abc import Callable
 from contextlib import nullcontext
-from contextvars import Context, ContextVar
+from contextvars import Context
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from rlmflow.graph import calls
 from rlmflow.graph.nodes import (
     Node,
     Step,
@@ -47,136 +47,57 @@ from rlmflow.runtime.repl_server import (
     WireModel,
 )
 from rlmflow.runtime.runtime import RLMFLOW_REPLAY
-from rlmflow.schema import as_json_value
 from rlmflow.utils import encode_host_value
 
 _NO_ANSWER = object()
-_RPC_CALL_ID: ContextVar[int] = ContextVar("rlmflow_rpc_call_id", default=0)
-_RPC_NAME: ContextVar[str] = ContextVar("rlmflow_rpc_name", default="")
-
-
-def current_rpc_call_id() -> int:
-    """Ordinal of the current proxied call within one execution."""
-    return _RPC_CALL_ID.get()
-
-
-def current_rpc_name() -> str:
-    """Binding name the current proxied call was made through."""
-    return _RPC_NAME.get()
 
 
 def invoke_tool_call(
     fn: Callable[..., object],
     action: Node | None,
     call_id: int,
-    restoring: bool,
     args: tuple[object, ...],
     kwargs: dict[str, object],
     *,
     name: str | None = None,
 ) -> object:
-    """Invoke or restore one proxied tool call and save successful results.
+    """Run one host tool call from the cell ``action``, or return what it saved.
 
-    ``action`` is the cell's pending ``code`` node. Receipts are keyed by
-    ``name``, the binding the code called, because call indexes are counted
-    per binding.
+    ``call_id`` counts calls to ``name`` (the binding the code called) within the
+    cell, so the n-th call gets the n-th saved result. A call with nothing saved
+    runs, and its JSON result is saved on the cell.
     """
-    started = time.perf_counter()
     metadata = get_tool_metadata(fn)
-    restore = metadata.restore if metadata is not None else None
     if name is None:
         name = metadata.name if metadata is not None else getattr(fn, "__name__", "tool")
-    calls = action.calls(name) if action is not None else {}
-    use_saved = call_id in calls if restoring else action is not None and call_id in calls
-
-    token = _RPC_CALL_ID.set(call_id)
-    name_token = _RPC_NAME.set(name)
-    try:
-        if restore is not None and use_saved:
-            saved = deepcopy(calls[call_id])
-            try:
-                result = saved if restore == "result" else restore(saved, *args, **kwargs)
-            except BaseException as exc:
-                if not restoring:
-                    _record_tool_receipt(action, name, call_id, started, restored=True, error=exc)
-                raise
-            if not restoring:
-                _record_tool_receipt(action, name, call_id, started, restored=True)
-            return result
-        try:
-            value = fn(*args, **kwargs)
-        except DoneSignal:
-            if not restoring:
-                _record_tool_receipt(action, name, call_id, started)
-            raise
-        except BaseException as exc:
-            if not restoring:
-                _record_tool_receipt(action, name, call_id, started, error=exc)
-            raise
-    finally:
-        _RPC_CALL_ID.reset(token)
-        _RPC_NAME.reset(name_token)
-
-    if restore is not None and action is None:
-        raise RuntimeError(f"cannot save {name} outside a REPL cell")
+    entry = calls.saved(action, name, call_id) if action is not None else None
+    if entry is not None:
+        restore = metadata.restore if metadata is not None else None
+        return (
+            restore(deepcopy(entry), *args, **kwargs) if restore else deepcopy(entry.get("value"))
+        )
+    value = fn(*args, **kwargs)
 
     def save(result: object) -> object:
-        if restore is None:
+        if action is None:
             return result
-        try:
-            stored = as_json_value(encode_agent_references(result))
-        except TypeError as exc:
-            raise TypeError(f"{name} returned a value that cannot be saved as strict JSON") from exc
-        action.record_call(name, call_id, deepcopy(stored))
+        receipt = metadata.receipt if metadata is not None else None
+        if receipt is not None:
+            calls.record(action, name, call_id, **receipt(result, *args, **kwargs))
+        else:
+            calls.record(action, name, call_id, value=encode_agent_references(result))
         return result
 
     if bool(metadata and metadata.is_async) and inspect.isawaitable(value):
         step = current_step()
 
         async def wait_and_save() -> object:
-            nested_token = _RPC_CALL_ID.set(call_id)
-            try:
-                context = running_step(step) if step is not None else nullcontext()
-                with context, running_cell(action):
-                    result = save(await value)
-                if not restoring:
-                    _record_tool_receipt(action, name, call_id, started)
-                return result
-            except BaseException as exc:
-                if not restoring:
-                    _record_tool_receipt(action, name, call_id, started, error=exc)
-                raise
-            finally:
-                _RPC_CALL_ID.reset(nested_token)
+            context = running_step(step) if step is not None else nullcontext()
+            with context, running_cell(action):
+                return save(await value)
 
         return wait_and_save()
-    result = save(value)
-    if not restoring:
-        _record_tool_receipt(action, name, call_id, started)
-    return result
-
-
-def _record_tool_receipt(
-    action: Node | None,
-    name: str,
-    call_id: int,
-    started: float,
-    *,
-    restored: bool = False,
-    error: BaseException | None = None,
-) -> None:
-    if action is None:
-        return
-    receipt: dict[str, Any] = {
-        "name": name,
-        "call_id": call_id,
-        "restored": restored,
-        "status": "error" if error is not None else "ok",
-        "duration_ms": round((time.perf_counter() - started) * 1000, 3),
-    }
-    if error is not None:
-        receipt["error"] = f"{type(error).__name__}: {error}"
-    action.annotate("tools.calls", receipt, append=True)
+    return save(value)
 
 
 class ReplConnection(Protocol):
@@ -341,7 +262,6 @@ class WorkerSession:
                     fn,
                     state.code,
                     message.call_id,
-                    message.restoring,
                     tuple(message.args),
                     dict(message.kwargs),
                     name=message.proxy,
@@ -365,6 +285,7 @@ class WorkerSession:
                 id=message.id,
                 ok=False,
                 error=f"{message.proxy}: {type(exc).__name__}: {exc}",
+                error_type=type(exc).__name__,
             )
         else:
             response = ProxyResponse(id=message.id, value=encode_host_value(value))
@@ -553,6 +474,4 @@ __all__ = [
     "ReplConnection",
     "WorkerRepl",
     "WorkerSession",
-    "current_rpc_call_id",
-    "current_rpc_name",
 ]

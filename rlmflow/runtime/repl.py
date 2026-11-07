@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterable, MutableMapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 
 class DoneSignal(BaseException):
@@ -186,6 +186,18 @@ class CurrentObject:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._value(), name)
 
+    def __getitem__(self, key: Any) -> Any:
+        return self._value()[key]
+
+    def __contains__(self, key: Any) -> bool:
+        return key in self._value()
+
+    def __iter__(self):
+        return iter(self._value())
+
+    def __len__(self) -> int:
+        return len(self._value())
+
     def __repr__(self) -> str:
         return repr(self._value())
 
@@ -309,11 +321,18 @@ class LocalRepl:
             raise _CellStopIteration from None
 
 
-#: The worker cannot import ``rlmflow.graph``; this must equal
-#: ``rlmflow.graph.nodes.AGENT_REF_KEY``.
+class NotYourAgent(RuntimeError):
+    """``await`` on an agent the caller did not launch."""
+
+
+#: Key of the data-only agent reference that stands in for a handle in values crossing the wire.
 AGENT_REF_KEY = "$rlmflow_agent"
 AGENTS_BINDING = "__rlmflow_agents__"
-AGENT_WAIT_TOOL = "__rlmflow_wait_agent__"
+#: Namespace keys of ``await agent`` and ``agent.send``; cell code can't name them, and
+#: they are the names their calls are saved under. The worker can't import
+#: ``rlmflow.graph``, so these must equal ``rlmflow.graph.calls.AWAIT`` and ``SEND``.
+AGENT_WAIT_TOOL = "await"
+AGENT_SEND_TOOL = "agent.send"
 
 
 class AgentReference:
@@ -334,10 +353,6 @@ def encode_agent_references(value: object) -> object:
     return value
 
 
-#: How a proxied tool's saved result rebuilds a namespace on replay.
-ToolRestore = Literal["result"] | Callable[..., Any] | None
-
-
 @dataclass(frozen=True)
 class ToolMetadata:
     name: str
@@ -347,9 +362,12 @@ class ToolMetadata:
     #: ``(flow, node) -> bool``. ``None`` means always visible. Evaluated for
     #: both the prompt and the REPL binding.
     when: Callable[..., bool] | None = None
-    #: Namespace restoration policy. ``"result"`` returns the saved value;
-    #: a callable rebuilds a tool-specific value from it.
-    restore: ToolRestore = None
+    #: Built-in tools only. ``(entry, *args, **kwargs) -> value``: what a saved call
+    #: returns instead of running; by default the entry's ``value``.
+    restore: Callable[..., Any] | None = None
+    #: Built-in tools only. ``(result, *args, **kwargs) -> fields``: what a call saves
+    #: instead of ``value=result``.
+    receipt: Callable[..., Any] | None = None
 
 
 def get_tool_metadata(fn: Any) -> ToolMetadata | None:
@@ -359,11 +377,12 @@ def get_tool_metadata(fn: Any) -> ToolMetadata | None:
 
 __all__ = [
     "ToolMetadata",
-    "ToolRestore",
     "get_tool_metadata",
     "AGENTS_BINDING",
+    "AGENT_SEND_TOOL",
     "AGENT_WAIT_TOOL",
     "AgentReference",
+    "NotYourAgent",
     "CurrentMapping",
     "CurrentObject",
     "DEFAULT_PREIMPORTS",

@@ -1,554 +1,141 @@
 # Streaming and task scheduling
 
-`Flow.run_streaming(g)` is the execution driver. It appends to the graph, yields each node and edge as it lands, applies stream boundaries, and keeps one `TaskQueue` step in flight for every ready agent, including agents added to the graph while the stream runs.
+`Flow.run_streaming(g)` is the execution driver. It keeps one step in flight for
+every ready agent, including agents added to the graph while the stream runs,
+yields a `Step` for each node as it lands, and stops at a boundary.
 
 ```python
-from rlmflow import Flow, Graph, Node
+from rlmflow import AgentConfig, Flow, Graph
 
 g = Graph()
-root = g.create_agent("Audit this repository.")
+root = g.add_agent("Audit this repository.")
 
 flow = Flow(configs=[AgentConfig(model="gpt-5-mini")])
-async for item in flow.run_streaming(g):
-    if isinstance(item, Node):
-        print(g.path(g.node(item.agent_id)), item.type)
+async for step in flow.run_streaming(g):
+    print(g.path(step.agent), step.node.type, [e.kind for e in step.edges])
 
 print(g.result(root))
 ```
 
-The graph is durable state. The queue contains only live execution state.
+The graph is durable state. The queue holds only live execution state.
 
 ```text
-durable                                      live
-──────────────────────────────────────      ─────────────────────────────
-Node trees                                  Flow.run_streaming
-  AgentStart                                  TaskQueue
-    LLMOutput                                 asyncio tasks
-      ExecAction                              Condition waiters
-        ExecOutput                            Pool / Runtime resources
+durable                      live
+─────────────────────        ───────────────────────────
+Graph                        Flow.run_streaming
+  agents, histories            TaskQueue: one task per agent
+  inboxes                      asyncio tasks, waiters
+  edges, edits                 Pool / Runtime resources
 ```
 
 ## Source map
 
-The implementation is deliberately split by responsibility:
-
-- [`rlmflow/flow.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/flow.py)
-  - `Flow.run_streaming`: the driver loop;
-  - `Flow.step`: one complete Node transition;
-  - `rlmflow.tools.launch`: child creation, submission, and joining;
-  - `rlmflow.engine.steps`: declarative `@transition` producers;
-  - `rlmflow.engine.handoff`: child `DoneOutput` → parent `UserQuery`.
-- [`rlmflow/engine/scheduler.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/engine/scheduler.py)
-  - `StepResult`: submitted Node, created Node, and infrastructure error;
-  - `TaskQueue`: active tasks, completed transitions, child-terminal wake-ups;
-  - `Pool`, `ThreadPool`, `SequentialPool`: compute placement and capacity;
-  - `resolve_boundary`: built-in and custom `until` boundary resolution.
-- [`rlmflow/graph/nodes.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/graph/nodes.py)
-  - `Node.append`, `AgentStart.leaves`, `frontier`, `terminal`, and `result`.
-
-## The execution contract
-
-The scheduler has four owners:
-
-```text
-Flow.step
-  Decides what one Node creates next.
-
-TaskQueue
-  Runs submitted leaves and reports completed transitions.
-
-Flow.run_streaming
-  Chooses successors, applies boundaries, and yields Nodes.
-
-Pool / Runtime
-  Decide where model calls and code execution run.
-```
-
-`TaskQueue` does not inspect roots, boundaries, transcripts, or graph topology. It can run Nodes from several independent graphs in the same queue.
-
-## One step, one node
-
-`Flow.step(node)` consumes one frontier Node and returns its next durable Node:
-
-```text
-AgentStart ──> complete / guards ─> LLMOutput | FinalQuery | TruncationSummary
-UserQuery  ──> complete / guards ─> LLMOutput | FinalQuery | TruncationSummary
-ExecOutput ──> complete / guards ─> LLMOutput | FinalQuery | TruncationSummary
-ErrorOutput─> complete / guards ─> LLMOutput | FinalQuery | TruncationSummary
-
-LLMOutput  ──> to_action         ─> ExecAction
-           └─> to_missing_action ─> ExecAction(code="")
-ExecAction ──> run_repl  ─> ExecOutput | ErrorOutput | ReplDead | DoneOutput | VerificationFailure
-```
-
-The queue records both sides of that step:
-
-```python
-@dataclass(slots=True)
-class StepResult:
-    submitted: Node
-    created: Node
-    error: BaseException | None = None
-
-    @property
-    def is_agent_start(self) -> bool:
-        return isinstance(self.created, AgentStart)
-```
-
-- `submitted` is the frontier passed to the driver.
-- `created` is the durable Node `Flow.step` returns.
-- `error` carries an infrastructure exception after the failure has been recorded in the graph.
-
-For a normal model turn:
-
-```text
-submitted = AgentStart("question")
-created   = LLMOutput("...")
-```
-
-For a code turn:
-
-```text
-submitted = ExecAction("print(...)")
-created   = ExecOutput("...")
-```
-
-### Why child starts are special
-
-A child `AgentStart` must appear in the stream immediately, while its first model step is already running. `TaskQueue.submit(..., publish=True)` therefore publishes:
-
-```python
-Transition(submitted=child, created=child)
-```
-
-This is a child-start notification, not the completion of the child's first step. `Transition.is_agent_start` identifies it. The queue leaves the child's active task tracked, and the driver does not submit the child a second time.
-
-Later, the real first-step transition arrives:
-
-```text
-submitted = child AgentStart
-created   = child LLMOutput
-```
-
-## TaskQueue state
-
-The queue owns three small pieces of live state:
-
-```python
-self.running: dict[int, tuple[Node, asyncio.Task[None]]]
-self.done: asyncio.Queue[Transition]
-self.changed = asyncio.Condition()
-```
-
-```text
-submit(node)
-    │
-    ├── running[id(node)] = asyncio task
-    │
-    └── _run(node)
-          │
-          ├── Flow.step(node)
-          ├── done.put(transition)
-          └── notify child joiners if terminal
-
-next()
-    │
-    ├── done.get()
-    ├── remove completed task from running
-    └── return Transition
-```
-
-### `submit`
-
-`submit(node, fn)` creates at most one active task for that exact Node:
-
-```python
-key = id(node)
-active = self.running.get(key)
-if active is not None:
-    return active[1]
-
-task = asyncio.create_task(self._run(node, fn))
-self.running[key] = (node, task)
-```
-
-The identity check prevents the driver from stepping the same frontier twice. The queue keys work by submitted Node identity, not by root or agent.
-
-### `_run`
-
-The private runner invokes transition orchestration directly and publishes the result:
-
-```python
-result = fn(node)
-transition = await result if inspect.isawaitable(result) else result
-self.done.put_nowait(transition)
-```
-
-If the transition made an agent terminal, `_run` notifies every task waiting on the queue's condition:
-
-```python
-agent = transition.created.parent_agent
-if agent.terminal:
-    async with self.changed:
-        self.changed.notify_all()
-```
-
-The notification contains no answer. The answer remains `agent.result()` in the graph.
-
-### `next`
-
-The driver has one consumer:
-
-```python
-transition = await queue.next()
-```
-
-For a completed step, `next()` removes `transition.submitted` from `running`. For the immediate child `AgentStart` publication, it keeps the task tracked because that child's first step has not completed.
-
-### `join`
-
-A parent REPL block can await several complete children:
-
-```python
-values = await asyncio.gather(*(queue.join(child) for child in children))
-```
-
-`join` waits for a predicate over durable graph state:
-
-```python
-async with self.changed:
-    await self.changed.wait_for(lambda: child.terminal)
-return child.result()
-```
-
-`asyncio.Condition.wait_for`:
-
-1. checks `child.terminal`;
-1. registers the task as a waiter if false;
-1. releases the Condition lock while sleeping;
-1. reacquires it after a notification;
-1. checks the predicate again.
-
-One child completing wakes all joiners, but each joiner checks its own child. Unfinished children go back to sleep. This supports siblings and nested delegation without a future dictionary or polling loop.
-
-### `cancel`
-
-`TaskQueue.cancel()` cancels every active transition. Passing Nodes selects a subset:
-
-```python
-await queue.cancel(root.walk())
-```
-
-Selective cancellation is what lets one parallel root hit a boundary without stopping the other roots sharing the queue.
+- [`rlmflow/flow.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/flow.py):
+  `run_streaming` (the driver loop), `_schedule`, `run_step` (one step),
+  `rerun` (a cell an edit invalidated), `deliver_results`.
+- [`rlmflow/engine/scheduler.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/engine/scheduler.py):
+  `StepResult`, `TaskQueue`, `Pool`/`ThreadPool`/`SequentialPool`, `resolve_boundary`.
+- [`rlmflow/graph/graph.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/graph/graph.py):
+  `status`, `deliver`, `busy`, `subscribe`.
 
 ## The driver loop
 
-`Flow.run_streaming(root, *roots)` is both the single-root and multi-root driver.
-
-The driver performs six phases.
-
-### 1. Normalize and validate roots
-
-String inputs become new `AgentStart` roots carrying the flow's defaults. The same root object cannot be driven twice, and one Flow permits one active driver queue:
-
-```python
-agents = [
-    self.start(item) if isinstance(item, str) else item
-    for item in (root, *roots)
-]
-
-if self.queue is not None:
-    raise RuntimeError("this Flow is already driving a stream")
+```text
+subscribe to the graph (every landed node is queued for the stream)
+open toolkits
+deliver unseen results to every agent that is between turns
+schedule
+loop while anything is in flight:
+    result = await queue.next()          # a finished step, or a wake-up
+    if a step finished: unmark busy, deliver results to its agent and its parent
+    yield a Step for every node that landed since; stop if the boundary says so
+    notify waiters (cells awaiting agents re-check the graph)
+    re-raise a root's infrastructure error
+    schedule
+finally: unsubscribe, cancel what's in flight, close toolkits
 ```
 
-Pass every root to one `run_streaming` call instead of opening competing generators on one Flow.
+`_schedule` goes through every agent whose `g.status` is `"running"` and has no
+step in flight: it sends the budget's final-turn message if the run is nearly
+out of tokens, moves the inbox into the history (`g.deliver`), marks the agent
+busy and submits `run_step`.
 
-### 2. Restore cold graphs
+Because the loop reacts to graph writes, anything that writes to the graph during
+a stream (a cell launching an agent, a peer's message, a host thread calling
+`g.send`) wakes the driver, and the new work is scheduled on the next pass.
 
-A graph loaded from disk has durable Nodes but no live REPL namespace. Before scheduling, the Flow either:
+## One step, one node
 
-- replays recorded `ExecAction`s when `restore="replay"`; or
-- appends a cold-REPL notice when `restore="lazy"`.
-
-Terminal agents are not replayed or submitted.
-
-### 3. Seed current leaves
-
-Every unfinished leaf across every root enters the same queue:
-
-```python
-for agent in agents:
-    for leaf in agent.leaves():
-        owner = leaf.parent_agent
-        if owner is not None and not owner.terminal:
-            queue.submit(leaf, self.step)
-```
-
-The roots are only used to discover initial leaves. Once submitted, `TaskQueue` treats every item as an independent Node.
-
-### 4. Consume one transition
-
-One driver consumes the shared completion queue:
-
-```python
-transition = await queue.next()
-node = transition.created
-root = node.root
-```
-
-The created Node identifies its root. The queue does not route by graph.
+`run_step(step)` either runs a pending cell again, or calls the agent's harness
+and appends the node it returns. The native `repl` harness:
 
 ```text
-                       one TaskQueue
-              ┌────────────────────────┐
-root A leaves ─>                        │
-root B leaves ─> running tasks         │
-root C leaves ─>                        │
-              │                        │
-              │ completed transitions ───> one driver loop
-              └────────────────────────┘          │
-                                                  ├─> root A boundary/feed
-                                                  ├─> root B boundary/feed
-                                                  └─> root C boundary/feed
+last node is none, a message or code  -> call the model          -> llm
+last node is llm with one repl block  -> run the cell            -> code, then done if it submitted
+last node is llm with no repl block   -> the reply is the answer -> done
 ```
 
-There is one queue and one consumer, so transitions cannot be stolen by competing stream loops.
+A cell lands pending when it starts, and is filled in when it finishes.
 
-### 5. Yield, check the boundary, or feed the successor
+Session harnesses (`claude_code`, `pi`, `interactive`) run one session turn per
+step; cells the session runs through `rlmflow repl` land as `code` nodes during
+the turn, and the turn ends with `idle` (it is waiting for agents it launched or
+for unread results) or `done`.
 
-The created Node is yielded before its boundary is applied:
+A step that raises lands `done` with the error as its result. Cancellation is
+not caught.
+
+## TaskQueue
 
 ```python
-yield node
-
-stop = boundary is not None and boundary(node, root)
-if stop:
-    driving.discard(id(root))
-    await queue.cancel(root.walk())
-else:
-    extra = handoff.apply(node)
-    if not transition.is_agent_start and not node.parent_agent.terminal:
-        if node.parent_agent.frontier is node:
-            queue.submit(node, self.step)
-    for leaf in extra:
-        queue.submit(leaf, self._drive)
+queue.submit(step, fn)  # run fn(step) unless this agent already has a step in flight
+await queue.next()  # the next StepResult, or None when only woken
+queue.wake()  # ask the driver to look for new work; safe from any thread
+await queue.join(pred)  # wait until pred() holds after some processed change
+await queue.cancel()  # cancel every step (or some agents')
 ```
 
-The cases are:
-
-- **boundary matched**: stop this root and cancel only its active work;
-- **root terminal**: do not submit another root step, but keep draining any non-blocking descendants;
-- **child start publication**: its first step is already running, so do nothing;
-- **child finished**: enqueue the result on the launching parent; if that parent is sitting on `ExecOutput` (or `DoneOutput` with `resume_on_child_done`), append a `UserQuery` and submit that instead;
-- **ordinary nonterminal transition**: submit the created Node as the next leaf.
-
-This is the self-feeding loop:
-
-```text
-submit leaf
-    │
-    v
-Flow.step
-    │
-    v
-Transition.created
-    │
-    ├── boundary ───────────> stop this root
-    ├── terminal agent ─────> no successor (unless a child-handoff wakes it)
-    └── unfinished agent ───> submit created Node, or the handoff UserQuery
-```
-
-### 6. Clean up
-
-Every exit path cancels remaining queue tasks and clears `flow.queue`. `close_repls=True` additionally closes every agent REPL under every driven root.
-
-```python
-finally:
-    await queue.cancel()
-    self.queue = None
-```
-
-`await flow.aclose()` also closes the Pool and every REPL owned by the Runtime.
-
-## Delegation timeline
-
-`launch_subagent` runs inside the parent agent's `ExecAction` step. A parent can start independent calls together with `asyncio.gather`.
-
-```text
-parent ExecAction task
-    │
-    ├─ create child A AgentStart
-    ├─ create child B AgentStart
-    │
-    ├─ queue.submit(A, publish=True)
-    ├─ queue.submit(B, publish=True)
-    │
-    └─ await gather(queue.join(A), queue.join(B))
-            │                         │
-            │                         │
-driver: A start, A transitions        │
-driver: B start, B transitions        │
-            │                         │
-            └──── terminal ───────────┘
-                         │
-                         v
-              parent REPL resumes
-                         │
-                         v
-              parent ExecOutput / DoneOutput
-```
-
-The parent task remains suspended at an ordinary `await`. It does not block the event-loop thread and does not occupy a bounded Pool compute slot. Child steps use the same queue and Pool as every other step.
-
-Child results preserve input order because `asyncio.gather` returns values in the order of its awaitables, even when children complete in a different order.
+`await child` in a cell is a `join` on "the child is done". It runs on the
+Flow's event loop, so a cell blocked on a child doesn't hold a pool slot.
 
 ## Pool versus Runtime
 
-The scheduler separates lightweight orchestration from bounded compute:
-
-```text
-TaskQueue._run
-    │
-    └─ Flow._drive(node)               orchestration; no scarce slot
-          │
-          ├─ complete
-          │    └─ PooledLLMClient(...)
-          │         └─ Pool.stream(client.stream)
-          │
-          └─ run_repl
-               └─ Runtime.execute(...)
-                                              REPL/runtime placement
-```
-
-`ThreadPool.stream` sends synchronous producers to a thread executor and holds the placement slot until iteration ends. Async streams are consumed directly under the same lifetime policy. `SequentialPool.stream` holds one lock for the full stream.
-
-`TaskQueue` invokes orchestration directly. `Pool` is used only around compute calls, so a parent awaiting children cannot reserve a scarce compute slot.
-
-```python
-flow = Flow(workers=16)
-```
-
-`workers=16` bounds synchronous model calls to sixteen threads. A custom Pool can apply a different capacity or placement policy.
+`Pool` places model compute: `ThreadPool(workers)` bounds how many model calls
+run at once, `SequentialPool` runs one at a time. `Runtime` places code: one REPL
+per agent, in a worker process, container or sandbox. A parent awaiting its
+children holds neither.
 
 ## Stream boundaries
 
-`until` is checked after a Node is yielded and before its successor is submitted:
+| `until` | Stops after |
+| --- | --- |
+| `"done"` (default) | Nothing is ready or in flight. |
+| `"next"` | The next node a step produced (messages are written by senders, so they don't count). |
+| `"idle"` | The next `code`, `idle` or `done`. |
+| a callable | The first `step` for which `until(step)` is true. |
 
-- `"done"` / `"finished"`: run each root and drain queued descendants;
-- `"next"`: stop each root after its next created Node;
-- `"idle"`: stop on `ExecOutput` or `DoneOutput`;
-- `"error"`: stop on `ErrorOutput`;
-- callable: receives `(node, root)` and returns a boolean.
-
-```python
-async for node in flow.run_streaming(root, until="next"):
-    ...
-```
-
-Custom boundary:
-
-```python
-from rlmflow import DoneOutput, ExecOutput
-
-def parent_idle(node, root):
-    return (
-        node.parent_agent is root
-        and isinstance(node, (ExecOutput, DoneOutput))
-    )
-
-async for node in flow.run_streaming(root, until=parent_idle):
-    ...
-```
-
-For several roots, the same boundary is evaluated with the root belonging to each created Node. A match stops only that root.
-
-Call `run_streaming` again with a stopped root to resume from its current leaves.
-
-## Parallel roots
-
-`run_streaming` can drive multiple roots directly:
-
-```python
-async for node in flow.run_streaming(root_a, root_b, root_c):
-    print(node.root.content, node.type)
-```
-
-All roots share:
-
-- one `TaskQueue`;
-- one driver consumer;
-- the Flow's Pool capacity;
-- model clients, tools, and Runtime.
-
-The roots must be distinct objects. Trees that reuse agent ids may also share REPL identity and should not be driven together.
+Stopping cancels the steps still in flight. A cell cut off mid-run stays
+pending, keeping what it saved: the agents it launched keep running on the next
+stream, and the next run executes the cell again in place, so its launches
+return the same agents and its finished awaits their saved results. Nothing a
+child did is paid for twice. Any other step that was cut off (a model call, a
+session turn) runs again. A run saved mid-cell loads the same way.
 
 ## Ordering
 
-The stream follows queue completion order, not depth-first tree order.
+Nodes are yielded in the order they landed. Within one agent that is its history
+order; across agents it is completion order, which `seq` records.
 
-```text
-submitted: A1, B1
-completed: B1, A1
-yielded:   B1.created, A1.created
-```
+## Failure behaviour
 
-Within one agent, `Node.append` preserves a single transcript chain and `seq` preserves that agent's local order. Across agents and roots, completion order is intentionally nondeterministic.
-
-`asyncio.gather` returns child answers in call order. That promise does not change stream completion order.
-
-## Failure behavior
-
-Agent code failure and infrastructure failure are different.
-
-### Agent code failure
-
-An exception raised by code inside the REPL becomes an `ErrorOutput`. The agent can read the traceback and recover on its next model turn.
-
-```text
-ExecAction -> ErrorOutput -> LLMOutput -> ...
-```
-
-### Infrastructure failure
-
-An exception from model/runtime orchestration is caught by `Flow.step`. The step:
-
-1. appends a terminal `DoneOutput` containing the failure;
-1. returns `Transition(..., error=exception)`.
-
-A child failure is therefore a durable child result that its parent can receive. A root failure is yielded as a Node and then re-raised to the stream caller.
-
-`asyncio.CancelledError` is not converted into a Node. Cancellation means the caller stopped live work; the unchanged frontier can be resumed later.
-
-## Cancellation and explicit close
-
-Breaking from an async loop does not communicate a durable boundary by itself. Close the generator when managing it manually:
-
-```python
-stream = flow.run_streaming(root)
-try:
-    async for node in stream:
-        if should_stop(node):
-            break
-finally:
-    await stream.aclose()
-```
-
-Prefer `until=` when the stop condition is known. The driver then yields the matching Node, cancels that root's active tasks, and leaves the graph at a clear resume point.
-
-Stopping while a parent `ExecAction` awaits children cancels that parent block. Resuming re-executes the block from its frontier, so boundaries on the parent's own `ExecOutput` or `DoneOutput` are safer pause points for delegated work.
+Agent code that raises is an observation: the `code` node records the error and
+the model sees it next turn. A step that raises (a provider error, a harness
+crash) finishes its agent with `done` and an error; for a root it is also
+re-raised from the stream.
 
 ## Scheduler invariants
 
-The implementation relies on these invariants:
-
-1. An agent has one frontier and one transcript successor chain.
-1. Only a frontier is submitted for a step.
-1. A submitted Node has at most one active queue task.
-1. Every non-cancelled step creates a durable Node.
-1. A child `AgentStart` publication does not complete or duplicate its first step.
-1. The graph owns terminal status and results; the Condition only wakes waiters.
-1. One driver consumes one queue, including for parallel roots.
-1. Boundaries are applied by the driver, never by `TaskQueue`.
-1. Pool slots are used for compute, not while parents wait for children.
-
-These constraints keep the queue small: it executes leaves and reports transitions, while the graph and driver retain all domain behavior.
+1. One step per agent in flight, enforced by `g.busy` and the queue.
+1. Every landed node is yielded exactly once.
+1. A message is delivered only at a turn boundary.
+1. Results are delivered once, recorded by `return` edges.

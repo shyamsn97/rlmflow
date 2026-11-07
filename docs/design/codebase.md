@@ -1,5 +1,9 @@
 # rlmflow, file by file
 
+> Snapshot of the package before core v2. The current layout is in
+> [file_structure.md](file_structure.md); what changed and why is in
+> [core-v2.md](core-v2.md).
+
 Every Python file under `rlmflow/`: what it is for, what is in it, and who uses
 it. Line counts are current; "+ x.py" names the modules a file absorbed in the
 flattening pass. The package layout and its import rules are in
@@ -297,12 +301,12 @@ registers per-launch verifiers. `fork_agent` branches an agent's history.
 
 ### `tools/messaging.py` — 211 lines (was `graph_tools.py`)
 
-`send_agent`, `ask_agent`, `connect_agent`/`disconnect_agent` (through
-`Graph.add_edge`/`remove_edge`), and `waiting`, which refuses wait cycles.
+`send_agent` (agent code calls it as `Agent.send`), which returns the target `Agent`, and `waiting`,
+which refuses wait cycles.
 
 ### `tools/agents_view.py` — 468 lines (was `directory.py`)
 
-The read-only `AGENTS` snapshot (`AgentDirectory`, `AgentInfo`), `AgentHandle`,
+The read-only `AGENTS` snapshot (`AgentDirectory`, `AgentRecord`), `Agent`,
 and `resolve_agent`/`agent_handle` for turning a selector into an agent.
 
 ### `tools/files.py` — 167 lines (`filesystem.py` + `coding.py`)

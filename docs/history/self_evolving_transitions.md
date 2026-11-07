@@ -21,9 +21,7 @@ means:
 If experiments show value in letting an agent set the objective of its own next turn, add a separate control primitive:
 
 ```python
-continue_with(
-    "Try to falsify the current candidate with focused tests before changing it."
-)
+continue_with("Try to falsify the current candidate with focused tests before changing it.")
 ```
 
 That call should land one durable `ContinuationQuery` directly after the current `ExecAction`. It records the actual next edge taken; it does not create a reusable behavior, mutate future edges, or pretend to be a workflow optimizer.
@@ -349,9 +347,7 @@ review = launch_subagent(
     task="Review the current implementation for correctness.",
 )
 
-continue_with(
-    "A review is running. Independently run focused tests before waiting for it."
-)
+continue_with("A review is running. Independently run focused tests before waiting for it.")
 ```
 
 The graph is:
@@ -375,9 +371,7 @@ if result.failed:
         "and revise the implementation without unrelated cleanup."
     )
 
-continue_with(
-    "The focused tests passed. Inspect the final diff and run regression checks."
-)
+continue_with("The focused tests passed. Inspect the final diff and run regression checks.")
 ```
 
 The model writes only the edge it is taking. It does not author hypothetical future nodes it may never visit.

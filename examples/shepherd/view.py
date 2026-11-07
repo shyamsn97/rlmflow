@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from rlmflow import AGENT_START, CODE, DONE, LLM_OUTPUT, Edge, Flow, Graph, Node, Step
+from rlmflow import CODE, DONE, LLM, Agent, Edge, Flow, Graph, Node, Step
 from rlmflow.consumers import StreamConsumer
 from rlmflow.utils import find_repl_blocks
 
@@ -48,7 +48,7 @@ def grid_of_blocks(labeled: list[tuple[str, str]], *, cols: int = 4) -> str:
     return "\n\n".join(row for row in rows if row)
 
 
-def panel_status(flow: Flow, g: Graph, agent: Node) -> str:
+def panel_status(flow: Flow, g: Graph, agent: Agent) -> str:
     """Live one-line status for a board panel, read from the agent's REPL env."""
     env = flow.runtime.repl_for(agent).env
     pushes = env.get("pushes")
@@ -59,7 +59,7 @@ def panel_status(flow: Flow, g: Graph, agent: Node) -> str:
     # "stuck" and running out of turns look identical on the board but mean opposite
     # things. ``blocked`` only records that the last action was refused, so reading it
     # here would blame a stray illegal step for ending the branch.
-    if g.terminal(agent):
+    if g.status(agent) == "done":
         claim = str(g.result(agent) or "done").strip("[]")
         return f"{step} · {claim} (dist {env.get('dist')})"
     if env.get("blocked"):
@@ -71,9 +71,9 @@ def panel_status(flow: Flow, g: Graph, agent: Node) -> str:
 
 def trace_line(g: Graph, node: Node, labels: dict[str, str]) -> str:
     """One compact line for the streamed node."""
-    agent = g.node(node.agent_id)
+    agent = g.owner(node)
     lane = labels.get(agent.id, agent.name)
-    if node.type == LLM_OUTPUT:
+    if node.type == LLM:
         detail = (find_repl_blocks(node["text"]) or [node["text"]])[0]
     elif node.type == DONE:
         detail = f"submit({node.get('result')!r})"
@@ -131,9 +131,9 @@ class PanelViewer(StreamConsumer):
         title: str = "",
         cols: int = 4,
         every_s: float = 0.1,
-        status_of: Callable[[Node], str] | None = None,
-        board_of: Callable[[Node], str] | None = None,
-        frames_of: Callable[[Node], list[str]] | None = None,
+        status_of: Callable[[Agent], str] | None = None,
+        board_of: Callable[[Agent], str] | None = None,
+        frames_of: Callable[[Agent], list[str]] | None = None,
         frame_ms: int = 70,
         sink: Callable[[list[tuple[str, str]]], None] | None = None,
         paint: bool = True,
@@ -166,25 +166,25 @@ class PanelViewer(StreamConsumer):
         self._order: list[str] = []
         self._labels: dict[str, str] = {}
         self._blocks: dict[str, str] = {}
-        self._agents: dict[str, Node] = {}
+        self._agents: dict[str, Agent] = {}
         self._root_labels: dict[str, str] = {}
         self._last_paint = 0.0
         self._closed = False
 
-    def label(self, agent: Node, label: str) -> None:
+    def label(self, agent: Agent, label: str) -> None:
         """Give ``agent`` a lane under ``label`` (e.g. "worker"/"shepherd")."""
         self._root_labels[agent.id] = label
         if agent.id in self._labels:
             self._labels[agent.id] = label
 
-    def _default_label(self, agent: Node) -> str:
+    def _default_label(self, agent: Agent) -> str:
         return self._root_labels.get(agent.id) or agent.name
 
     def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
         item = item.node if isinstance(item, Step) else item
         if self._closed or not isinstance(item, Node):
             return
-        agents = [a for a in graph.nodes(AGENT_START) if a.id in self._root_labels]
+        agents = [a for a in graph.agents() if a.id in self._root_labels]
         for agent in agents:
             self._observe(agent, item if item.agent_id == agent.id else None)
         # Play out this turn's per-sub-step frames so a box-level push visibly walks
@@ -197,13 +197,13 @@ class PanelViewer(StreamConsumer):
             return
         self._paint()
 
-    def _safe_frames(self, agent: Node) -> list[str]:
+    def _safe_frames(self, agent: Agent) -> list[str]:
         try:
             return list(self.frames_of(agent) or [])  # type: ignore[misc]
         except Exception:  # noqa: BLE001 - a viewer must never crash a run
             return []
 
-    def _animate(self, agent: Node) -> None:
+    def _animate(self, agent: Agent) -> None:
         """Paint this turn's sub-step frames for ``agent`` in sequence (short delay
         each) so the walk-around before each shove is visible. ``frames`` is the
         current turn only (replaced each turn), so we play it once — when it differs
@@ -220,7 +220,7 @@ class PanelViewer(StreamConsumer):
             if delay and i < len(frames) - 1:
                 time.sleep(delay)
 
-    def _observe(self, agent: Node, changed: Node | None) -> None:
+    def _observe(self, agent: Agent, changed: Node | None) -> None:
         key = agent.id
         if key not in self._order:
             self._order.append(key)

@@ -109,7 +109,7 @@ def _run_cli(flow: Flow, workdir: Path) -> None:
             break
 
         g = Graph()
-        root = g.create_agent(query)
+        root = g.add_agent(query)
         asyncio.run(print_run(flow, g, graph_dir, width=20))
 
         print(f"\n{g.result(root) or '(no result)'}\n")

@@ -110,7 +110,7 @@ def run_one(root_harness: str, worker_harness: str, args: argparse.Namespace) ->
         root_config = config(root_harness, args, max_depth=1, max_iters=args.max_iters)
 
         g = Graph()
-        root = g.create_agent(TASK.format(n=args.num_files))
+        root = g.add_agent(TASK.format(n=args.num_files))
         consumers = ConsumerGroup([GraphCheckpointer(saved)])
         if not args.no_viz:
             consumers.append(

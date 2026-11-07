@@ -1,29 +1,44 @@
-"""Every graph is its own timeline: replay the log to see each earlier state."""
+"""Every graph is its own timeline: replay a run to see each earlier state.
+
+A scripted model stands in for the LLM, so this runs offline.
+"""
 
 from __future__ import annotations
 
-from rlmflow import DONE, LLM_OUTPUT, Graph, Node
+from typing import Any
+
+from rlmflow import Agent, AgentConfig, Flow, Graph
+from rlmflow.view import replay
+
+REPLIES = [
+    "```repl\nsource = 'print(1)'\nprint(len(source))\n```",
+    "```repl\nsubmit('hello.py is ' + source)\n```",
+]
 
 
-def print_history(g: Graph, agent: Node) -> None:
-    print("  " + " -> ".join(node.type for node in g.history(agent)))
+class ScriptedLLM:
+    def chat(self, messages: list[dict[str, Any]]) -> str:
+        turns = sum(message["role"] == "assistant" for message in messages)
+        return REPLIES[min(turns, len(REPLIES) - 1)]
+
+
+def print_history(g: Graph, agent: Agent) -> None:
+    print("  " + (" -> ".join(node.type for node in g.history(agent)) or "(no nodes yet)"))
 
 
 def main() -> None:
+    flow = Flow(llm_clients={"scripted": ScriptedLLM()})
     g = Graph()
-    root = g.spawn("write hello.py")
-    g.append(root, Node(LLM_OUTPUT, text='```repl\nwrite_file("hello.py", "print(1)")\n```'))
-    g.append(root, Node(DONE, result="hello.py created"))
+    root = g.add_agent("write hello.py")
+    flow.run(g, root_config=AgentConfig(model="scripted"))
+    flow.runtime.close()
 
-    # The log is append-only, so the prefix ending just before each node (with
-    # the edges that landed alongside it) is a valid earlier graph.
-    items = g.items()
-    starts = [item.seq for item in items if isinstance(item, Node)][1:] + [items[-1].seq + 1]
-    for step, end in enumerate(starts):
-        cutoff = end - 1
-        snapshot = g.as_of(cutoff)
-        print(f"\nstep {step}")
-        print_history(snapshot, snapshot.node(root.id))
+    # Agents and nodes carry the order they were added in, so the graph cut after
+    # each one (with the edges between what's kept) is a real earlier graph.
+    for step, snapshot in enumerate(replay(g)):
+        agent = snapshot.agent(root.id)
+        print(f"\nstep {step}: {snapshot.status(agent)}, result={snapshot.result(agent)!r}")
+        print_history(snapshot, agent)
 
 
 if __name__ == "__main__":

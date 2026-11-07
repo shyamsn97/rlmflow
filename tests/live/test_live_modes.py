@@ -18,6 +18,7 @@ import pytest
 from rlmflow import CODE, Graph
 from rlmflow.agent_tools.hooks import PLUGIN_DIR
 from rlmflow.cli.serve import INTERACTIVE
+from rlmflow.graph import calls
 from rlmflow.graph.config import HARNESSES
 
 pytestmark = [pytest.mark.live, pytest.mark.timeout(1800)]
@@ -127,7 +128,7 @@ def test_claude_harness_roots_find_the_needles():
     )
     assert "Correct:        True" in out
     g = Graph.load(RUNS / "mode2-filesystem")
-    [root] = [a for a in g.agents() if g.launcher(a) is None]
+    [root] = [a for a in g.agents() if g.parent(a) is None]
     assert g.children(root) and root.config.harness == HARNESSES["claude_code"]
 
 
@@ -162,7 +163,7 @@ def test_your_claude_session_as_the_root_finds_the_needle_and_forks(tmp_path):
     ]
     assert {n.data["session_id"] for n in turn_ends} == {result["session_id"]}
 
-    launching = next(n for n in g.history(root) if n.type == CODE and n.launched())
+    launching = next(n for n in g.history(root) if n.type == CODE and calls.launched(n))
     forked = subprocess.run(
         [
             sys.executable,

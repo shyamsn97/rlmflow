@@ -26,6 +26,8 @@ pip-log.txt
 .coverage
 .tox
 .cache/
+.pytest_cache/
+.ruff_cache/
 site/
 nosetests.xml
 
@@ -39,6 +41,7 @@ nosetests.xml
 test.json
 *.pickle
 venv
+.venv/
 .idea
 *.vscode/
 

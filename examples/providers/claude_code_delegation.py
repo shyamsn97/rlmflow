@@ -108,7 +108,7 @@ def main() -> None:
     )
     flow = Flow(configs=[claude], runtime=LocalRuntime(working_directory=workdir))
     g = Graph()
-    root = g.create_agent(
+    root = g.add_agent(
         "Launch two independent child agents before awaiting either one. "
         "Child one must review calculator.py and add useful docstrings without "
         "changing behavior. Child two must inspect calculator.py and create "

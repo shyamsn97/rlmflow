@@ -1,8 +1,14 @@
 # Skills
 
+## The bundled skill
+
+rlmflow ships one skill, [`orchestrate`](../rlmflow/plugin/skills/orchestrate/SKILL.md), which the Claude Code plugin loads. It covers the ways to split work across agents (subagents, fan-out, recursive trees, pipelines, review loops, peers, a DeLM-style task board on the shared store), with code and when each pays off, and the same shapes built from host code. Every agent that can launch others gets it as the `orchestration` prompt section, on every harness. Drop it with `prompt={"orchestration": None}`.
+
+## Your own skills
+
 Skills are ordinary files that become part of an agent's prompt: project style guides, domain playbooks, a contract for workers, lessons from earlier runs. Each one goes in a prompt section of its own, so it can change without touching the rest of the prompt ([Prompt customization](prompt_customization.md)).
 
-## Fixed skills: a config section
+### Fixed skills: a config section
 
 When the skill text is known before the run, put it in the config's `prompt`. It applies to every agent launched with that config and is saved with the run:
 
@@ -24,7 +30,7 @@ flow = Flow(
 
 Different configs get different skills, so a worker-only contract is a section on the worker config.
 
-## Live skills: a harness section
+### Live skills: a harness section
 
 When the files can change during the run, read them each turn in a harness subclass. Put their location in `harness_options`, which the run records:
 
@@ -46,11 +52,15 @@ class SkillsHarness(ReplHarness):
 
     def prompt_sections(self, flow, step):
         directory = Path(self.options(step).directory)
-        skills = "\n\n".join(f"### {path.stem}\n\n{path.read_text()}" for path in sorted(directory.glob("*.md")))
+        skills = "\n\n".join(
+            f"### {path.stem}\n\n{path.read_text()}" for path in sorted(directory.glob("*.md"))
+        )
         return {**super().prompt_sections(flow, step), "skills": skills or None}
 
 
-AgentConfig(model="gpt-5-mini", harness=SkillsHarness, harness_options={"directory": "skills/run-memory"})
+AgentConfig(
+    model="gpt-5-mini", harness=SkillsHarness, harness_options={"directory": "skills/run-memory"}
+)
 ```
 
 [`examples/skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/skills.py) loads `SKILL.md` files this way. [`examples/dynamic_skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/dynamic_skills.py) adds an `add_skill` tool that writes into the directory, so the agent sees the skill it installed in its own prompt on the next turn.

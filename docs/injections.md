@@ -1,59 +1,46 @@
 # Node injection
 
-Controllers edit the caller-owned Node tree — while a run streams, or between streaming calls — then continue the same root.
+Controllers change the graph while a run streams or between streaming calls,
+then continue the same run.
 
-## Append to a frontier
+## Send a message
 
-An agent's frontier is where its next step starts from, so appending there is how a controller gets a word in:
-
-```python
-from rlmflow import UserQuery
-
-root.frontier.append(UserQuery(content="Controller stop request: finalize now."))
-
-flow.run(root)
-```
-
-Any node type works. A `UserQuery` and an `ExecOutput` both reach the model as user turns, so the choice is about what the saved run should say happened — feedback from outside, or an observation the agent's own code could have made:
+A message is how a controller gets a word in. It waits in the agent's inbox and
+lands in its history at the agent's next turn:
 
 ```python
-from rlmflow import ExecOutput
-
-worker = root.sub_agents[0]
-worker.frontier.append(
-    ExecOutput(content="Controller observation: finalize with current evidence.")
-)
+g.send(root, "Controller stop request: finalize now.")
+flow.run(g)
 ```
 
-Injected nodes are ordinary durable nodes: they are saved, replayed, and projected into prompts like any other. What marks them is what they are and where they sit — a `UserQuery` the agent's own code did not produce — not a flag. They carry no timing, because no step ran to produce them.
+A finished agent that gets a message reopens. Messages from the host have
+`sender="user"` unless you pass another label, and no `message` edge, because no
+cell sent them. They carry no timing, because no step produced them.
 
-## Only the frontier
+## Change history
 
-`append` raises if the node it is called on is not its agent's frontier:
+Everything already in the graph can be edited; see
+[The graph](node_model.md#editing) for the rules.
 
 ```python
-stale = root.transcript()[1]
-stale.append(UserQuery(content="too late"))   # ValueError: ... is not the frontier
+cell = next(n for n in g.history(root) if n.type == "code")
+print(g.edit(cell, code="print(sorted(files)[:20])", dry_run=True))
+g.edit(cell, code="print(sorted(files)[:20])")  # root rewinds to this cell
+flow.run(g)
 ```
 
-This is the whole edit model. There is no insert, replace, or remove: history is append-only, and the way to change what an agent already did is to fork the run at that point and continue the copy.
+To keep the original and try something else, fork instead:
 
 ```python
-from rlmflow import ExecAction
-
-action = next(n for n in root.transcript() if isinstance(n, ExecAction))
-branch = action.fork()
-branch.frontier.append(UserQuery(content="Try a different approach."))
-
-async for _ in flow.run_streaming(branch):
-    pass
+branch = g.fork(cell, name="retry")
+g.send(branch, "Try a different approach.")
+flow.run(g)
 ```
-
-`fork()` copies the whole tree, cuts everything after that node, and re-ids the copy, so the original is untouched and both can be run and saved side by side.
 
 ## Inject tools and values
 
-The other injection point is the REPL namespace, which reaches agents that are already running:
+The other injection point is the REPL namespace, which reaches agents that are
+already running:
 
 ```python
 flow.inject("BUDGET_REMAINING", 4)
@@ -61,52 +48,44 @@ flow.add_tool(escalate)
 flow.remove_tool("escalate")
 ```
 
-`inject` takes any object, not just callables; `add_tool` is the same thing with the name read off the function. Both write into every open REPL as well as the flow's namespace, so a tool added mid-run is visible on the next step. Tools gated with `when=` are still filtered when that step builds its namespace.
-
-`submit`, its hidden `finish` compatibility alias, `launch_subagent`, `Input`, and invocation argument names are reserved and cannot be injected over.
+`inject` takes any object, not just callables; `add_tool` is the same thing with
+the name read off the function. Both write into every open REPL as well as the
+flow's namespace, so a tool added mid-run is visible on the next step.
 
 ## Reactive control
 
-There are two moments when an agent's frontier is yours to write to, and both come down to the same rule: an agent that is mid-step owns its frontier, and moving it out from under a running step makes that step's own append raise.
-
-**Inside the loop, as the agent's node lands.** A pass submits its steps at the top and yields what landed at the bottom, so an agent whose node you are holding has not been given its next step yet:
+**Inside the loop.** `g.send` is safe at any time, from the stream loop or
+another thread: the message waits for the agent's next turn.
 
 ```python
-from rlmflow import ExecOutput, UserQuery
-
-async for node in flow.run_streaming(root):
-    agent = node.parent_agent
-    if agent is not root and isinstance(node, ExecOutput):
-        agent.frontier.append(UserQuery(content="Answer with the best evidence."))
+async for step in flow.run_streaming(g):
+    if step.agent is not root and step.node.type == "code":
+        g.send(step.agent, "Answer with the best evidence.")
 ```
 
-This is the only way to reach a worker while its parent is still inside the block that launched it.
+This reaches a worker while its parent is still inside the cell that launched it.
 
-**Between streaming calls,** once the boundary has left nothing in flight:
+**Between streaming calls.** Edits are refused for agents that are stepping, so
+stop the stream first:
 
 ```python
-async for _ in flow.run_streaming(root, until="idle"):
+async for _ in flow.run_streaming(g, until="idle"):
     pass
 
-root.frontier.append(UserQuery(content="Human feedback: verify the auth path."))
+g.send(root, "Human feedback: verify the auth path.")
 
-async for _ in flow.run_streaming(root):
+async for _ in flow.run_streaming(g):
     pass
 ```
 
-The stream settles its pass before returning, so the edit cannot race a step that is landing, and the next prompt projection reads the changed tree.
-
-A `UserQuery` appended after `ExecOutput` or `DoneOutput` is the model's next user message. The next step calls the model directly. The engine uses that path when a child finishes (see [`control.md`](control.md)); a controller injecting after idle `ExecOutput` gets the same behavior.
-
-The caveat is delegation. A boundary that fires on a child's node stops the stream while the parent's block is still running, and closing the stream cancels that step — so resuming re-runs the block. Each launch call is tied to its existing child by a receipt on the recorded `ExecAction`, so replay returns the same handle without relaunching, revalidating handle-valued inputs, or resubmitting the child. To edit between calls in a run that delegates, stop on the parent's own output:
+A boundary that fires on a child's node stops the stream while the parent's
+cell is still running. Stopping cancels that cell and undoes what it did, its
+children included, so the next run runs the cell, and its children, again. To
+avoid the repeat, stop on the parent's own nodes:
 
 ```python
-from rlmflow import DoneOutput, ExecOutput
-
-def parent_idle(node, root):
-    return isinstance(node, (ExecOutput, DoneOutput)) and node.parent_agent is root
+def root_idle(step):
+    return step.agent is root and step.node.type in ("code", "idle", "done")
 ```
-
-Or edit inside the loop, which never stops the run at all.
 
 See [`examples/control/injection/`](../examples/control/injection/) for runnable variants.

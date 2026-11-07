@@ -165,18 +165,11 @@ def code_card(lines, *, width=4.35, height=1.82, font_size=7, header_size=FS_TIN
         fill_opacity=0.10,
     )
     header = Text("python", font=CODE_FONT, font_size=header_size, color=DIM)
-    header.next_to(box.get_top(), DOWN, buff=0.14).align_to(
-        box.get_left() + RIGHT * 0.20, LEFT
-    )
+    header.next_to(box.get_top(), DOWN, buff=0.14).align_to(box.get_left() + RIGHT * 0.20, LEFT)
     rendered_lines = VGroup(
-        *[
-            Text(line, font=CODE_FONT, font_size=font_size, color=color)
-            for line, color in lines
-        ]
+        *[Text(line, font=CODE_FONT, font_size=font_size, color=color) for line, color in lines]
     ).arrange(DOWN, aligned_edge=LEFT, buff=0.09)
-    rendered_lines.next_to(header, DOWN, buff=0.14).align_to(
-        box.get_left() + RIGHT * 0.20, LEFT
-    )
+    rendered_lines.next_to(header, DOWN, buff=0.14).align_to(box.get_left() + RIGHT * 0.20, LEFT)
     max_w = width - 0.35
     if rendered_lines.width > max_w:
         rendered_lines.set_width(max_w)
@@ -279,9 +272,7 @@ def rendered_style_graph():
         else:
             for child in node["children"]:
                 assign_x(child)
-            node["x"] = sum(tree[c]["x"] for c in node["children"]) / len(
-                node["children"]
-            )
+            node["x"] = sum(tree[c]["x"] for c in node["children"]) / len(node["children"])
 
     assign_x(0)
     center = tree[0]["x"]
@@ -573,9 +564,7 @@ def simplified_style_graph(*, with_labels=True):
 
 def center_head(text, *, buff=0.62):
     """Section title — centered at the top."""
-    return Text(
-        text, font=CODE_FONT, font_size=FS_HEADER, color=WHITE_C
-    ).to_edge(UP, buff=buff)
+    return Text(text, font=CODE_FONT, font_size=FS_HEADER, color=WHITE_C).to_edge(UP, buff=buff)
 
 
 def center_sub(text, anchor, *, buff=0.20, color=DIM, font_size=FS_CAP):
@@ -599,9 +588,9 @@ class RecursiveFlowHero(Scene):
         self._graph_first_animation()
 
     def _graph_first_animation(self):
-        brand = Text(
-            "rlmflow", font=CODE_FONT, font_size=26, color=WHITE_C
-        ).to_corner(UP + LEFT, buff=0.30)
+        brand = Text("rlmflow", font=CODE_FONT, font_size=26, color=WHITE_C).to_corner(
+            UP + LEFT, buff=0.30
+        )
         self.play(FadeIn(brand), run_time=0.30)
 
         def reveal_stage(stage):
@@ -714,12 +703,8 @@ class RecursiveFlowHero(Scene):
         )
         dots = VGroup(
             *[
-                Circle(
-                    radius=0.07, color=DIM, fill_opacity=0.35, stroke_width=1.0
-                ).move_to(
-                    LEFT * 4.8
-                    + RIGHT * (9.6 * i / (len(snapshot_steps) - 1))
-                    + DOWN * 3.28
+                Circle(radius=0.07, color=DIM, fill_opacity=0.35, stroke_width=1.0).move_to(
+                    LEFT * 4.8 + RIGHT * (9.6 * i / (len(snapshot_steps) - 1)) + DOWN * 3.28
                 )
                 for i in range(len(snapshot_steps))
             ]
@@ -733,9 +718,9 @@ class RecursiveFlowHero(Scene):
             graph = tiny_graph(specs, root_pos=UP * 1.85, scale=1.00)
             label = Text(label_text, font=CODE_FONT, font_size=FS_BODY, color=WHITE_C)
             label.move_to(DOWN * 2.62)
-            dot = Circle(
-                radius=0.11, color=HOT, fill_opacity=0.65, stroke_width=1.5
-            ).move_to(dots[i])
+            dot = Circle(radius=0.11, color=HOT, fill_opacity=0.65, stroke_width=1.5).move_to(
+                dots[i]
+            )
             if active_graph is not None:
                 self.play(
                     FadeOut(active_graph),
@@ -756,9 +741,7 @@ class RecursiveFlowHero(Scene):
 
         self.play(
             FadeOut(
-                VGroup(
-                    timeline, dots, active_graph, active_label, active_dot
-                ),
+                VGroup(timeline, dots, active_graph, active_label, active_dot),
                 shift=DOWN * 0.05,
             ),
             run_time=0.55,
@@ -926,9 +909,7 @@ class RecursiveFlowHero(Scene):
 
         fork_mobs = VGroup(fork_code, orig, fork_rhs)
 
-        finale_title = center_head(
-            "Nested agent trees -- one modular graph", buff=0.72
-        )
+        finale_title = center_head("Nested agent trees -- one modular graph", buff=0.72)
         dense_graph, dense_stages = rendered_style_graph()
         self.play(
             FadeOut(head),

@@ -3,7 +3,7 @@
 A ``SessionHarness`` runs one session turn per step. During the turn the session
 reaches the agent tools through ``rlmflow``; each ``rlmflow repl`` cell lands its
 own ``code`` node. When the turn ends, ``outcome`` turns it into a ``done`` or
-``waiting`` node.
+``idle`` node.
 """
 
 from __future__ import annotations
@@ -18,63 +18,25 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from rlmflow import schema
-from rlmflow.engine import handoff
-from rlmflow.graph.nodes import AGENT_START, CODE, DONE, MESSAGE, WAITING, Node, Step
+from rlmflow.graph.nodes import CODE, DONE, IDLE, MESSAGE, Node, Step
+from rlmflow.graph.queries import unseen_results
 from rlmflow.harnesses.base import Harness
-from rlmflow.harnesses.prompts import argument_manifest, preview
+from rlmflow.harnesses.prompts import (
+    LOCATION_PROMPT,
+    RECORD_PROMPT,
+    RESUME_PROMPT,
+    STATE_PROMPT,
+    TOOLS_PROMPT,
+    argument_manifest,
+    guidance,
+    preview,
+)
 
 if TYPE_CHECKING:
     from rlmflow.agent_tools.server import Turn
     from rlmflow.flow import Flow
 
 SESSION_NAMESPACE = uuid.UUID("5f0c1d1e-4b8e-4c1a-9a57-2f61b3f1e0aa")
-
-TOOLS_PROMPT = """\
-You are one agent in a multi-agent run, with a persistent Python REPL.
-
-Run code with `rlmflow repl 'CODE'`, or for several lines:
-    rlmflow repl <<'EOF'
-    ...
-    EOF
-Quote the heredoc marker ('EOF') so the shell leaves the code alone. Variables persist
-between calls. Your inputs are already variables: {arguments}.
-Only printed output comes back, so print summaries, not whole values.
-
-In the REPL:
-- launch_agent(task, config=NAME, **args) starts an agent and returns a handle.
-  A handle's `.status`, `.done()` and `.result()` are as of when the cell started, so they
-  never change inside a loop; `await handle` waits for its result.
-- llm_query(prompt) asks a model and returns its answer.
-- AGENTS shows the agents you started and their status.
-- submit(value) records your final result. Call it exactly once, when you're finished.
-
-To wait for agents you started, end your turn without submitting. You'll be resumed
-with their results. Don't poll. A cell that awaits long work can hit your tool timeout,
-so launch agents and end the turn instead."""
-
-STATE_PROMPT = """\
-Keep your working state in REPL variables, not only in your replies: put intermediate
-results in clearly named variables (for example `candidate_files`, `matches_by_chunk`),
-and keep a `notes` string with your plan and what you've ruled out. Update `notes`
-before ending a turn. A later session may continue from this REPL without your
-conversation."""
-
-RECORD_PROMPT = """\
-Cells you run with `rlmflow repl` are recorded in this run, so it can be replayed and
-forked from them; changes you make with your own tools are not."""
-
-LOCATION_PROMPT = """\
-Your REPL runs in {location}. Your own tools run on this machine; reach the REPL's
-files and programs through `rlmflow repl`, with paths as the REPL sees them."""
-
-RESUME_PROMPT = """\
-You are continuing an earlier session on this task. Its conversation is gone, but its
-REPL is intact. Cells run so far (outputs truncated):
-
-{cells}
-
-REPL variables: {variables}
-Start with `rlmflow repl 'print(notes)'`."""
 
 #: Prints the user's REPL variables with their types and sizes; never recorded.
 DESCRIBE_VARIABLES = """\
@@ -99,13 +61,13 @@ del _rlmflow_describe"""
 
 
 def own_history(step: Step) -> list[Node]:
-    return step.graph.history(step.node)
+    return step.graph.history(step.node) if isinstance(step.node, Node) else []
 
 
 def turn_end(step: Step) -> Node | None:
     """The latest node that ended a session turn, if no cell ran after it."""
     for node in reversed(own_history(step)):
-        if node.type in (WAITING, DONE) and node.data.get("session_id"):
+        if node.type in (IDLE, DONE) and node.data.get("session_id"):
             return node
         if node.type == CODE:
             return None
@@ -186,7 +148,7 @@ async def describe_variables(flow: Flow, step: Step) -> str:
 
 async def resume_prompt(flow: Flow, step: Step) -> str:
     """A fresh session on an existing REPL: the cells so far and the variables they left."""
-    cells = [n for n in own_history(step) if n.type in (CODE, DONE) and n.data.get("code")]
+    cells = [n for n in own_history(step) if n.type == CODE and n.data.get("code")]
     lines = [
         f"[cell {i}] {preview(c.data['code'], 80)} -> {preview(c.data.get('output') or '(no output)', 100)}"
         for i, c in enumerate(cells, 1)
@@ -202,7 +164,7 @@ async def next_prompt(flow: Flow, step: Step, session: Session) -> str:
     if session.resume:
         return "\n\n".join(messages) or "Continue."
     has_cells = any(n.type == CODE for n in own_history(step))
-    if not has_cells and step.node.type == AGENT_START:
+    if not has_cells and step.node is step.agent:
         return first_prompt(step)
     opening = await resume_prompt(flow, step) if has_cells else ""
     return "\n\n".join(
@@ -217,7 +179,7 @@ class SessionHarness(Harness):
         """Appended to the session's own system prompt."""
         from rlmflow.tools import format_tool_line, tool_allowed
 
-        names = list({**step.agent.resolved_args(), **step.graph.inputs(step.agent)})
+        names = list(step.agent.resolved_args())
         arguments = ", ".join(f"`{name}`" for name in ["task", *names])
         own_tools = [
             line
@@ -231,8 +193,8 @@ class SessionHarness(Harness):
             "configs": f"Configs for launch_agent (default `default`): {config_list(flow)}",
             "tools": "Also in the REPL:\n" + "\n".join(own_tools) if own_tools else None,
             "location": LOCATION_PROMPT.format(location=location) if location is not None else None,
-            "state": STATE_PROMPT,
             "record": RECORD_PROMPT,
+            **guidance(step),
             "schema": schema.contract(output_schema) if output_schema is not None else None,
         }
 
@@ -245,7 +207,7 @@ class SessionHarness(Harness):
         raise NotImplementedError
 
     async def outcome(self, flow: Flow, step: Step, turn: Turn, result: TurnResult) -> Node:
-        """``done`` if the agent submitted or has nothing to wait for, else ``waiting`` on its children."""
+        """``done`` if the agent submitted or has nothing to wait for, else ``idle`` until its children finish."""
         g, agent = step.graph, step.agent
         data: dict[str, Any] = {"session_id": result.session_id, "text": result.text}
         if result.cost_usd is not None:
@@ -257,11 +219,8 @@ class SessionHarness(Harness):
             data["workspace"] = workspace
         if turn.submitted:
             return Node(DONE, result=turn.result, **data)
-        # Children still running, or finished with results this agent hasn't seen.
-        unseen = {child.id for child in handoff.pending(g, agent)}
-        on = [c.id for c in g.launched(agent) if c.id in unseen or not g.terminal(c)]
-        if on:
-            return Node(WAITING, on=on, **data)
+        if unseen_results(g, agent) or not all(g.status(c) == "done" for c in g.children(agent)):
+            return Node(IDLE, **data)
         answer = result.structured if result.structured is not None else result.text
         output_schema = agent.config.output_schema
         return Node(

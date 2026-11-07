@@ -34,7 +34,7 @@ def resume_command(graph: Any, fork: Any, plugin_dir: Path) -> str:
     from rlmflow.graph.nodes import Step
     from rlmflow.harnesses.sessions import Session
 
-    session = Session.for_step(Step(graph, fork, graph.frontier(fork)))
+    session = Session.for_step(Step.latest(graph, fork))
     argv = ["claude", "--plugin-dir", str(plugin_dir)]
     if session.resume:
         argv += ["--resume", session.id, "--fork-session"]
@@ -59,7 +59,7 @@ def fork_run(
         raise CliError(f"path not found: {run_dir}")
     graph = Graph.load(run_dir)
     at = find_node(graph, node)
-    owner = graph.node(at.agent_id)
+    owner = graph.owner(at)
     if interactive:
         config = INTERACTIVE_CONFIG
     elif config is None and ran_interactively(owner):

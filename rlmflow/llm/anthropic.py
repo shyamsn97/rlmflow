@@ -9,6 +9,26 @@ from rlmflow.graph.nodes import LLMUsage
 from rlmflow.llm import LLMChunk, LLMClient, join_chunks, stream_with_retry
 
 
+def anthropic_content(content: str | list[dict[str, Any]]) -> str | list[dict[str, Any]]:
+    """OpenAI-style content parts (text, ``image_url`` data URLs) as Anthropic blocks."""
+    if isinstance(content, str):
+        return content
+    blocks: list[dict[str, Any]] = []
+    for part in content:
+        if part.get("type") == "image_url":
+            header, data = part["image_url"]["url"].split(",", 1)
+            media_type = header.removeprefix("data:").split(";", 1)[0]
+            blocks.append(
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": data},
+                }
+            )
+        else:
+            blocks.append(part)
+    return blocks
+
+
 class AnthropicClient(LLMClient):
     """Anthropic client. Requires `pip install anthropic`."""
 
@@ -39,7 +59,7 @@ class AnthropicClient(LLMClient):
             if m["role"] == "system":
                 system = m["content"]
             else:
-                chat_msgs.append(m)
+                chat_msgs.append({**m, "content": anthropic_content(m["content"])})
         return system, chat_msgs
 
     async def chat(self, messages: list[dict[str, str]], *args, **kwargs) -> str:

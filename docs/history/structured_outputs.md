@@ -30,12 +30,14 @@ Pydantic models and `TypeAdapter` instances are accepted at live API boundaries 
 ```python
 from rlmflow import Flow, JsonSchemaCodec
 
+
 class DomainCodec(JsonSchemaCodec):
     def validate(self, value, schema):
         value = super().validate(value, schema)
         if isinstance(value, dict) and value.get("score", 0) < 0:
             raise ValueError("score must be non-negative")
         return value
+
 
 flow = Flow(model, output_codec=DomainCodec())
 ```
@@ -111,8 +113,10 @@ Instructor uses the original Pydantic model as its response contract:
 from pydantic import BaseModel
 from rlmflow import Flow, InstructorEngine
 
+
 class Decision(BaseModel):
     label: str
+
 
 flow = Flow(
     model,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from rlmflow.graph.nodes import AGENT_START, CODE, MESSAGE, WAITING, Node, Step
+from rlmflow.graph.nodes import AGENT, CODE, IDLE, MESSAGE, Node, Step
 
 if TYPE_CHECKING:
     from rlmflow.flow import Flow
@@ -26,7 +26,7 @@ class Harness:
 
     name: ClassVar[str]
     #: The node types this harness can step from.
-    handles: ClassVar[tuple[str, ...]] = (AGENT_START, MESSAGE, CODE, WAITING)
+    handles: ClassVar[tuple[str, ...]] = (AGENT, MESSAGE, CODE, IDLE)
     #: The dataclass an agent's ``config.harness_options`` are read into.
     Options: ClassVar[type] = NoOptions
 

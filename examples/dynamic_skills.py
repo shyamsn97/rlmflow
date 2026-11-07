@@ -92,7 +92,6 @@ def make_add_skill(library: SkillLibrary):
         "Install a reusable skill (a name plus a markdown body of guidance) into "
         "your own skill library. It appears in the Skills section of your system "
         "prompt starting next turn.",
-        proxy=True,
     )
     def add_skill(name: str, body: str) -> str:
         library.add(name, body)
@@ -194,7 +193,7 @@ def main() -> None:
     )
 
     g = Graph()
-    root = g.create_agent(QUERY)
+    root = g.add_agent(QUERY)
     if args.print_prompt:
         print("\n--- Skills section BEFORE run (empty) ---\n")
         print(library.render())

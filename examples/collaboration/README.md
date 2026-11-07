@@ -6,28 +6,32 @@ root or manager agent.
 ## Decentralized peers
 
 [`decentralized_peers.py`](decentralized_peers.py) runs three real-model peers.
-One draws `peer` edges with `connect_agent`, asks the others for their values
-with `ask_agent`, and sends them the total with `send_agent`.
-Messages are `message` nodes with `from` edges to the turn that sent them,
+Peers can't await each other, so one asks the others for their values with
+`AGENTS[name].send(...)` and ends its turn; their replies arrive as messages and
+reopen it, and once it has both it sends them the total.
+Messages are `message` nodes with `message` edges from the cell that sent them,
 so the saved graph shows who told whom what.
 
     python examples/collaboration/decentralized_peers.py --model gpt-5-mini
 
 ## Shared task board
 
-[`shared_board.py`](shared_board.py) is a DeLM-style board where the board is
-the graph. Every task is an agent:
+[`shared_board.py`](shared_board.py) is a DeLM-style board made of a few host
+functions over shared dicts and a lock, passed to the `Flow` as tools. A fixed
+pool of workers shares it, with no manager:
 
-| Board idea | In the graph |
+| Board idea | Tool |
 | --- | --- |
-| a task | a top-level agent (`g.create_agent`) |
-| follow-up work | a child from `launch_agent(task)` |
-| claiming a task | `Flow(workers=N)` running whichever agents are ready |
-| a finished task's result | its `done` node (`submit(...)`) |
-| shared context | `AGENTS`, every task's status and result |
+| a task | `board_post(id, task)`; the host posts the seeds, workers post follow-ups they find |
+| open tasks | `board_open()` |
+| claiming a task | `board_claim(id, worker)`; atomic, so exactly one worker wins |
+| a finished task's result | `board_finish(id, result)`, read back with `board_results()` |
+| workers | top-level agents run `--workers` at a time |
 
-Nothing lives outside the graph, so the saved run is the whole board and it
-resumes or replays like any other graph.
+The tools run in the host process, so every worker sees the same board. Each
+call's result is saved on the `code` node that made it: the saved run records
+what each worker saw, and a rebuilt REPL replays those results instead of
+calling the board again.
 
 ```bash
 python examples/collaboration/shared_board.py \

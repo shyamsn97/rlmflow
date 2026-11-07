@@ -1,126 +1,142 @@
-"""Read-only snapshots of the agents in one graph."""
+"""Agents as the REPL sees them: ``AgentHandle`` objects and the ``AGENTS`` snapshot."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
-from rlmflow.graph.nodes import Node, agent_ref_id
-from rlmflow.runtime.repl import AgentReference
+from rlmflow.runtime.repl import AGENT_REF_KEY, AgentReference
 
 if TYPE_CHECKING:
     from rlmflow.graph.graph import Graph
+    from rlmflow.graph.nodes import Agent
 
-AgentStatus = Literal["blocked", "running", "waiting", "completed"]
+AgentStatus = Literal["done", "idle", "running"]
 
 
 def _json_safe(value: object) -> object:
-    """Return a detached, JSON-compatible result value."""
     try:
         return json.loads(json.dumps(value, default=str))
     except (TypeError, ValueError):
         return str(value)
 
 
-@dataclass(frozen=True, slots=True)
-class AgentFrontier:
-    """Small, immutable description of an agent's current frontier."""
+def _snapshot() -> AgentDirectory | None:
+    """The ``AGENTS`` snapshot of the running cell, if any."""
+    from rlmflow.runtime.repl import current_binding
 
-    node_id: str
-    type: str
-    seq: int
+    try:
+        agents = current_binding().get("agents")
+    except RuntimeError:
+        return None
+    return agents if isinstance(agents, AgentDirectory) else None
+
+
+def _binding(name: str, what: str):
+    from rlmflow.runtime.repl import current_binding
+
+    fn = current_binding().get(name)
+    if fn is None:
+        raise RuntimeError(f"{what} is unavailable in this execution")
+    return fn
 
 
 @dataclass(frozen=True, slots=True)
 class AgentHandle(AgentReference):
-    """Future-like child selector. ``status``, ``done()`` and ``result()`` are a snapshot from the
-    start of the current cell; only ``await`` waits."""
+    """One agent in the REPL: what ``launch_agent`` returns and ``AGENTS[...]`` looks up.
+
+    ``await agent`` waits for the result of an agent you launched, and
+    ``agent.send(message)`` messages any agent. Everything else (``status``,
+    ``result()``, ``children``, ...) reads the ``AGENTS`` snapshot taken when
+    the cell started, so it doesn't change inside a cell; only ``await`` waits.
+    """
 
     agent_id: str
     name: str
     path: str
+    _directory: AgentDirectory | None = field(default=None, repr=False, compare=False)
+
+    def __repr__(self) -> str:
+        return f"Agent({self.path!r}, status={self.status!r})"
 
     @property
     def id(self) -> str:
         return self.agent_id
 
-    def _current(self) -> AgentInfo | None:
-        from rlmflow.runtime.repl import current_binding
+    def _record(self) -> AgentRecord | None:
+        directory = _snapshot() or self._directory
+        return directory._by_id.get(self.agent_id) if directory else None
 
-        agents = current_binding().get("agents")
-        if not isinstance(agents, AgentDirectory):
-            return None
-        return agents.get(self.agent_id)
+    def _agents(self, ids: tuple[str, ...]) -> list[AgentHandle]:
+        directory = _snapshot() or self._directory
+        if directory is None:
+            return []
+        return [directory._handle(directory._by_id[i]) for i in ids if i in directory._by_id]
 
     @property
     def status(self) -> AgentStatus:
-        current = self._current()
-        return current.status if current is not None else "running"
+        record = self._record()
+        return record.status if record is not None else "running"
+
+    @property
+    def config(self) -> str | None:
+        record = self._record()
+        return record.config if record is not None else None
+
+    @property
+    def task(self) -> str | None:
+        record = self._record()
+        return record.task if record is not None else None
+
+    @property
+    def parent(self) -> AgentHandle | None:
+        record = self._record()
+        found = self._agents((record.parent_id,) if record and record.parent_id else ())
+        return found[0] if found else None
+
+    @property
+    def children(self) -> list[AgentHandle]:
+        record = self._record()
+        return self._agents(record.child_ids if record else ())
 
     def done(self) -> bool:
-        return self.status == "completed"
+        return self.status == "done"
 
     def result(self) -> object | None:
-        """Return the completed result or raise when it is not ready."""
-        current = self._current()
-        if current is None or not current.done():
-            raise asyncio.InvalidStateError(f"agent {self.path!r} is not completed")
-        return current.result()
-
-    async def wait_for_result(self) -> object | None:
-        """Wait for completion and return the result."""
-        from rlmflow.runtime.repl import current_binding
-
-        waiter = current_binding().get("wait_agent")
-        if waiter is None:
-            raise RuntimeError("agent waiting is unavailable in this execution")
-        return await waiter(self.agent_id)
+        """The result, or raise if the agent hadn't finished when the cell started."""
+        record = self._record()
+        if record is None or record.status != "done":
+            raise asyncio.InvalidStateError(f"agent {self.path!r} is not done")
+        return record.result
 
     def __await__(self):
-        """Wait for this agent using Python's ordinary future syntax."""
-        return self.wait_for_result().__await__()
+        """Wait for the result of an agent you launched: ``await agent``."""
+        return _binding("wait_agent", "awaiting agents")(self.agent_id).__await__()
+
+    def send(self, message: str) -> AgentHandle:
+        """Queue ``message`` for this agent, reopening it if it finished, and return it.
+
+        ``await agent.send(...)`` also waits for its next result, for agents you launched.
+        """
+        return _binding("send_agent", "messaging agents")(self.agent_id, message)
 
 
 @dataclass(frozen=True, slots=True)
-class AgentInfo(AgentReference):
-    """One agent as exposed through the REPL ``AGENTS`` snapshot."""
+class AgentRecord:
+    """What the ``AGENTS`` snapshot knows about one agent."""
 
     agent_id: str
     name: str
     config: str
     path: str
-    depth: int
+    task: str
     parent_id: str | None
     child_ids: tuple[str, ...]
     status: AgentStatus
-    frontier: AgentFrontier
-    dependency_paths: tuple[str, ...]
-    dependent_paths: tuple[str, ...]
-    blocked_on_paths: tuple[str, ...]
-    _result: object | None = field(default=None, repr=False)
-
-    def done(self) -> bool:
-        return self.status == "completed"
-
-    def result(self) -> object | None:
-        """Return the completed result or raise when it is not ready."""
-        if not self.done():
-            raise asyncio.InvalidStateError(f"agent {self.path!r} is not completed")
-        return self._result
-
-    async def wait_for_result(self) -> object | None:
-        """Wait for completion and return the result."""
-        from rlmflow.runtime.repl import current_binding
-
-        waiter = current_binding().get("wait_agent")
-        if waiter is None:
-            raise RuntimeError("agent waiting is unavailable in this execution")
-        return await waiter(self.agent_id)
-
-    def __await__(self):
-        return self.wait_for_result().__await__()
+    result: object | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,299 +152,156 @@ class AgentEdge:
 
 @dataclass(frozen=True, slots=True)
 class AgentDirectory:
-    """Viewer-scoped, read-only queries over one snapshotted agent graph."""
+    """``AGENTS``: every agent in the run, as of when the cell started."""
 
     viewer_id: str
-    root_id: str
-    agents: tuple[AgentInfo, ...]
+    records: tuple[AgentRecord, ...]
     links: tuple[AgentEdge, ...] = ()
-    _by_id: dict[str, AgentInfo] = field(init=False, repr=False, compare=False)
-    _by_path: dict[str, AgentInfo] = field(init=False, repr=False, compare=False)
-    _by_name: dict[str, tuple[AgentInfo, ...]] = field(init=False, repr=False, compare=False)
+    _by_id: dict[str, AgentRecord] = field(init=False, repr=False, compare=False)
+    _by_path: dict[str, AgentRecord] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        by_id = {agent.agent_id: agent for agent in self.agents}
-        by_path = {agent.path: agent for agent in self.agents}
-        names: dict[str, list[AgentInfo]] = {}
-        for agent in self.agents:
-            names.setdefault(agent.name, []).append(agent)
-        if self.viewer_id not in by_id:
-            raise ValueError(f"viewer {self.viewer_id!r} is not in the agent tree")
-        if self.root_id not in by_id:
-            raise ValueError(f"root {self.root_id!r} is not in the agent tree")
-        object.__setattr__(self, "_by_id", by_id)
-        object.__setattr__(self, "_by_path", by_path)
-        object.__setattr__(
-            self,
-            "_by_name",
-            {name: tuple(matches) for name, matches in names.items()},
-        )
+        object.__setattr__(self, "_by_id", {r.agent_id: r for r in self.records})
+        object.__setattr__(self, "_by_path", {r.path: r for r in self.records})
+        if self.viewer_id not in self._by_id:
+            raise ValueError(f"viewer {self.viewer_id!r} is not in the run")
+
+    def _handle(self, record: AgentRecord) -> AgentHandle:
+        return AgentHandle(record.agent_id, record.name, record.path, self)
+
+    def __getitem__(self, selector: str | AgentReference) -> AgentHandle:
+        record = self._find(selector)
+        if record is None:
+            raise KeyError(f"unknown agent {selector!r}")
+        return self._handle(record)
+
+    def __contains__(self, selector: object) -> bool:
+        try:
+            return self._find(selector) is not None  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return False
+
+    def __iter__(self) -> Iterator[AgentHandle]:
+        return (self._handle(record) for record in self.records)
+
+    def __len__(self) -> int:
+        return len(self.records)
 
     @property
-    def self(self) -> AgentInfo:
-        """The agent whose REPL received this directory."""
-        return self._by_id[self.viewer_id]
+    def self(self) -> AgentHandle:
+        """The agent running this cell."""
+        return self._handle(self._by_id[self.viewer_id])
 
-    def get(self, selector: str | AgentHandle | AgentInfo | None = None) -> AgentInfo | None:
-        """Resolve self, an id/path, a direct relative, or a unique tree-wide name."""
-        if selector is None:
-            return self.self
-        if isinstance(selector, AgentHandle):
-            return self._by_id.get(selector.agent_id)
-        if isinstance(selector, AgentInfo):
+    @property
+    def parent(self) -> AgentHandle | None:
+        return self.self.parent
+
+    @property
+    def children(self) -> list[AgentHandle]:
+        """The agents you launched, in creation order."""
+        return self.self.children
+
+    def _find(self, selector: str | AgentReference) -> AgentRecord | None:
+        """An id or path, a relative's name, or a name that is unique in the run."""
+        if isinstance(selector, AgentReference):
             return self._by_id.get(selector.agent_id)
         if not isinstance(selector, str):
-            raise TypeError("agent selector must be a string, AgentHandle, AgentInfo, or None")
-
+            raise TypeError("agent selector must be a string or an agent")
         exact = self._by_id.get(selector) or self._by_path.get(selector)
         if exact is not None:
             return exact
-
-        relatives = [
-            agent
-            for agent in [
-                self.get_parent(),
-                *self.get_siblings(),
-                *self.get_children(),
-            ]
-            if agent is not None and agent.name == selector
-        ]
-        if len(relatives) == 1:
-            return relatives[0]
-        if len(relatives) > 1:
-            raise ValueError(f"ambiguous relative agent name {selector!r}; use a path or id")
-
-        matches = self._by_name.get(selector, ())
-        if len(matches) == 1:
-            return matches[0]
+        me = self._by_id[self.viewer_id]
+        near = {me.parent_id, *me.child_ids}
+        if me.parent_id in self._by_id:
+            near.update(self._by_id[me.parent_id].child_ids)
+        relatives = [r for r in self.records if r.agent_id in near and r.name == selector]
+        matches = relatives or [r for r in self.records if r.name == selector]
         if len(matches) > 1:
             raise ValueError(f"ambiguous agent name {selector!r}; use a path or id")
-        return None
+        return matches[0] if matches else None
 
-    def get_parent(self, agent: str | AgentHandle | AgentInfo | None = None) -> AgentInfo | None:
-        """Return an agent's direct parent, defaulting to the viewer."""
-        selected = self._selected(agent)
-        return self._by_id.get(selected.parent_id) if selected.parent_id is not None else None
+    def edges(self, *, kind: str | None = None) -> list[AgentEdge]:
+        """Application edges between agents, such as ``peer``."""
+        return [edge for edge in self.links if kind is None or edge.kind == kind]
 
-    def get_children(self, agent: str | AgentHandle | AgentInfo | None = None) -> list[AgentInfo]:
-        """Return an agent's direct children in creation order."""
-        selected = self._selected(agent)
-        return [self._by_id[child_id] for child_id in selected.child_ids]
-
-    def get_siblings(self, agent: str | AgentHandle | AgentInfo | None = None) -> list[AgentInfo]:
-        """Return an agent's siblings in creation order, excluding itself."""
-        selected = self._selected(agent)
-        if selected.parent_id is None:
-            return []
-        parent = self._by_id[selected.parent_id]
-        return [
-            self._by_id[child_id] for child_id in parent.child_ids if child_id != selected.agent_id
-        ]
-
-    def edges(
-        self,
-        *,
-        source: str | AgentHandle | AgentInfo | None = None,
-        target: str | AgentHandle | AgentInfo | None = None,
-        kind: str | None = None,
-    ) -> list[AgentEdge]:
-        """Application edges between agents, filtered by endpoint and kind."""
-        source_id = self._selected(source).agent_id if source is not None else None
-        target_id = self._selected(target).agent_id if target is not None else None
-        return [
-            edge
-            for edge in self.links
-            if (source_id is None or edge.source == source_id)
-            and (target_id is None or edge.target == target_id)
-            and (kind is None or edge.kind == kind)
-        ]
-
-    def render_graph(
-        self,
-        *,
-        view: Literal["ownership", "dependencies"] = "ownership",
-        show_results: bool = False,
-        max_result_chars: int = 160,
-    ) -> str:
-        """Render the ownership tree or consumer-rooted dependency projection."""
-        if max_result_chars < 1:
-            raise ValueError("max_result_chars must be >= 1")
-        if view not in ("ownership", "dependencies"):
-            raise ValueError("view must be 'ownership' or 'dependencies'")
-
+    def render_graph(self, *, show_results: bool = False, max_result_chars: int = 160) -> str:
+        """The agent tree with each agent's config and status."""
         lines: list[str] = []
 
-        def label(agent: AgentInfo, connector: str) -> str:
-            label = f"{connector}{agent.name} ({agent.config}) [{agent.status}]"
-            if agent.agent_id == self.viewer_id:
-                label += " (you)"
-            if show_results and agent.status == "completed":
-                preview = self._result_preview(agent.result(), max_result_chars)
-                if preview:
-                    label += f" -> {preview}"
-            return label
-
-        def visit(agent: AgentInfo, prefix: str, connector: str) -> None:
-            lines.append(prefix + label(agent, connector))
-
-            children = [self._by_id[child_id] for child_id in agent.child_ids]
-            child_prefix = prefix + ("    " if connector == "└── " else "│   ")
-            if not connector:
-                child_prefix = ""
+        def visit(record: AgentRecord, prefix: str, connector: str, child_prefix: str) -> None:
+            text = f"{prefix}{connector}{record.name} ({record.config}) [{record.status}]"
+            if record.agent_id == self.viewer_id:
+                text += " (you)"
+            if show_results and record.status == "done" and record.result is not None:
+                preview = " ".join(json.dumps(record.result, ensure_ascii=False).split())
+                if len(preview) > max_result_chars:
+                    preview = preview[: max(max_result_chars - 3, 0)] + "..."
+                text += f" -> {preview}"
+            lines.append(text)
+            children = [self._by_id[i] for i in record.child_ids if i in self._by_id]
             for index, child in enumerate(children):
                 last = index == len(children) - 1
-                visit(child, child_prefix, "└── " if last else "├── ")
-
-        def visit_dependencies(
-            agent: AgentInfo,
-            prefix: str,
-            connector: str,
-            branch: frozenset[str],
-        ) -> None:
-            lines.append(prefix + label(agent, connector))
-            if agent.path in branch:
-                lines[-1] += " (cycle)"
-                return
-            sources = [self._by_path[path] for path in agent.dependency_paths]
-            child_prefix = prefix + ("    " if connector == "└── " else "│   ")
-            if not connector:
-                child_prefix = ""
-            nested = branch | {agent.path}
-            for index, source in enumerate(sources):
-                last = index == len(sources) - 1
-                visit_dependencies(
-                    source,
+                visit(
+                    child,
                     child_prefix,
                     "└── " if last else "├── ",
-                    nested,
+                    child_prefix + ("    " if last else "│   "),
                 )
 
-        if view == "ownership":
-            visit(self._by_id[self.root_id], "", "")
-        else:
-            sinks = [
-                agent
-                for agent in self.agents
-                if agent.dependency_paths and not agent.dependent_paths
-            ]
-            for index, sink in enumerate(sinks):
-                if index:
-                    lines.append("")
-                visit_dependencies(sink, "", "", frozenset())
-            if not sinks:
-                lines.append("(no dependency edges)")
+        for record in self.records:
+            if record.parent_id is None:
+                visit(record, "", "", "")
         return "\n".join(lines)
 
-    def print_graph(
-        self,
-        *,
-        view: Literal["ownership", "dependencies"] = "ownership",
-        show_results: bool = False,
-        max_result_chars: int = 160,
-    ) -> None:
-        """Print :meth:`render_graph` for the REPL's stdout-only observation."""
-        print(
-            self.render_graph(
-                view=view,
-                show_results=show_results,
-                max_result_chars=max_result_chars,
-            )
-        )
-
-    def _selected(self, selector: str | AgentHandle | AgentInfo | None) -> AgentInfo:
-        selected = self.get(selector)
-        if selected is None:
-            raise KeyError(f"unknown agent {selector!r}")
-        return selected
-
-    @staticmethod
-    def _result_preview(result: object | None, limit: int) -> str:
-        if result is None:
-            return ""
-        encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-        text = " ".join(encoded.split())
-        if len(text) <= limit:
-            return text
-        if limit <= 3:
-            return text[:limit]
-        return text[: limit - 3] + "..."
+    def print_graph(self, *, show_results: bool = False, max_result_chars: int = 160) -> None:
+        print(self.render_graph(show_results=show_results, max_result_chars=max_result_chars))
 
 
-def build_agent_directory(graph: Graph, viewer: Node) -> AgentDirectory:
+def build_agent_directory(graph: Graph, viewer: Agent) -> AgentDirectory:
     """Snapshot every agent in ``graph`` as seen by ``viewer``."""
-    agents = graph.agents()
-    paths = {agent.id: graph.path(agent) for agent in agents}
-    dependents: dict[str, list[str]] = {}
-    for agent in agents:
-        for producer in graph.producers(agent):
-            dependents.setdefault(producer.id, []).append(paths[agent.id])
-    info: list[AgentInfo] = []
-
-    for agent in agents:
-        launcher = graph.launcher(agent)
-        producers = graph.producers(agent)
-        terminal = graph.terminal(agent)
-        if terminal:
-            status: AgentStatus = "completed"
-        elif any(not graph.terminal(producer) for producer in producers):
-            status = "blocked"
-        elif graph.status(agent) == "waiting":
-            status = "waiting"
-        else:
-            status = "running"
-        frontier = graph.frontier(agent)
-        info.append(
-            AgentInfo(
+    records = []
+    for agent in graph.agents():
+        parent = graph.parent(agent)
+        status = graph.status(agent)
+        records.append(
+            AgentRecord(
                 agent_id=agent.id,
                 name=agent.name,
                 config=agent.config_name or "root",
-                path=paths[agent.id],
-                depth=graph.depth(agent),
-                parent_id=launcher.id if launcher is not None else None,
+                path=graph.path(agent),
+                task=agent.task,
+                parent_id=parent.id if parent is not None else None,
                 child_ids=tuple(child.id for child in graph.children(agent)),
-                status=status,
-                frontier=AgentFrontier(node_id=frontier.id, type=frontier.type, seq=frontier.seq),
-                dependency_paths=tuple(paths[producer.id] for producer in producers),
-                dependent_paths=tuple(dependents.get(agent.id, ())),
-                blocked_on_paths=tuple(
-                    paths[producer.id] for producer in producers if not graph.terminal(producer)
-                ),
-                _result=_json_safe(graph.result(agent)) if terminal else None,
+                status=status,  # type: ignore[arg-type]
+                result=_json_safe(graph.result(agent)) if status == "done" else None,
             )
         )
-
-    ids = {agent.id for agent in agents}
     links = tuple(
-        AgentEdge(
-            id=edge.id,
-            kind=edge.kind,
-            source=edge.source,
-            target=edge.target,
-            data=_json_safe(dict(edge.data)),
-        )
+        AgentEdge(edge.id, edge.kind, edge.source, edge.target, _json_safe(dict(edge.data)))  # type: ignore[arg-type]
         for edge in graph.edges()
-        if not edge.structural and edge.source in ids and edge.target in ids
+        if not edge.structural and edge.source in graph._agents and edge.target in graph._agents
     )
-    return AgentDirectory(
-        viewer_id=viewer.id,
-        root_id=graph.lineage(viewer)[0].id,
-        agents=tuple(info),
-        links=links,
-    )
+    return AgentDirectory(viewer_id=viewer.id, records=tuple(records), links=links)
 
 
-def resolve_agent(g: Graph, selector: object) -> Node:
-    """An agent by handle, directory entry, id, path, or unique name."""
-    if isinstance(selector, (AgentHandle, AgentInfo)):
+def resolve_agent(g: Graph, selector: object) -> Agent:
+    """An agent by handle, id, path, or unique name."""
+    from rlmflow.graph.nodes import Agent
+
+    if isinstance(selector, Agent):
+        return g.agent(selector.id)
+    if isinstance(selector, AgentReference):
         selector = selector.agent_id
-    selector = agent_ref_id(selector) or selector
+    if isinstance(selector, dict) and isinstance(selector.get(AGENT_REF_KEY), str):
+        selector = selector[AGENT_REF_KEY]
     if not isinstance(selector, str):
-        raise TypeError("agent selector must be a handle, an AGENTS entry, or a string")
-    if selector in g and (found := g.node(selector)).type == "agent_start":
-        return found
+        raise TypeError("agent selector must be an agent or a string")
+    if selector in g._agents:
+        return g._agents[selector]
     agents = g.agents()
-    by_path = [agent for agent in agents if g.path(agent) == selector]
-    matches = by_path or [agent for agent in agents if agent.name == selector]
+    matches = [a for a in agents if g.path(a) == selector] or [
+        a for a in agents if a.name == selector
+    ]
     if len(matches) == 1:
         return matches[0]
     if matches:
@@ -436,18 +309,17 @@ def resolve_agent(g: Graph, selector: object) -> Node:
     raise KeyError(f"unknown agent {selector!r}")
 
 
-def agent_handle(g: Graph, agent: Node) -> AgentHandle:
+def agent_handle(g: Graph, agent: Agent) -> AgentHandle:
     return AgentHandle(agent_id=agent.id, name=agent.name, path=g.path(agent))
 
 
 __all__ = [
-    "agent_handle",
-    "resolve_agent",
     "AgentDirectory",
     "AgentEdge",
-    "AgentFrontier",
     "AgentHandle",
-    "AgentInfo",
+    "AgentRecord",
     "AgentStatus",
+    "agent_handle",
     "build_agent_directory",
+    "resolve_agent",
 ]

@@ -6,9 +6,10 @@ by the flow's worker pool. This example focuses on the caller-facing control
 surface instead: choosing how much of the Node stream to consume with
 ``until=...``.
 
-A parent halted part-way through a delegating block re-runs that block when the
-stream resumes; its launch calls resolve to the children already in the graph,
-so nothing is launched twice.
+A halt cancels whatever is still running. A parent halted part-way through a
+delegating block lands that block marked to re-run: the children it launched
+stay, and when the stream resumes the block re-runs in place, getting the same
+children back from its saved launches.
 
 Run:
     export OPENAI_API_KEY=...
@@ -22,7 +23,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import AGENT_START, DONE, AgentConfig, Flow, Graph, Node, Step
+from rlmflow import DONE, Agent, AgentConfig, Flow, Graph, Step
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -44,11 +45,7 @@ This example script is observing the graph stream, so keep the work small.
 """
 
 
-def node_label(g: Graph, node: Node) -> str:
-    return f"{g.path(g.node(node.agent_id))}: {node.type}"
-
-
-def print_tree(g: Graph, agent: Node, depth: int = 0) -> None:
+def print_tree(g: Graph, agent: Agent, depth: int = 0) -> None:
     """Each agent's history on one line, with its children indented below."""
     history = " -> ".join(node.type for node in g.history(agent))
     print(f"{'  ' * depth}[{g.path(agent)}] {history}")
@@ -56,36 +53,36 @@ def print_tree(g: Graph, agent: Node, depth: int = 0) -> None:
         print_tree(g, child, depth + 1)
 
 
-def print_nodes(title: str, nodes: list[Node], g: Graph, root: Node) -> None:
+def print_nodes(title: str, labels: list[str], g: Graph, root: Agent) -> None:
     print(f"\n=== {title} ===")
-    for node in nodes:
-        print(f"- {node_label(g, node)}")
+    for label in labels:
+        print(f"- {label}")
     print_tree(g, root)
 
 
-async def run_example(args: argparse.Namespace) -> tuple[Graph, Node]:
+async def run_example(args: argparse.Namespace) -> tuple[Graph, Agent]:
     config = AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)
     flow = Flow(configs=[config], workers=args.max_concurrency)
     g = Graph()
-    root = g.create_agent(QUERY)
-    observed: list[Node] = []
+    root = g.add_agent(QUERY)
+    observed: list[str] = []
     out_dir = Path(args.out_dir)
 
-    async def collect(**flow_kwargs) -> list[Node]:
+    async def collect(**flow_kwargs) -> list[str]:
+        """A label per landed node, taken as it lands: a halt can take nodes back."""
         stream = checkpoint_stream(flow.run_streaming(g, **flow_kwargs), g, out_dir)
-        return [step.node async for step in stream]
+        return [f"{g.path(step.agent)}: {step.node.type}" async for step in stream]
 
     events = await collect(until="next")
     observed.extend(events)
     print_nodes("until='next': first appended node", events, g, root)
 
-    def child_launched(step: Step) -> bool:
-        # The first child agent_start is the fan-out.
-        return step.node.type == AGENT_START and step.node is not root
+    def child_stepped(step: Step) -> bool:
+        return step.agent.id != root.id
 
-    events = await collect(until=child_launched)
+    events = await collect(until=child_stepped)
     observed.extend(events)
-    print_nodes("until=<callable>: parent has fanned out a child", events, g, root)
+    print_nodes("until=<callable>: a child has taken its first step", events, g, root)
 
     def first_child_done(step: Step) -> bool:
         return step.agent.id != root.id and step.node.type == DONE
@@ -105,13 +102,13 @@ async def run_example(args: argparse.Namespace) -> tuple[Graph, Node]:
     observed.extend(events)
     print_nodes("callable boundary: consume two more global steps", events, g, root)
 
-    while not g.terminal(root):
-        events = await collect(until="finished")
-        print_nodes("until='finished': run to the end", events, g, root)
+    while not g.status(root) == "done":
+        events = await collect(until="done")
+        print_nodes("until='done': run to the end", events, g, root)
         observed.extend(events)
 
     if observed:
-        print(f"\nObserved {len(observed)} Nodes.")
+        print(f"\nObserved {len(observed)} nodes.")
 
     await flow.aclose()
     return g, root

@@ -12,12 +12,11 @@
 - [Security](security.md): the trust model, Docker isolation, caps, proxied tools.
 - [Streaming and scheduling](streaming.md): `run_streaming(..., until=...)`, boundaries, cancellation.
 - [Control](control.md): limits, multi-turn runs, save and resume, forks, custom tools.
-- [Node injection](injections.md): add nodes between streaming calls and continue the run.
+- [Node injection](injections.md): add messages and edits between streaming calls and continue the run.
 - [Observability](observability.md): querying the graph, consumers, reading a saved run.
-- [Node model](node_model.md): node types, their data, and edges.
+- [The graph](node_model.md): agents, node types, edges, editing, and the saved format.
 - [Prompt customization](prompt_customization.md): each harness's prompt sections, and overriding them from a config or a harness subclass.
 - [Skills](skills.md): `SKILL.md` files in prompts.
-- [Benchmarks](benchmarks.md): the evaluation suites and how to run them.
 
 ## Examples and context
 
@@ -47,7 +46,7 @@ These records explain experiments and design lineage. They are not API reference
 - [Persistent agents](research/persistent_agents.md) — reopening a finished child with a follow-up question, why peer messaging deadlocks, and the engine constraints either would have to survive.
 - [Isolated agents](runtimes.md#isolated-agents) — one worker process and namespace per agent, and where a remote runtime runs.
 - [Historical REPL correctness and sharing plan](research/repl_plan.md) — the staged plan: the transport bugs found along the way, then local and remote co-tenancy.
-- [RAO implementation plan](research/rao_implementation_plan.md) — the design record behind the now-implemented but still experimental `rlmflow.rao` module.
+- [RAO implementation plan](research/rao_implementation_plan.md) — the design record behind the `rlmflow.rao` module, removed in core v2.
 - [Speculative programmatic tool calling](research/spec_ptc.md) — implement Zhang's sPTC algorithm in `rlmflow.speculate` (shadow REPL, claim-or-run futures) without depending on the spec-ptc package.
 - [Shepherd run analysis](research/shepherd_run_analysis.md) — a concrete rewind/replay/fan-out walkthrough from a saved eight-branch Sokoban run, including outcomes, parallelism, process boundaries, persistence, and the terminal-worker lifecycle bug exposed by the artifacts.
 - [DeLM vs. rlmflow](research/delm_vs_rlmflow.md) — how DeLM-style coordination could sit on top of recursive execution graphs.

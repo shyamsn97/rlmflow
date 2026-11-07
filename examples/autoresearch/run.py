@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import random
 import re
 import shutil
@@ -156,8 +157,8 @@ Editing train.py (do it the robust way):
   it still fails, re-read `trial_dir/train.py` from scratch and rewrite
   cleanly. Do not retry more than twice; if still broken, return the failure row.
 - If it returns any other failure row, return it to the parent.
-- `launch_agent(task, **inputs)` values may be strict JSON values or child
-  handles.
+- `launch_agent(task, **inputs)` values must be strict JSON values. To pass a
+  child's output on, `await` the child first and pass its result.
 
 Root sketch (root is the planner: plan a wave, fan out implementers, repeat):
 ```repl
@@ -199,6 +200,30 @@ results = await asyncio.gather(*handles)
 # wave next turn (pivot to a new/untried direction). Only call submit() at 0.
 print(results, list_runs(), best_run(), submission_status())
 ```
+"""
+
+
+IMPLEMENTER_PROMPT = """
+You implement one autoresearch trial. Your inputs `trial_dir`, `slug` and
+`hypothesis` are REPL variables; start with
+`rlmflow repl 'print(trial_dir, slug, hypothesis, sep="\\n")'`.
+
+- Edit only `train.py` inside `trial_dir` (relative to your working directory),
+  with your own file tools, changing only what the hypothesis needs. Do not touch
+  any other file, use git, or run training.
+- Then submit it from the REPL. The Modal job takes several minutes, so give the
+  cell a long timeout and set your shell tool's timeout to its maximum:
+      rlmflow repl --timeout 1500 'row = submit_trial(slug, hypothesis); print(row)'
+- If the row's status is `preflight_failed`, read the reported line, fix
+  `train.py`, and submit again. Retry at most twice.
+- Finish with `rlmflow repl 'submit(row)'`, passing the last row unchanged.
+"""
+
+PLANNER_IMPLEMENTER_NOTE = """
+Implementers are Claude Code sessions: launch every implementer with
+`launch_agent(task, config="implementer", trial_dir=..., slug=..., hypothesis=...)`.
+They edit `train.py` with their own tools, so the task can simply say
+"Implement this trial's hypothesis in trial_dir/train.py, then submit it."
 """
 
 
@@ -556,35 +581,35 @@ class AutoresearchState:
 
 
 def build_autoresearch_tools(state: AutoresearchState) -> list[Callable[..., object]]:
-    @tool("Create or return the baseline trial and run it once.", proxy=True)
+    @tool("Create or return the baseline trial and run it once.")
     def run_baseline() -> dict[str, Any]:
         return state.run_baseline()
 
-    @tool("Create a fresh copied trial directory for one hypothesis.", proxy=True)
+    @tool("Create a fresh copied trial directory for one hypothesis.")
     def create_trial(slug: str, hypothesis: str, parent_slug: str | None = None) -> dict[str, Any]:
         return state.create_trial(slug, hypothesis, parent_slug)
 
-    @tool("Submit an existing trial slug and return the ledger row.", proxy=True)
+    @tool("Submit an existing trial slug and return the ledger row.")
     def submit_trial(slug: str, hypothesis: str = "") -> dict[str, Any]:
         return state.submit_trial(slug, hypothesis)
 
-    @tool("Compact best-first ledger view.", proxy=True)
+    @tool("Compact best-first ledger view.")
     def list_runs() -> list[dict[str, Any]]:
         return state.list_runs()
 
-    @tool("Best successful/scored trial, or None if none has scored.", proxy=True)
+    @tool("Best successful/scored trial, or None if none has scored.")
     def best_run() -> dict[str, Any] | None:
         return state.best_run()
 
-    @tool("Random already-succeeded trial to diversify from (not the best).", proxy=True)
+    @tool("Random already-succeeded trial to diversify from (not the best).")
     def sample_valid_run() -> dict[str, Any] | None:
         return state.sample_valid_run()
 
-    @tool("Full latest ledger row for trial number n.", proxy=True)
+    @tool("Full latest ledger row for trial number n.")
     def get_run(n: int) -> dict[str, Any] | None:
         return state.get_run(n)
 
-    @tool("Submission budget and pending created trial counts.", proxy=True)
+    @tool("Submission budget and pending created trial counts.")
     def submission_status() -> dict[str, int | None]:
         return state.submission_status()
 
@@ -633,6 +658,8 @@ def run(args: argparse.Namespace) -> None:
         "submitted_trial_timeout_s": args.submitted_trial_timeout_s,
         "agent_runtime": args.agent_runtime,
         "docker_image": args.docker_image,
+        "implementer_harness": args.implementer_harness,
+        "implementer_model": args.implementer_model,
         "preflight": preflight(modal_config),
         "run_id": state.run_id,
     }
@@ -641,15 +668,36 @@ def run(args: argparse.Namespace) -> None:
 
     runtime = build_runtime(args.agent_runtime, args.docker_image, args.out)
 
-    flow = Flow(
-        configs=[
+    configs = [
+        AgentConfig(
+            model=args.model,
+            max_depth=args.max_depth,
+            max_iters=args.max_iters,
+            prompt={"autoresearch": ADAPTER_PROMPT},
+        )
+    ]
+    planner_note = ""
+    if args.implementer_harness == "claude_code":
+        # Claude Code's shell tool stops a command after 2 minutes by default;
+        # a submit_trial cell blocks for the whole Modal job.
+        bash_timeout_ms = str((args.modal_timeout_s + 300) * 1000)
+        os.environ.setdefault("BASH_DEFAULT_TIMEOUT_MS", bash_timeout_ms)
+        os.environ.setdefault("BASH_MAX_TIMEOUT_MS", bash_timeout_ms)
+        configs.append(
             AgentConfig(
-                model=args.model,
-                max_depth=args.max_depth,
-                max_iters=args.max_iters,
-                prompt={"autoresearch": ADAPTER_PROMPT},
+                name="implementer",
+                harness="claude_code",
+                description="a Claude Code session that implements and submits one trial",
+                model=args.implementer_model,
+                max_depth=0,
+                prompt={"autoresearch": IMPLEMENTER_PROMPT},
+                harness_options={"sdk": {"permission_mode": "acceptEdits"}},
             )
-        ],
+        )
+        planner_note = PLANNER_IMPLEMENTER_NOTE
+
+    flow = Flow(
+        configs=configs,
         runtime=runtime,
         tools=[FILE_TOOLS, *build_autoresearch_tools(state)],
         workers=args.parallel,
@@ -672,10 +720,10 @@ That is the ONLY stop condition — do NOT call submit() while submissions remai
 even if the last wave did not improve on the best (a plateau means pivot to a
 new direction, not stop). After each wave, re-check submission_status() and
 launch the next one.
-"""
+{planner_note}"""
     graph_dir = args.out / "graph"
     g = Graph()
-    root = g.create_agent(
+    root = g.add_agent(
         query,
         task_instructions=(example_dir / "program.md").read_text(),
     )
@@ -952,6 +1000,17 @@ def parse_args() -> argparse.Namespace:
         "--agent-runtime", choices=("subprocess", "local", "docker"), default="subprocess"
     )
     parser.add_argument("--docker-image", default="rlmflow:local")
+    parser.add_argument(
+        "--implementer-harness",
+        choices=("repl", "claude_code"),
+        default="repl",
+        help="harness for the agents that edit and submit trials",
+    )
+    parser.add_argument(
+        "--implementer-model",
+        default=None,
+        help="Claude Code's model; default: your Claude setting",
+    )
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument("--sync-dir", type=Path, default=None)
     parser.add_argument("--sync-every-s", type=float, default=2.0)
@@ -960,6 +1019,11 @@ def parse_args() -> argparse.Namespace:
         args.out = default_out_dir()
     if args.parallel < 1 or args.max_submissions < 0 or args.max_depth < 1:
         raise SystemExit("bad parallel/max-submissions/max-depth")
+    if args.implementer_harness == "claude_code" and args.agent_runtime == "docker":
+        # Claude Code edits files on the host; a Docker REPL sees different paths.
+        raise SystemExit(
+            "--implementer-harness claude_code needs --agent-runtime subprocess or local"
+        )
     return args
 
 

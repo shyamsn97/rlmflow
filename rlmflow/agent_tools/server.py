@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from rlmflow.agent_tools import tools
-from rlmflow.graph.nodes import Node, Step
+from rlmflow.graph.nodes import Agent, Step
 
 if TYPE_CHECKING:
     from rlmflow.flow import Flow
@@ -70,7 +70,7 @@ class Turn:
         return self.step.graph
 
     @property
-    def agent(self) -> Node:
+    def agent(self) -> Agent:
         return self.step.agent
 
 
@@ -135,11 +135,11 @@ class AgentToolsServer:
             if not turn.ended.done():
                 turn.ended.cancel()
 
-    def open_turn(self, agent: Node | str) -> Turn | None:
+    def open_turn(self, agent: Agent | str) -> Turn | None:
         """The turn ``agent`` has open, if any."""
         return self._open.get(agent if isinstance(agent, str) else agent.id)
 
-    def attach(self, agent: Node) -> str:
+    def attach(self, agent: Agent) -> str:
         """A token that acts for whichever turn of ``agent`` is open."""
         token = secrets.token_urlsafe(24)
         self._agent_tokens[token] = agent.id
@@ -163,7 +163,7 @@ class AgentToolsServer:
     # -- the tools ----------------------------------------------------------
 
     def _step(self, turn: Turn) -> Step:
-        return Step(turn.graph, turn.agent, self.flow.anchor(turn.graph, turn.agent))
+        return Step.latest(turn.graph, turn.agent)
 
     async def repl(self, turn: Turn, body: dict[str, Any]) -> dict[str, Any]:
         code = body.get("code")

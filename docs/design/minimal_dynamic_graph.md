@@ -67,10 +67,10 @@ STRUCTURAL = frozenset({NEXT, FROM, DEPENDS_ON})
 class Node:
     type: ClassVar[str] = "node"
     id: str = field(default_factory=new_node_id)
-    agent_id: str = ""            # owner; recipient for an undelivered UserQuery
+    agent_id: str = ""  # owner; recipient for an undelivered UserQuery
     content: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
-    seq: int = -1                 # assigned when the node is logged
+    seq: int = -1  # assigned when the node is logged
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
     finished_at: float | None = None
@@ -94,7 +94,7 @@ class Edge:
 @dataclass(kw_only=True)
 class AgentStart(Node):
     type: ClassVar[str] = "agent_start"
-    args: dict[str, Any] = field(default_factory=dict)        # plain JSON only
+    args: dict[str, Any] = field(default_factory=dict)  # plain JSON only
     config: AgentConfig = field(default_factory=AgentConfig)  # no path/depth
     system_prompts: dict[str, str] = field(default_factory=dict)
 
@@ -133,17 +133,23 @@ class Graph:
     id: str
 
     # writes (history goes through ops)
-    def add_edge(self, edge: Edge) -> Edge: ...           # application edge between existing nodes
+    def add_edge(self, edge: Edge) -> Edge: ...  # application edge between existing nodes
     def remove_edge(self, edge: Edge | str) -> Edge: ...  # deactivate an application edge
-    def merge(self, other: Graph) -> None: ...            # append another graph's log
-    def as_of(self, seq: int) -> Graph: ...               # copy of the graph at a log position
+    def merge(self, other: Graph) -> None: ...  # append another graph's log
+    def as_of(self, seq: int) -> Graph: ...  # copy of the graph at a log position
 
     # raw lookups
     def node(self, id: str) -> Node: ...
     def nodes(self, type: type[Node] = Node, *, agent: str | None = None) -> list[Node]: ...
-    def edges(self, *, kind: str | None = None, source: str | None = None,
-              target: str | None = None, active: bool | None = True) -> list[Edge]: ...
-    def items(self, after: int = -1) -> list[Node | Edge]: ...    # the log, in seq order
+    def edges(
+        self,
+        *,
+        kind: str | None = None,
+        source: str | None = None,
+        target: str | None = None,
+        active: bool | None = True,
+    ) -> list[Edge]: ...
+    def items(self, after: int = -1) -> list[Node | Edge]: ...  # the log, in seq order
 
     # persistence
     def save(self, path: str | Path) -> Path: ...
@@ -156,9 +162,9 @@ Its state:
 ```python
 self._nodes: dict[str, Node]
 self._edges: dict[str, Edge]
-self._out: dict[str, list[Edge]]     # node id -> outgoing edges
-self._in: dict[str, list[Edge]]      # node id -> incoming edges
-self._log: list[Node | Edge]         # index == seq; a removal re-logs the edge
+self._out: dict[str, list[Edge]]  # node id -> outgoing edges
+self._in: dict[str, list[Edge]]  # node id -> incoming edges
+self._log: list[Node | Edge]  # index == seq; a removal re-logs the edge
 self._lock: threading.RLock
 ```
 
@@ -234,10 +240,10 @@ def depth(g: Graph, agent: AgentStart) -> int: ...
 Anything else is a one-liner at the call site:
 
 ```python
-agents    = g.nodes(AgentStart)
+agents = g.nodes(AgentStart)
 top_level = [a for a in agents if reads.launcher(g, a) is None]
-usage     = sum((n.usage for n in g.nodes(LLMOutput)), LLMUsage())
-peers     = g.edges(kind="peer", source=a.id)
+usage = sum((n.usage for n in g.nodes(LLMOutput)), LLMUsage())
+peers = g.edges(kind="peer", source=a.id)
 ```
 
 ## `ops`: derived writes
@@ -336,8 +342,7 @@ To bring in a saved run from elsewhere, merge it and then attach it:
 ```python
 other = Graph.load(path)
 g.merge(other)
-ops.attach(g, parent, *[a for a in other.nodes(AgentStart)
-                        if reads.launcher(other, a) is None])
+ops.attach(g, parent, *[a for a in other.nodes(AgentStart) if reads.launcher(other, a) is None])
 ```
 
 IDs are UUIDs, so they collide only when the same run is imported twice. Fork
@@ -371,10 +376,11 @@ async def run_streaming(self, g, *, until="done"):
             if agent.id not in running:
                 ops.deliver(g, agent)
                 running[agent.id] = asyncio.create_task(
-                    self._step(g, agent, reads.frontier(g, agent)))
+                    self._step(g, agent, reads.frontier(g, agent))
+                )
         if not running:
             return
-        done = await first_completed(running)          # pops from running
+        done = await first_completed(running)  # pops from running
         self._react(g, done)
         for item in g.items(after=cursor):
             cursor = item.seq
@@ -382,12 +388,13 @@ async def run_streaming(self, g, *, until="done"):
             if stop(until, item, g):
                 return
 
+
 async def _step(self, g, agent, node):
     landed = await self.transitions.produce(self, g, node)
     try:
         ops.append(g, agent, landed, after=node)
     except StaleFrontier:
-        pass                                           # a host write won; ready() reschedules
+        pass  # a host write won; ready() reschedules
 ```
 
 ### Reactions
@@ -465,9 +472,9 @@ after that query.
 
 ```python
 class ContextPolicy(StrEnum):
-    EPHEMERAL = "ephemeral"        # drop live state when terminal; refuse follow-ups
+    EPHEMERAL = "ephemeral"  # drop live state when terminal; refuse follow-ups
     REHYDRATABLE = "rehydratable"  # drop live state; replay history on follow-up
-    RESIDENT = "resident"          # keep live state; replay only after process loss
+    RESIDENT = "resident"  # keep live state; replay only after process loss
 ```
 
 The policy is stored in `AgentStart.config`, so it is a graph fact; Flow
@@ -510,7 +517,7 @@ follow-up `DelegationAction` that resumes that session.
 
 | Feature                                                                  | Today                                           | After                                                                  |
 | ------------------------------------------------------------------------ | ----------------------------------------------- | ---------------------------------------------------------------------- |
-| Start a run                                                              | `start(task)` builds a root                     | `g.create_agent(task)`, which is `ops.spawn(g, task)` with no launcher |
+| Start a run                                                              | `start(task)` builds a root                     | `g.add_agent(task)`, which is `ops.spawn(g, task)` with no launcher |
 | Model, exec, and delegation steps                                        | producer, then `anchor.append`                  | producer, then `ops.append(..., after=)`                               |
 | In-step nudges (`FinalQuery`, `TruncationSummary`, `TransitionDecision`) | `anchor.append` inside the step                 | `ops.append` from the same step                                        |
 | `launch_subagent`                                                        | `resolve_child`, then a tree child              | `ops.spawn(by=action)`                                                 |
@@ -543,7 +550,8 @@ from rlmflow.graph import Graph, Edge, ops, reads
 g = Graph()
 
 # Classic RLM
-ops.spawn(g, "Solve it."); flow.run(g)
+ops.spawn(g, "Solve it.")
+flow.run(g)
 
 # Disposable workers (inside a REPL)
 launch_agent(task="One question.", context_policy="ephemeral")
@@ -565,8 +573,8 @@ out = launch_agent(task="Summarize.", data=src)
 branches = [ops.fork(g, rewind, name=f"branch{i}") for i in range(n)]
 for b, plan in zip(branches, plans):
     ops.send(g, b, plan)
-ops.attach(g, judge, *branches)   # the judge's next turn sees every result
-flow.run(g)                       # the judge writes the merge as ordinary code
+ops.attach(g, judge, *branches)  # the judge's next turn sees every result
+flow.run(g)  # the judge writes the merge as ordinary code
 ```
 
 ### Decentralized language models
@@ -577,9 +585,13 @@ agent is a root or a router.
 
 ```python
 peers = [
-    ops.spawn(g, "Own shard {shard}; find contradictions with your peers.",
-              name=f"peer{i}", config=AgentConfig(model=m, context_policy="resident"),
-              shard=i)
+    ops.spawn(
+        g,
+        "Own shard {shard}; find contradictions with your peers.",
+        name=f"peer{i}",
+        config=AgentConfig(model=m, context_policy="resident"),
+        shard=i,
+    )
     for i, m in enumerate(["qwen3-4b", "llama-8b", "claude-sonnet", "gpt-oss-20b"])
 ]
 for a, b in zip(peers, peers[1:] + peers[:1]):
@@ -593,11 +605,11 @@ Inside a peer's REPL:
 ```python
 nbrs = [AGENTS.get(e.target) for e in AGENTS.edges(source=AGENTS.self, kind="peer")]
 for n in nbrs:
-    send_agent(n, f"My claims: {claims}")        # gossip without blocking
+    send_agent(n, f"My claims: {claims}")  # gossip without blocking
 reply = ask_agent(nbrs[0], "Do you contradict claim 3?")
-connect_agent(AGENTS.get("peer3"), "peer")       # emergent topology
+connect_agent(AGENTS.get("peer3"), "peer")  # emergent topology
 checks = [launch_agent(task=f"Verify {c}", context_policy="ephemeral") for c in claims]
-submit(await asyncio.gather(*checks))            # a local answer; messages can reopen it
+submit(await asyncio.gather(*checks))  # a local answer; messages can reopen it
 ```
 
 - **Termination is quiescence.** `reads.ready(g)` is empty: every peer is
@@ -875,7 +887,7 @@ and the shims and `_graph` are deleted.
 
 | Today                                   | After                                                  |
 | --------------------------------------- | ------------------------------------------------------ |
-| `root = start(task)`                    | `g = Graph(); agent = g.create_agent(task)`            |
+| `root = start(task)`                    | `g = Graph(); agent = g.add_agent(task)`            |
 | `flow.run(root)`                        | `flow.run(g)`                                          |
 | `root.save(p)` / `AgentStart.load(p)`   | `g.save(p)` / `Graph.load(p)`                          |
 | `root.iter_agents()` / `find_agent(id)` | `g.nodes(AgentStart)` / `g.node(id)`                   |

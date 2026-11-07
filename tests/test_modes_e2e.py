@@ -13,7 +13,7 @@ import pytest
 from helpers import ScriptedFlow, StubLLM
 from helpers import reasoning_repl as block
 
-from rlmflow import CODE, WAITING, AgentConfig, Flow, Graph
+from rlmflow import CODE, IDLE, AgentConfig, Flow, Graph
 from rlmflow.agent_tools import hooks
 from rlmflow.cli.fork import resume_command
 from rlmflow.cli.serve import INTERACTIVE, Serve, until
@@ -81,7 +81,7 @@ def worker_flow() -> Flow:
 
 def shapes(g):
     """Each agent's node types and result, by path."""
-    return {g.path(a): ([n.type for n in g.own_history(a)], g.result(a)) for a in g.agents()}
+    return {g.path(a): ([n.type for n in a.nodes], g.result(a)) for a in g.agents()}
 
 
 async def claude(project: Path, *argv: str) -> dict:
@@ -127,7 +127,7 @@ def test_same_conversation_same_graph_in_both_modes(env, tmp_path, monkeypatch):
     harness_project = tmp_path / "harness"
     harness_project.mkdir()
     headless = Graph()
-    root = headless.create_agent("Count the x's")
+    root = headless.add_agent("Count the x's")
 
     async def as_harness():
         flow = worker_flow()
@@ -152,8 +152,8 @@ def test_same_conversation_same_graph_in_both_modes(env, tmp_path, monkeypatch):
     assert headless.result(root) == 5
     [iroot] = [a for a in interactive.agents() if a.name == "root"]
     assert iroot.config.harness == INTERACTIVE
-    waiting = next(n for n in interactive.history(iroot) if n.type == WAITING)
-    assert waiting.data["session_id"] == session_id and waiting.data["text"].startswith(
+    idle = next(n for n in interactive.history(iroot) if n.type == IDLE)
+    assert idle.data["session_id"] == session_id and idle.data["text"].startswith(
         "Launched the counters. 8"
     )
     assert interactive.usage([iroot]).input_tokens == 20
@@ -169,11 +169,12 @@ def test_forking_an_interactive_graph_resumes_at_turn_ends_and_restarts_mid_turn
     g, session_id = interactive_run(project)
     [root] = [a for a in g.agents() if a.name == "root"]
     history = g.history(root)
-    waiting = next(n for n in history if n.type == WAITING)
+    idle = next(n for n in history if n.type == IDLE)
     first_cell = next(n for n in history if n.type == CODE)
 
-    script(FROM_NOTES, SUM)
-    at_turn_end = g.fork(waiting, name="at-turn-end")
+    # The fork has no children of its own, so its resumed turn opens on the prompt alone.
+    script(FROM_NOTES, SUM, ("Continue the task", SUM[1], SUM[2]))
+    at_turn_end = g.fork(idle, name="at-turn-end")
     command = resume_command(g, at_turn_end, hooks.PLUGIN_DIR)
     assert f"--resume {session_id} --fork-session" in command
 
@@ -192,7 +193,7 @@ def test_forking_an_interactive_graph_resumes_at_turn_ends_and_restarts_mid_turn
     assert "--resume" not in command
     asyncio.run(continue_fork(mid_turn, shlex.split(command)[1:]))
     assert g.result(mid_turn) == "split doc in two!"
-    assert g.launched(mid_turn) == []
+    assert g.children(mid_turn) == []
 
 
 def run_cli(*argv: str, cwd: Path) -> subprocess.CompletedProcess:
@@ -219,7 +220,7 @@ def test_rlmflow_run_starts_serve_and_a_restarted_serve_continues_the_session(en
     asyncio.run(claude(project, "--resume", session, "what are your notes?"))
     assert until_gone(project / ".rlmflow" / "serve.json")
     g = Graph.load(graph_dir)
-    assert g.result(g.node(root.id)) == "kept"
+    assert g.result(g.agent(root.id)) == "kept"
 
 
 def until_gone(path: Path, timeout: float = 15) -> bool:
@@ -233,12 +234,12 @@ def test_rlmflow_fork_interactive_prints_the_resume_command_and_serves_the_fork(
     project.mkdir()
     g, session_id = interactive_run(project)
     [root] = [a for a in g.agents() if a.name == "root"]
-    waiting = next(n for n in g.history(root) if n.type == WAITING)
+    idle = next(n for n in g.history(root) if n.type == IDLE)
 
     done = run_cli(
         "fork",
         str(project / "run"),
-        waiting.id,
+        idle.id,
         "--interactive",
         "--name",
         "again",
@@ -255,10 +256,10 @@ def test_rlmflow_fork_interactive_prints_the_resume_command_and_serves_the_fork(
     info = json.loads(serve_file.read_text())
     assert info["session_id"] is None
     saved = Graph.load(project / "run")
-    assert saved.path(saved.node(info["root"])) == "again"
+    assert saved.path(saved.agent(info["root"])) == "again"
 
     hooks.run("end", {"cwd": str(project)})
     assert until_gone(serve_file)
 
-    headless = run_cli("fork", str(project / "run"), waiting.id, cwd=project)
+    headless = run_cli("fork", str(project / "run"), idle.id, cwd=project)
     assert headless.returncode == 1 and "was interactive; pass --config" in headless.stderr

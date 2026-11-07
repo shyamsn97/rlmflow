@@ -82,12 +82,10 @@ def build_namespace(flow, node) -> dict[str, Any]:
 
 ```python
 # engine/restore.py
-async def replay(flow, root: AgentStart) -> None:
-    ...
+async def replay(flow, root: AgentStart) -> None: ...
 
 
-async def ensure_replayed(flow, agent: AgentStart) -> None:
-    ...
+async def ensure_replayed(flow, agent: AgentStart) -> None: ...
 ```
 
 `Flow` keeps the names callers already use:

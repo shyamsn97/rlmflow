@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
-from rlmflow.graph.graph import FROM, Graph
-from rlmflow.graph.nodes import AGENT_START, LLMUsage, Node
+from rlmflow.graph.graph import Graph
+from rlmflow.graph.nodes import MESSAGE, RETURN, SPAWN, Agent, LLMUsage, Node
 from rlmflow.view.timeline import timeline
 
 BG = "#0d1117"
@@ -31,22 +31,22 @@ AGENT_LABEL = "#3fb950"
 
 # Hue per node type, from the original viewer.
 NODE_COLORS: dict[str, str] = {
-    "agent_start": "#58a6ff",  # sky blue   — an agent's entry point
+    "agent": "#58a6ff",  # sky blue   — an agent's entry point
     "message": "#79c0ff",  # pale blue  — input handed to it
-    "llm_output": "#bc8cff",  # lavender   — a model turn
+    "llm": "#bc8cff",  # lavender   — a model turn
     "code": "#ff9e64",  # peach      — a cell and what it printed
-    "waiting": "#ffd33d",  # gold       — turn ended with children running
+    "idle": "#ffd33d",  # gold       — a session waiting for messages
     "done": "#56d364",  # emerald    — finished
 }
 
 # Shape pairs with colour so types stay separable when small, in greyscale, or
 # to someone who cannot tell gold from peach.
 NODE_SHAPES: dict[str, str] = {
-    "agent_start": "circle",
+    "agent": "circle",
     "message": "circle-open",
-    "llm_output": "diamond",
+    "llm": "diamond",
     "code": "square",
-    "waiting": "star",
+    "idle": "star",
     "done": "hexagon",
 }
 
@@ -55,7 +55,7 @@ FALLBACK_SHAPE = "circle"
 SANS = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
 MONO = "ui-monospace, SFMono-Regular, Menlo, monospace"
 
-MARGIN_X, MARGIN_TOP, MARGIN_BOTTOM = 16.0, 44.0, 16.0
+MARGIN_X, MARGIN_TOP, MARGIN_BOTTOM = 16.0, 56.0, 16.0
 LABEL_SIZE = 10.5
 LABEL_ADVANCE = 0.6  # monospace glyph width as a share of font size
 BASE_DIAMETER = 14.0
@@ -64,9 +64,9 @@ MAX_TOKEN_GROWTH = 22.0
 
 @dataclass
 class Placed:
-    """A node and where it landed."""
+    """An agent or node and where it landed."""
 
-    node: Node
+    node: Agent | Node
     x: float
     y: float
     r: float
@@ -82,56 +82,92 @@ class Layout:
     scale: float = 1.0
 
 
-def node_color(node: Node) -> str:
+def node_color(node: Agent | Node) -> str:
     return NODE_COLORS.get(node.type, FALLBACK_COLOR)
 
 
-def node_shape(node: Node) -> str:
+def node_shape(node: Agent | Node) -> str:
     return NODE_SHAPES.get(node.type, FALLBACK_SHAPE)
 
 
-def node_label(node: Node) -> str:
+def node_label(node: Agent | Node) -> str:
     """Agents get named; the rest are identified by colour and shape."""
-    return node.name if node.type == AGENT_START else ""
+    return node.name if isinstance(node, Agent) else ""
 
 
 def parent_ids(g: Graph) -> dict[str, str]:
-    """Each node's drawn parent: an agent's launch action or fork base, else ``prev``."""
+    """Each item's drawn parent: an agent's launching cell or fork base, else the node before it."""
     parents: dict[str, str] = {}
-    for node in g.nodes():
-        launch = g.edges(kind=FROM, source=node.id) if node.type == AGENT_START else []
-        source = g.node(launch[0].target) if launch else g.prev(node)
-        if source is not None:
-            parents[node.id] = source.id
+    for agent in g.agents():
+        source = [agent.base.id] if agent.base is not None else []
+        source += [e.source for e in g.edges(kind=SPAWN, target=agent.id)]
+        if source:
+            parents[agent.id] = source[0]
+        previous = agent.id
+        for node in [*agent.nodes, *agent.inbox]:
+            parents[node.id] = previous
+            previous = node.id
     return parents
 
 
-def node_tokens(node: Node) -> int:
+def handoffs(g: Graph) -> list[tuple[str, str]]:
+    """``(source, receiver)`` pairs for what crossed between agents.
+
+    A ``return`` edge runs from a child's ``done`` to the cell that awaited it or
+    the message that delivered it; a ``message`` edge from the sending cell to
+    the message it put in another agent's inbox.
+    """
+    return [
+        (edge.source, edge.target)
+        for edge in g.edges()
+        if edge.kind == RETURN or (edge.kind == MESSAGE and edge.source in g)
+    ]
+
+
+def node_tokens(node: Agent | Node) -> int:
     """What this node cost, which is what sizes its marker."""
+    if isinstance(node, Agent):
+        return 0
     usage = LLMUsage.of(node.data.get("usage"))
     return int(usage.input_tokens) + int(usage.output_tokens)
 
 
-def marker_diameter(node: Node) -> float:
+def marker_diameter(node: Agent | Node) -> float:
     """``14 + min(22, sqrt(tokens) / 3.5)``, as the Plotly viewer sized them."""
     return BASE_DIAMETER + min(MAX_TOKEN_GROWTH, math.sqrt(node_tokens(node)) / 3.5)
 
 
-def tidy_tree(nodes: list[Node], parents: dict[str, str]) -> dict[str, tuple[float, float]]:
-    """Give every subtree a horizontal slot by leaf count; centre parents over it."""
+def tidy_tree(nodes: list[Agent | Node], parents: dict[str, str]) -> dict[str, tuple[float, float]]:
+    """Give every subtree a horizontal slot by leaf count.
+
+    An agent's own chain is a straight column at the left of its slot; agents it
+    launches or forks take the slots to its right.
+    """
     present = {node.id for node in nodes}
-    children: dict[str, list[Node]] = {node.id: [] for node in nodes}
+    by_id = {node.id: node for node in nodes}
+    children: dict[str, list[Agent | Node]] = {node.id: [] for node in nodes}
     for node in nodes:
         parent = parents.get(node.id)
         if parent is not None and parent in present:
             children[parent].append(node)
+
+    def continues(parent: Agent | Node, kid: Agent | Node) -> bool:
+        return not isinstance(kid, Agent) and kid.agent_id == parent.agent_id
+
+    for node_id, kids in children.items():
+        kids.sort(key=lambda kid: not continues(by_id[node_id], kid))
+    spine = {
+        node_id: kids[0].id
+        for node_id, kids in children.items()
+        if kids and continues(by_id[node_id], kids[0])
+    }
 
     leaves: dict[str, int] = {}
     for origin in nodes:
         if origin.id in leaves:
             continue
         active: set[str] = set()
-        stack: list[tuple[Node, bool]] = [(origin, False)]
+        stack: list[tuple[Agent | Node, bool]] = [(origin, False)]
         while stack:
             node, expanded = stack.pop()
             if node.id in leaves:
@@ -153,29 +189,40 @@ def tidy_tree(nodes: list[Node], parents: dict[str, str]) -> dict[str, tuple[flo
                 (kid, False) for kid in reversed(children[node.id]) if kid.id not in leaves
             )
 
-    pos: dict[str, tuple[float, float]] = {}
+    slots: dict[str, tuple[float, float, int]] = {}
 
     cursor = 0.0
     for node in nodes:
         parent = parents.get(node.id)
         if parent is None or parent not in present:
             width = float(max(leaves[node.id], 1))
-            pending: list[tuple[Node, float, float, int]] = [(node, cursor, cursor + width, 0)]
+            pending: list[tuple[Agent | Node, float, float, int]] = [
+                (node, cursor, cursor + width, 0)
+            ]
             while pending:
                 current, left, right, depth = pending.pop()
-                if current.id in pos:
+                if current.id in slots:
                     continue
-                pos[current.id] = ((left + right) / 2, float(depth))
+                slots[current.id] = (left, right, depth)
                 kids = children[current.id]
                 total = sum(leaves[kid.id] for kid in kids) or 1
                 child_left = left
-                placements: list[tuple[Node, float, float, int]] = []
+                placements: list[tuple[Agent | Node, float, float, int]] = []
                 for kid in kids:
                     child_width = (right - left) * (leaves[kid.id] / total)
                     placements.append((kid, child_left, child_left + child_width, depth + 1))
                     child_left += child_width
                 pending.extend(reversed(placements))
             cursor += width + 1.0
+
+    pos: dict[str, tuple[float, float]] = {}
+    for node_id, (left, right, depth) in slots.items():
+        end, seen = node_id, {node_id}
+        while end in spine and spine[end] in slots and spine[end] not in seen:
+            end = spine[end]
+            seen.add(end)
+        end_left, end_right, _ = slots[end]
+        pos[node_id] = ((end_left + end_right) / 2, float(depth))
     for node in nodes:  # cycles or broken edges, parked rather than dropped
         if node.id not in pos:
             cursor += 1.0
@@ -190,7 +237,7 @@ def legend_width() -> float:
 
 
 def layout_graph(
-    nodes: list[Node],
+    nodes: list[Agent | Node],
     parents: dict[str, str],
     *,
     width: float = 1024.0,
@@ -307,9 +354,9 @@ def marker(x: float, y: float, shape: str, color: str, r: float, *, ring: bool =
     return f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" fill="{color}"{stroke}/>'
 
 
-def hover_text(g: Graph, node: Node) -> str:
+def hover_text(g: Graph, node: Agent | Node) -> str:
     """Identity only — the detail panel carries the content."""
-    rows = [f"{g.path(g.node(node.agent_id))} · {node.type}"]
+    rows = [f"{g.path(g.agent(node.agent_id))} · {node.type}"]
     tokens = node_tokens(node)
     if tokens:
         usage = LLMUsage.of(node.data.get("usage"))
@@ -324,7 +371,7 @@ def graph_svg(
     width: float = 1024.0,
     height: float = 360.0,
     dim_after: int | None = None,
-    order: list[Node] | None = None,
+    order: list[Agent | Node] | None = None,
     highlight: str = "",
     legend: bool = True,
     interactive: bool = False,
@@ -333,14 +380,14 @@ def graph_svg(
 
     ``dim_after`` fades everything from that index on, which is how the stepper
     shows a partly-built graph without markers moving between slides. Indexes
-    count along ``order`` (every node of ``g``), which defaults to log order.
+    count along ``order`` (every agent and node of ``g``), which defaults to log order.
     ``highlight`` rings one node id: the step you are on.
 
     With ``interactive`` the markers carry their step index and geometry, and a
     spare ring is parked in the drawing. That lets one figure be stepped through
     by script instead of shipping a separate copy of it per step.
     """
-    nodes = g.nodes() if order is None else order
+    nodes = timeline(g) if order is None else order
     parents = parent_ids(g)
     layout = layout_graph(nodes, parents, width=width, height=height, legend=legend)
     if not layout.placed:
@@ -372,6 +419,18 @@ def graph_svg(
         parts.append(
             f'<path d="M {x0:.1f} {y0:.1f} L {x1:.1f} {y1:.1f}" stroke="{EDGE}" '
             f'stroke-width="1" fill="none" opacity="{0.2 if faded else 1}"{tag}/>'
+        )
+    at = {placed.node.id: placed for placed in layout.placed}
+    for sender, receiver in handoffs(g):
+        if sender not in at or receiver not in at:
+            continue
+        source, target, arrives = at[sender], at[receiver], index_of[receiver]
+        faded = dim_after is not None and arrives >= dim_after
+        tag = f' class="rlm-e" data-i="{arrives}"' if interactive else ""
+        parts.append(
+            f'<path d="M {source.x:.1f} {source.y:.1f} L {target.x:.1f} {target.y:.1f}" '
+            f'stroke="{NODE_COLORS[MESSAGE]}" stroke-width="1" stroke-dasharray="3 3" '
+            f'fill="none" opacity="{0.2 if faded else 0.6}"{tag}/>'
         )
 
     for placed in layout.placed:
@@ -445,14 +504,14 @@ def _legend(width: float, y: float) -> str:
 
 def run_title(g: Graph) -> str:
     """The run's name: its top-level agents."""
-    tops = [a.name for a in g.agents() if g.launcher(a) is None]
+    tops = [a.name for a in g.roots()]
     return ", ".join(tops) or "empty graph"
 
 
 def figure_title(g: Graph) -> str:
     """The bold half of the title: ``root · done``."""
-    nodes = g.nodes()
-    last = nodes[-1].type if nodes else "empty"
+    items = timeline(g)
+    last = items[-1].type if items else "empty"
     return f"{run_title(g)} · {last}"
 
 

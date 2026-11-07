@@ -14,25 +14,28 @@ Imports may only point to the same layer or lower. Imports inside
 `ast`; it also checks that layer-0 modules import nothing from rlmflow.
 
 ```text
-6  apps        cli/  consumers.py  view/  rao/
+6  apps        cli/  consumers.py  view/
 5  driver      flow.py
-4  engine      engine/
-3  agent API   tools/  prompts.py
+4  agent API   tools/  harnesses/
+3  engine      engine/  agent_tools/
 2  substrate   llm/  runtime/  integrations/
 1  data        graph/
-0  leaves      utils.py  structured.py
+0  leaves      utils.py  schema.py
 ```
 
-- `graph/` is the bottom: usable with no model, no REPL and no `Flow`.
+- `graph/` is the bottom: usable with no model, no REPL and no `Flow`. Every
+  graph write, including edits and invalidation, lives there.
 - `llm/` and `runtime/` know nothing about tools or the engine.
-- `tools/` and `prompts.py` are what an agent calls and sees.
-- `engine/` is how `Flow` turns one node into the next, and when it stops.
+- `engine/` is scheduling and workspaces; `agent_tools/` is what an agent's
+  REPL calls back into (launch, await, send, `AGENTS`).
+- `harnesses/` turn one ready agent into its next node; `tools/` is the tool
+  decorator, built-ins and file tools.
 - Everything optional sits on top or in `integrations/`.
 
 Two extra checks in the same test:
 
 - `runtime/repl_server.py` runs in the worker process, so it may import only
-  `runtime/repl.py`, `structured.py` and `utils.py`.
+  `runtime/repl.py`, `schema.py` and `utils.py`.
 - `runtime/repl.py` keeps a literal copy of `AGENT_REF_KEY`; the test asserts it
   equals `graph.nodes.AGENT_REF_KEY`.
 
@@ -42,48 +45,47 @@ Two extra checks in the same test:
 rlmflow/
   __init__.py        public API
   __main__.py
-  flow.py            Flow, FlowLLM, messages_to_query
-  structured.py      output codec + structured engines
-  prompts.py         prompt prose, Prompt sections, system prompt, message assembly
+  flow.py            Flow: config, scheduling, result delivery, rerun, streaming
+  schema.py          JSON values and the output-schema check
   consumers.py       stream consumers: checkpoint, sync, live trees
   utils.py           code-block parsing, truncation, host-value encoding
 
   graph/             the data
-    graph.py         Graph (history writes and agent queries), Edge, edge kinds, check_invariants, errors
-    nodes.py         node types, LLMUsage, Step context, payload keys, ids
-    config.py        AgentConfig, ContextPolicy, Input, argument walkers
-    persistence.py   save/load, blobs, v1 upgrade
+    graph.py         Graph: agents, nodes, edges, queries, writes, edits, Invalidation
+    nodes.py         Agent record, node types, LLMUsage, Step, ids
+    config.py        AgentConfig, ContextPolicy, argument walkers
+    persistence.py   save/load (format 4), blobs
 
   llm/               chat clients
     __init__.py      LLMClient protocol, streaming, retries, PooledLLMClient, client_for
-    openai.py  anthropic.py  tinker.py
+    openai.py  anthropic.py
 
   runtime/           REPL workers
-    runtime.py       Runtime, local/subprocess runtimes, connections, ENV, REPL rebuild
-    repl.py          worker-side REPL contract, agent references, tool metadata
+    runtime.py       Runtime, local/subprocess runtimes, REPL rebuild
+    repl.py          worker-side REPL contract, agent references
     repl_client.py   host side of a worker process
-    repl_server.py   the worker process and its protocol, verifier fingerprints
+    repl_server.py   the worker process and its protocol
     docker.py  modal.py
 
-  integrations/      third-party glue
-    claude_code.py   ClaudeCodeBackend
-    dspy.py          DSPyFlow
-    instructor.py  jev.py
+  integrations/
+    mcp.py           MCPTools toolkit
 
-  tools/             what agents call
-    namespace.py     @tool, tool docs, RESERVED_TOOLS, REPL namespace building
-    builtins.py      submit, llm_query, completion contract, run_verifier
-    launch.py        launch_agent, fork_agent
-    messaging.py     send/ask/connect/disconnect, wait-cycle checks
-    agents_view.py   AGENTS, AgentHandle, resolve_agent
-    files.py         FILE_TOOLS, CODING_HANDOFF_SCHEMA
+  engine/
+    scheduler.py     TaskQueue, pools
+    workspaces.py    LocalWorkspace, GitWorktrees
 
+  agent_tools/       the REPL's line back to the graph
+    tools.py         launch, await, send, run_repl as functions of (flow, step)
+    view.py          AgentHandle, AGENTS
+    server.py        HTTP server for external harnesses
+    cli.py  mcp.py  hooks.py   `rlmflow repl`, the MCP server, Claude Code hooks
 
-  engine/            steps
-    steps.py         @transition, resolve_transition, choose_transition,
-                     DEFAULT_TRANSITIONS, AgentBackend
-    scheduler.py     TaskQueue, pools, resolve_boundary
-    handoff.py       result delivery to reporters
+  harnesses/         one ready agent -> its next node
+    base.py  repl.py  sessions.py  claude_code.py  pi.py  interactive.py  prompts.py
+
+  tools/
+    __init__.py      @tool, built-ins (submit, llm_query), toolkits
+    files.py         FILE_TOOLS
 
   view/
     figure.py        graph_svg, step_svg, PNG frames and GIFs
@@ -93,12 +95,9 @@ rlmflow/
 
   cli/
     __init__.py      entry point, config and version commands, resolve_options
-    run.py  view.py
-    serve.py         rlmflow serve: a Claude Code session as the root agent
-    fork.py          rlmflow fork
-    tui.py           FlowTUI
+    run.py  view.py  serve.py  fork.py
 
-  rao/               rollout, env, credit, export, trainer
+  plugin/            the Claude Code plugin (commands, skills)
 ```
 
 ## Placement rules
@@ -108,15 +107,13 @@ rlmflow/
   process (`runtime/repl_server.py`).
 - Optional third-party imports for viewers and image export happen inside the
   call, so `view/` imports eagerly without requiring its extras.
-- Names say what the thing does: `resolve_transition`, `resolve_boundary`,
-  `resolve_agent`, `resolve_options`, `rebuild_repl`, `run_verifier`.
-- History is written only through `Graph`'s history writes (`spawn`,
-  `append`, `send`, `deliver`, `fork`, `attach`) and its edge methods
-  (`add_edge`, `remove_edge`, `merge`); each checks its own preconditions. Loading a saved log runs `check_invariants` once.
+- The graph is written only through `Graph` methods (`create_agent`, `spawn`,
+  `append`, `send`, `deliver`, `fork`, `add_edge`, `edit`, `delete`, `remove`,
+  `replace`), each under the graph lock and checking its own preconditions.
 
-## Moved imports
+## Moved imports (0.7 flattening)
 
-The flattening pass moved these; `CHANGELOG.md` lists them for callers.
+The 0.7 flattening pass moved these, before core v2 removed several of the targets; `CHANGELOG.md` lists them for callers.
 
 | Old                                                | New                                                                                            |
 | -------------------------------------------------- | ---------------------------------------------------------------------------------------------- |

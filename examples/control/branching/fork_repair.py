@@ -1,6 +1,6 @@
 """Compare repair branches, each recorded in its own graph.
 
-Each repair attempt is a separate ``g.create_agent(...)`` run in its own working
+Each repair attempt is a separate ``g.add_agent(...)`` run in its own working
 directory; the resulting graphs are directly comparable.
 
 Usage:
@@ -108,7 +108,7 @@ def run_branch(root: Path, name: str, implementation: str, label: str):
         runtime=runtime,
     )
     g = Graph()
-    agent = g.create_agent(TASK)
+    agent = g.add_agent(TASK)
 
     async def drive() -> None:
         checkpoint = GraphCheckpointer(workdir / "graph")

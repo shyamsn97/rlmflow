@@ -1,11 +1,11 @@
-"""Decentralized peers: equal agents in one graph, talking over edges they draw.
+"""Decentralized peers: equal agents in one graph, talking with ``Agent.send``.
 
 There is no root agent. Three peers are top-level agents in one graph, each
-holding a private number. ``alice`` draws ``peer`` edges to the others with
-``connect_agent``, asks each for its number with ``ask_agent`` (which waits for
-the peer's next finished turn), then shares the total with ``send_agent``
-(which does not wait). Every message is a ``message`` node with a ``from``
-edge to the turn that sent it, so the saved graph records who told whom what.
+holding a private number. Peers can't await each other: ``alice`` asks bob and
+carol for their numbers with ``AGENTS[name].send(...)`` and ends her turn; their
+replies arrive as messages and reopen her. Once she has both, she sends them the
+total. Every message is a ``message`` node with a ``message`` edge from the cell
+that sent it, so the saved graph records who told whom what.
 
     python examples/collaboration/decentralized_peers.py --model gpt-5-mini
 """
@@ -17,8 +17,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import AGENT_START, MESSAGE, AgentConfig, Flow, Graph, GraphCheckpointer, Step
-from rlmflow.graph.graph import FROM
+from rlmflow import MESSAGE, AgentConfig, Flow, Graph, GraphCheckpointer, Step
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -28,19 +27,26 @@ from common import add_model_args, example_run_dir  # noqa: E402
 
 VALUES = {"alice": 1, "bob": 2, "carol": 3}
 
-PEERS = "You are {name}, one of three equal peers (alice, bob, carol) in one agent graph. There is no manager. Your private number is in the REPL variable `value`."
+PEERS = """\
+You are {name}, one of three equal peers (alice, bob, carol) in one agent graph. There is
+no manager. Your private number is in the REPL variable `value`. You can't await a peer:
+send it a message with AGENTS[name].send(text), then end your turn by calling submit(...).
+A peer's reply arrives as a message and reopens you, with your REPL as you left it.
+"""
 
 COLLECTOR = """
 Find the sum of all three private numbers:
-1. Draw a "peer" edge to bob and to carol with connect_agent.
-2. Ask both for their number with ask_agent, concurrently via asyncio.gather.
-3. Add their numbers to yours.
-4. Tell bob and carol the total with send_agent.
-5. submit the total as an integer."""
+1. Ask bob and carol for their number: send each "alice asks for your number", then
+   submit("waiting for bob and carol").
+2. Each reply reopens you. Keep the numbers you have in a dict `numbers`; while one is
+   missing, submit("waiting") again.
+3. With both, add them to yours, tell bob and carol the total with AGENTS[name].send(...),
+   and submit the total as an integer."""
 
 RESPONDER = """
 Submit your number now with submit(value). Peers may message you later:
-- asked for your number: submit(value) again;
+- asked for your number: reply to the asker with AGENTS[asker].send("{name}: <value>"),
+  then submit(value) again;
 - told the total: submit the string "{name} knows the total is N"."""
 
 
@@ -57,6 +63,22 @@ async def run(flow: Flow, g: Graph, out_dir: str, config: AgentConfig) -> None:
         flow.runtime.close_repls()
 
 
+def build_graph() -> Graph:
+    g = Graph()
+    for name, value in VALUES.items():
+        role = COLLECTOR if name == "alice" else RESPONDER.format(name=name)
+        g.add_agent(PEERS.format(name=name) + role, name=name, value=value)
+    return g
+
+
+def print_messages(g: Graph) -> None:
+    """Each message a peer sent: a ``message`` edge from its cell, naming the sending agent."""
+    for edge in g.edges(kind=MESSAGE):
+        message = g.node(edge.target)
+        sender = g.agent(edge.data["agent"]).name
+        print(f"  {sender} -> {g.owner(message).name}: {message['text']}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     add_model_args(parser)
@@ -65,15 +87,7 @@ def main() -> None:
     args = parser.parse_args()
 
     flow = Flow()
-    g = Graph()
-    for name, value in VALUES.items():
-        role = COLLECTOR if name == "alice" else RESPONDER.format(name=name)
-        g.create_agent(
-            PEERS.format(name=name) + role,
-            name=name,
-            value=value,
-        )
-
+    g = build_graph()
     asyncio.run(
         run(
             flow,
@@ -84,22 +98,12 @@ def main() -> None:
     )
 
     print("\nresults:")
-    results = {peer.name: g.result(peer) for peer in g.nodes(AGENT_START)}
+    results = {peer.name: g.result(peer) for peer in g.agents()}
     for name, result in results.items():
         print(f"  {name}: {result!r}")
 
-    print("\nedges the peers drew:")
-    for edge in g.edges():
-        if not edge.structural:
-            print(f"  {g.node(edge.source).name} -{edge.kind}-> {g.node(edge.target).name}")
-
     print("\nmessages:")
-    for message in g.nodes(MESSAGE):
-        senders = [g.node(edge.target) for edge in g.edges(kind=FROM, source=message.id)]
-        if not senders:
-            continue
-        frm = ", ".join(g.node(sender.agent_id).name for sender in senders)
-        print(f"  {frm} -> {g.node(message.agent_id).name}: {message['text']}")
+    print_messages(g)
 
     print(f"\nexpected total {sum(VALUES.values())}, alice submitted {results['alice']!r}")
     print(f"Graph saved to {args.out_dir}")

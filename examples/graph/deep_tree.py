@@ -11,24 +11,23 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rlmflow import AGENT_START, CODE, DONE, LLM_OUTPUT, Graph, LLMUsage, Node
-from rlmflow.graph.graph import FROM, NEXT
+from rlmflow import CODE, DONE, LLM, SPAWN, Agent, Graph, LLMUsage, Node
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = EXAMPLES_DIR / "_runs" / "deep-tree"
 
 
-def grow(g: Graph, agent: Node, *, depth: int, branch: int) -> None:
+def grow(g: Graph, agent: Agent, *, depth: int, branch: int) -> None:
     """Grow ``agent`` into a depth-``depth`` tree with ``branch`` children per fanout.
 
-    Children are launched by the model turn whose cell called ``launch_agent``,
-    the way a real run records it.
+    Children are launched by the cell that called ``launch_agent``, the way a
+    real run records it.
     """
     path = g.path(agent)
-    turn = g.append(
+    g.append(
         agent,
         Node(
-            LLM_OUTPUT,
+            LLM,
             text=f"plan at {path}",
             usage=LLMUsage(input_tokens=10, output_tokens=5).as_dict(),
         ),
@@ -39,28 +38,33 @@ def grow(g: Graph, agent: Node, *, depth: int, branch: int) -> None:
         g.append(agent, Node(DONE, result=path))
         return
 
+    cell = g.append(
+        agent,
+        Node(CODE, code="print(await asyncio.gather(*kids))", output=f"fanout from {path}"),
+    )
     for index in range(branch):
-        child = g.spawn(f"subtask of {path}", by=turn, name=f"c{index}")
+        child = g.add_agent(f"subtask of {path}", parent=cell, name=f"c{index}")
         grow(g, child, depth=depth - 1, branch=branch)
-
-    g.append(agent, Node(CODE, code="print(await handles)", output=f"fanout from {path}"))
     g.append(agent, Node(DONE, result=f"merged:{path}"))
 
 
-def tree_children(g: Graph) -> dict[str, list[Node]]:
-    """Each node's successors: its ``next`` node plus any agents its action launched."""
-    kids: dict[str, list[Node]] = {node.id: [] for node in g.nodes()}
-    for edge in g.edges(kind=NEXT):
-        kids[edge.source].append(g.node(edge.target))
-    for edge in g.edges(kind=FROM):
-        if edge.target in kids and g.node(edge.source).type == AGENT_START:
-            kids[edge.target].append(g.node(edge.source))
+Item = Agent | Node
+
+
+def tree_children(g: Graph) -> dict[str, list[Item]]:
+    """Each item's successors: an agent's first node, a node's next one, and the agents a cell launched."""
+    kids: dict[str, list[Item]] = {item.id: [] for item in [*g.agents(), *g.nodes()]}
+    for agent in g.agents():
+        for before, after in zip([agent, *agent.nodes], agent.nodes):
+            kids[before.id].append(after)
+    for edge in g.edges(kind=SPAWN):
+        kids[edge.source].append(g.agent(edge.target))
     return kids
 
 
 def render_ascii(
-    node: Node,
-    kids: dict[str, list[Node]],
+    node: Item,
+    kids: dict[str, list[Item]],
     *,
     prefix: str = "",
     is_last: bool = True,
@@ -78,10 +82,10 @@ def render_ascii(
     return lines
 
 
-def render_agents(g: Graph, agent: Node, *, prefix: str = "", is_last: bool = True) -> list[str]:
+def render_agents(g: Graph, agent: Agent, *, prefix: str = "", is_last: bool = True) -> list[str]:
     """Render only the agent tree."""
     connector = "└── " if is_last else "├── "
-    label = f"{g.path(agent)}  [{g.frontier(agent).type}]"
+    label = f"{g.path(agent)}  [{g.history(agent)[-1].type}]"
     lines = [f"{prefix}{connector}{label}" if prefix or not is_last else label]
     child_prefix = prefix + ("    " if is_last else "│   ")
     children = g.children(agent)
@@ -92,8 +96,8 @@ def render_agents(g: Graph, agent: Node, *, prefix: str = "", is_last: bool = Tr
     return lines
 
 
-def _label(node: Node) -> str:
-    if node.type == AGENT_START:
+def _label(node: Item) -> str:
+    if isinstance(node, Agent):
         return f"agent:{node.name}"
     text = str(node.get("text") or node.get("output") or node.get("result") or "").replace(
         "\n", " "
@@ -104,12 +108,12 @@ def _label(node: Node) -> str:
     return f"{node.type}{suffix}"
 
 
-def _layout(root: Node, kids: dict[str, list[Node]]) -> dict[str, tuple[float, float]]:
+def _layout(root: Item, kids: dict[str, list[Item]]) -> dict[str, tuple[float, float]]:
     """Assign (x, y) positions keyed by node id."""
     positions: dict[str, tuple[float, float]] = {}
     counter = {"x": 0.0}
 
-    def walk(node: Node, depth: int) -> None:
+    def walk(node: Item, depth: int) -> None:
         children = kids[node.id]
         if not children:
             positions[node.id] = (counter["x"], -float(depth))
@@ -124,10 +128,10 @@ def _layout(root: Node, kids: dict[str, list[Node]]) -> dict[str, tuple[float, f
     return positions
 
 
-def plot_tree(g: Graph, root: Node, out: Path, *, title: str, show: bool) -> Path:
+def plot_tree(g: Graph, root: Agent, out: Path, *, title: str, show: bool) -> Path:
     """Save a PNG (matplotlib) or SVG fallback of the node tree."""
     kids = tree_children(g)
-    nodes = {node.id: node for node in g.nodes()}
+    nodes = {item.id: item for item in [*g.agents(), *g.nodes()]}
     edges = [(parent, child.id) for parent, children in kids.items() for child in children]
     positions = _layout(root, kids)
 
@@ -175,7 +179,7 @@ def plot_tree(g: Graph, root: Node, out: Path, *, title: str, show: bool) -> Pat
 
 
 def _plot_svg(
-    nodes: dict[str, Node],
+    nodes: dict[str, Item],
     positions: dict[str, tuple[float, float]],
     edges: list[tuple[str, str]],
     out: Path,
@@ -221,19 +225,17 @@ def _plot_svg(
     return out
 
 
-def _color(node: Node) -> str:
+def _color(node: Item) -> str:
     return {
-        AGENT_START: "#cfe8ff",
+        "agent": "#cfe8ff",
         CODE: "#ffe6a8",
         DONE: "#c8f7c5",
-        LLM_OUTPUT: "#e8d5ff",
+        LLM: "#e8d5ff",
     }.get(node.type, "#f0f0f0")
 
 
-def _short(node: Node) -> str:
-    if node.type == AGENT_START:
-        return node.name
-    return node.type.replace("_", "\n")
+def _short(node: Item) -> str:
+    return node.name if isinstance(node, Agent) else node.type
 
 
 def main() -> None:
@@ -245,10 +247,10 @@ def main() -> None:
     args = parser.parse_args()
 
     g = Graph()
-    root = g.create_agent("deep tree root")
+    root = g.add_agent("deep tree root")
     grow(g, root, depth=args.depth, branch=args.branch)
 
-    print(f"agents={len(g.nodes(AGENT_START))}  nodes={len(g.nodes())}")
+    print(f"agents={len(g.agents())}  nodes={len(g.nodes())}")
     print()
     print("=== agent tree ===")
     print("\n".join(render_agents(g, root)))

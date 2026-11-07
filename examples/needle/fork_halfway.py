@@ -55,7 +55,7 @@ def main() -> None:
         )
         config = AgentConfig(harness="claude_code")
         g = Graph()
-        root = g.create_agent(
+        root = g.add_agent(
             f"There are {args.num_files} text files in haystack/. Exactly one line "
             "in one file matches `The magic number is <number>`. Find and return "
             "the number. Split the files into batches and give each batch to a "
@@ -71,7 +71,7 @@ def main() -> None:
                 async for step in flow.run_streaming(g, until=launched, root_config=config):
                     checkpointer.handle(step, g)
                     print(f"{g.path(step.agent):<20} {step.node.type}")
-                cell = g.frontier(root)
+                cell = g.history(root)[-1]
                 workers = g.children(root)
                 print(f"\n--- forking at {cell.id} after {len(workers)} workers launched ---\n")
                 fork = g.fork(cell, name="fork")

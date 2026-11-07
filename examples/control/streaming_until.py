@@ -11,7 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from rlmflow import DONE, AgentConfig, Flow, Graph, Node, Step
+from rlmflow import DONE, Agent, AgentConfig, Flow, Graph, Step
 
 RUN_DIR = Path(__file__).resolve().parents[1] / "_runs" / "streaming-until"
 
@@ -41,9 +41,11 @@ def first_user(messages: list[dict[str, Any]]) -> str:
     return next(message["content"] for message in messages if message["role"] == "user")
 
 
-async def collect(flow: Flow, g: Graph, **kwargs: Any) -> list[Node]:
-    """The nodes a run lands, in order."""
-    return [step.node async for step in flow.run_streaming(g, **kwargs)]
+async def collect(flow: Flow, g: Graph, **kwargs: Any) -> list[str]:
+    """A label for each node the run lands, in order, taken as it lands."""
+    return [
+        f"{g.path(step.agent)}: {step.node.type}" async for step in flow.run_streaming(g, **kwargs)
+    ]
 
 
 def after_appends(count: int):
@@ -58,11 +60,7 @@ def after_appends(count: int):
     return halt
 
 
-def node_label(g: Graph, node: Node) -> str:
-    return f"{g.path(g.node(node.agent_id))}: {node.type}"
-
-
-def print_tree(g: Graph, agent: Node, depth: int = 0) -> None:
+def print_tree(g: Graph, agent: Agent, depth: int = 0) -> None:
     """Each agent's history on one line, with its children indented below."""
     history = " -> ".join(node.type for node in g.history(agent))
     print(f"{'  ' * depth}[{g.path(agent)}] {history}")
@@ -70,10 +68,10 @@ def print_tree(g: Graph, agent: Node, depth: int = 0) -> None:
         print_tree(g, child, depth + 1)
 
 
-def print_nodes(title: str, nodes: list[Node], g: Graph, root: Node) -> None:
+def print_nodes(title: str, labels: list[str], g: Graph, root: Agent) -> None:
     print(f"\n=== {title} ===")
-    for node in nodes:
-        print(f"- {node_label(g, node)}")
+    for label in labels:
+        print(f"- {label}")
     print_tree(g, root)
 
 
@@ -86,7 +84,7 @@ async def demo_next_idle_and_resume() -> None:
 
     flow = Flow(llm_clients={"scripted": ScriptedLLM(reply)})
     g = Graph()
-    root = g.create_agent("work until I inject a stop instruction")
+    root = g.add_agent("work until I inject a stop instruction")
     config = AgentConfig(model="scripted", max_iters=8)
 
     events = await collect(flow, g, until=after_appends(3), root_config=config)
@@ -112,7 +110,7 @@ async def demo_idle_heals_errors() -> None:
         llm_clients={"scripted": ScriptedLLM(replies)}, configs=[AgentConfig(model="scripted")]
     )
     g = Graph()
-    root = g.create_agent("recover from a bad response")
+    root = g.add_agent("recover from a bad response")
 
     events = await collect(flow, g, until="idle")
     print_nodes("until='idle': an empty block is reported back as a code node", events, g, root)
@@ -135,13 +133,22 @@ async def demo_callable_boundary_with_child() -> None:
         llm_clients={"scripted": ScriptedLLM(reply)}, configs=[AgentConfig(model="scripted")]
     )
     g = Graph()
-    root = g.create_agent("parent")
+    root = g.add_agent("parent")
 
     def child_done(step: Step) -> bool:
         return step.agent.id != root.id and step.node.type == DONE
 
     events = await collect(flow, g, until=child_done)
+    # The halt cuts the root's cell off mid-await. It lands marked to re-run, and
+    # the child it launched stays, finished.
     print_nodes("until=<callable>: observe the child's done", events, g, root)
+    [child] = g.children(root)
+    assert g.status(child) == "done"
+
+    events = await collect(flow, g, until="done")
+    print_nodes("resume: the cell re-runs in place and gets the same child back", events, g, root)
+    assert g.children(root) == [child]
+    assert g.result(root) == "parent saw child done"
     g.save(RUN_DIR / "callable-boundary-with-child")
 
 

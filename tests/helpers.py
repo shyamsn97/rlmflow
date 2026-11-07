@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import inspect
 
-from rlmflow import AgentConfig, Flow, Node, PooledLLMClient
-from rlmflow.graph import NEXT, Graph
-from rlmflow.graph.nodes import AGENT_START, Step, current_code, running_step
+from rlmflow import Agent, AgentConfig, Flow, PooledLLMClient
+from rlmflow.graph import Graph
+from rlmflow.graph.nodes import Step, current_code, running_step
 from rlmflow.runtime.repl import (
+    AGENT_SEND_TOOL,
     AGENT_WAIT_TOOL,
     AGENTS_BINDING,
     LocalRepl,
@@ -15,39 +16,37 @@ from rlmflow.runtime.repl import (
     get_tool_metadata,
 )
 from rlmflow.runtime.repl_client import invoke_tool_call
-from rlmflow.runtime.runtime import RLMFLOW_REPLAY, Runtime
+from rlmflow.runtime.runtime import Runtime
 
 
-def agent_graph(task: str = "", *, args: dict | None = None) -> tuple[Graph, Node]:
+def agent_graph(task: str = "", *, args: dict | None = None) -> tuple[Graph, Agent]:
     """A fresh graph holding one root, bound to the default config as a Flow would before stepping it.
 
     A Flow rebinds the root to its run's ``root_config``; pass ``root_config=`` to
     ``flow.run`` for anything else.
     """
     g = Graph()
-    root = g.create_agent(task, **(args or {}))
+    root = g.add_agent(task, **(args or {}))
     root.bind_config(AgentConfig())
     return g, root
 
 
-def run_result(flow, g: Graph, agent: Node, **kwargs):
+def run_result(flow, g: Graph, agent: Agent, **kwargs):
     """Run the graph to quiescence and return ``agent``'s result."""
     flow.run(g, **kwargs)
     return g.result(agent)
 
 
-def stepping(g: Graph, agent: Node, node=None):
+def stepping(g: Graph, agent: Agent, node=None):
     """Run engine code as if inside ``agent``'s step at ``node`` (its frontier by default)."""
-    return running_step(Step(g, agent, node if node is not None else g.frontier(agent)))
+    return running_step(Step(g, agent, node) if node is not None else Step.latest(g, agent))
 
 
 def next_node(g: Graph, node):
     """The node its own agent appended after ``node``, if any."""
-    for edge in g.edges(kind=NEXT, source=node.id):
-        target = g.node(edge.target)
-        if target.agent_id == node.agent_id and target.type != AGENT_START:
-            return target
-    return None
+    nodes = g.owner(node).nodes
+    index = nodes.index(node) + 1 if node in nodes else len(nodes)
+    return nodes[index] if index < len(nodes) else None
 
 
 def repl(code: str, *, preamble: str | None = None) -> str:
@@ -67,7 +66,10 @@ def trailing_user_text(messages) -> str:
     for message in reversed(messages):
         if message["role"] != "user":
             break
-        trailing.append(message["content"])
+        content = message["content"]
+        if isinstance(content, list):
+            content = "\n".join(part["text"] for part in content if part.get("type") == "text")
+        trailing.append(content)
     return "\n\n".join(reversed(trailing))
 
 
@@ -76,13 +78,12 @@ class TestRuntime(Runtime):
 
     __test__ = False
 
-    def open(self, agent: Node) -> LocalRepl:
+    def open(self, agent: Agent) -> LocalRepl:
         return LocalRepl(self.directory(agent), namespace=base_namespace(self.preimports))
 
-    async def execute(self, agent: Node, code: str, graph: Graph | None = None):
+    async def execute(self, agent: Agent, code: str, graph: Graph | None = None):
         repl = self.repl_for(agent, graph)
         cell = current_code()
-        restoring = repl.env.get(RLMFLOW_REPLAY) == "1"
         counts: dict[str, int] = {}
 
         for name, original in tuple(repl.namespace.items()):
@@ -93,7 +94,7 @@ class TestRuntime(Runtime):
             def invoke(*args, _fn=original, _name=name, **kwargs):
                 call_id = counts.get(_name, 0)
                 counts[_name] = call_id + 1
-                return invoke_tool_call(_fn, cell, call_id, restoring, args, kwargs, name=_name)
+                return invoke_tool_call(_fn, cell, call_id, args, kwargs, name=_name)
 
             if inspect.iscoroutinefunction(original):
 
@@ -106,7 +107,11 @@ class TestRuntime(Runtime):
                 repl.namespace[name] = invoke
 
         binding = {"args": repl.args, "env": repl.env}
-        for source, target in ((AGENTS_BINDING, "agents"), (AGENT_WAIT_TOOL, "wait_agent")):
+        for source, target in (
+            (AGENTS_BINDING, "agents"),
+            (AGENT_WAIT_TOOL, "wait_agent"),
+            (AGENT_SEND_TOOL, "send_agent"),
+        ):
             item = repl.namespace.get(source)
             if item is not None:
                 binding[target] = item

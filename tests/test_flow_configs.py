@@ -6,6 +6,7 @@ from helpers import reasoning_repl as block
 
 from rlmflow import AgentConfig, Flow, Graph
 from rlmflow.cli import resolve_options
+from rlmflow.graph.nodes import record_metadata
 
 
 def system_message(call_messages):
@@ -25,7 +26,7 @@ class RecordingLLM:
 def test_resuming_runs_the_root_with_this_runs_config_not_the_recorded_one(tmp_path):
     llm = RecordingLLM(block("submit('one')"), block("submit('two')"))
     g = Graph()
-    root = g.create_agent("answer")
+    root = g.add_agent("answer")
     ScriptedFlow(llm, runtime=TestRuntime()).run(
         g, root_config=AgentConfig(prompt={"rules": "FIRST RULES"})
     )
@@ -33,7 +34,7 @@ def test_resuming_runs_the_root_with_this_runs_config_not_the_recorded_one(tmp_p
     g.save(tmp_path)
 
     loaded = Graph.load(tmp_path)
-    again = loaded.node(root.id)
+    again = loaded.agent(root.id)
     loaded.send(again, "and again")
     ScriptedFlow(llm, runtime=TestRuntime()).run(
         loaded, root_config=AgentConfig(prompt={"rules": "SECOND RULES"})
@@ -53,8 +54,10 @@ def test_a_registered_config_wins_over_what_the_graph_recorded():
         configs=[AgentConfig(name="worker", prompt={"rules": "CURRENT"})],
     )
     g = Graph()
-    worker = g.spawn("work", config="worker")
-    worker.annotate("config", AgentConfig(name="worker", prompt={"rules": "STALE"}).to_dict())
+    worker = g.add_agent("work", config="worker")
+    record_metadata(
+        "config", AgentConfig(name="worker", prompt={"rules": "STALE"}).to_dict(), node=worker
+    )
 
     flow.run(g)
 
@@ -65,7 +68,7 @@ def test_a_registered_config_wins_over_what_the_graph_recorded():
 def test_an_unknown_config_name_raises():
     flow = ScriptedFlow(StubLLM(lambda _: block("submit(1)")), runtime=TestRuntime())
     g = Graph()
-    g.spawn("work", config="nope")
+    g.add_agent("work", config="nope")
 
     with pytest.raises(KeyError, match="no config named 'nope'"):
         flow.run(g)
@@ -79,7 +82,7 @@ def test_launch_agent_without_a_config_uses_default_not_the_roots():
     )
     flow = ScriptedFlow(llm, runtime=TestRuntime())
     g = Graph()
-    root = g.create_agent("delegate")
+    root = g.add_agent("delegate")
 
     flow.run(g, root_config=AgentConfig(prompt={"rules": "ROOT ONLY"}, max_depth=1))
 

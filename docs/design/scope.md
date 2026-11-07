@@ -22,7 +22,7 @@ The library is three things. Everything else is built from them.
   - `next`: history order. A branch in history is a fork.
   - `from`: who sent a message. On an `AgentStart`, it is the action that launched the agent.
   - `depends_on`: a consumer waits for its producer, and `data["as"]` binds the result to a name.
-- **Application edges** can have any kind, are added with `connect_agent` or `Edge(...)`, and can be removed. One kind has engine meaning: `reports_to`. A finished agent's result is delivered to its launcher *and* to every agent it reports to. Other kinds, such as `peer` or `reviews`, mean whatever your prompts and code say they mean.
+- **Application edges** can have any kind, are added by host code with `g.add_edge(Edge(...))`, and can be removed. One kind has engine meaning: `reports_to`. A finished agent's result is delivered to its launcher *and* to every agent it reports to. Other kinds, such as `peer` or `reviews`, mean whatever your prompts and code say they mean.
 - **Editing.** `Graph`'s history writes (`spawn`, `append`, `send`, `deliver`, `fork`, `attach`) edit a graph with no `Flow` around, and its queries (`ready`, `frontier`, `result`, `children`, `producers` and so on) are pure reads.
 - **Persistence.** `Graph.save` and `Graph.load` round-trip the whole run. A saved graph can be resumed by any `Flow`.
 
@@ -48,11 +48,9 @@ Every native agent is a coding agent. Code is its action format, and coordinatio
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | `launch_agent(task=..., **args)`                            | A new agent, with a `from` edge to this action. The call returns an awaitable handle. |
 | `fork_agent(handle, message=...)`                           | A new agent that shares the forked agent's history up to the fork point.              |
-| `send_agent(target, message)`                               | A `UserQuery` in the target's inbox, which reopens it if it had finished.             |
-| `ask_agent(target, message)`                                | The same as `send_agent`, then a wait for the target's next result.                   |
-| `connect_agent(target, kind)` / `disconnect_agent(edge_id)` | Adds or removes an application edge.                                                  |
+| `agent.send(message)`                                       | A `UserQuery` in the target's inbox, which reopens it if it had finished. Returns the `Agent`; awaiting it waits for the reply. |
 | `submit(value)`                                             | `DoneOutput`, after the schema and verifier checks.                                   |
-| `AGENTS`                                                    | Read-only: every agent's status and result.                                           |
+| `AGENTS`                                                    | Read-only: every agent as an `Agent`, with its status and result.                     |
 
 An agent can also finish by replying in plain text with no `repl` block; the text is checked exactly like `submit(text)`. A malformed reply becomes an action that raises `MissingReplError`, so it recovers through the same loop as failing code.
 
@@ -65,14 +63,14 @@ graphs built from the same calls:
 
 | Shape             | How it is built                                                                                     | Example                                         |
 | ----------------- | --------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| RLM tree          | A top-level agent calls `launch_agent` and awaits the handles; children can launch again.           | `examples/needle/haystack.py`                   |
-| Task board (DeLM) | The host creates several top-level agents; each reads `AGENTS` and may launch follow-up tasks.      | `examples/collaboration/shared_board.py`        |
-| Peer team         | Top-level agents call `ask_agent` and `send_agent` and draw edges with `connect_agent`.             | `examples/collaboration/decentralized_peers.py` |
-| Pipeline          | The host creates agents with `depends_on` and `inputs=`; each one starts when its producers finish. | `g.create_agent(..., depends_on=[spec])`        |
-| Supervisor        | Workers have `reports_to` edges to a reviewer; the reviewer `send_agent`s fixes back.               | Hive (planned)                                  |
+| RLM tree          | A top-level agent calls `launch_agent` and awaits the agents; children can launch again.            | `examples/needle/haystack.py`                   |
+| Task board (DeLM) | Top-level workers claim tasks in the store with `if_absent=True`, post results and follow-ups.      | `examples/collaboration/shared_board.py`        |
+| Peer team         | Top-level agents message each other with `agent.send` and await replies.                           | `examples/collaboration/decentralized_peers.py` |
+| Pipeline          | The host creates agents with `depends_on` and `inputs=`; each one starts when its inputs finish.    | `g.add_agent(..., depends_on=[spec])`        |
+| Supervisor        | Workers have `reports_to` edges to a reviewer; the reviewer `.send`s fixes back.                  | Hive (planned)                                  |
 | Recovery          | A meta-agent reads another run's graph, forks it at earlier nodes and picks a winner.               | `examples/shepherd/`                            |
 
-Mixing shapes needs nothing extra. A board task can launch an RLM subtree, and
+Mixing shapes needs nothing extra. A board worker can launch an RLM subtree, and
 a peer can report to a supervisor. Topology can come from the host, which
 creates agents and edges up front, or from the agents themselves during the
 run. It's usually both.
@@ -83,7 +81,7 @@ A feature belongs in the library only if at least one of these is true:
 
 1. **It needs engine internals.** Scheduling, turn boundaries, replay, or the step loop.
 1. **It has to survive save, load and replay.** It must be a node, an edge, or a config field, or replaying the run would give a different result.
-1. **Every agent needs it to coordinate.** It's a REPL function with graph semantics, such as `launch_agent` or `send_agent`.
+1. **Every agent needs it to coordinate.** It's a REPL function with graph semantics, such as `launch_agent` or `Agent.send`.
 
 Otherwise it's a pattern for user code, and at most an example. When in
 doubt, leave it out until a real run needs it.
@@ -94,11 +92,12 @@ How the rule has played out so far:
 | ---------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Delegation settings on `Flow`      | Removed   | A child is just an agent; its policy is `AgentConfig.child_config` (rule 2).                                                                          |
 | A shared task-board object         | Removed   | Its claims lived outside the graph and were lost on replay. Tasks are agents now (rule 2).                                                            |
+| A shared object store              | In        | Writes are recorded on the cell's `code` node, so the store survives save, load and replay (rule 2); `if_absent` covers the board's claims.          |
 | `reports_to` delivery              | In        | The handoff is engine work at a turn boundary (rule 1) and has to replay (rule 2).                                                                    |
 | Backends picked per agent          | In        | The choice must be saved with each agent (rule 2).                                                                                                    |
 | Plain-text answers                 | In        | A reply with no `repl` block finishes the agent through the same check as `submit`. It adds no node type, so the protocol RAO trains on is unchanged. |
 | Chat or tool-calling actions       | Not now   | Code is a strictly more capable action format, one protocol keeps training simple, and external backends cover other agent types.                     |
-| Standing agents, broadcast, topics | User code | A host loop plus `g.send` and `connect_agent` covers them; see below.                                                                                 |
+| Standing agents, broadcast, topics | User code | A host loop plus `g.send` and `g.add_edge` covers them;    see below.                                                                                 |
 | Workspace layout and isolation     | User code | That's runtime and tool configuration, which you already control.                                                                                     |
 
 ## Patterns that stay in user code
@@ -109,7 +108,7 @@ their REPL between runs:
 
 ```python
 while True:
-    event = await next_event()                 # CI result, webhook, human, timer
+    event = await next_event()  # CI result, webhook, human, timer
     g.send(reviewer, event.text)
     async for item in flow.run_streaming(g):
         checkpointer.handle(item, g)
@@ -122,7 +121,7 @@ for peer in [a for a in g.nodes(AgentStart) if a.config.name.startswith("worker"
     g.send(peer, "API changed: see SPEC.md v2")
 ```
 
-A topic is an application edge kind, for example `connect_agent(channel, "subscribes")`, plus a filter over `g.edges(kind="subscribes", target=channel.id)`.
+A topic is an application edge kind, for example `g.add_edge(Edge("subscribes", agent.id, channel.id))`, plus a filter over `g.edges(kind="subscribes", target=channel.id)`.
 
 **Workspaces.** Give each agent its own files or directory through its task
 and arguments. Use a merge agent that `depends_on` the workers when outputs

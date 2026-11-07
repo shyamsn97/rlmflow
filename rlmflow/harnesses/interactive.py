@@ -3,7 +3,7 @@
 The agent's turn opens when Flow steps it and stays open until the session's
 Stop hook closes it with ``/stop``; meanwhile its ``rlmflow repl`` cells land as
 ``code`` nodes like any harness's. ``outcome`` then lands ``done`` or
-``waiting``, so handoff, forking and replay work as they do for ``claude_code``.
+``idle``, so results, forking and replay work as they do for ``claude_code``.
 """
 
 from __future__ import annotations

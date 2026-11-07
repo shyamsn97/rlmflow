@@ -33,13 +33,13 @@ flow = rlmflow.Flow(
 
 The working directory belongs to the worker.
 
-Tools marked `@tool(proxy=True)` execute on the host through the worker's private protocol stream. Their arguments travel from worker to host as JSON data only. Other values and functions are copied in the trusted host-to-worker direction with `cloudpickle`.
+Tools execute on the host through the worker's private protocol stream unless marked `@tool(where="repl")`. Their arguments travel from worker to host as JSON data only. `where="repl"` tools and other values are copied in the trusted host-to-worker direction with `cloudpickle`.
 
 ## Host and worker state
 
 Agent code runs in a worker process, so the host and the agent share no heap. Three rules follow, and a tool that ignores them either fails at injection with a pickling error or quietly updates a copy:
 
-- A function that has to run on the host — because it mutates host state, drives the graph, or closes over something unpicklable such as `Flow` — must be marked `@tool(proxy=True)`. Everything else is copied into the worker by value.
+- Tools run on the host by default, so they can mutate host state, drive the graph, or close over something unpicklable such as `Flow` or a client. A pure function that should run inside the worker (next to the agent's files, or in its sandbox) is marked `@tool(where="repl")` and copied in by value.
 - State the host reads back travels through `ENV`, which is per-agent and round-trips with every execution: whatever agent code writes there is readable afterwards with `flow.runtime.get_env_var(agent, name)`. `ENV` values must be JSON-compatible.
 - `flow.runtime.get_var(agent, name)` reads JSON-compatible worker state. Custom class instances and other executable Python objects never deserialize on the host; publish the plain fields the host needs through `ENV` or another variable.
 

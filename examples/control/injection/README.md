@@ -14,7 +14,7 @@ from rlmflow import Graph
 
 g = Graph.load("examples/_runs/word-search/baseline")
 for node in g.nodes():
-    print(g.path(g.node(node.agent_id)), node.type)
+    print(g.path(g.owner(node)), node.type)
 ```
 
 ## Flow
@@ -42,7 +42,7 @@ The baseline prompt explicitly forbids a root-level all-direction scan so the sa
 
 ## What To Look For
 
-- `g.fork(node)` copies nothing: the fork shares the history up to `node` through one `next` edge, so the children the later turn launched are not part of it — and the baseline is untouched.
+- `g.fork(node)` copies nothing: the fork's history continues from `node` (its `base`, joined by a `fork` edge), so the children the later turn launched are not part of it, and the baseline is untouched.
 - The new turn is an ordinary message sent with `g.send`; it is delivered at the fork's next turn boundary, so an edit cannot land mid-transcript.
 - Both forks are driven by the same run, so you can watch them diverge.
 - `g.result(fork)` returns the structured word-search payload from the `done` node, and the example validates it with `WordSearchResult.model_validate(...)`.

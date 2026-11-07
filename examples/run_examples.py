@@ -74,7 +74,7 @@ EXAMPLES: list[Example] = [
         env=("OPENAI_API_KEY",),
         modules=("openai",),
         timeout=300,
-        note="rootless real-model peers connect, ask, and share a total over graph edges",
+        note="rootless real-model peers message each other and share a total",
     ),
     Example(
         "shared-board-collaboration",
@@ -95,7 +95,7 @@ EXAMPLES: list[Example] = [
         env=("OPENAI_API_KEY",),
         modules=("openai",),
         timeout=300,
-        note="a shared task board where every task is an agent in one graph",
+        note="workers claim and post tasks on a board of host-function tools",
     ),
     Example(
         "step-until",
@@ -151,7 +151,7 @@ EXAMPLES: list[Example] = [
     ),
     Example("graph-query", "examples/graph/01_query.py"),
     Example("graph-navigate", "examples/graph/02_navigate.py"),
-    Example("graph-edit-frontier", "examples/graph/03_edit_frontier.py"),
+    Example("graph-edit", "examples/graph/03_edit.py"),
     Example(
         "graph-save-load",
         "examples/graph/04_save_load.py",
@@ -163,7 +163,7 @@ EXAMPLES: list[Example] = [
         "examples/graph/06_fork.py",
         args=("--out-dir", "{tmp}/graph-fork"),
     ),
-    Example("graph-attach-subtree", "examples/graph/07_attach_subtree.py"),
+    Example("graph-host-spawn", "examples/graph/07_host_spawn.py"),
     Example(
         "graph-deep-tree",
         "examples/graph/deep_tree.py",
@@ -171,22 +171,6 @@ EXAMPLES: list[Example] = [
         note="builds an agent tree by hand and plots it; no model",
     ),
     Example("autoresearch-help", "examples/autoresearch/run.py", args=("--help",)),
-    Example(
-        "rao-textcraft-help",
-        "examples/research/rao_textcraft.py",
-        category="optional",
-        args=("--help",),
-        modules=("gymnasium",),
-        note="Gymnasium TextCraft rollout and Tinker RAO training CLI",
-    ),
-    Example(
-        "drop-in-llm",
-        "examples/drop_in_llm.py",
-        category="live",
-        env=("OPENAI_API_KEY",),
-        modules=("openai",),
-        timeout=300,
-    ),
     Example(
         "skills",
         "examples/skills.py",
@@ -261,14 +245,6 @@ EXAMPLES: list[Example] = [
         ),
         env=("OPENAI_API_KEY",),
         modules=("openai",),
-        timeout=300,
-    ),
-    Example(
-        "dspy-drop-in",
-        "examples/providers/dspy_drop_in.py",
-        category="live",
-        env=("OPENAI_API_KEY",),
-        modules=("dspy", "openai"),
         timeout=300,
     ),
     Example(

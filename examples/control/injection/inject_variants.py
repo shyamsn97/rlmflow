@@ -32,8 +32,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rlmflow import AGENT_START, LLM_OUTPUT, AgentConfig, Flow, Graph, Node, json_schema_for
-from rlmflow.graph.graph import FROM
+from rlmflow import SPAWN, Agent, AgentConfig, Flow, Graph, Node, json_schema_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -91,31 +90,33 @@ def default_source() -> Path:
     return word_search_runs_dir() / "baseline"
 
 
-def delegating_turn(g: Graph, agent: Node) -> Node:
-    """The most recent model turn of this agent whose block launched sub-agents."""
+def before_delegating(g: Graph, agent: Agent) -> Node | Agent:
+    """Where the agent stood before the model turn whose cell launched sub-agents."""
     launchers = {
-        edge.target for child in g.children(agent) for edge in g.edges(kind=FROM, source=child.id)
+        edge.source for child in g.children(agent) for edge in g.edges(kind=SPAWN, target=child.id)
     }
-    for node in reversed(g.history(agent)):
-        if node.type == LLM_OUTPUT and node.id in launchers:
-            return node
+    history = g.history(agent)
+    for index in reversed(range(len(history))):
+        if history[index].id in launchers:
+            # history[index - 1] is the model turn that wrote the cell.
+            return history[index - 2] if index >= 2 else agent
     raise SystemExit("the baseline run never delegated; regenerate it with word_search.py")
 
 
-def steer(g: Graph, root: Node, prompt: str, name: str) -> Node:
+def steer(g: Graph, root: Agent, prompt: str, name: str) -> Agent:
     """Fork the run back to before it delegated, then hand it a new instruction."""
-    variant = g.fork(g.prev(delegating_turn(g, root)), name=name)
+    variant = g.fork(before_delegating(g, root), name=name)
     g.send(variant, prompt)
     return variant
 
 
-def summarize(label: str, g: Graph, root: Node) -> None:
+def summarize(label: str, g: Graph, root: Agent) -> None:
     print(f"\n{label}")
     print("-" * len(label))
-    print(f"root frontier: {g.frontier(root).type}")
+    print(f"root frontier: {g.history(root)[-1].type}")
     children = ", ".join(child.name for child in g.children(root))
     print(f"children: {children or '<none>'}")
-    if g.terminal(root):
+    if g.status(root) == "done":
         print("result:")
         print(g.result(root))
 
@@ -131,8 +132,8 @@ def _hit_key(hit: WordHit) -> tuple[str, int, int, int, int, str]:
     )
 
 
-def validate_result(label: str, g: Graph, root: Node) -> None:
-    if not g.terminal(root):
+def validate_result(label: str, g: Graph, root: Agent) -> None:
+    if not g.status(root) == "done":
         print(f"\n{label} validation: skipped (the run did not finish)")
         return
 
@@ -175,7 +176,7 @@ def main() -> None:
     args = parser.parse_args()
 
     g = Graph.load(args.source.resolve())
-    baseline = next(agent for agent in g.nodes(AGENT_START) if g.launcher(agent) is None)
+    baseline = g.roots()[0]
     summarize("Loaded real word-search run", g, baseline)
 
     # Both forks share the baseline's history; the baseline itself is untouched.

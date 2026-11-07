@@ -14,29 +14,30 @@ import io
 from collections.abc import Sequence
 from pathlib import Path
 
-from rlmflow import AGENT_START, DONE, Graph, Node
-from rlmflow.flow import launched_from
+from rlmflow import DONE, SPAWN, Agent, Graph, Node
 from rlmflow.view.figure import graph_svg, parent_ids
 
+Item = Agent | Node
 
-def _launch_turn(g: Graph, root_nodes: Sequence[Node]) -> Node:
-    launches = [node for node in root_nodes if launched_from(g, node)]
+
+def _launch_cell(g: Graph, root_nodes: Sequence[Node]) -> Node:
+    launches = [node for node in root_nodes if g.edges(kind=SPAWN, source=node.id)]
     if len(launches) != 1:
-        raise ValueError(f"expected one fan-out action, found {len(launches)}")
+        raise ValueError(f"expected one fan-out cell, found {len(launches)}")
     return launches[0]
 
 
-def _parallel_order(g: Graph, root: Node) -> tuple[list[Node], list[tuple[int, str]]]:
-    """Return a parent-safe node order and reveal boundaries with frame titles."""
+def _parallel_order(g: Graph, root: Agent) -> tuple[list[Item], list[tuple[int, str]]]:
+    """Return a parent-safe order of agents and nodes, and reveal boundaries with frame titles."""
     root_nodes = g.nodes(agent=root)
-    launch = _launch_turn(g, root_nodes)
+    launch = _launch_cell(g, root_nodes)
     launch_index = root_nodes.index(launch)
-    prelude = root_nodes[: launch_index + 1]
+    prelude = [root, *root_nodes[: launch_index + 1]]
     tail = root_nodes[launch_index + 1 :]
     workers = g.children(root)
-    worker_nodes = [g.nodes(agent=worker) for worker in workers]
+    worker_items = [[worker, *g.nodes(agent=worker)] for worker in workers]
 
-    ordered: list[Node] = []
+    ordered: list[Item] = []
     frames: list[tuple[int, str]] = []
 
     for index, node in enumerate(prelude):
@@ -46,9 +47,9 @@ def _parallel_order(g: Graph, root: Node) -> tuple[list[Node], list[tuple[int, s
             label = f"root launches {len(workers)} independent workers"
         frames.append((len(ordered), label))
 
-    # A worker's nth own node is its level: siblings at one level light together.
-    for level in range(max(map(len, worker_nodes))):
-        wave = [nodes[level] for nodes in worker_nodes if level < len(nodes)]
+    # A worker's nth own item is its level: siblings at one level light together.
+    for level in range(max(map(len, worker_items))):
+        wave = [items[level] for items in worker_items if level < len(items)]
         ordered.extend(wave)
         if level == 0:
             label = f"{len(wave)} worker branches light together"
@@ -66,7 +67,7 @@ def _parallel_order(g: Graph, root: Node) -> tuple[list[Node], list[tuple[int, s
         )
         frames.append((len(ordered), label))
 
-    if {node.id for node in ordered} != {node.id for node in g.nodes()}:
+    if {item.id for item in ordered} != {item.id for item in [*g.agents(), *g.nodes()]}:
         raise ValueError("parallel ordering did not preserve the complete graph")
 
     parents = parent_ids(g)
@@ -93,7 +94,7 @@ def render(
         raise SystemExit("rendering needs CairoSVG and Pillow: install rlmflow[image]") from exc
 
     g = Graph.load(run_dir)
-    root = next(agent for agent in g.nodes(AGENT_START) if g.launcher(agent) is None)
+    root = g.roots()[0]
     ordered, reveal_frames = _parallel_order(g, root)
     frames = []
     for revealed, label in reveal_frames:

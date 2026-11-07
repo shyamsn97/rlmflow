@@ -1,4 +1,4 @@
-"""The graph store, its invariants, and its agent queries."""
+"""The graph store, its writes, and its agent queries."""
 
 from __future__ import annotations
 
@@ -7,222 +7,237 @@ from pathlib import Path
 
 import pytest
 
-from rlmflow.graph import persistence
-from rlmflow.graph.config import AgentConfig, Input
-from rlmflow.graph.graph import (
-    DEPENDS_ON,
-    FROM,
-    NEXT,
+from rlmflow.graph import calls, persistence
+from rlmflow.graph.config import AgentConfig
+from rlmflow.graph.graph import Graph, GraphError
+from rlmflow.graph.nodes import (
+    CODE,
+    DONE,
+    IDLE,
+    LLM,
+    MESSAGE,
+    RETURN,
+    SPAWN,
+    Agent,
     Edge,
-    Graph,
-    InvariantError,
-    StaleFrontier,
-    check_invariants,
+    Node,
+    record_metadata,
 )
-from rlmflow.graph.nodes import AGENT_START, CODE, DONE, LLM_OUTPUT, MESSAGE, Node
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
-def agent(**data) -> Node:
-    """A bare ``agent_start``, as a hand-written log would hold."""
-    return Node(AGENT_START, task="", name="a", args={}, **data)
-
-
-def owned(node_type: str, owner: Node, **data) -> Node:
-    node = Node(node_type, **data)
-    node.agent_id = owner.id
-    return node
-
-
-def hand_written(*items) -> Graph:
-    """A graph holding exactly ``items``, as a corrupted saved log would."""
+def test_writes_assign_consecutive_seq_and_notify_subscribers():
     g = Graph()
-    g._append_unchecked(*items)
-    return g
+    seen: list[str] = []
+    unsubscribe = g.subscribe(lambda kind, _item: seen.append(kind))
+    a = g.add_agent("task")
+    llm = g.append(a, Node(LLM, text="hi"))
+    child = g.add_agent("child", parent=llm)
+    [edge] = g.edges(kind=SPAWN)
 
-
-def test_writes_assign_consecutive_seq_and_log_in_order():
-    g = Graph()
-    a = g.spawn("task")
-    llm = g.append(a, Node(LLM_OUTPUT, text="hi"))
-
-    items = g.items()
-    assert [item.seq for item in items] == [0, 1, 2]
-    assert items[0] is a and items[1] is llm
-    assert isinstance(items[2], Edge) and items[2].kind == NEXT
-    assert g.items(after=1) == items[2:]
+    assert [a.seq, llm.seq, child.seq, edge.seq] == [0, 1, 2, 3]
+    assert seen == ["agent", "node", "agent", "edge"]
+    assert g.revision == 4
+    unsubscribe()
+    g.append(a, Node(DONE, result=1))
+    assert len(seen) == 4 and g.revision == 5
 
 
 def test_a_failed_write_leaves_the_graph_unchanged():
     g = Graph()
-    a = g.spawn("task")
-    stranger = agent()
-    with pytest.raises(InvariantError, match="not in the graph"):
-        g.send(a, "hi", sender=stranger)
-    assert g.items() == [a] and g.inbox(a) == []
+    a = g.add_agent("task")
+    stranger = Agent("elsewhere", name="stranger")
+    with pytest.raises(KeyError, match="no agent"):
+        g.append(stranger, Node(CODE, code=""))
+    with pytest.raises(TypeError, match="text must be a string"):
+        g.send(a, 123)
+    with pytest.raises(TypeError, match="task must be a string"):
+        g.add_agent(123, parent=a)
+    assert g.agents() == [a] and g.nodes() == [] and g.edges() == [] and a.inbox == []
 
 
 def test_ids_are_unique():
     g = Graph()
-    a = g.spawn("task")
-    node = g.append(a, Node(LLM_OUTPUT))
-    with pytest.raises(InvariantError, match="duplicate node"):
+    a = g.add_agent("task")
+    node = g.append(a, Node(LLM))
+    with pytest.raises(GraphError, match="already in the graph"):
         g.append(a, node)
-    edge = g.add_edge(Edge(kind="peer", source=a.id, target=a.id))
-    with pytest.raises(InvariantError, match="duplicate edge"):
-        g.add_edge(Edge(kind="peer", source=a.id, target=a.id, id=edge.id))
+    assert a.nodes == [node]
 
 
-def test_append_refuses_agent_start_and_message_nodes():
+def test_containment_owner_and_node_queries():
     g = Graph()
-    a = g.spawn("task")
-    with pytest.raises(InvariantError, match="spawn, fork or send"):
-        g.append(a, Node(MESSAGE, text="hi"))
+    a = g.add_agent("task")
+    llm = g.append(a, Node(LLM, text="hi"))
+    queued = g.send(a, "later")
 
-
-def test_append_must_follow_the_agents_last_node():
-    g = Graph()
-    a = g.spawn("task")
-    first = g.append(a, Node(LLM_OUTPUT, text="one"))
-    g.append(a, Node(CODE, code=""))
-    with pytest.raises(StaleFrontier):
-        g.append(a, Node(CODE), after=first)
-    assert g.frontier(a) is not first
+    assert a.id in g and llm in g and queued.id in g and "node_missing" not in g
+    assert g.agent(a.id) is a and g.agent(a) is a and g.node(llm.id) is llm
+    assert g.owner(queued) is a and len(g) == 2
+    assert g.nodes(agent=a) == [llm, queued] and g.nodes(MESSAGE) == [queued]
+    assert list(g) == [a] and g.roots() == [a]
+    with pytest.raises(KeyError, match="no node"):
+        g.node(a.id)
+    with pytest.raises(KeyError, match="no agent"):
+        g.agent(llm.id)
 
 
 def test_application_edges_need_known_endpoints_and_a_non_structural_kind():
     g = Graph()
-    a = g.spawn("task")
-    with pytest.raises(InvariantError, match="not in the graph"):
+    a = g.add_agent("task")
+    with pytest.raises(GraphError, match="not in this graph"):
         g.add_edge(Edge(kind="peer", source=a.id, target="node_missing"))
-    with pytest.raises(InvariantError, match="written by the graph.s history writes"):
-        g.add_edge(Edge(kind=DEPENDS_ON, source=a.id, target=a.id))
-    assert g.items() == [a]
+    for kind in (SPAWN, RETURN, MESSAGE):
+        with pytest.raises(GraphError, match="written by the engine"):
+            g.add_edge(Edge(kind=kind, source=a.id, target=a.id))
+    with pytest.raises(TypeError, match="strict JSON"):
+        g.add_edge("peer", a, a, bad=object())
+    assert g.edges() == []
+
+    edge = g.add_edge("peer", a, a, weight=2)
+    assert (edge.kind, edge.source, edge.target, edge.data) == ("peer", a.id, a.id, {"weight": 2})
+    assert g.edges(kind="peer", touching=a.id) == [edge]
+    with pytest.raises(GraphError, match="already"):
+        g.add_edge(edge)
+    assert g.edges() == [edge]
 
 
 def test_undelivered_message_waits_in_the_inbox():
     g = Graph()
-    a = g.spawn("task")
+    a = g.add_agent("task")
     done = g.append(a, Node(DONE, result=1))
     message = g.send(a, "again")
 
-    assert g.inbox(a) == [message]
-    assert g.frontier(a) is done
-    assert g.ready() == [a]
+    assert a.inbox == [message]
+    assert g.history(a)[-1] is done
+    assert g.status(a) == "running"
 
     assert g.deliver(a) == [message]
-    assert g.inbox(a) == []
-    assert g.frontier(a) is message
+    assert a.inbox == []
+    assert g.history(a)[-1] is message
+    assert g.history(a) == [done, message]
 
 
-def test_status_is_done_waiting_or_running():
+def test_status_is_done_idle_or_running():
     g = Graph()
-    parent = g.spawn("parent")
-    child = g.spawn("child", by=g.append(parent, Node(CODE, code="")))
-    assert g.status(parent) == "running"
-    g.append(parent, Node("waiting", on=[child.id]))
-    assert g.status(parent) == "waiting" and parent not in g.ready()
+    parent = g.add_agent("parent")
+    child = g.add_agent("child", parent=g.append(parent, Node(CODE, code="")))
+    assert g.status(parent) == "running" and g.status(child) == "running"
+    assert g.history(child) == [] and g.result(child) is None
+
+    g.append(parent, Node(IDLE))
+    assert g.status(parent) == "idle"
     g.send(parent, "nudge")
-    assert g.status(parent) == "running" and parent in g.ready()
+    # Any message wakes an idle session.
+    assert g.status(parent) == "running"
+
     g.append(child, Node(DONE, result=1))
-    assert g.status(child) == "done"
+    assert g.status(child) == "done" and g.result(child) == 1
 
 
-def test_attach_refuses_an_agent_with_a_launcher_or_the_parents_ancestor():
+def test_a_pending_cell_keeps_its_agent_running():
     g = Graph()
-    parent = g.spawn("parent")
+    a = g.add_agent("task")
+    g.append(a, Node(DONE, result=1))
+    cell = g.append(a, Node(CODE, code="x = 1", pending=True))
+    assert cell.pending and g.status(a) == "running" and g.result(a) is None
+    g.send(a, "wait")
+    assert g.deliver(a) == []  # a pending cell must run before messages arrive
+    g.update(cell, output="", pending=False)
+    assert not cell.pending and g.deliver(a)
+
+
+def test_spawn_by_a_cell_or_an_agent_links_the_parent():
+    g = Graph()
+    parent = g.add_agent("parent")
     cell = g.append(parent, Node(CODE, code="launch"))
-    child = g.spawn("child", by=cell)
-    other = g.spawn("other")
+    child = g.add_agent("child", parent=cell)
+    hosted = g.add_agent("hosted", parent=parent)
+    grandchild = g.add_agent("grandchild", parent=child)
 
-    with pytest.raises(ValueError, match="already has a launcher"):
-        g.attach(other, child)
-    with pytest.raises(InvariantError, match="cannot launch itself"):
-        g.attach(child, parent)
-    with pytest.raises(InvariantError, match="cannot launch itself"):
-        g.attach(parent, parent)
+    assert g.parent(child) is parent and g.parent(hosted) is parent
+    assert g.children(parent) == [child, hosted]
+    assert g.lineage(grandchild) == [parent, child, grandchild]
+    assert (len(g.lineage(grandchild)) - 1) == 2 and (len(g.lineage(parent)) - 1) == 0
+    assert g.subtree(parent) == [parent, child, grandchild, hosted]
+    assert [(e.source, e.target) for e in g.edges(kind=SPAWN)] == [
+        (cell.id, child.id),
+        (parent.id, hosted.id),
+        (child.id, grandchild.id),
+    ]
+    assert g.roots() == [parent]
 
-    assert g.launcher(child) is parent
-    assert g.children(parent) == [child]
-    assert g.depth(child) == 1
+    stray = Node(CODE, code="")
+    with pytest.raises(GraphError, match="not in this graph"):
+        g.add_agent("lost", parent=stray)
 
 
-def test_spawn_needs_producers_in_the_graph():
+def test_structural_edges_are_never_removed_and_application_ones_are():
     g = Graph()
-    with pytest.raises(InvariantError, match="not in the graph"):
-        g.spawn("consumer", depends_on=[agent()])
-    producer = g.spawn("producer")
-    llm = g.append(producer, Node(LLM_OUTPUT))
-    with pytest.raises(InvariantError, match="expected an agent_start"):
-        g.spawn("consumer", inputs={"data": llm})
-
-
-def test_depends_on_blocks_ready_until_the_producer_is_terminal():
-    g = Graph()
-    producer = g.spawn("p")
-    consumer = g.spawn("c", inputs={"data": producer})
-    assert g.ready() == [producer]
-
-    g.append(producer, Node(DONE, result={"n": 1}))
-    assert g.ready() == [consumer]
-    assert g.inputs(consumer) == {"data": {"n": 1}}
-
-
-def test_structural_edges_are_never_removed_and_removal_is_logged():
-    g = Graph()
-    a, b = g.spawn("a"), g.spawn("b")
-    node = g.append(a, Node(LLM_OUTPUT))
-    with pytest.raises(InvariantError, match="cannot be removed"):
-        g.remove_edge(g.edges(kind=NEXT, target=node.id)[0])
+    a = g.add_agent("a")
+    b = g.add_agent("b", parent=a)
+    with pytest.raises(GraphError, match="written by the engine"):
+        g.remove_edge(g.edges(kind=SPAWN)[0])
 
     peer = g.add_edge(Edge(kind="peer", source=a.id, target=b.id))
-    removed = g.remove_edge(peer)
-    assert removed.removed_seq == len(g.items()) - 1
-    assert g.items()[-1] is removed and not removed.active
+    g.remove_edge(peer)
     assert g.edges(kind="peer") == []
-    assert g.edges(kind="peer", active=False) == [removed]
-    with pytest.raises(InvariantError, match="already removed"):
+    assert len(g.edges(kind=SPAWN)) == 1
+    with pytest.raises(KeyError, match="no edge"):
         g.remove_edge(peer.id)
 
 
 def test_fork_history_shares_the_prefix_and_an_empty_fork_stands_at_its_base():
     g = Graph()
-    base = g.spawn("task")
-    llm = g.append(base, Node(LLM_OUTPUT, text="plan"))
+    base = g.add_agent("task")
+    llm = g.append(base, Node(LLM, text="plan"))
     g.append(base, Node(CODE, code="x", output="out"))
 
     fork = g.fork(llm)
-    assert g.frontier(fork) is llm
-    assert g.history(fork) == [base, llm, fork]
-    assert not g.terminal(fork)
+    assert fork.base is llm and fork.nodes == []
+    assert g.history(fork)[-1] is llm
+    assert g.history(fork) == [llm]
+    assert not g.status(fork) == "done" and g.status(fork) == "running"
 
     cell = g.append(fork, Node(CODE, code="y"))
-    assert g.frontier(fork) is cell
-    assert g.history(fork) == [base, llm, fork, cell]
-    assert g.own_history(fork) == [fork, cell]
-    assert [node.type for node in g.history(base)] == [AGENT_START, LLM_OUTPUT, CODE]
+    assert g.history(fork)[-1] is cell
+    assert g.history(fork) == [llm, cell]
+    assert fork.nodes == [cell]
+    assert [node.type for node in g.history(base)] == [LLM, CODE]
+    assert g.history(cell) == [llm, cell]
 
     nested = g.fork(cell)
-    assert g.history(nested) == [base, llm, fork, cell, nested]
+    assert g.history(nested) == [llm, cell] and nested.base is cell
+    assert g.edges() == []
+
+
+def test_fork_at_an_agent_starts_from_nothing():
+    g = Graph()
+    base = g.add_agent("task", limit=3)
+    g.append(base, Node(LLM, text="plan"))
+
+    fork = g.fork(base)
+    assert fork.base is None and g.history(fork) == []
+    assert fork.task == base.task and fork.args == base.args and fork.args is not base.args
 
 
 def test_fork_needs_a_landed_node():
     g = Graph()
-    base = g.spawn("task")
+    base = g.add_agent("task")
     queued = g.send(base, "later")
-    with pytest.raises(InvariantError, match="undelivered"):
+    with pytest.raises(GraphError, match="not in a history"):
         g.fork(queued)
     assert g.agents() == [base]
 
 
 def test_names_and_paths_derive_from_configs_and_launchers():
     g = Graph()
-    root = g.spawn("root")
+    root = g.add_agent("root")
     cell = g.append(root, Node(CODE, code=""))
-    first = g.spawn("a", by=cell, config="worker")
-    second = g.spawn("b", by=cell, config="worker")
-    named = g.spawn("c", by=cell, name="checker")
+    first = g.add_agent("a", parent=cell, config="worker")
+    second = g.add_agent("b", parent=cell, config="worker")
+    named = g.add_agent("c", parent=cell, name="checker")
 
     assert [a.name for a in (root, first, second, named)] == [
         "root",
@@ -233,417 +248,243 @@ def test_names_and_paths_derive_from_configs_and_launchers():
     assert g.path(second) == "root.worker-1"
     assert g.lineage(second) == [root, second]
     assert (root.config_name, second.config_name, named.config_name) == (None, "worker", "default")
-    assert g.spawn("again").name == "root-0"
-    top = g.spawn("solo", config="worker")
-    assert (top.name, top.config_name, g.launcher(top)) == ("worker", "worker", None)
-    assert g.spawn("more", config="worker").name == "worker-0"
+    assert g.add_agent("again").name == "root-0"
+    top = g.add_agent("solo", config="worker")
+    assert (top.name, top.config_name, g.parent(top)) == ("worker", "worker", None)
+    assert g.add_agent("more", config="worker").name == "worker-0"
+    with pytest.raises(ValueError, match="invalid agent name"):
+        g.add_agent("bad", name="no spaces")
 
 
 def test_create_agent_makes_a_root_whose_keywords_are_repl_args():
     g = Graph()
-    lead = g.create_agent("x", name="lead", limit=3)
+    lead = g.add_agent("x", name="lead", limit=3)
     assert (lead.name, lead.config_name, lead.args) == ("lead", None, {"limit": 3})
+    assert lead.type == "agent" and lead.agent_id == lead.id
     with pytest.raises(AttributeError, match="until a Flow steps it"):
         lead.config
     lead.bind_config(AgentConfig(model="big"))
     assert lead.config.model == "big" and lead.metadata["config"]["model"] == "big"
-    assert g.create_agent("y").name == "root"
+    assert g.add_agent("y").name == "root"
 
 
-def test_merge_moves_another_graph_in_log_order_and_refuses_shared_ids():
-    side = Graph()
-    a, b = side.spawn("a"), side.spawn("b")
-    side.append(a, Node(DONE, result=1))
-    side.remove_edge(side.add_edge(Edge(kind="peer", source=a.id, target=b.id)))
-
+def test_send_queues_and_deliver_moves_messages_at_a_boundary():
     g = Graph()
-    root = g.spawn("root")
-    g.merge(side)
-    assert [
-        item.removed_seq if isinstance(item, Edge) and not item.active else item.seq
-        for item in g.items()
-    ] == list(range(len(g.items())))
-    assert g.node(a.id) is a and g.result(a) == 1
-    assert g.edges(kind="peer") == [] and len(g.edges(kind="peer", active=False)) == 1
-    check_invariants(g)
-    with pytest.raises(InvariantError, match="share ids"):
-        g.merge(side)
-    assert g.frontier(root) is root
-
-
-def test_as_of_copies_the_graph_as_it_stood_at_a_log_position():
-    g = Graph()
-    a = g.spawn("task")
-    llm = g.append(a, Node(LLM_OUTPUT, text="hi"))
-    peer = g.add_edge(Edge(kind="peer", source=a.id, target=llm.id))
-    g.remove_edge(peer)
-    g.append(a, Node(DONE, result=1))
-
-    past = g.as_of(peer.seq)
-    assert [node.id for node in past.history(past.node(a.id))] == [a.id, llm.id]
-    assert past.node(llm.id) is not llm
-    assert len(past.edges(kind="peer")) == 1
-    assert past.as_of(-1).items() == []
-    assert g.as_of(len(g) - 1).edges(kind="peer") == []
-
-
-def test_usage_sums_every_node_that_reports_it():
-    g = Graph()
-    a = g.spawn("task")
-    g.append(a, Node(LLM_OUTPUT, text="", usage={"input_tokens": 3, "output_tokens": 2}))
-    g.append(a, Node(DONE, result=1, usage={"input_tokens": 10, "output_tokens": 1}))
-    assert g.usage().total == 16
-
-
-# -- check_invariants: the whole-graph walk run on load -------------------------
-
-
-def test_check_invariants_accepts_every_graph_the_writes_produce():
-    g = Graph()
-    root = g.spawn("root")
-    cell = g.append(root, Node(CODE, code="launch"))
-    child = g.spawn("child", by=cell)
-    g.spawn("consumer", depends_on=[child])
-    g.fork(g.append(root, Node(LLM_OUTPUT, text="launched")))
-    g.send(root, "queued")
-    g.attach(root, g.spawn("orphan"))
-    check_invariants(g)
-
-
-def test_check_invariants_needs_each_node_reached_by_next():
-    a = agent()
-    orphan = owned(CODE, a)
-    with pytest.raises(InvariantError, match="no incoming next"):
-        check_invariants(hand_written(a, orphan))
-
-
-def test_check_invariants_needs_a_known_owner_and_one_predecessor():
-    lost = Node(MESSAGE, text="lost")
-    lost.agent_id = "agent_missing"
-    with pytest.raises(InvariantError, match="unknown agent"):
-        check_invariants(hand_written(lost))
-    a = agent()
-    llm = owned(LLM_OUTPUT, a)
-    twice = hand_written(
-        a,
-        llm,
-        Edge(kind=NEXT, source=a.id, target=llm.id),
-        Edge(kind=NEXT, source=a.id, target=llm.id),
-    )
-    with pytest.raises(InvariantError, match="already has a predecessor"):
-        check_invariants(twice)
-
-
-def test_check_invariants_needs_one_history_chain_per_agent():
-    a = agent()
-    one, two = owned(LLM_OUTPUT, a), owned(LLM_OUTPUT, a)
-    branched = hand_written(
-        a,
-        one,
-        two,
-        Edge(kind=NEXT, source=a.id, target=one.id),
-        Edge(kind=NEXT, source=a.id, target=two.id),
-    )
-    with pytest.raises(InvariantError, match="two successors"):
-        check_invariants(branched)
-    b = agent()
-    looped_a, looped_b = owned(LLM_OUTPUT, b), owned(CODE, b)
-    loop = hand_written(
-        b,
-        looped_a,
-        looped_b,
-        Edge(kind=NEXT, source=looped_a.id, target=looped_b.id),
-        Edge(kind=NEXT, source=looped_b.id, target=looped_a.id),
-    )
-    with pytest.raises(InvariantError, match="not in its agent's history"):
-        check_invariants(loop)
-
-
-def test_check_invariants_needs_an_acyclic_launcher_tree():
-    parent, child = agent(), agent()
-    cell, child_cell = owned(CODE, parent), owned(CODE, child)
-    history = [
-        parent,
-        child,
-        cell,
-        child_cell,
-        Edge(kind=NEXT, source=parent.id, target=cell.id),
-        Edge(kind=NEXT, source=child.id, target=child_cell.id),
-        Edge(kind=FROM, source=child.id, target=cell.id),
-    ]
-    with pytest.raises(InvariantError, match="cannot launch itself"):
-        check_invariants(
-            hand_written(*history, Edge(kind=FROM, source=parent.id, target=child_cell.id))
-        )
-    with pytest.raises(InvariantError, match="already has a launcher"):
-        check_invariants(
-            hand_written(*history, Edge(kind=FROM, source=child.id, target=child_cell.id))
-        )
-    with pytest.raises(InvariantError, match="agent_start or message"):
-        check_invariants(
-            hand_written(*history, Edge(kind=FROM, source=cell.id, target=child_cell.id))
-        )
-
-
-def test_check_invariants_needs_acyclic_depends_on_declared_before_the_first_step():
-    a, b = agent(), agent()
-    cycle = hand_written(
-        a,
-        b,
-        Edge(kind=DEPENDS_ON, source=a.id, target=b.id),
-        Edge(kind=DEPENDS_ON, source=b.id, target=a.id),
-    )
-    with pytest.raises(InvariantError, match="cycle"):
-        check_invariants(cycle)
-    llm = owned(LLM_OUTPUT, a)
-    late = hand_written(
-        a,
-        b,
-        llm,
-        Edge(kind=NEXT, source=a.id, target=llm.id),
-        Edge(kind=DEPENDS_ON, source=a.id, target=b.id),
-    )
-    with pytest.raises(InvariantError, match="already started"):
-        check_invariants(late)
-    wrong = hand_written(
-        a,
-        llm,
-        Edge(kind=NEXT, source=a.id, target=llm.id),
-        Edge(kind=DEPENDS_ON, source=a.id, target=llm.id),
-    )
-    with pytest.raises(InvariantError, match="connect agent_start"):
-        check_invariants(wrong)
-
-
-def test_check_invariants_needs_forks_at_landed_nodes():
-    a = agent()
-    queued = owned(MESSAGE, a, text="later")
-    fork = agent()
-    with pytest.raises(InvariantError, match="undelivered"):
-        check_invariants(
-            hand_written(a, queued, fork, Edge(kind=NEXT, source=queued.id, target=fork.id))
-        )
-
-
-# -- ops ----------------------------------------------------------------------
-
-
-def written(g: Graph, before: int) -> list:
-    return g.items(after=before - 1)
-
-
-def test_spawn_writes_the_agent_and_its_edges():
-    g = Graph()
-    root = g.spawn("root task")
-    cell = g.append(root, Node(CODE, code="launch"))
-    source = g.spawn("source", by=cell, name="source")
-    before = len(g)
-    consumer = g.spawn(
-        "consume",
-        by=cell,
-        name="consumer",
-        depends_on=[root],
-        inputs={"data": Input(source, description="Parsed rows.")},
-        limit=3,
-    )
-
-    items = written(g, before)
-    assert items[0] is consumer and consumer.args == {"limit": 3}
-    assert [(e.kind, e.target, dict(e.data)) for e in items[1:]] == [
-        (FROM, cell.id, {}),
-        (DEPENDS_ON, root.id, {}),
-        (DEPENDS_ON, source.id, {"as": "data", "description": "Parsed rows."}),
-    ]
-    assert g.path(consumer) == "root.consumer"
-    assert g.producers(consumer) == [root, source]
-
-
-def test_append_guard_rejects_a_stale_frontier():
-    g = Graph()
-    a = g.spawn()
-    first = g.append(a, Node(LLM_OUTPUT, text="one"), after=a)
-    with pytest.raises(StaleFrontier):
-        g.append(a, Node(LLM_OUTPUT, text="stale"), after=a)
-    g.append(a, Node(CODE, code=""), after=first)
-
-
-def test_send_queues_and_deliver_links_in_order_at_a_boundary():
-    g = Graph()
-    a = g.spawn()
-    llm = g.append(a, Node(LLM_OUTPUT, text="code"))
-    before = len(g)
-    first = g.send(a, "one", sender=llm, kind="note")
+    a = g.add_agent()
+    llm = g.append(a, Node(LLM, text="code"))
+    first = g.send(a, "one", by=llm, kind="note")
     second = g.send(a, "two")
-    assert written(g, before)[:2] == [first, g.edges(kind=FROM, source=first.id)[0]]
+    [edge] = g.edges(kind=MESSAGE)
+    assert (edge.source, edge.target, edge.data) == (llm.id, first.id, {})
     assert first.data["kind"] == "note" and first.data["sender"] == a.id
     assert second.data["sender"] == "user"
-    assert g.inbox(a) == [first, second]
+    assert g.send(a, "three", sender="boss").data["sender"] == "boss"
+    assert a.inbox[:2] == [first, second]
 
-    assert g.deliver(a) == []  # mid-turn: the llm_output's code must run first
+    assert g.deliver(a) == []  # mid-turn: the llm's code must run first
     out = g.append(a, Node(CODE, code="", output="ran"))
-    assert g.deliver(a) == [first, second]
-    assert g.history(a)[-3:] == [out, first, second]
-    assert g.inbox(a) == []
+    delivered = g.deliver(a)
+    assert delivered[:2] == [first, second]
+    assert g.history(a)[-3:] == delivered
+    assert g.history(a)[:2] == [llm, out]
+    assert a.inbox == []
 
 
-def test_fork_writes_two_or_three_items_and_shares_history():
+def test_fork_writes_an_agent_based_at_the_node():
     g = Graph()
-    base = g.spawn("task", config="m")
-    llm = g.append(base, Node(LLM_OUTPUT, text="plan"))
+    base = g.add_agent("task", config="m")
+    llm = g.append(base, Node(LLM, text="plan"))
     cell = g.append(base, Node(CODE, code="x = 1", output="ran"))
-    before = len(g)
+    edges = len(g.edges())
 
     fork = g.fork(llm, name="retry", config="other")
-    items = written(g, before)
-    assert items[0] is fork and [e.kind for e in items[1:]] == [NEXT]
+    assert g.edges()[edges:] == [] and fork.base is llm
     assert (fork.name, fork.config_name, base.config_name) == ("retry", "other", "m")
-    assert g.frontier(fork) is llm
-    assert g.history(fork)[:2] == [base, llm]
-    assert g.frontier(base) is not llm
+    assert g.history(fork)[-1] is llm
+    assert g.history(base)[-1] is cell
+    assert g.parent(fork) is None
     second = g.fork(cell)
-    assert (second.name, second.config_name) == ("m-fork1", "m")
+    assert (second.name, second.config_name) == ("m-fork0", "m")
 
-    before = len(g)
-    judged = g.fork(llm, by=cell)
-    assert len(written(g, before)) == 3
-    assert g.launcher(judged) is base
+    edges = len(g.edges())
+    judged = g.fork(llm, parent=cell)
+    assert [e.kind for e in g.edges()[edges:]] == [SPAWN]
+    assert g.parent(judged) is base and judged in g.children(base)
 
-    fresh = g.append(fork, Node(CODE, code="x = 2"), after=llm)
-    assert g.history(fork) == [base, llm, fork, fresh]
+    fresh = g.append(fork, Node(CODE, code="x = 2"))
+    assert g.history(fork) == [llm, fresh]
+    assert g.history(base) == [llm, cell]
 
 
-def test_fork_at_done_is_terminal_until_a_message_reopens_it():
+def test_fork_at_done_is_finished_until_a_message_reopens_it():
     g = Graph()
-    base = g.spawn()
+    base = g.add_agent()
     done = g.append(base, Node(DONE, result=1))
     fork = g.fork(done)
-    assert g.terminal(fork) and fork not in g.ready()
+    assert g.status(fork) == "done" and g.result(fork) == 1
 
     message = g.send(fork, "Try again.")
-    assert fork in g.ready()
+    assert g.status(fork) == "running"
     assert g.deliver(fork) == [message]
-    assert g.history(fork) == [base, done, fork, message]
-    assert g.terminal(base)
+    assert g.history(fork) == [done, message]
+    assert g.status(base) == "done"
 
 
-def test_attach_writes_a_message_and_from_edges():
+def test_usage_and_cost_sum_every_node_that_reports_them():
     g = Graph()
-    judge = g.spawn("judge")
-    done_branch = g.spawn("a", name="branch_a")
-    g.append(done_branch, Node(DONE, result="A"))
-    open_branch = g.spawn("b")
-    before = len(g)
-
-    message = g.attach(judge, done_branch, open_branch)
-    items = written(g, before)
-    assert items[0] is message and message.type == MESSAGE and message.data["sender"] == "rlmflow"
-    assert [e.kind for e in items[1:]] == [FROM, FROM]
-    assert "branch_a" in message.data["text"]
-    assert g.children(judge) == [done_branch, open_branch]
-    assert g.path(open_branch) == "root.root-0"
-    assert g.inbox(judge) == [message]
-    with pytest.raises(ValueError, match="already has a launcher"):
-        g.attach(judge, open_branch)
+    a = g.add_agent("task")
+    g.append(a, Node(LLM, text="", usage={"input_tokens": 3, "output_tokens": 2}))
+    child = g.add_agent("child", parent=a)
+    g.append(child, Node(DONE, result=1, usage={"input_tokens": 10, "output_tokens": 1}))
+    g.append(child, Node(IDLE, cost_usd=0.25))
+    assert g.usage().total == 16
+    assert g.usage([a]).total == 5
+    assert g.usage().cost_usd == 0.25 and g.usage([a]).cost_usd == 0
 
 
-def test_import_a_saved_graph_and_attach_its_top_level_agents():
-    other = Graph()
-    sub = other.spawn("prepared", name="prepared")
-    other.append(sub, Node(DONE, result="ready"))
-
+def test_saved_calls_match_the_nth_call_of_each_tool():
     g = Graph()
-    parent = g.spawn("parent")
-    g.merge(other)
-    g.attach(parent, *[a for a in other.agents() if other.launcher(a) is None])
-    assert g.result(g.node(sub.id)) == "ready"
-    assert g.path(sub) == "root.prepared"
+    root = g.add_agent("root")
+    cell = g.append(root, Node(CODE, code="await launch_agent('x')"))
+    child = g.add_agent("child", parent=cell)
+    calls.record(cell, "llm_query", 1, value="second")
+    calls.record(cell, calls.LAUNCH, 0, agent=child.id)
+    calls.record(cell, "llm_query", 0, value="first")
+    calls.record(cell, "big", 0, value="x" * (calls.MAX_SAVED_BYTES + 1))
+    calls.record(cell, "live", 0, value=object())
+
+    assert calls.saved(cell, "llm_query", 0)["value"] == "first"
+    assert calls.saved(cell, "llm_query", 1)["value"] == "second"
+    assert calls.saved(cell, "llm_query", 2) is None
+    assert calls.saved(cell, "big", 0) is None and calls.saved(cell, "live", 0) is None
+    assert calls.launched(cell) == [child.id]
+    calls.rebind(cell, child.id, "agent_other")
+    assert calls.launched(cell) == ["agent_other"]
+
+
+def test_link_return_draws_one_edge():
+    g = Graph()
+    root = g.add_agent("root")
+    cell = g.append(root, Node(CODE, code=""))
+    child = g.add_agent("child", parent=cell)
+    done = g.append(child, Node(DONE, result=1))
+    first = g.link_return(done, cell)
+    assert g.link_return(done, cell) is first
+    assert [(e.source, e.target) for e in g.edges(kind=RETURN)] == [(done.id, cell.id)]
 
 
 # -- persistence ----------------------------------------------------------------
 
 
-def test_load_rejects_a_log_that_breaks_an_invariant(tmp_path):
+def test_save_and_load_round_trip_agents_nodes_edges_and_blobs(tmp_path):
     g = Graph()
-    root = g.spawn("task")
-    llm = g.append(root, Node(LLM_OUTPUT, text="hi"))
-    run = g.save(tmp_path / "run")
-    data = json.loads((run / "graph.json").read_text())
-    data["items"] = [item for item in data["items"] if item.get("target") != llm.id]
-    for position, item in enumerate(data["items"]):
-        item["seq"] = position
-    (run / "graph.json").write_text(json.dumps(data))
-
-    with pytest.raises(InvariantError, match="invalid graph log: .*no incoming next"):
-        Graph.load(run)
-
-
-def test_save_and_load_round_trip_the_log_configs_and_blobs(tmp_path):
-    g = Graph()
-    root = g.create_agent("task", doc="x" * 70_000)
+    root = g.add_agent("task", doc="x" * 70_000)
     root.bind_config(AgentConfig(max_budget=500))
-    peer = g.spawn("peer", name="peer", config="worker")
+    peer = g.add_agent("peer", name="peer", config="worker")
     edge = g.add_edge(Edge(kind="peer", source=root.id, target=peer.id, data={"w": 1}))
-    g.append(root, Node(LLM_OUTPUT, text="hi", usage={"input_tokens": 1}))
+    note = g.add_edge("note", root, peer, k=2)
+    llm = g.append(root, Node(LLM, text="hi", usage={"input_tokens": 1}))
+    record_metadata("score", 0.5, node=llm)
+    fork = g.fork(llm, name="alt")
     g.remove_edge(edge)
     g.send(peer, "queued")
 
     run = g.save(tmp_path / "run")
     assert sorted(path.name for path in run.iterdir()) == ["blobs", "graph.json"]
     document = json.loads((run / "graph.json").read_text())
-    assert document["format"] == persistence.FORMAT_VERSION and "configs" not in document
+    assert document["format"] == persistence.FORMAT_VERSION == 5
+    assert set(document) == {"format", "id", "agents", "nodes", "edges", "edits"}
     loaded = Graph.load(run)
 
     assert loaded.id == g.id
-    assert [
-        item.removed_seq if isinstance(item, Edge) and not item.active else item.seq
-        for item in loaded.items()
-    ] == list(range(len(g.items())))
-    assert [(type(item).__name__, getattr(item, "type", None)) for item in loaded.items()] == [
-        (type(item).__name__, getattr(item, "type", None)) for item in g.items()
+    assert [(a.id, a.name, a.seq) for a in loaded.agents()] == [
+        (a.id, a.name, a.seq) for a in g.agents()
     ]
-    loaded_root = loaded.node(root.id)
+    assert [(n.id, n.type, n.seq) for n in loaded.nodes()] == [
+        (n.id, n.type, n.seq) for n in g.nodes()
+    ]
+    assert [(e.id, e.kind, e.seq) for e in loaded.edges()] == [
+        (e.id, e.kind, e.seq) for e in g.edges()
+    ]
+    loaded_root = loaded.agent(root.id)
     assert loaded_root.args == {"doc": "x" * 70_000}
     assert loaded_root.config_name is None and loaded_root.config.max_budget == 500
-    assert loaded.node(peer.id).config_name == "worker"
+    assert loaded.agent(peer.id).config_name == "worker"
     with pytest.raises(AttributeError, match="until a Flow steps it"):
-        loaded.node(peer.id).config
+        loaded.agent(peer.id).config
+    assert [e.id for e in loaded.edges(kind="note")] == [note.id]
     assert loaded.edges(kind="peer") == []
-    assert loaded.edges(kind="peer", active=False)[0].data == {"w": 1}
-    assert [m.data["text"] for m in loaded.inbox(loaded.node(peer.id))] == ["queued"]
-    assert loaded.frontier(loaded_root).data == {"text": "hi", "usage": {"input_tokens": 1}}
+    assert [m.data["text"] for m in loaded.agent(peer.id).inbox] == ["queued"]
+    assert loaded.history(loaded_root)[-1].data == {"text": "hi", "usage": {"input_tokens": 1}}
+    assert loaded.history(loaded_root)[-1].metadata == {"score": 0.5}
+    assert loaded.agent(fork.id).base is loaded.node(llm.id)
+
+    later = loaded.append(loaded_root, Node(DONE, result=1))
+    assert later.seq > max(item.seq for item in [*g.agents(), *g.nodes(), *g.edges()])
 
 
-def test_load_converts_a_format_2_graph_that_saved_whole_configs(tmp_path):
+def test_load_validates_that_every_node_is_placed_once(tmp_path):
     g = Graph()
-    root = g.create_agent("task")
-    cell = g.append(root, Node(CODE, code="launch"))
-    child = g.spawn("child", by=cell, name="child")
-    top = g.spawn("top", name="top")
+    root = g.add_agent("task")
+    llm = g.append(root, Node(LLM, text="hi"))
+    fork = g.fork(llm)
+    g.add_edge("note", root, llm)
     run = g.save(tmp_path / "run")
-    saved = {
-        root.id: AgentConfig(max_iters=4),
-        child.id: AgentConfig(name="worker", model="fast"),
-        top.id: AgentConfig(name="lead", max_budget=9),
-    }
+    original = json.loads((run / "graph.json").read_text())
+
+    def load(edit) -> Graph:
+        document = json.loads(json.dumps(original))
+        edit(document)
+        (run / "graph.json").write_text(json.dumps(document))
+        return Graph.load(run)
+
+    def unplace(document):
+        document["agents"][0]["nodes"] = []
+
+    def misplace(document):
+        document["agents"][0]["nodes"].append("node_missing")
+
+    def rebase(document):
+        next(a for a in document["agents"] if a["id"] == fork.id)["base"] = "node_missing"
+
+    def dangle(document):
+        document["edges"][0]["target"] = "node_missing"
+
+    with pytest.raises(GraphError, match="exactly one agent's history or inbox"):
+        load(unplace)
+    with pytest.raises(GraphError, match="unknown node"):
+        load(misplace)
+    with pytest.raises(GraphError, match="unknown base"):
+        load(rebase)
+    with pytest.raises(GraphError, match="points at missing"):
+        load(dangle)
+
+
+def test_load_refuses_older_formats(tmp_path):
+    g = Graph()
+    g.add_agent("task")
+    run = g.save(tmp_path / "run")
     document = json.loads((run / "graph.json").read_text())
-    document["format"] = 2
-    document["configs"] = {"worker": saved[child.id].to_dict(), "lead": saved[top.id].to_dict()}
-    for item in document["items"]:
-        if item.get("type") == AGENT_START:
-            item["data"]["config"] = saved[item["id"]].to_dict()
+    document["format"] = 3
     (run / "graph.json").write_text(json.dumps(document))
-
-    loaded = Graph.load(run)
-
-    for agent_id, config in saved.items():
-        assert loaded.node(agent_id).metadata["config"] == config.to_dict()
-        assert loaded.node(agent_id).config == config
-    assert loaded.node(root.id).config_name is None
-    assert loaded.node(child.id).config_name == "worker"
-    assert loaded.node(top.id).config_name is None and "config" not in loaded.node(top.id).data
-    assert loaded.path(loaded.node(child.id)) == "root.child"
+    with pytest.raises(ValueError, match="run format 3"):
+        Graph.load(run)
 
 
 def test_load_refuses_runs_saved_before_the_harness_refactor():
     with pytest.raises(ValueError, match="run format 1"):
         Graph.load(FIXTURES / "v1_tree_run")
+
+
+def test_copy_is_independent_and_keeps_ids():
+    g = Graph()
+    root = g.add_agent("task")
+    llm = g.append(root, Node(LLM, text="hi"))
+    child = g.add_agent("child", parent=llm)
+
+    clone = g.copy()
+    assert clone.id == g.id and clone.agent(child.id) is not child
+    assert clone.parent(clone.agent(child.id)).id == root.id
+    clone.append(clone.agent(root.id), Node(DONE, result=1))
+    clone.node(llm.id).data["text"] = "changed"
+    assert root.nodes == [llm] and llm.data["text"] == "hi"

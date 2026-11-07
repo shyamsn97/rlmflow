@@ -5,19 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from rlmflow.graph.graph import FROM, Graph
-from rlmflow.graph.nodes import AGENT_START, CODE, DONE, LLM_OUTPUT, MESSAGE, WAITING, Node
-
-
-def top_level(graph: Graph) -> list[Node]:
-    """Agents nobody launched, in creation order."""
-    return [agent for agent in graph.agents() if graph.launcher(agent) is None]
-
-
-def launched_by(graph: Graph, node: Node) -> list[Node]:
-    """Agents whose ``from`` edge points at ``node``."""
-    launched = (graph.node(edge.source) for edge in graph.edges(kind=FROM, target=node.id))
-    return [agent for agent in launched if agent.type == AGENT_START]
+from rlmflow.graph.graph import Graph
+from rlmflow.graph.nodes import CODE, DONE, IDLE, LLM, Agent
 
 
 def render_forest(graphs: Iterable[Graph]) -> str:
@@ -28,14 +17,14 @@ def render_forest(graphs: Iterable[Graph]) -> str:
 def render_tree(graph: Graph) -> str:
     """Render each top-level agent's task and recursive status tree."""
     blocks = []
-    for top in top_level(graph):
+    for top in graph.roots():
         lines = [_clip(top.task) or "task"]
         _append_agent(graph, lines, top, prefix="", last=True)
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
 
 
-def _append_agent(graph: Graph, lines: list[str], agent: Node, *, prefix: str, last: bool) -> None:
+def _append_agent(graph: Graph, lines: list[str], agent: Agent, *, prefix: str, last: bool) -> None:
     lines.append(f"{prefix}{'└── ' if last else '├── '}{_status(graph, agent)}")
     child_prefix = prefix + ("    " if last else "│   ")
     children = graph.children(agent)
@@ -43,28 +32,25 @@ def _append_agent(graph: Graph, lines: list[str], agent: Node, *, prefix: str, l
         _append_agent(graph, lines, child, prefix=child_prefix, last=index == len(children) - 1)
 
 
-def _status(graph: Graph, agent: Node) -> str:
-    frontier = graph.frontier(agent)
-    turns = sum(node.type == LLM_OUTPUT for node in graph.own_history(agent))
+def _status(graph: Graph, agent: Agent) -> str:
+    history = graph.history(agent)
+    frontier = history[-1] if history else None
+    turns = sum(node.type == LLM for node in agent.nodes)
     suffix = f" ({turns} turns)" if turns else ""
     path = graph.path(agent)
 
-    if frontier.type == DONE:
+    if graph.status(agent) == "done" and frontier is not None and frontier.type == DONE:
         return f"{path}: done {_clip(frontier.data.get('result'), limit=64)}{suffix}"
-    if frontier.type == WAITING:
-        on = frontier.data.get("on") or []
-        active = sum(not graph.terminal(graph.node(a)) for a in on if a in graph)
-        return f"{path}: waiting on {active}/{len(on)}{suffix}"
-    children = [c for c in graph.children(agent) if not graph.terminal(c)]
+    if graph.status(agent) == IDLE:
+        return f"{path}: idle{suffix}"
+    children = [c for c in graph.children(agent) if graph.status(c) != "done"]
     if children:
         return f"{path}: children running {len(children)}{suffix}"
-    if frontier.type == LLM_OUTPUT:
+    if frontier is not None and frontier.type == LLM:
         return f"{path}: running code{suffix}"
-    if frontier.type == CODE:
+    if frontier is not None and frontier.type == CODE:
         return f"{path}: planning{suffix}"
-    if frontier.type in (AGENT_START, MESSAGE):
-        return f"{path}: working{suffix}"
-    return f"{path}: pending{suffix}"
+    return f"{path}: working{suffix}"
 
 
 def _clip(value: Any, *, limit: int = 80) -> str:
@@ -72,4 +58,4 @@ def _clip(value: Any, *, limit: int = 80) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-__all__ = ["launched_by", "render_forest", "render_tree", "top_level"]
+__all__ = ["render_forest", "render_tree"]

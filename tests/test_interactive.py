@@ -9,11 +9,12 @@ import pytest
 from helpers import ScriptedFlow, StubLLM
 from helpers import reasoning_repl as block
 
-from rlmflow import CODE, DONE, MESSAGE, WAITING, AgentConfig, Graph
+from rlmflow import CODE, DONE, IDLE, MESSAGE, AgentConfig, Graph, Node
 from rlmflow.agent_tools import cli, hooks
 from rlmflow.cli.serve import INTERACTIVE, Serve, until
 from rlmflow.graph.nodes import Step
-from rlmflow.harnesses.interactive import read_transcript
+from rlmflow.harnesses.interactive import InteractiveHarness, read_transcript
+from rlmflow.harnesses.sessions import TurnResult
 
 SESSION = "11111111-2222-3333-4444-555555555555"
 WORKER = block("submit(chunk.count('x'))")
@@ -147,7 +148,7 @@ def test_stop_lands_done_with_a_submission_or_the_reply_when_nothing_is_pending(
     asyncio.run(main())
 
 
-def test_stop_with_children_lands_waiting_then_blocks_with_their_results(project):
+def test_stop_with_children_lands_idle_then_blocks_with_their_results(project):
     async def main():
         serve, task = await serving(project)
         you = Session(project, serve)
@@ -157,15 +158,15 @@ def test_stop_with_children_lands_waiting_then_blocks_with_their_results(project
         )
         decision = json.loads(await you.stop("Launched two counters."))
         g, root = serve.graph, serve.root
-        waiting = next(n for n in g.history(root) if n.type == WAITING)
-        assert waiting.data["text"] == "Launched two counters."
+        idle = next(n for n in g.history(root) if n.type == IDLE)
+        assert idle.data["text"] == "Launched two counters."
         assert decision["decision"] == "block"
         assert decision["reason"].startswith("Agents you started have finished.")
-        assert "[handoff root.worker-0]" in decision["reason"] and "result: 2" in decision["reason"]
+        assert "[result root.worker-0]" in decision["reason"] and "result: 2" in decision["reason"]
 
         await you.cell("submit(sum(h.result() for h in handles))")
         assert await you.stop("4 in all") == ""
-        assert types(g, root) == ["agent_start", CODE, WAITING, MESSAGE, CODE, DONE]
+        assert types(g, root) == [CODE, IDLE, MESSAGE, CODE, DONE]
         assert g.result(root) == 4
         await shut(you, task)
 
@@ -183,7 +184,7 @@ def test_a_stop_that_times_out_ends_the_turn_and_the_next_prompt_carries_the_res
         await you.prompt("/rlmflow:run count slowly")
         await you.cell("h = launch_agent('count', config='worker', chunk='xx')")
         assert await you.stop("launched") == ""
-        assert types(serve.graph, serve.root)[-1] == WAITING
+        assert types(serve.graph, serve.root)[-1] == IDLE
         assert await until(lambda: serve.flow.agent_tools.open_turn(serve.root), 10)
         context = await you.prompt("what did it find?")
         assert "Agents you started have finished." in context and "result: 2" in context
@@ -244,7 +245,7 @@ def test_the_turn_end_records_the_session_and_usage_from_the_transcript(project)
         with you.transcript.open("a") as handle:
             handle.writelines(json.dumps(entry) + "\n" for entry in entries)
         await you.hook("stop", stop_hook_active=False)
-        done = serve.graph.frontier(serve.root)
+        done = serve.graph.history(serve.root)[-1]
         assert done.data["session_id"] == SESSION and done.data["result"] == "bye"
         assert done.data["usage"] == {"input_tokens": 154, "output_tokens": 11}
         assert serve.graph.usage().input_tokens == 154
@@ -278,7 +279,7 @@ def test_serve_json_is_found_above_the_cwd_and_the_environment_wins(project, mon
 def test_an_agent_token_acts_only_for_its_own_agent(project):
     async def main():
         g = Graph()
-        a, b = g.create_agent("a"), g.create_agent("b")
+        a, b = g.add_agent("a"), g.add_agent("b")
         for agent in (a, b):
             agent.bind_config(AgentConfig(harness=INTERACTIVE))
         flow = ScriptedFlow(StubLLM(lambda messages: WORKER))
@@ -299,8 +300,8 @@ def test_an_agent_token_acts_only_for_its_own_agent(project):
                 await asyncio.to_thread(cli.request, "stop", {}, url=url, token=token_a)
         finally:
             await flow.aclose()
-        assert [n.type for n in g.history(b)] == ["agent_start", CODE]
-        assert [n.type for n in g.history(a)] == ["agent_start"]
+        assert [n.type for n in g.history(b)] == [CODE]
+        assert g.history(a) == []
 
     asyncio.run(main())
 
@@ -348,3 +349,35 @@ def test_a_restarted_serve_continues_the_same_root_and_session(project):
         await shut(you, task)
 
     asyncio.run(main())
+
+
+class EndedTurn:
+    """What ``outcome`` reads from a turn that ended without a submission."""
+
+    submitted, result = False, None
+
+
+def test_a_session_turn_ends_idle_while_children_run_or_results_are_unseen():
+    g = Graph()
+    root = g.add_agent("lead")
+    root.bind_config(AgentConfig(harness=INTERACTIVE))
+    flow = ScriptedFlow(StubLLM(lambda messages: WORKER))
+
+    def outcome():
+        step = Step.latest(g, root)
+        ended = TurnResult(session_id=SESSION, text="my reply")
+        return asyncio.run(InteractiveHarness().outcome(flow, step, EndedTurn(), ended))
+
+    assert outcome().type == DONE and outcome().data["result"] == "my reply"
+    cell = g.append(root, Node(CODE, code="h = launch_agent('count')", output=""))
+    child = g.add_agent("count", parent=cell)
+    assert outcome().type == IDLE
+    g.append(child, Node(DONE, result=2))
+    unseen = outcome()
+    assert unseen.type == IDLE and unseen.data["session_id"] == SESSION
+    g.append(root, unseen)
+    flow.deliver_results(g, root)
+    g.deliver(root)
+    assert root.nodes[-1].type == MESSAGE and "result: 2" in root.nodes[-1].data["text"]
+    done = outcome()
+    assert done.type == DONE and done.data["result"] == "my reply"

@@ -2,11 +2,15 @@
 
 import asyncio
 import os
+import shlex
 
 import pytest
-from helpers import ScriptedFlow
+from helpers import ScriptedFlow, StubLLM
+from helpers import repl as block
 
-from rlmflow import CODE, DONE, MESSAGE, WAITING, AgentConfig, Flow, Graph, Node
+from rlmflow import CODE, DONE, IDLE, MESSAGE, AgentConfig, Flow, Graph, Node
+from rlmflow.graph import calls, queries
+from rlmflow.graph.nodes import Step
 
 
 async def sh(command: str, env: dict[str, str]) -> tuple[int, str, str]:
@@ -24,7 +28,7 @@ async def shell(flow, step):
     """A stand-in for Claude Code: each turn runs its scripted shell commands."""
     g, agent = step.graph, step.agent
     turns = agent.config.harness_options["turns"]
-    index = sum(1 for node in g.history(agent) if node.type == WAITING)
+    index = sum(1 for node in g.history(agent) if node.type == IDLE)
     transcript = []
     async with flow.agent_tools.turn(step) as turn:
         for command in turns[index]:
@@ -33,9 +37,10 @@ async def shell(flow, step):
     exits = [code for code, _, _ in transcript]
     if turn.submitted:
         return Node(DONE, result=turn.result, text=text, exits=exits)
-    running = [a.id for a in g.children(agent) if not g.terminal(a)]
-    if running:
-        return Node(WAITING, on=running, text=text, exits=exits)
+    if queries.unseen_results(g, agent) or not all(
+        g.status(a) == "done" for a in g.children(agent)
+    ):
+        return Node(IDLE, text=text, exits=exits)
     return Node(DONE, result=text, exits=exits)
 
 
@@ -45,7 +50,7 @@ def shell_config(*turns, **config):
 
 def test_repl_cells_land_code_nodes_and_keep_state():
     g = Graph()
-    root = g.create_agent("count", doc="one two three")
+    root = g.add_agent("count", doc="one two three")
     config = shell_config(
         [
             "rlmflow repl 'n = len(doc)'",
@@ -72,14 +77,13 @@ def test_repl_cells_land_code_nodes_and_keep_state():
     ]
     assert cells[1].data["output"].strip() == "13 3"
     assert cells[2].data["error"] and "ZeroDivisionError" in cells[2].data["output"]
-    assert cells[3].data["submitted"] and cells[3].data["result"] == 26
     assert streamed == [CODE, CODE, CODE, CODE, DONE]
-    assert g.frontier(root).data["exits"] == [0, 0, 1, 0]
+    assert g.history(root)[-1].data["exits"] == [0, 0, 1, 0]
 
 
 def test_ending_a_turn_with_running_children_waits_then_resumes():
     g = Graph()
-    root = g.create_agent("delegate")
+    root = g.add_agent("delegate")
     config = shell_config(
         [
             "rlmflow repl \"h = launch_agent('add', config='worker', x=2)\"",
@@ -87,8 +91,6 @@ def test_ending_a_turn_with_running_children_waits_then_resumes():
         ],
         ["rlmflow repl 'print(h.result())'", "rlmflow repl 'submit({\"total\": 5})'"],
     )
-    from helpers import StubLLM
-
     flow = ScriptedFlow(
         StubLLM(lambda messages: "```repl\nawait asyncio.sleep(1)\nsubmit(x + 3)\n```"),
         configs=[AgentConfig(name="worker", description="adds")],
@@ -100,23 +102,84 @@ def test_ending_a_turn_with_running_children_waits_then_resumes():
     [child] = g.children(root)
     assert child.config.name == "worker" and g.result(child) == 5
     types = [node.type for node in g.history(root)]
-    assert types == ["agent_start", CODE, CODE, WAITING, MESSAGE, CODE, CODE, DONE]
+    assert types == [CODE, CODE, IDLE, MESSAGE, CODE, CODE, DONE]
     [cell] = [n for n in g.history(root) if n.type == CODE and "launch_agent" in n.data["code"]]
-    assert cell.launched() == [child.id]
-    assert "worker" in g.history(root)[2].data["output"]
-    assert g.history(root)[5].data["output"].strip() == "5"
+    assert calls.launched(cell) == [child.id]
+    assert "worker" in g.history(root)[1].data["output"]
+    assert g.history(root)[4].data["output"].strip() == "5"
+    [delivered] = g.edges(kind="return", target=g.history(root)[3].id)
+    assert delivered.source == child.nodes[-1].id
+
+
+DELEGATE = "h = launch_agent('add', config='worker', x=2)\nAGENTS['peer'].send('hi')\nprint('ok')"
+
+
+def edge_shapes(g):
+    """Each edge as ``(kind, source, target)``, endpoints named by owner and what they are."""
+
+    def end(item_id):
+        if item_id in {a.id for a in g.agents()}:
+            return g.agent(item_id).name, "agent"
+        node = g.node(item_id)
+        return g.owner(node).name, "cell" if node.data.get("code") else node.type
+
+    return sorted((e.kind, end(e.source), end(e.target)) for e in g.edges())
+
+
+def delegating_reply(messages):
+    """The lead delegates, then submits its child's result; the others answer at once."""
+    task, last = messages[1]["content"], messages[-1]["content"]
+    if task == "add":
+        return block("submit(x + 3)")
+    if task == "listen":
+        return block("submit('heard')" if "hi" in last else "submit('ready')")
+    return block(DELEGATE) if len(messages) == 2 else block("submit(await h)")
+
+
+def test_server_cells_write_the_same_edges_as_in_process_cells():
+    def run(root_config):
+        g = Graph()
+        root = g.add_agent("delegate", name="lead")
+        g.add_agent("listen", name="peer", config="listener")
+        flow = ScriptedFlow(
+            StubLLM(delegating_reply),
+            configs=[AgentConfig(name="worker"), AgentConfig(name="listener")],
+        )
+        asyncio.run(flow.arun(g, root_config=root_config))
+        asyncio.run(flow.aclose())
+        return g, root
+
+    native, native_root = run(None)
+    served, served_root = run(
+        AgentConfig(
+            harness=shell,
+            harness_options={
+                "turns": [
+                    [f"rlmflow repl {shlex.quote(DELEGATE)}", "rlmflow repl 'submit(await h)'"]
+                ]
+            },
+        )
+    )
+    assert native.result(native_root) == 5
+    assert served.result(served_root) == 5
+    assert edge_shapes(served) == edge_shapes(native)
+    for g, root in ((native, native_root), (served, served_root)):
+        [child] = g.children(root)
+        [spawn] = g.edges(kind="spawn", target=child.id)
+        assert g.owner(g.node(spawn.source)) is root
+        [message] = g.edges(kind=MESSAGE)
+        assert g.node(message.source) is g.node(spawn.source)
+        assert g.node(message.target).data["text"] == "hi"
 
 
 def test_a_token_stops_working_when_its_turn_ends():
     g = Graph()
-    root = g.create_agent("x")
+    root = g.add_agent("x")
     root.bind_config(AgentConfig())
     flow = Flow()
     seen = {}
 
     async def run():
-        from rlmflow.graph.nodes import Step
-
         async with flow.agent_tools.turn(Step(g, root, root)) as turn:
             seen["inside"] = await sh("rlmflow repl 'print(1)'", turn.env)
         seen["after"] = await sh("rlmflow repl 'print(2)'", turn.env)
@@ -134,13 +197,11 @@ def test_a_token_stops_working_when_its_turn_ends():
 
 def test_concurrent_cells_from_one_agent_run_one_at_a_time():
     g = Graph()
-    root = g.create_agent("race")
+    root = g.add_agent("race")
     root.bind_config(shell_config([]))
     flow = Flow()
 
     async def run():
-        from rlmflow.graph.nodes import Step
-
         async with flow.agent_tools.turn(Step(g, root, root)) as turn:
             results = await asyncio.gather(
                 *(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import builtins
 import os
 import sys
 import threading
@@ -14,10 +15,12 @@ from typing import Annotated, Any, Literal, TextIO, cast
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, ValidationError
 
 from rlmflow.runtime.repl import (
+    AGENT_SEND_TOOL,
     AGENT_WAIT_TOOL,
     CurrentObject,
     DoneSignal,
     LocalRepl,
+    NotYourAgent,
     ReplStatus,
     base_namespace,
     current_binding,
@@ -113,6 +116,18 @@ class ProxyResponse(WireModel):
     value: str | None = None
     done: bool = False
     error: str | None = None
+    error_type: str | None = None
+
+
+def host_error(text: str, kind: str | None) -> Exception:
+    """The exception a failed host tool raises in the cell: its own type when the worker has it."""
+    cls = NotYourAgent if kind == "NotYourAgent" else getattr(builtins, kind or "", None)
+    if isinstance(cls, type) and issubclass(cls, Exception):
+        try:
+            return cls(text)
+        except TypeError:
+            pass
+    return RuntimeError(text)
 
 
 _REQUEST = TypeAdapter(ReplRequest)
@@ -246,7 +261,7 @@ class ReplServer:
             if response.done:
                 raise DoneSignal()
             if not response.ok or response.error is not None:
-                raise RuntimeError(response.error or f"{name} failed")
+                raise host_error(response.error or f"{name} failed", response.error_type)
             return decode_host_value(response.value) if response.value is not None else None
 
         if is_async:
@@ -327,9 +342,10 @@ class ReplServer:
         binding["restoring"] = message.restoring
         tenant.seed({}, binding["args"])
         tenant.env = binding["env"]
-        wait_agent = tenant.namespace.get(AGENT_WAIT_TOOL)
-        if wait_agent is not None:
-            binding["wait_agent"] = wait_agent
+        for source, target in ((AGENT_WAIT_TOOL, "wait_agent"), (AGENT_SEND_TOOL, "send_agent")):
+            tool = tenant.namespace.get(source)
+            if tool is not None:
+                binding[target] = tool
         if binding.get("expose_agents"):
             tenant.namespace.setdefault("AGENTS", CurrentObject("agents"))
         try:

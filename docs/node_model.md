@@ -1,214 +1,153 @@
-# Node Model
+# The graph
 
-`rlmflow` records every agent run as a typed tree of nodes. One agent's slice of that tree is its transcript, and it alternates between **queries**, **actions**, and **outputs**:
+A run is a `Graph`: agents, the nodes in each agent's history, and edges between
+them. Everything the engine does is a write to it, everything it decides comes
+from reading it, and you can edit it between runs.
 
-- **Queries** (`UserQuery`) are explicit model-facing turns: a host or child message, a repair request, a last-turn prod, or a truncation notice.
-- **Actions** (`ActionNode`) are work the engine did on the agent's behalf: execute a block of code or invoke a configured delegation backend.
-- **Outputs** (`OutputNode`) are values produced by a model, runtime, or terminal engine step. `LLMOutput` renders as the assistant reply; `ExecOutput` and `ErrorOutput` are observations fed back to the model; `DoneOutput` ends the agent.
+## Agents
 
-`AgentStart` is the agent handle. `LLMOutput` is the model reply itself — there is no `LLMAction` node; `ExecAction` records the code the engine then ran.
+An `Agent` is a record, not a node:
 
-Every action is followed by exactly one output (or a `DoneOutput`). This makes each transition auditable: the tree says what the engine decided to do and what happened next.
+| Field | Meaning |
+| --- | --- |
+| `id`, `name` | Stable id; a name unique among its siblings. `g.path(agent)` is `root.worker-0`. |
+| `task`, `args` | What it was asked, and the variables its REPL starts with. |
+| `config_name` | The `AgentConfig` it runs with (`None` for a root, which uses the run's `root_config`). |
+| `nodes` | Its own history, oldest first. |
+| `inbox` | Messages queued for its next turn. |
+| `base` | For a fork, the node it branched at; its history continues from there. |
+| `metadata`, `seq`, `created_at` | Annotations, creation order, timestamp. |
 
-## Hierarchy
+`g.history(agent)` is the fork base's history followed by `agent.nodes`; a fresh
+root's history is empty. `Step.latest(g, agent)` is the agent at the last node
+of that history, or at itself before it has any.
 
-```text
-Node
-├── AgentStart      (an agent's opening query; also the root of a run)
-├── TransitionDecision
-├── UserQuery
-│   ├── RepairQuery
-│   ├── FinalQuery
-│   └── TruncationSummary
-├── ActionNode
-│   ├── ExecAction
-│   │   └── AppendChild
-│   └── BackendRun
-├── OutputNode
-│   ├── LLMOutput
-│   ├── ExecOutput
-│   ├── ErrorOutput
-│   │   └── ReplDead
-│   ├── VerificationFailure
-│   └── DoneOutput
-```
+## Nodes
 
-`ActionNode` and `OutputNode` group nodes by what the engine executes and what its stages produce. The model "turn" is the `LLMOutput` itself. Repair, final-answer, and truncation guidance are also `UserQuery` subclasses; a dead REPL is a `ReplDead`. Nodes receive prepared prompts through `build_system_prompt(system_prompt, flow)` and `build_messages(user_prompt, flow)`; inheriting `OutputNode` does not itself make a node prompt-bearing.
+| `type` | Lands when | Data |
+| --- | --- | --- |
+| `llm` | A model call returns. | `text`, `usage`, `model` |
+| `code` | A cell starts (`pending`), and is filled in when it finishes. | `code`, `output`, `error`, `calls` (what each tool call returned) |
+| `message` | Something arrives from outside: a batch of results, a peer's or host's message. | `text`, `sender` |
+| `idle` | A session agent ends a turn waiting for messages or for agents it launched. | |
+| `done` | After a cell that called `submit(value)`, a reply with no `repl` block, or a failure. | `result`, `error` |
 
-An `AgentStart` is both a node in its parent's tree and the handle for a whole agent: it owns that agent's `frontier`, `config`, `sub_agents`, and system prompt table. The root of a run is just the `AgentStart` nobody launched.
+Every node has `id`, `type`, `agent_id`, `data`, `metadata`, `seq`,
+`created_at`, and the `started_at` / `finished_at` of the step that produced it.
+`rlmflow.record_metadata(key, value, node=...)` adds namespaced metadata; a host
+tool can leave out `node=` to annotate the cell that called it. Metadata
+survives save, load and fork.
 
-## Node Fields
+A `code` node's `calls` make replay deterministic. They are a list in call
+order: `{"tool": "llm_query", "value": ...}` for a tool's JSON result,
+`{"tool": "launch_agent", "agent": id}` for a launch, and
+`{"tool": "await", "agent": id, "done": id}` for an await. The n-th call to a
+tool in the cell gets the n-th entry for that tool. Results that aren't JSON,
+or are over 64KB, aren't saved, and those calls run again on replay.
 
-All nodes share:
+## Edges
 
-- `type`: stable serialized discriminator, such as `"llm_output"`;
-- `id`: generated node id;
-- `content`: the node's text;
-- `parent` / `children`: recursive structure;
-- `parent_agent`: the `AgentStart` whose transcript this node belongs to;
-- `root`: the `AgentStart` at the top of the run;
-- `seq`: position in this node's own agent transcript, counting from 0;
-- `metadata`: durable, application-defined strict-JSON telemetry and annotations;
-- `started_at` / `finished_at`: when the step that produced the node ran, or `None` for a node written from inside a step.
+| Kind | From | To | Meaning |
+| --- | --- | --- | --- |
+| `spawn` | The cell that launched it (or the parent agent, from host code). | The child agent. | Who launched whom. |
+| `return` | A child's `done`. | The cell that awaited it, or the `message` that delivered it. | Where a result went. |
+| `message` | The cell (or agent) that sent it. | The `message` node. | Who said what to whom. |
 
-The concrete payloads are:
+These three are written by the engine. A fork isn't an edge: it is the
+`agent.base` node it branched at. Any other kind is yours:
+`g.add_edge("peer", a, b, note="...")` and `g.remove_edge(edge)`. The engine
+never reads them; views draw them, and `AGENTS.edges(kind=...)` shows them to
+agents.
 
-| Class                 | `type`                 | Key payload                                               |
-| --------------------- | ---------------------- | --------------------------------------------------------- |
-| `AgentStart`          | `agent_start`          | `content` (the agent's query), `config`, `system_prompts` |
-| `UserQuery`           | `user_query`           | `content`                                                 |
-| `RepairQuery`         | `repair_query`         | rejected submission feedback                              |
-| `FinalQuery`          | `final_query`          | last-iter prompt (default)                                |
-| `TruncationSummary`   | `truncation_summary`   | keep_n notice (default)                                   |
-| `TransitionDecision`  | `transition_decision`  | semantic guard candidates and selected durable rule       |
-| `LLMOutput`           | `llm_output`           | `content` (the reply), `code`, `usage`, `prompt_id`       |
-| `ExecAction`          | `exec_action`          | `code`                                                    |
-| `BackendRun`          | `backend_run`          | backend, external run ID, started state                   |
-| `ExecOutput`          | `exec_output`          | `content` (the REPL's stdout)                             |
-| `ErrorOutput`         | `error_output`         | execution error text, `error="exec"`                      |
-| `ReplDead`            | `repl_dead`            | crash text plus the cold-REPL note, `error="repl"`        |
-| `VerificationFailure` | `verification_failure` | rejected candidate and validation feedback                |
-| `DoneOutput`          | `done_output`          | `result`, `content`                                       |
-
-`LLMOutput.code` is the sole non-empty explicit `repl` block extracted from the reply; `ExecAction.code` is what the engine actually ran. A reply with no `repl` fence (plain text, possibly with ordinary Markdown code fences) is the agent's final answer and lands `DoneOutput` or `VerificationFailure` directly. An empty reply, an empty or unclosed `repl` block, or several `repl` blocks become an engine-written `ExecAction` that raises `MissingReplError` with the reason, recorded in `metadata["protocol_error"]`; the resulting `ErrorOutput` is recovered from like any failing code. `LLMOutput.prompt_id` keys into `agent.system_prompts`, so the exact system prompt a turn ran under is recoverable with `agent.system_prompt_for(node)`. `DoneOutput` is the only terminal node: an agent is finished when `agent.terminal` is true, which means its frontier is a `DoneOutput`. Model-driven completion comes from `submit(value)` inside the REPL or from a plain-text reply. Local schema and launch verifier checks happen before `DoneOutput` lands; rejected candidates produce `VerificationFailure`.
-
-## Metadata
-
-Every node has an open `metadata` dictionary for consumer-defined JSON. Use namespaced keys so independent integrations compose:
+Reading the graph:
 
 ```python
-node.annotate("eval.verdict", {"score": 0.8, "reason": "exact match"})
-node.annotate("tool.calls", {"name": "lookup", "cache_hit": True}, append=True)
+g.agents(), g.roots(), g.agent(id), g.node(id), g.owner(node)
+g.nodes("code", agent=a), g.edges(kind="return", target=cell.id)
+g.parent(a), g.children(a), g.lineage(a), g.path(a), g.subtree(a)
+g.status(a)  # "done", "idle" or "running"
+g.result(a)  # the latest done's result, or None
+g.usage(), g.usage().cost_usd
 ```
 
-Metadata survives save/load and fork. Persisted node records place it under `metadata.extensions`; the rest of the record's `metadata` object remains the stable engine envelope for creation time, timing, model identity, and usage. Core graph invariants remain typed fields, while provider metrics, tool receipts, rewards, cache evidence, and experiment IDs can evolve independently.
+Less common reads are plain functions in `rlmflow.graph.queries`, such as
+`unseen_results(g, agent)` (finished children whose result hasn't been
+delivered).
 
-Host-side proxy tools may call `rlmflow.record_metadata(...)` to annotate the currently executing action without receiving its `Node` explicitly. Successful and failed proxy calls also append compact receipts to `tools.calls`.
+## Status
 
-## Navigating
+An agent is **running** when it has no nodes yet, its last node is a pending
+cell, or messages are waiting in its inbox. Otherwise its last node decides:
+**done** after `done`, **idle** after `idle`, and **running** after anything
+else. The engine steps every running agent that isn't already stepping. A
+message wakes an idle agent, and the results of the children it launched arrive
+as messages.
 
-An agent's own transcript is a chain; the tree branches only where an agent delegated.
+## How results move
+
+Inside a cell, `await child` returns the child's result and adds a `return` edge
+from its `done` to the cell. Only descendants can be awaited; anyone else
+answers by message.
+
+A child that finishes without being awaited reaches its parent in one batched
+`message` at the parent's next turn, with a `return` edge from each child's
+`done`. A child is delivered once: the `return` edge marks it as seen.
+
+## Editing
+
+The graph is mutable. Each edit follows the edges to what depended on what it
+changed, and returns an `Invalidation`:
+
+| Field | Meaning |
+| --- | --- |
+| `rewound` | Agents whose history was cut back. |
+| `removed` | Agents removed with their subtrees. |
+| `dropped` | Nodes removed. |
+| `rerun` | Cells marked pending, to run again in place. |
 
 ```python
-node.next          # the following node in this node's own agent, or None
-node.prev          # the previous one, or None at the agent's start
-node.walk()        # this node and everything below it, including sub-agents
-node.iter_backwards()  # back up this agent's own chain to its AgentStart
-agent.transcript() # that chain, start to frontier, in order
-agent.frontier     # where the agent is now
-agent.sub_agents   # the agents it launched
-agent.leaves()     # the frontier of this agent and of every agent below it
+g.edit(node, **data)  # change a node; its agent rewinds to it
+g.delete(node)  # remove a node and everything after it
+g.remove(agent)  # remove an agent, its subtree, and what they caused
+g.replace(cell, 2, value)  # bind the cell's third saved call to a value
+g.replace(cell, 0, agent=other)  # ... or to another agent
+g.edit(node, text="...", dry_run=True)  # report, change nothing
 ```
 
-`node.append(child)` is the only link primitive. It hangs a node off this one and moves the agent's frontier there, so appending anywhere but the frontier raises. It returns `None`; the caller already has the child. Appending an `AgentStart` opens a sub-agent instead: it branches off without moving the parent's frontier.
+What follows from an edit:
 
-## Chat Projection
+- Cutting a cell removes the agents it launched and the messages it sent.
+- Changing or removing a child's `done` marks the cell that awaited it to re-run.
+  On the next `flow.run(g)` that cell runs again in place: its other calls
+  return what they saved, so only the changed value is new, and the agent
+  continues from the new output.
+- A results `message` built from a changed result is removed, and the results
+  are delivered again.
 
-Each node carries an immutable message snapshot. Model-facing query nodes build that snapshot exactly once through `build_messages(user_prompt, flow)`. `LLMOutput`, `ExecOutput`, and `ErrorOutput` initialize snapshots directly from their recorded content; bookkeeping nodes have an empty snapshot.
-
-`node.project(keep=...)` walks `prev`, flattens stored snapshots, and stops after `keep` messages. It never rebuilds a historical prompt or consults live runtime state. A custom query may return several messages from `build_messages`; those exact messages remain in later context and survive save/load and fork.
-
-Background-agent status is a request-only Flow overlay. It is appended to a copy of the current snapshot, so it stays fresh without accumulating in history.
-
-## Normal Flow
-
-`AgentStart` calls the model directly. An agent may submit in its first block, or observe its inputs and decide from the printed result:
-
-```text
-AgentStart
-  -> LLMOutput(code="x = compute(task); print(x)")
-  -> ExecAction
-  -> ExecOutput(content="...")
-  -> LLMOutput(code="submit({'answer': x})")
-  -> ExecAction
-  -> DoneOutput(result={"answer": ...})
-```
-
-When the host configures an external delegation backend, launched children use a shorter but still durable path:
-
-```text
-AgentStart
-  -> BackendRun(backend="claude-code", run_id="...")
-  -> DoneOutput | VerificationFailure
-```
-
-`VerificationFailure` produces `RepairQuery`, followed by another `BackendRun`. The backend identity lives in `AgentConfig`; the model cannot select it. A started action retains its run ID so a cold resume does not silently launch unrelated work.
-
-Without `output_schema`, `DoneOutput.result`, `Flow.run()`, and child result handles keep the strict JSON value passed to `submit` (strings stay strings; dictionaries with string keys, lists, finite numbers, booleans, and `None` stay typed). Tuples, sets, bytes, non-finite floats, arbitrary objects, dictionaries with non-string keys, and nested occurrences of those values produce an execution error rather than being stringified. With an explicit schema, a JSON value or JSON-encoded string is parsed and stored as the validated typed value.
-
-Errors are observations too. The next LLM turn sees the traceback and can recover:
-
-```text
-LLMOutput(code="1 / 0")
-  -> ExecAction
-  -> ErrorOutput(error="exec", content="ZeroDivisionError: ...")
-  -> LLMOutput(code="submit(...)")
-```
-
-An `ErrorOutput` means the agent's own code raised. A `ReplDead` means the REPL itself died and took the namespace with it; the agent is told that its variables are gone before the next model request.
-
-`AgentStart`, `UserQuery`, `ExecOutput`, and `ErrorOutput` call the model after final-turn and truncation guards. The invariant system protocol asks each turn to plan and execute the immediate next step, and to look at the inputs first when their size, format, or contents are unknown. `Flow.build_system_prompt(node)` uses the spawn-capable execution policy when the agent can spawn and the worker policy when it cannot. `FinalQuery` supplies one last-turn instruction, `RepairQuery` carries rejected-submission feedback, `TruncationSummary` records a `keep_n` overflow, and application code may append a generic `UserQuery` explicitly.
-
-## Delegation
-
-Agents delegate with:
-
-```python
-finding_schema = {
-    "type": "object",
-    "properties": {"conclusion": {"type": "string"}},
-    "required": ["conclusion"],
-    "additionalProperties": False,
-}
-search = launch_subagent(
-    task="Find the evidence",
-    chunk=chunk,
-    schema=finding_schema,
-)
-# Later, when the answer is needed:
-result = await search
-assert set(result) == {"conclusion"}
-```
-
-Launching returns a handle without waiting for the child. An ordinary child initially hangs off the `ExecAction` that launched it, and the step lands one `ExecOutput` when the parent's block finishes:
-
-```text
-ExecAction
-├── AgentStart "Find the evidence"   (root.search, runs to its own DoneOutput)
-└── ExecOutput                       (the parent's own sequel)
-```
-
-`node.next` skips the sub-agent branches, so the parent's transcript reads as one chain whether or not it delegated. Every child remains beneath the `ExecAction` that launched it. Handle-valued inputs add dataflow edges between those agents without changing ownership. Independent children run concurrently when their calls are passed to `asyncio.gather`. Each child's answer is its `DoneOutput.result`; a child that crashes has the failure recorded as its answer, so its siblings still settle. A result not routed through another agent's inputs also reaches its parent as a `[handoff]` `UserQuery`: a mapping is listed as fields, a scalar as labeled JSON.
-
-A host can set `AgentConfig(child_config={"output_schema": ...})` so launched children get a schema without the parent passing `schema=` on each call. Launch `schema=` still wins. The coding CLI uses `CODING_HANDOFF_SCHEMA` this way; evals do not.
-
-## Streaming Semantics
-
-`flow.run_streaming(root, until=...)` advances the run and yields each node as it lands; the tree is mutated in place. One logical reasoning turn is usually several node transitions:
-
-1. LLM half: `AgentStart | UserQuery | ExecOutput | ErrorOutput -> LLMOutput`.
-1. Resolution: exactly one non-empty `repl` block goes through `ExecAction -> <observation | DoneOutput | VerificationFailure>`; any other model response becomes a protocol `ErrorOutput`.
-1. External backend: an agent whose `config.backend` is not `"rlmflow"` goes through `AgentStart | RepairQuery -> BackendRun -> DoneOutput | VerificationFailure`.
-
-Each pass, the engine steps every leaf in the tree — the frontier of every agent that has not answered and is not already being stepped — so the parent and its children advance together:
-
-- an agent whose frontier is a `DoneOutput` does nothing unless `resume_on_child_done` appended a `UserQuery`;
-- an agent at `LLMOutput` runs its sole explicit `repl` block, or enters protocol-error recovery if the response is invalid;
-- an agent at `AgentStart`, `UserQuery`, `ExecOutput`, or `ErrorOutput` calls the model next after automatic guards;
-- an agent at `ExecAction` runs that block — but while a block is running, its agent's frontier is that action and the step already owns it, so the leaves that advance are its children's.
+Edits are refused while an affected agent is stepping (`g.busy`). Every edit is
+appended to `g.edits`, which is saved with the graph.
 
 ## Persistence
 
-`agent.save(path)` writes the tree; `AgentStart.load(path)` reads it back. Serialization writes one shallow record per Node with `parent_id`, then rebuilds the tree iteratively in parent-before-child order, so a loaded run is the same tree with the same ids.
+`g.save(path)` writes `path/graph.json`:
 
-Saved run directories keep a per-agent projection under `agents/<name>/` alongside the flat `graph.json` document. Cross-agent ownership is always the tree's launch structure. Dependency dataflow is derived from stable agent IDs persisted as handle-valued input references and can be rendered as a separate projection over the same nodes.
+```json
+{"format": 5, "id": "...", "agents": [...], "nodes": [...], "edges": [...], "edits": [...]}
+```
 
-Walk the tree and switch on `node.type` (or `isinstance`) when inspecting runs:
+Each agent lists its `nodes` and `inbox` by id; large string arguments go to
+`path/blobs/` by content hash. `Graph.load(path)` rebuilds the same graph with
+the same ids. A run saved in the middle of a cell loads with that cell still
+pending, and the cell runs again; agents it already launched are reused through
+its saved calls rather than launched twice. A stream that stops mid-cell leaves
+the same state.
+
+## Streaming
+
+`flow.run_streaming(g)` yields a `Step(graph, agent, node)` for each node as it
+lands; `step.edges` are the edges touching it. For everything else, subscribe:
 
 ```python
-for node in root.walk():
-    if isinstance(node, AgentStart):
-        print(node.config.path, "started:", node.content)
-    elif isinstance(node, DoneOutput):
-        print("result:", node.result)
+unsubscribe = g.subscribe(lambda event, item: print(event, item))
+# events: "agent", "node", "edge", "edit", "deliver"; g.revision counts them
 ```

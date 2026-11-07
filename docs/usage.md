@@ -5,7 +5,7 @@ How to run rlmflow, configure it, and work with what it produces. What an agent 
 ## Install
 
 ```bash
-pip install "rlmflow[openai]"        # or [anthropic], [claude], [tui], [mcp], [all]
+pip install "rlmflow[openai]"        # or [anthropic], [claude], [mcp], [all]
 ```
 
 Set `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY` for `claude*` models). The Claude Code harness and plugin need the `claude` [CLI](https://docs.claude.com/en/docs/claude-code), signed in.
@@ -16,8 +16,8 @@ Set `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY` for `claude*` models). The Claude C
 from rlmflow import Flow
 from rlmflow.llm import client_for
 
-flow = Flow(configs=[AgentConfig(model="gpt-5-mini")])   # "default": roots and plain launches
-flow.run("Add a and b", a=2, b=3)       # 5; keyword arguments become REPL variables
+flow = Flow(configs=[AgentConfig(model="gpt-5-mini")])  # "default": roots and plain launches
+flow.run("Add a and b", a=2, b=3)  # 5; keyword arguments become REPL variables
 ```
 
 To keep the run, build the graph yourself:
@@ -26,9 +26,9 @@ To keep the run, build the graph yourself:
 from rlmflow import AgentConfig, Graph
 
 g = Graph()
-root = g.create_agent("Count the x's in doc.", doc="xxaaxbxx")
-flow.run(g, root_config=AgentConfig(max_iters=10))   # returns the graph
-g.result(root)                   # 5
+root = g.add_agent("Count the x's in doc.", doc="xxaaxbxx")
+flow.run(g, root_config=AgentConfig(max_iters=10))  # returns the graph
+g.result(root)  # 5
 g.save("runs/count")
 ```
 
@@ -53,16 +53,24 @@ An `AgentConfig` is a kind of agent: its harness, model, limits and prompt. The 
 ```python
 from pydantic import BaseModel
 
+
 class Finding(BaseModel):
     file: str
     line: int
 
-searcher = AgentConfig(name="searcher", model="gpt-5-mini", max_depth=0, description="searches one batch of files", output_schema=Finding)
-flow = Flow(configs=[searcher])     # or flow.add_config(searcher)
+
+searcher = AgentConfig(
+    name="searcher",
+    model="gpt-5-mini",
+    max_depth=0,
+    description="searches one batch of files",
+    output_schema=Finding,
+)
+flow = Flow(configs=[searcher])  # or flow.add_config(searcher)
 flow.run("Find the magic number in haystack/.", root_config=AgentConfig(model="gpt-5", max_depth=1))
 ```
 
-Roots (agents made with `g.create_agent`) run with the run's `root_config`: an `AgentConfig`, a config name, or `None` for the Flow's `"default"`. Everything else names a Flow config. `launch_agent(...)` without `config=` uses `"default"`, not its parent's. To put a top-level agent on a named config, use `g.spawn(task, config="searcher")`. An unknown name is a `KeyError` when the Flow reaches the agent.
+Roots (agents made with `g.add_agent` and no `config=`) run with the run's `root_config`: an `AgentConfig`, a config name, or `None` for the Flow's `"default"`. Everything else names a Flow config. `launch_agent(...)` without `config=` uses `"default"`, not its parent's. To put a top-level agent on a named config, use `g.add_agent(task, config="searcher")`. An unknown name is a `KeyError` when the Flow reaches the agent.
 
 ## Models
 
@@ -71,7 +79,7 @@ from rlmflow.llm import OpenAIClient, client_for
 
 flow = Flow(
     configs=[
-        AgentConfig(model="gpt-5"),                       # "default"
+        AgentConfig(model="gpt-5"),  # "default"
         AgentConfig(name="cheap", model="gpt-5-mini"),
         AgentConfig(name="claude", model="claude-sonnet-4-5"),
         AgentConfig(name="local", model="local"),
@@ -80,19 +88,21 @@ flow = Flow(
 )
 ```
 
-A config's `model` is a model name; the Flow builds the client the first time it's used, Anthropic for `claude*` names and OpenAI otherwise. `llm_clients` is for clients a name can't describe (a local server, a reasoning effort, a Tinker sampler); a config names them by their key. Any object with `chat(messages)` works as a client. A config with no `model` raises when the REPL harness reaches it; Claude Code and pi use their own default model.
+A config's `model` is a model name; the Flow builds the client the first time it's used, Anthropic for `claude*` names and OpenAI otherwise. `llm_clients` is for clients a name can't describe (a local server, a reasoning effort); a config names them by their key. Any object with `chat(messages)` works as a client. A config with no `model` raises when the REPL harness reaches it; Claude Code and pi use their own default model.
 
 ## Tools
 
 ```python
 from rlmflow import FILE_TOOLS, tool
 
+
 @tool("Look up a customer by id; returns a dict.")
 def customer(customer_id: str) -> dict:
     return db.get(customer_id)
 
+
 flow = Flow(tools=[FILE_TOOLS, customer])
-flow.inject("TODAY", "2026-10-25")      # a value bound in every REPL
+flow.inject("TODAY", "2026-10-25")  # a value bound in every REPL
 ```
 
 ## Prompts
@@ -112,7 +122,9 @@ The runtime is where agent code runs; the workspace is where each agent's files 
 ```python
 from rlmflow import DockerRuntime, GitWorktrees
 
-flow = Flow(runtime=DockerRuntime("rlmflow:local", working_directory="./proj"), workspaces=GitWorktrees("."))
+flow = Flow(
+    runtime=DockerRuntime("rlmflow:local", working_directory="./proj"), workspaces=GitWorktrees(".")
+)
 ```
 
 | Runtime                  | For                                                  |
@@ -131,7 +143,7 @@ async for step in flow.run_streaming(g, until="idle"):
     print(g.path(step.agent), step.node.type)
 ```
 
-`until` is `"done"` (default), `"next"`, `"idle"` (the next `code`, `waiting` or `done`), or a function of the step. Stop, look or change the graph, then call `run_streaming` again. Consumers handle the stream for you:
+`until` is `"done"` (default), `"next"`, `"idle"` (the next `code`, `idle` or `done`), or a function of the step. Stop, look or change the graph, then call `run_streaming` again. Consumers handle the stream for you:
 
 ```python
 from rlmflow import ConsumerGroup, GraphCheckpointer, LiveGraphTree
@@ -148,35 +160,38 @@ More in [Streaming](streaming.md).
 ## Read the graph
 
 ```python
-g.result(root)       # None until done
-g.status(root)       # "running" | "waiting" | "done"
-g.history(root)      # the agent's nodes
-g.children(root)     # agents it launched
-g.usage()              # tokens; g.cost_usd()
+g.result(root)  # None until done
+g.status(root)  # "running" | "idle" | "done"
+g.history(root)  # the agent's nodes
+g.children(root)  # agents it launched; g.parent(agent) is the one that launched it
+g.edges(kind="return", target=cell.id)  # whose results reached a cell
+g.usage()  # tokens; g.usage().cost_usd
 g.nodes("code", agent=root)
 ```
 
-Node types and edges: [Node model](node_model.md).
+Agents, node types and edges: [The graph](node_model.md).
 
 ## Change a run
 
 ```python
-from rlmflow import Input
-
-g.send(root, "Also report the file name.")      # a message; reopens a finished agent
-writer = g.create_agent("Summarize research.", inputs={"research": Input(research_agent)})  # runs after it
-retry = g.fork(some_node, name="retry", config="cheap") # branch from any node, optionally on another config
+g.send(root, "Also report the file name.")  # a message; reopens a finished agent
+helper = g.add_agent("Collect the sources.", parent=root)  # a child, from host code
+retry = g.fork(
+    some_node, name="retry", config="cheap"
+)  # branch from any node, optionally on another config
+g.edit(g.history(helper)[-1], result="...", dry_run=True)  # what changing a result would redo
+g.replace(cell, 0, "cached value")  # bind the cell's first saved call; the cell re-runs
 flow.run(g)
 ```
 
-A fork shares the history up to its node and doesn't redo work that already finished. More in [Control](control.md) and [Injections](injections.md).
+A fork shares the history up to its node and doesn't redo work that already finished. Edits follow the edges to what used what they changed: see [The graph](node_model.md#editing). More in [Control](control.md) and [Injections](injections.md).
 
 ## Save and resume
 
 ```python
 g.save("runs/x")
 g = Graph.load("runs/x")
-flow.run(g)                 # unfinished agents continue, with this Flow's configs
+flow.run(g)  # unfinished agents continue, with this Flow's configs
 ```
 
 ## Claude Code and pi as agents
@@ -184,7 +199,11 @@ flow.run(g)                 # unfinished agents continue, with this Flow's confi
 The harness is per config, so one run can mix them:
 
 ```python
-claude = AgentConfig(name="claude", harness="claude_code", harness_options={"sdk": {"permission_mode": "acceptEdits"}})
+claude = AgentConfig(
+    name="claude",
+    harness="claude_code",
+    harness_options={"sdk": {"permission_mode": "acceptEdits"}},
+)
 flow = Flow(configs=[claude])
 flow.run(task, root_config=AgentConfig(harness="claude_code", max_depth=1))
 ```
@@ -220,8 +239,7 @@ rlmflow fork runs/x NODE --interactive                      # prints the claude 
 ## Command line
 
 ```bash
-rlmflow tui                                  # a coding agent over ., in the dashboard
-rlmflow run print "fix the failing test"     # headless
+rlmflow run print "fix the failing test"     # a coding agent over .
 rlmflow run --resume ./graph print "now update the docs"
 rlmflow view show runs/x                     # tree and timeline
 rlmflow render html runs/x run.html          # or gif, browser
@@ -241,16 +259,6 @@ save_html(g, "run.html")
 ```
 
 More in [Observability](observability.md).
-
-## rlmflow as an LLM
-
-```python
-from rlmflow.flow import FlowLLM
-
-agent = FlowLLM(Flow(), root_config=AgentConfig(model="gpt-5-mini", max_depth=1))
-agent.chat([{"role": "user", "content": "Summarize this repo's README."}])
-agent.last_graph
-```
 
 ## Troubleshooting
 

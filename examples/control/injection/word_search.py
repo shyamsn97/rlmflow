@@ -9,7 +9,7 @@ delegating direction-specific search to three child agents:
 
 That route is intentionally plausible but more complicated than necessary. It
 creates a real delegating turn at the root, with each child agent launched by
-the model turn whose cell called ``launch_agent``. The finished graph is saved
+the cell that called ``launch_agent``. The finished graph is saved
 as a run directory that ``inject_variants.py`` loads with ``Graph.load``.
 
 Run:
@@ -28,7 +28,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rlmflow import AGENT_START, AgentConfig, Flow, Graph, json_schema_for
+from rlmflow import AgentConfig, Flow, Graph, json_schema_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -124,7 +124,7 @@ def run(model: str, out_dir: Path) -> None:
     flow = Flow(configs=[AgentConfig(model=model, max_depth=2)])
 
     g = Graph()
-    root = g.create_agent(QUERY, puzzle=PUZZLE)
+    root = g.add_agent(QUERY, puzzle=PUZZLE)
     print_agent_tree(g, root)
 
     config = AgentConfig(model=model, output_schema=json_schema_for(WordSearchResult), max_depth=2)
@@ -147,7 +147,7 @@ def run(model: str, out_dir: Path) -> None:
     print("agent returned the expected word-search hits!")
     path = g.save(out_dir)
     print(f"\nwrote baseline run: {path}")
-    print(f"  graph:  {path / 'graph.json'} ({len(g.nodes(AGENT_START))} agents)")
+    print(f"  graph:  {path / 'graph.json'} ({len(g.agents())} agents)")
     save_example_graph(g, "injection-word-search")
 
 

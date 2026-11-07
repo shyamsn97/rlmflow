@@ -18,7 +18,10 @@ def _display_path(path: Path, *, absolute: bool) -> str:
         return str(path)
 
 
-@tool("Read a file and return its contents. Paths resolve relative to the working directory.")
+@tool(
+    "Read a file and return its contents. Paths resolve relative to the working directory.",
+    where="repl",
+)
 def read_file(path: str) -> str:
     return Path(path).read_text()
 
@@ -29,6 +32,7 @@ def read_file(path: str) -> str:
     "when it may already exist; use `edit_file` to change part of a file. Other "
     "agents may share this directory: write only paths assigned to your scope, and "
     "never replace another agent's file with its status, manifest, or placeholder.",
+    where="repl",
     when=at_leaf,
 )
 def write_file(path: str, content: str) -> str:
@@ -38,7 +42,7 @@ def write_file(path: str, content: str) -> str:
     return f"Wrote {len(content)} bytes to {path}"
 
 
-@tool("Append content to a file.", when=at_leaf)
+@tool("Append content to a file.", where="repl", when=at_leaf)
 def append_file(path: str, content: str) -> str:
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -52,6 +56,7 @@ def append_file(path: str, content: str) -> str:
     "exactly once (add surrounding lines to disambiguate) unless replace_all=True. "
     "Edits apply atomically: if any anchor is missing or ambiguous, nothing is written. "
     "If another agent wrote the file, edit it in place rather than rewriting it.",
+    where="repl",
     when=at_leaf,
 )
 def edit_file(path: str, *edits: tuple[str, str], replace_all: bool = False) -> str:
@@ -74,7 +79,8 @@ def edit_file(path: str, *edits: tuple[str, str], replace_all: bool = False) -> 
 @tool(
     "List files and directories, returning paths usable by other file tools. "
     "For relative inputs, returns workspace-relative paths. Call this on '.' "
-    "before writing anything, so you build on what the workspace already has."
+    "before writing anything, so you build on what the workspace already has.",
+    where="repl",
 )
 def ls(path: str = ".") -> list[str]:
     absolute = Path(path).is_absolute()
@@ -84,17 +90,17 @@ def ls(path: str = ".") -> list[str]:
     return sorted(_display_path(entry, absolute=absolute) for entry in p.iterdir())
 
 
-@tool("Read lines start:end (0-indexed, exclusive) from a file.")
+@tool("Read lines start:end (0-indexed, exclusive) from a file.", where="repl")
 def read_lines(path: str, start: int, end: int) -> str:
     return "\n".join(Path(path).read_text().splitlines()[start:end])
 
 
-@tool("Count the number of lines in a file.")
+@tool("Count the number of lines in a file.", where="repl")
 def line_count(path: str) -> int:
     return len(Path(path).read_text().splitlines())
 
 
-@tool("Search for lines matching a regex pattern.")
+@tool("Search for lines matching a regex pattern.", where="repl")
 def grep(pattern: str, path: str = ".", *, max_results: int = 50) -> str:
     p = Path(path)
     regex = re.compile(pattern)

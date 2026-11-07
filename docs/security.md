@@ -39,23 +39,10 @@ Independent of the runtime:
 
 ## Proxied tools
 
-`Flow(tools=[...])` and `flow.add_tool(fn)` expose callables to the agent worker. Tools marked `@tool(proxy=True)` execute on the host through the worker's private protocol stream; local tools are copied into the worker when possible. Working-directory-aware tools run relative to `runtime.working_directory`. `@tool(..., when=...)` hides a name from that agent's prompt and namespace; it is not a sandbox. The worker can still write files with ordinary Python.
+`Flow(tools=[...])` and `flow.add_tool(fn)` expose callables to the agent worker. Tools execute on the host through the worker's private protocol stream, so a host tool runs with the host's privileges whatever runtime the agent uses; `@tool(where="repl")` tools are copied into the worker instead. Working-directory-aware tools run relative to `runtime.working_directory`. `@tool(..., when=...)` hides a name from that agent's prompt and namespace; it is not a sandbox. The worker can still write files with ordinary Python.
 
 Tools you register are part of the trust boundary. The container can be sealed off, but any injected tool runs on the host with host privileges. Worker-to-host arguments are restricted to JSON data; the host never deserializes worker-controlled Python objects. Keep the tool surface small and still validate the meaning and bounds of every argument.
 
 ## Approval gates
 
-Pass an `execution_guard` to inspect each `ExecAction` before the runtime is seeded or agent code executes. Return `None` to allow the action or an error message to reject it. The rejection becomes an `ErrorOutput`, so the next model turn can repair its plan. Guards may be synchronous or asynchronous:
-
-```python
-from rlmflow import ExecAction, Flow
-
-def review(action: ExecAction) -> str | None:
-    if "rm -rf" in action.code and input(f"run? {action.code}\n> ") != "y":
-        return "rejected by reviewer"
-    return None
-
-flow = Flow(llm, execution_guard=review)
-```
-
-The guard is enforced by `WrappedRuntime`, including custom step functions that delegate through `self.runtime.execute(action)`.
+There is no built-in approval gate. To review code before it runs, subclass the runtime and check `code` in `execute(agent, code, graph)` before calling `super().execute(...)`; return or raise to refuse. A refused cell is an error the next model turn sees, so the agent can repair its plan.

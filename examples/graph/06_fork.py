@@ -18,7 +18,7 @@ def main() -> None:
     args = parser.parse_args()
 
     g = Graph()
-    base = g.spawn("choose a release plan", name="base")
+    base = g.add_agent("choose a release plan", name="base")
     # Each fork is a new agent whose history is the base up to the fork point.
     conservative = g.fork(base, name="conservative")
     bold = g.fork(base, name="bold")

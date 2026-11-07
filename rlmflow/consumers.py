@@ -13,9 +13,9 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from rlmflow.graph.graph import Edge, Graph
-from rlmflow.graph.nodes import DONE, WAITING, Node, Step
-from rlmflow.view.text import _status, render_forest, render_tree, top_level
+from rlmflow.graph.graph import Graph
+from rlmflow.graph.nodes import DONE, IDLE, Agent, Edge, Node, Step
+from rlmflow.view.text import _status, render_forest, render_tree
 
 if TYPE_CHECKING:
     from rlmflow.flow import Flow
@@ -105,7 +105,7 @@ class GraphCheckpointer(StreamConsumer):
         graph = self.latest
         if graph is None:
             return
-        revision = len(graph)
+        revision = graph.revision
         if revision == self.saved_revision:
             return
         graph.save(self.path)
@@ -306,16 +306,14 @@ class LiveGraphTree(StreamConsumer):
         from rich.text import Text
         from rich.tree import Tree
 
-        def render_label(agent: Node):
+        def render_label(agent: Agent):
             text = _status(graph, agent)
-            frontier = graph.frontier(agent)
-            if frontier.type == DONE:
-                if frontier.data.get("error"):
+            status = graph.status(agent)
+            if status == "done":
+                if graph.history(agent)[-1].data.get("error"):
                     return Text.assemble(("✗ ", "red"), (text, "red"))
                 return Text.assemble(("✓ ", "green"), (text, "green"))
-            if frontier.type == WAITING or any(
-                not graph.terminal(c) for c in graph.children(agent)
-            ):
+            if status == IDLE or not all(graph.status(c) == "done" for c in graph.children(agent)):
                 return Text.assemble(("◌ ", "magenta"), (text, "magenta"))
             if self.spinners:
                 return Spinner("dots", text=Text(text, style="cyan"))
@@ -323,12 +321,12 @@ class LiveGraphTree(StreamConsumer):
 
         tree = Tree(Text(label or graph.id, style="bold"), guide_style="dim")
 
-        def populate(branch, agent: Node) -> None:
+        def populate(branch, agent: Agent) -> None:
             for child in graph.children(agent):
                 child_branch = branch.add(render_label(child), guide_style="dim")
                 populate(child_branch, child)
 
-        for top in top_level(graph):
+        for top in graph.roots():
             populate(tree.add(render_label(top), guide_style="dim"), top)
         return tree
 

@@ -134,7 +134,7 @@ SHEPHERD_RUN ?= examples/_runs/shepherd
 SHEPHERD_DOC_ASSETS := docs/static/shepherd
 
 showcase-shepherd-assets: ## Publish Shepherd SVGs and GIFs from SHEPHERD_RUN.
-	@test -d "$(SHEPHERD_RUN)/shepherd" || (echo "missing $(SHEPHERD_RUN)/shepherd; run the Shepherd example first" >&2; exit 1)
+	@test -d "$(SHEPHERD_RUN)/graph" || (echo "missing $(SHEPHERD_RUN)/graph; run the Shepherd example first" >&2; exit 1)
 	mkdir -p $(SHEPHERD_DOC_ASSETS)
 	uv run --locked --python 3.12 --extra image python examples/shepherd/render_graph.py \
 		--run-dir $(SHEPHERD_RUN) \
@@ -160,7 +160,7 @@ showcase-needle-assets: ## Render and publish the saved million-line Needle grap
 		--run-dir $(NEEDLE_RUN) \
 		--out $(NEEDLE_DOC_ASSETS)/needle-haystack.gif
 
-BOIDS_RUN ?= examples/_runs/coding/boids-rlmflow
+BOIDS_RUN ?= examples/_runs/coding/boids
 BOIDS_DOC_ASSETS := docs/static/boids
 
 showcase-boids-assets: ## Validate Boids and publish its browser and graph visuals.
@@ -177,18 +177,11 @@ showcase-boids-assets: ## Validate Boids and publish its browser and graph visua
 		--mp4 $(BOIDS_DOC_ASSETS)/simulation.mp4
 	uv run --locked --python 3.12 rlmflow render svg \
 		$(BOIDS_RUN)/graph $(BOIDS_DOC_ASSETS)/graph.svg
-	uv run --locked --python 3.12 --extra image python examples/coding/boids/render_parallel.py \
-		--run-dir $(BOIDS_RUN)/graph \
-		--out $(BOIDS_DOC_ASSETS)/graph.gif
+	uv run --locked --python 3.12 --extra image rlmflow render gif \
+		$(BOIDS_RUN)/graph $(BOIDS_DOC_ASSETS)/graph.gif
 
 build-docker-image:
 	docker build -t rlmflow:local .
-
-# ── Eval harness ─────────────────────────────────────────────────────
-# Public suites and recipes live in benchmarks/Makefile. `make eval-long-context`
-# from the repo root forwards there. See docs/benchmarks.md.
-eval-%:
-	$(MAKE) -C benchmarks $@
 
 # ── Animation (manim) ────────────────────────────────────────────────
 ANIMATION_SRC := docs/static/rlm_animation.py

@@ -112,7 +112,7 @@ def main():
     )
 
     g = Graph()
-    root = g.create_agent(
+    root = g.add_agent(
         "I'm looking for a magic number buried somewhere in the haystack in "
         "`haystack`. What is it? Chunk the string and search the "
         "pieces in parallel.",

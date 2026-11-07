@@ -18,7 +18,7 @@ from typing import Any
 from xml.sax.saxutils import escape
 
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import AGENT_START, Node
+from rlmflow.graph.nodes import Agent, Node
 from rlmflow.view.figure import BG, DIM, INK, graph_svg, node_color, run_title, step_svg
 from rlmflow.view.timeline import Step, as_graph, node_detail, steps, timeline
 
@@ -143,8 +143,9 @@ DOT_LIMIT = 120
 
 def _meta(step: Step) -> str:
     bits = [step.agent, f"+{step.elapsed:.2f}s"]
-    if step.node.started_at and step.node.finished_at:
-        bits.append(f"ran {(step.node.finished_at - step.node.started_at) * 1000:.0f}ms")
+    started, finished = (getattr(step.node, key, None) for key in ("started_at", "finished_at"))
+    if started and finished:
+        bits.append(f"ran {(finished - started) * 1000:.0f}ms")
     return escape(" · ".join(bits))
 
 
@@ -167,8 +168,8 @@ def render_html(g: Graph, *, title: str = "") -> str:
     figure = graph_svg(g, title=name, interactive=True)
     heading = title or f"{name} · {len(ordered)} nodes"
     tokens = g.usage()
-    agents = sum(1 for node in ordered if node.type == AGENT_START and g.launcher(node))
-    turns = sum(1 for node in ordered if node.type == "llm_output")
+    agents = sum(1 for node in ordered if isinstance(node, Agent) and g.parent(node))
+    turns = sum(1 for node in ordered if node.type == "llm")
     sub = (
         f"{agents} sub-agents · {turns} model turns · "
         f"{tokens.input_tokens + tokens.output_tokens:,} tokens"
@@ -266,7 +267,7 @@ def _panel(step: Step) -> str:
 
 def _transcript(g: Graph, nodes: list[Node], agent_path: str) -> str:
     """One agent's own nodes, in order, as of the step being shown."""
-    own = [node for node in nodes if g.path(g.node(node.agent_id)) == agent_path]
+    own = [node for node in nodes if g.path(g.agent(node.agent_id)) == agent_path]
     if not own:
         return f"_{escape(agent_path)} has not started yet._"
     blocks = [f"**{agent_path}** · {len(own)} nodes so far"]
@@ -293,7 +294,7 @@ def open_viewer(
     if not walked:
         raise ValueError("nothing to view: that graph has no nodes")
     ordered = [step.node for step in walked]
-    agents = [g.path(node) for node in ordered if node.type == AGENT_START]
+    agents = [g.path(node) for node in ordered if isinstance(node, Agent)]
     tokens = g.usage()
     name = run_title(g)
 
@@ -313,7 +314,7 @@ def open_viewer(
         gr.Markdown(
             f"### {name} · {last} steps\n"
             f"{len(agents) - 1} sub-agents · "
-            f"{sum(1 for n in ordered if n.type == 'llm_output')} model turns · "
+            f"{sum(1 for n in ordered if n.type == 'llm')} model turns · "
             f"{tokens.input_tokens + tokens.output_tokens:,} tokens — drag the slider to "
             "scrub the run; the ringed node is the step you are on."
         )

@@ -1,848 +1,742 @@
-"""The graph: nodes and edges in one ordered log, the writes that keep its history valid, and the queries over it."""
+"""The run as a graph: agents, the nodes in their histories, and the edges between them.
+
+Each ``Agent`` owns its history (``agent.nodes``) and an inbox of undelivered
+messages. A fork's history continues from ``agent.base``. Edges say how agents
+affect each other:
+
+- ``spawn``: the cell (or agent) that launched a child -> the child agent
+- ``return``: a child's ``done`` -> the cell that awaited it, or the message that delivered it
+- ``message``: the cell that sent a message -> the ``message`` node
+
+The graph is mutable. ``edit``, ``delete``, ``remove`` and ``replace`` change it
+and invalidate everything downstream along those edges, so the next run redoes
+only what the change affected.
+"""
 
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from copy import copy, deepcopy
-from dataclasses import dataclass, field, replace
+from collections import defaultdict
+from collections.abc import Callable, Iterable, Iterator
+from copy import deepcopy
+from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
 from typing import Any, TypeVar
-from uuid import uuid4
 
-from rlmflow.graph.config import (
-    DEFAULT_QUERY,
-    input_parts,
-    validate_agent_name,
-    validate_argument_name,
+from rlmflow.graph import calls, queries
+from rlmflow.graph.config import DEFAULT_QUERY, validate_agent_name, validate_argument_name
+from rlmflow.graph.nodes import (
+    CODE,
+    DONE,
+    IDLE,
+    IMAGES_KEY,
+    LLM,
+    MESSAGE,
+    PENDING,
+    RETURN,
+    SPAWN,
+    Agent,
+    Edge,
+    LLMUsage,
+    Node,
+    new_id,
+    strict_json,
 )
-from rlmflow.graph.nodes import AGENT_START, CODE, DONE, MESSAGE, WAITING, LLMUsage, Node
 
 T = TypeVar("T")
+_MISSING = object()
 
-#: History order. A branch in history is a fork.
-NEXT = "next"
-#: Message to sender. On an ``agent_start`` that is who launched the agent.
-FROM = "from"
-#: Consumer ``agent_start`` to producer ``agent_start``; ``data["as"]`` binds the result.
-DEPENDS_ON = "depends_on"
-STRUCTURAL = frozenset({NEXT, FROM, DEPENDS_ON})
-#: Application edge ``agent -> recipient``: the agent's results go to the recipient.
-#: Launching implies it; ``connect_agent`` adds it for peers.
-REPORTS_TO = "reports_to"
+#: What a cell's run wrote; an invalidated cell loses them until it runs again.
+CELL_RESULTS = ("output", "error", "dead", IMAGES_KEY, "workspace")
 
 
-def new_edge_id() -> str:
-    return f"edge_{uuid4().hex}"
+class GraphError(Exception):
+    """A write that would leave the graph inconsistent."""
 
 
-def new_graph_id() -> str:
-    return f"graph_{uuid4().hex}"
+@dataclass
+class Invalidation:
+    """What an edit changed: agents rewound or removed, nodes dropped, cells marked to re-run."""
 
+    rewound: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
+    dropped: list[str] = field(default_factory=list)
+    rerun: list[str] = field(default_factory=list)
 
-@dataclass(frozen=True, kw_only=True)
-class Edge:
-    """One directed relation between two nodes.
+    def __bool__(self) -> bool:
+        return bool(self.rewound or self.removed or self.dropped or self.rerun)
 
-    ``next``, ``from``, and ``depends_on`` are structural. Any other ``kind`` is
-    application data that the graph stores but does not interpret.
-    """
+    def _add(self, kind: str, item: str) -> None:
+        items = getattr(self, kind)
+        if item not in items:
+            items.append(item)
 
-    kind: str
-    source: str
-    target: str
-    data: Mapping[str, Any] = field(default_factory=dict)
-    id: str = field(default_factory=new_edge_id)
-    seq: int = -1
-    removed_seq: int | None = None
-
-    @property
-    def active(self) -> bool:
-        return self.removed_seq is None
-
-    @property
-    def structural(self) -> bool:
-        return self.kind in STRUCTURAL
-
-
-Item = Node | Edge
-
-
-class InvariantError(ValueError):
-    """A write would break one of the graph's structural invariants."""
-
-
-class StaleFrontier(InvariantError):
-    """A write was based on a frontier that has since moved."""
-
-
-#: Frontiers where a queued message may enter history without cutting a turn.
-DELIVERABLE = frozenset({AGENT_START, MESSAGE, CODE, WAITING, DONE})
+    def as_dict(self) -> dict[str, list[str]]:
+        return {
+            "rewound": list(self.rewound),
+            "removed": list(self.removed),
+            "dropped": list(self.dropped),
+            "rerun": list(self.rerun),
+        }
 
 
 def locked(write: Callable[..., T]) -> Callable[..., T]:
-    """Check and write under the graph's lock, so no other write lands between."""
-
     @wraps(write)
-    def write_under_lock(g: Graph, *args: Any, **kwargs: Any) -> T:
+    def under_lock(g: Graph, *args: Any, **kwargs: Any) -> T:
         with g._lock:
             return write(g, *args, **kwargs)
 
-    return write_under_lock
-
-
-def agent_node(
-    task: str,
-    args: Mapping[str, Any] | None,
-    *,
-    config: str | None,
-    name: str,
-) -> Node:
-    """An unlanded ``agent_start`` naming the Flow config it runs with (``None``: a root)."""
-    if config is not None:
-        validate_agent_name(config)
-    if not isinstance(task, str):
-        raise TypeError("agent task must be a string")
-    validate_agent_name(name)
-    values = dict(args or {})
-    for arg in values:
-        validate_argument_name(arg)
-    data: dict[str, Any] = {"task": task or DEFAULT_QUERY, "name": name, "args": values}
-    if config is not None:
-        data["config"] = config
-    return Node(AGENT_START, **data)
+    return under_lock
 
 
 class Graph:
-    """Every durable fact of a run, as nodes and edges in one ordered log.
-
-    History (``next``, ``from``, ``depends_on``) is written only by ``spawn``,
-    ``append``, ``send``, ``deliver``, ``fork`` and ``attach``, which check their
-    own preconditions. The queries below them read agents' history, status and
-    results. Application edges are written with ``add_edge`` and ``remove_edge``;
-    ``merge`` copies in another graph. Nothing is ever deleted: removing an edge
-    logs its updated record. Agents name their config; a ``Flow`` decides what
-    each name means.
-    """
+    """Agents, their nodes, and the edges between them."""
 
     def __init__(self, id: str | None = None) -> None:
-        self.id = id or new_graph_id()
+        self.id = id or new_id("graph")
+        self._agents: dict[str, Agent] = {}
         self._nodes: dict[str, Node] = {}
         self._edges: dict[str, Edge] = {}
-        self._out: dict[str, list[str]] = {}
-        self._in: dict[str, list[str]] = {}
-        self._log: list[Item] = []
+        self._out: defaultdict[str, list[str]] = defaultdict(list)
+        self._in: defaultdict[str, list[str]] = defaultdict(list)
+        self._parent: dict[str, str] = {}
+        self._children: defaultdict[str, list[str]] = defaultdict(list)
+        #: Fork agent ids by the node their history continues from.
+        self._forks: defaultdict[str, list[str]] = defaultdict(list)
+        self._seq = 0
         self._lock = threading.RLock()
-        # Private indexes: each agent's last own node, and undelivered messages.
-        self._tail: dict[str, str] = {}
-        self._inbox: dict[str, list[str]] = {}
-        self._by_agent: dict[str, list[str]] = {}
-        self._by_type: dict[str, list[str]] = {}
+        self._subscribers: list[Callable[[str, Any], None]] = []
+        #: Every edit, with what it invalidated.
+        self.edits: list[dict[str, Any]] = []
+        #: Bumped on every write; a checkpointer saves when it changes.
+        self.revision = 0
+        #: Agents with a step in flight; a Flow keeps this, and edits refuse them.
+        self.busy: set[str] = set()
 
     def __repr__(self) -> str:
-        return f"Graph({self.id!r}, nodes={len(self._nodes)}, edges={len(self._edges)})"
+        return f"Graph({self.id!r}, agents={len(self._agents)}, nodes={len(self._nodes)})"
 
-    # -- history writes ---------------------------------------------------
+    def __len__(self) -> int:
+        return len(self._nodes)
 
-    @locked
-    def append(self, agent: Node, node: Node, *, after: Node | None = None) -> Node:
-        """Land ``node`` as the agent's next node.
-
-        ``after`` is a compare-and-set guard: the write raises ``StaleFrontier``
-        unless ``after`` is still the agent's frontier.
-        """
-        self._require_agent(agent)
-        if node.type in (AGENT_START, MESSAGE):
-            raise InvariantError(f"a {node.type} node is added by spawn, fork or send, not append")
-        if node.id in self._nodes:
-            raise InvariantError(f"duplicate node id {node.id!r}")
-        source = self._last(agent.id)
-        if after is not None and after is not source:
-            if not (source is agent and self.prev(agent) is after):
-                raise StaleFrontier(
-                    f"{after.type} {after.id!r} is not the frontier of {agent.id!r}"
-                )
-            source = agent  # an empty fork extends from its own agent_start
-        node.agent_id = agent.id
-        self._append_unchecked(node, Edge(kind=NEXT, source=source.id, target=node.id))
-        return node
-
-    @locked
-    def spawn(
-        self,
-        task: str = "",
-        *,
-        by: Node | None = None,
-        name: str | None = None,
-        config: str | None = None,
-        depends_on: Iterable[Node] = (),
-        inputs: Mapping[str, Any] | None = None,
-        **args: Any,
-    ) -> Node:
-        """Add an agent; ``by`` is the node that created it, ``None`` for top-level.
-
-        ``config`` names one of the Flow's configs (``"default"`` when ``by`` is
-        given); ``None`` without ``by`` makes a root, which runs with the run's
-        ``root_config``. ``inputs`` binds producer results to names; a value may
-        be an agent or ``Input(agent, description=...)``.
-        """
-        self._require(by)
-        if by is not None and config is None:
-            config = "default"
-        start = agent_node(task, args, config=config, name=name or self._default_name(config, by))
-        items: list[Node | Edge] = [start]
-        if by is not None:
-            items.append(Edge(kind=FROM, source=start.id, target=by.id))
-        for producer in depends_on:
-            self._require_agent(producer)
-            items.append(Edge(kind=DEPENDS_ON, source=start.id, target=producer.id))
-        for input_name, value in (inputs or {}).items():
-            wrapped = input_parts(value)
-            producer, description = wrapped if wrapped is not None else (value, None)
-            self._require_agent(producer)
-            data = {"as": input_name, **({"description": description} if description else {})}
-            items.append(Edge(kind=DEPENDS_ON, source=start.id, target=producer.id, data=data))
-        self._append_unchecked(*items)
-        return start
-
-    @locked
-    def send(
-        self,
-        agent: Node,
-        text: str,
-        *,
-        sender: Node | Sequence[Node] | str | None = None,
-        **data: Any,
-    ) -> Node:
-        """Queue a durable ``message`` in the agent's inbox without touching its history.
-
-        ``sender`` is the node(s) it comes from (each gets a ``from`` edge), or a
-        label such as ``"user"`` or ``"rlmflow"``.
-        """
-        self._require_agent(agent)
-        if not isinstance(text, str):
-            raise TypeError("message text must be a string")
-        if isinstance(sender, str) or sender is None:
-            senders: list[Node] = []
-            label = sender or "user"
-        else:
-            senders = [sender] if isinstance(sender, Node) else list(sender)
-            self._require(*senders)
-            owners = sorted({node.agent_id for node in senders})
-            label = owners[0] if len(owners) == 1 else ",".join(owners)
-        message = Node(MESSAGE, text=text, sender=label, **data)
-        message.agent_id = agent.id
-        self._append_unchecked(
-            message, *(Edge(kind=FROM, source=message.id, target=item.id) for item in senders)
+    def __contains__(self, item: object) -> bool:
+        key = getattr(item, "id", item)
+        return isinstance(key, str) and (
+            key in self._agents or key in self._nodes or key in self._edges
         )
-        return message
 
-    @locked
-    def deliver(self, agent: Node) -> list[Node]:
-        """Move queued messages into history, in ``seq`` order, at a turn boundary.
+    def __iter__(self) -> Iterator[Agent]:
+        return iter(self.agents())
 
-        A fork that owns nothing yet takes messages at any base node.
-        """
-        queued = self.inbox(agent)
-        source = self._last(agent.id)
-        if not queued or not (source is agent or self.frontier(agent).type in DELIVERABLE):
-            return []
-        edges = []
-        for message in queued:
-            edges.append(Edge(kind=NEXT, source=source.id, target=message.id))
-            source = message
-        self._append_unchecked(*edges)
-        return queued
+    # -- reads ----------------------------------------------------------------
 
-    @locked
-    def fork(
-        self,
-        at: Node,
-        *,
-        name: str | None = None,
-        by: Node | None = None,
-        config: str | None = None,
-    ) -> Node:
-        """Branch a new agent whose history is everything up to ``at``.
-
-        Nothing is copied: the fork shares the prefix through one ``next`` edge.
-        It runs with the owner's config name unless ``config`` names another; a
-        fork of a root is a root.
-        """
-        self._require(at, by)
-        if at.type != AGENT_START and not self.edges(kind=NEXT, target=at.id):
-            raise InvariantError(f"cannot fork at undelivered {at.type} {at.id!r}")
-        owner = self.node(at.agent_id)
-        if name is None:
-            forks = sum(1 for agent in self.agents() if self.prev(agent) is not None)
-            name = f"{owner.name}-fork{forks}"
-        start = agent_node(
-            owner.task,
-            deepcopy(owner.args),
-            config=config if config is not None else owner.config_name,
-            name=name,
-        )
-        items: list[Node | Edge] = [start, Edge(kind=NEXT, source=at.id, target=start.id)]
-        if by is not None:
-            items.append(Edge(kind=FROM, source=start.id, target=by.id))
-        self._append_unchecked(*items)
-        return start
-
-    @locked
-    def attach(self, parent: Node, *agents: Node) -> Node:
-        """Make ``agents`` children of ``parent`` and tell it with a ``message``.
-
-        Attached agents may be finished or still running. Each must not already
-        have a launcher.
-        """
-        if not agents:
-            raise ValueError("attach needs at least one agent")
-        self._require_agent(parent)
-        ancestors = {agent.id for agent in self.lineage(parent)}
-        for agent in agents:
-            self._require_agent(agent)
-            if agent.id in ancestors:
-                raise InvariantError(f"agent {agent.id!r} cannot launch itself")
-            if self.edges(kind=FROM, source=agent.id):
-                raise ValueError(f"agent {agent.id!r} already has a launcher")
-        listing = "\n".join(f"- {agent.name} ({agent.id}): {agent.task[:200]}" for agent in agents)
-        message = self.send(parent, f"These agents now report to you:\n{listing}", sender="rlmflow")
-        self._append_unchecked(
-            *(Edge(kind=FROM, source=agent.id, target=message.id) for agent in agents)
-        )
-        return message
-
-    # -- other writes -----------------------------------------------------
-
-    def add_edge(self, edge: Edge) -> Edge:
-        """Record one application edge between two nodes already in the graph."""
-        with self._lock:
-            if edge.structural:
-                raise InvariantError(
-                    f"{edge.kind!r} edges are written by the graph's history writes, not add_edge"
-                )
-            if not edge.active:
-                raise InvariantError(f"edge {edge.id!r} is removed; add its active record")
-            for endpoint in (edge.source, edge.target):
-                if endpoint not in self._nodes:
-                    raise InvariantError(f"edge endpoint {endpoint!r} is not in the graph")
-            (added,) = self._append_unchecked(edge)
-            return added
-
-    def remove_edge(self, edge: Edge | str) -> Edge:
-        """Deactivate one application edge and return its updated record."""
-        edge_id = edge if isinstance(edge, str) else edge.id
-        with self._lock:
-            current = self._edges.get(edge_id)
-            if current is None:
-                raise KeyError(f"unknown edge {edge_id!r}")
-            if current.structural:
-                raise InvariantError(f"structural {current.kind!r} edges cannot be removed")
-            if not current.active:
-                raise InvariantError(f"edge {edge_id!r} is already removed")
-            (removed,) = self._append_unchecked(current, removing=True)
-            return removed
-
-    def merge(self, other: Graph) -> None:
-        """Append ``other``'s log to this graph, in order.
-
-        The node objects move: they belong to this graph afterwards and take its
-        ``seq`` numbers. Ids must not collide; ``other`` is already valid, so
-        nothing else is checked.
-        """
-        with self._lock:
-            shared = [i for i in (*other._nodes, *other._edges) if i in self]
-            if shared:
-                raise InvariantError(f"graphs share ids: {', '.join(map(repr, shared[:3]))}")
-            for item in other.items():
-                removing = isinstance(item, Edge) and not item.active
-                self._append_unchecked(
-                    self._edges[item.id] if removing else item, removing=removing
-                )
-
-    def as_of(self, seq: int) -> Graph:
-        """A copy of the graph as it stood once log item ``seq`` was written."""
-        past = Graph(self.id)
-        with self._lock:
-            for item in self._log[: seq + 1]:
-                if isinstance(item, Node):
-                    past._append_unchecked(copy(item))
-                elif item.active:
-                    past._append_unchecked(item)
-                else:
-                    past._append_unchecked(past._edges[item.id], removing=True)
-        return past
-
-    # -- lookups ----------------------------------------------------------
-
-    def node(self, id: str) -> Node:
+    def agent(self, agent_id: str | Agent) -> Agent:
+        key = agent_id.id if isinstance(agent_id, Agent) else agent_id
         try:
-            return self._nodes[id]
+            return self._agents[key]
         except KeyError:
-            raise KeyError(f"unknown node {id!r}") from None
+            raise KeyError(f"no agent {key!r} in this graph") from None
 
-    def nodes(self, type: str | None = None, *, agent: str | Node | None = None) -> list[Node]:
-        """Nodes of ``type`` (all types when ``None``) in ``seq`` order, optionally one agent's."""
-        agent_id = agent.id if isinstance(agent, Node) else agent
-        if agent_id is not None:
-            owned = (self._nodes[node_id] for node_id in self._by_agent.get(agent_id, ()))
-            return [node for node in owned if type is None or node.type == type]
-        if type is not None:
-            return [self._nodes[node_id] for node_id in self._by_type.get(type, ())]
-        return [item for item in self._log if isinstance(item, Node)]
+    def node(self, node_id: str) -> Node:
+        try:
+            return self._nodes[node_id]
+        except KeyError:
+            raise KeyError(f"no node {node_id!r} in this graph") from None
 
-    def agents(self) -> list[Node]:
-        """Every ``agent_start`` node, in ``seq`` order."""
-        return self.nodes(AGENT_START)
+    def owner(self, node: Node) -> Agent:
+        """The agent whose history or inbox holds ``node``."""
+        return self._agents[node.agent_id]
+
+    def agents(self) -> list[Agent]:
+        """Every agent, in creation order."""
+        return list(self._agents.values())
+
+    def roots(self) -> list[Agent]:
+        """Agents nobody launched, in creation order."""
+        return [agent for agent in self._agents.values() if agent.id not in self._parent]
+
+    def nodes(self, type: str | None = None, *, agent: Agent | str | None = None) -> list[Node]:
+        """Nodes in creation order: everywhere, or one agent's own history then its inbox."""
+        if agent is not None:
+            owner = self.agent(agent)
+            found = [*owner.nodes, *owner.inbox]
+        else:
+            found = sorted(self._nodes.values(), key=lambda node: node.seq)
+        return [node for node in found if type is None or node.type == type]
 
     def edges(
         self,
         *,
         kind: str | None = None,
-        source: str | Node | None = None,
-        target: str | Node | None = None,
-        active: bool | None = True,
+        source: str | None = None,
+        target: str | None = None,
+        touching: str | None = None,
     ) -> list[Edge]:
-        """Edges matching every given filter, in ``seq`` order."""
-        source_id = source.id if isinstance(source, Node) else source
-        target_id = target.id if isinstance(target, Node) else target
-        if source_id is not None:
-            ids: Iterable[str] = self._out.get(source_id, ())
-        elif target_id is not None:
-            ids = self._in.get(target_id, ())
+        """Edges in creation order, filtered by kind and endpoint ids."""
+        if touching is not None:
+            ids = [*self._out.get(touching, ()), *self._in.get(touching, ())]
+        elif source is not None:
+            ids = list(self._out.get(source, ()))
+        elif target is not None:
+            ids = list(self._in.get(target, ()))
         else:
-            ids = self._edges
-        found = []
-        for edge_id in ids:
-            edge = self._edges[edge_id]
-            if kind is not None and edge.kind != kind:
-                continue
-            if target_id is not None and edge.target != target_id:
-                continue
-            if active is not None and edge.active is not active:
-                continue
-            found.append(edge)
-        return found
+            ids = list(self._edges)
+        found = [self._edges[edge_id] for edge_id in dict.fromkeys(ids)]
+        return sorted(
+            (
+                edge
+                for edge in found
+                if (kind is None or edge.kind == kind)
+                and (source is None or edge.source == source)
+                and (target is None or edge.target == target)
+            ),
+            key=lambda edge: edge.seq,
+        )
 
-    def items(self, after: int = -1) -> list[Item]:
-        """The log after ``seq``: the graph's one change stream."""
-        with self._lock:
-            return self._log[after + 1 :]
+    def history(self, item: Agent | Node) -> list[Node]:
+        """What an agent has seen: a fork's base history, then its own nodes (up to ``item`` for a node)."""
+        if isinstance(item, Agent):
+            prefix = self.history(item.base) if item.base is not None else []
+            return [*prefix, *item.nodes]
+        owner = self.owner(item)
+        if item in owner.inbox:
+            return [*self.history(owner), item]
+        prefix = self.history(owner.base) if owner.base is not None else []
+        return [*prefix, *owner.nodes[: owner.nodes.index(item) + 1]]
 
-    # -- agent queries ----------------------------------------------------
+    def status(self, agent: Agent) -> str:
+        """``"done"``, ``"idle"`` (a session waiting for messages), or ``"running"``.
 
-    def prev(self, node: Node) -> Node | None:
-        """The node before ``node`` in history, or ``None`` at a run's first node."""
-        edges = self.edges(kind=NEXT, target=node.id)
-        return self.node(edges[0].source) if edges else None
-
-    def history(self, at: Node) -> list[Node]:
-        """Nodes leading to ``at``; for an agent, its whole history to the frontier.
-
-        A fork's walk continues through its base agent's prefix.
+        Read from the last node: ``done`` and ``idle`` stand until a message
+        arrives; anything else, or a cell still to run, is ``running``.
         """
-        node: Node | None = self._last(at.id) if at.type == AGENT_START else at
-        nodes: list[Node] = []
-        while node is not None:
-            nodes.append(node)
-            node = self.prev(node)
-        nodes.reverse()
-        return nodes
-
-    def own_history(self, agent: Node) -> list[Node]:
-        """The agent's history from its own ``agent_start``, without a fork's base prefix."""
-        nodes = self.history(agent)
-        return nodes[next(i for i, node in enumerate(nodes) if node is agent) :]
-
-    def frontier(self, agent: Node) -> Node:
-        """The agent's latest node. An empty fork stands at its base node."""
-        last = self._last(agent.id)
-        if last is agent:
-            return self.prev(agent) or agent
-        return last
-
-    def terminal(self, agent: Node) -> bool:
-        """Finished, with no queued message that would reopen it."""
-        return self.frontier(agent).type == DONE and not self._inbox.get(agent.id)
-
-    def status(self, agent: Node) -> str:
-        """``"done"``, ``"waiting"`` or ``"running"``."""
-        if self.terminal(agent):
+        last = _last(agent)
+        if last is None or last.pending or agent.inbox:
+            return "running"
+        if last.type == DONE:
             return "done"
-        if self.frontier(agent).type == WAITING and not self._inbox.get(agent.id):
-            return "waiting"
+        if last.type == IDLE:
+            return "idle"
         return "running"
 
-    def result(self, agent: Node) -> Any:
+    def result(self, agent: Agent) -> Any:
         """The agent's result, or ``None`` until it is done."""
-        node = self.frontier(agent)
-        return node.data.get("result") if node.type == DONE else None
+        last = _last(agent)
+        return last.data.get("result") if last is not None and last.type == DONE else None
 
-    def inbox(self, agent: Node) -> list[Node]:
-        """Messages sent to ``agent`` that are not yet part of its history."""
-        return [self.node(node_id) for node_id in self._inbox.get(agent.id, ())]
+    def parent(self, agent: Agent) -> Agent | None:
+        """The agent that launched this one; ``None`` when top-level."""
+        parent_id = self._parent.get(agent.id)
+        return self._agents.get(parent_id) if parent_id else None
 
-    def producers(self, agent: Node) -> list[Node]:
-        """Agents this agent must wait for, through active ``depends_on`` edges."""
-        return [self.node(edge.target) for edge in self.edges(kind=DEPENDS_ON, source=agent.id)]
+    def children(self, agent: Agent) -> list[Agent]:
+        """Agents this one launched, in creation order."""
+        return [self._agents[i] for i in self._children.get(agent.id, ()) if i in self._agents]
 
-    def inputs(self, agent: Node) -> dict[str, Any]:
-        """Producer results bound to names by ``depends_on`` edges with ``as``."""
-        return {
-            edge.data["as"]: self.result(self.node(edge.target))
-            for edge in self.edges(kind=DEPENDS_ON, source=agent.id)
-            if edge.data.get("as")
-        }
+    def subtree(self, agent: Agent) -> list[Agent]:
+        return queries.subtree(self, agent)
 
-    def ready(self) -> list[Node]:
-        """Agents with work to do: not done, not waiting with an empty inbox, producers done."""
-        return [
-            agent
-            for agent in self.agents()
-            if self.status(agent) == "running"
-            and all(self.terminal(producer) for producer in self.producers(agent))
-        ]
+    def lineage(self, agent: Agent) -> list[Agent]:
+        return queries.lineage(self, agent)
 
-    def launcher(self, agent: Node) -> Node | None:
-        """The agent that owns this agent's ``from`` target; ``None`` when top-level."""
-        edges = self.edges(kind=FROM, source=agent.id)
-        if not edges:
-            return None
-        return self.node(self.node(edges[0].target).agent_id)
+    def path(self, agent: Agent) -> str:
+        return queries.path(self, agent)
 
-    def children(self, agent: Node) -> list[Node]:
-        """Agents created by ``agent``, in ``seq`` order."""
-        launched = [
-            self.node(edge.source)
-            for node in self.nodes(agent=agent.id)
-            for edge in self.edges(kind=FROM, target=node.id)
-            if self.node(edge.source).type == AGENT_START
-        ]
-        return sorted(launched, key=lambda child: child.seq)
+    def usage(self, agents: Iterable[Agent] | None = None) -> LLMUsage:
+        return queries.usage(self, agents)
 
-    def launched(self, agent: Node) -> list[Node]:
-        """Agents created anywhere in ``agent``'s history, a fork's shared prefix included.
+    # -- writes ---------------------------------------------------------------
 
-        A launch hangs off the node before the cell that made it. Where a fork's
-        history leaves a base agent right after that node, the cell isn't in it, and
-        neither are that cell's launches; a cell the fork reran records them again.
+    def subscribe(self, fn: Callable[[str, Any], None]) -> Callable[[], None]:
+        """Call ``fn(kind, item)`` after each write; returns the unsubscribe function.
+
+        ``kind`` is ``"agent"``, ``"node"`` (also when a cell finishes),
+        ``"edge"``, ``"deliver"`` or ``"edit"``.
         """
-        nodes = self.history(agent)
-        found: dict[str, Node] = {}
-        for i, node in enumerate(nodes):
-            following = nodes[i + 1] if i + 1 < len(nodes) else None
-            skipped = (
-                self._skipped_launches(node)
-                if following is not None and following.agent_id != node.agent_id
-                else ()
-            )
-            for edge in self.edges(kind=FROM, target=node.id):
-                child = self.node(edge.source)
-                if child.type == AGENT_START and child.id not in skipped:
-                    found[child.id] = child
-            if node.type == CODE:
-                for child_id in node.launched():
-                    if child_id in self:
-                        found[child_id] = self.node(child_id)
-        return sorted(found.values(), key=lambda child: child.seq)
+        self._subscribers.append(fn)
+        return lambda: self._subscribers.remove(fn) if fn in self._subscribers else None
 
-    def _skipped_launches(self, node: Node) -> list[str]:
-        """What the cell right after ``node`` in its own agent's history launched."""
-        for edge in self.edges(kind=NEXT, source=node.id):
-            after = self.node(edge.target)
-            if after.agent_id == node.agent_id and after.type == CODE:
-                return after.launched()
-        return []
+    def _emit(self, kind: str, item: Any) -> None:
+        self.revision += 1
+        for fn in list(self._subscribers):
+            fn(kind, item)
 
-    def lineage(self, agent: Node) -> list[Node]:
-        """The launcher chain from the top-level agent down to ``agent``."""
-        chain: list[Node] = []
-        current: Node | None = agent
-        while current is not None:
-            chain.append(current)
-            current = self.launcher(current)
-        chain.reverse()
-        return chain
+    def _stamp(self, item: Agent | Node | Edge) -> None:
+        item.seq = self._seq
+        self._seq += 1
 
-    def path(self, agent: Node) -> str:
-        return ".".join(item.name for item in self.lineage(agent))
-
-    def depth(self, agent: Node) -> int:
-        return len(self.lineage(agent)) - 1
-
-    def tree(self, agent: Node) -> list[Node]:
-        """``agent`` and every agent it created, transitively, depth first."""
-        found: list[Node] = []
-        stack = [agent]
-        while stack:
-            current = stack.pop()
-            found.append(current)
-            stack.extend(reversed(self.children(current)))
-        return found
-
-    def usage(self, agents: list[Node] | None = None) -> LLMUsage:
-        """Model usage spent by ``agents``, or anywhere in the graph.
-
-        Our harness records it on ``llm_output`` nodes; external harnesses on the
-        ``waiting`` or ``done`` node that ends each session turn.
-        """
-        nodes = (
-            self.nodes() if agents is None else [n for a in agents for n in self.nodes(agent=a.id)]
-        )
-        return sum(
-            (LLMUsage.of(node.data["usage"]) for node in nodes if node.data.get("usage")),
-            LLMUsage(),
-        )
-
-    def cost_usd(self, agents: list[Node] | None = None) -> float:
-        """Dollar cost reported by external harnesses on their turn-ending nodes."""
-        nodes = (
-            self.nodes() if agents is None else [n for a in agents for n in self.nodes(agent=a.id)]
-        )
-        return sum(float(node.data.get("cost_usd") or 0) for node in nodes)
-
-    def __contains__(self, item: object) -> bool:
-        if isinstance(item, Node):
-            return self._nodes.get(item.id) is item
-        if isinstance(item, Edge):
-            return item.id in self._edges
-        if isinstance(item, str):
-            return item in self._nodes or item in self._edges
-        return False
-
-    def __len__(self) -> int:
-        return len(self._log)
-
-    def create_agent(
+    @locked
+    def add_agent(
         self,
         task: str = "",
         *,
         name: str | None = None,
-        depends_on: Iterable[Node] = (),
-        inputs: Mapping[str, Any] | None = None,
+        config: str | None = None,
+        parent: Node | Agent | None = None,
+        base: Node | None = None,
         **args: Any,
-    ) -> Node:
-        """Add a root agent; keyword arguments become its REPL variables.
+    ) -> Agent:
+        """Add an agent; keyword arguments become its REPL variables. Nothing runs here.
 
-        Nothing runs here: a ``Flow`` steps the agent with the run's ``root_config``.
+        ``parent`` is the cell (or agent) that launched it, which gets a ``spawn``
+        edge; without one it is top-level. ``config`` names one of the Flow's
+        configs: ``"default"`` for a child, while a top-level agent with none runs
+        with the run's ``root_config``. ``base`` makes it a fork whose history
+        continues from that node.
         """
-        return self.spawn(
-            task,
+        launcher = None
+        if parent is not None:
+            launcher = parent if isinstance(parent, Agent) else self._agents.get(parent.agent_id)
+            if launcher is None or parent.id not in self:
+                raise GraphError(f"{parent!r} is not in this graph")
+            config = config or "default"
+        if base is not None and base not in [*self.owner(base).nodes]:
+            raise GraphError(f"cannot fork at {base.type} {base.id!r}: it is not in a history")
+        if config is not None:
+            validate_agent_name(config)
+        if not isinstance(task, str):
+            raise TypeError("agent task must be a string")
+        for arg in args:
+            validate_argument_name(arg)
+        name = name or self._default_name(config, launcher)
+        validate_agent_name(name)
+        agent = Agent(task or DEFAULT_QUERY, name=name, args=args, config=config)
+        agent.base = base
+        self._stamp(agent)
+        self._agents[agent.id] = agent
+        if base is not None:
+            self._forks[base.id].append(agent.id)
+        self._emit("agent", agent)
+        if parent is not None:
+            self._link(SPAWN, parent.id, agent.id)
+        return agent
+
+    def fork(
+        self,
+        at: Node | Agent,
+        *,
+        name: str | None = None,
+        parent: Node | Agent | None = None,
+        config: str | None = None,
+    ) -> Agent:
+        """A new agent with the same task and arguments whose history is everything up to ``at``.
+
+        Nothing is copied. Forking an agent rather than a node starts it over.
+        It runs with the owner's config unless ``config`` names another.
+        """
+        owner = at if isinstance(at, Agent) else self.owner(at)
+        if name is None:
+            taken = {agent.name for agent in self._agents.values()}
+            index = 0
+            while f"{owner.name}-fork{index}" in taken:
+                index += 1
+            name = f"{owner.name}-fork{index}"
+        return self.add_agent(
+            owner.task,
             name=name,
-            depends_on=depends_on,
-            inputs=inputs,
-            **args,
+            config=config if config is not None else owner.config_name,
+            parent=parent,
+            base=at if isinstance(at, Node) else None,
+            **deepcopy(owner.args),
         )
 
-    # -- persistence ------------------------------------------------------
+    @locked
+    def append(self, agent: Agent, node: Node) -> Node:
+        """Add ``node`` to the end of ``agent``'s history."""
+        self.agent(agent)
+        if node.id in self._nodes:
+            raise GraphError(f"node {node.id!r} is already in the graph")
+        node.agent_id = agent.id
+        self._stamp(node)
+        agent.nodes.append(node)
+        self._nodes[node.id] = node
+        self._emit("node", node)
+        return node
 
-    def save(self, path: str | Path) -> Path:
-        """Write the log and its argument blobs as a run directory."""
-        from rlmflow.graph import persistence
+    @locked
+    def update(self, node: Node, **data: Any) -> Node:
+        """Change a node's data in place, as when its cell finishes; no edit, nothing invalidated."""
+        self.node(node.id)
+        node.data.update(data)
+        self._emit("node", node)
+        return node
 
-        return persistence.save_graph(self, path)
+    @locked
+    def send(
+        self,
+        agent: Agent,
+        text: str,
+        *,
+        sender: str | None = None,
+        by: Node | Agent | None = None,
+        **data: Any,
+    ) -> Node:
+        """Queue a ``message`` in the agent's inbox; it is delivered at the agent's next turn.
 
-    @classmethod
-    def load(cls, path: str | Path) -> Graph:
-        """Read a run directory and check the whole graph's invariants."""
-        from rlmflow.graph import persistence
+        ``by`` is the cell (or agent) it comes from, which gets a ``message`` edge;
+        ``sender`` is a label for host messages, such as ``"user"``.
+        """
+        self.agent(agent)
+        if not isinstance(text, str):
+            raise TypeError("message text must be a string")
+        origin = None
+        if by is not None:
+            origin = by if isinstance(by, Agent) else self._agents.get(by.agent_id)
+        label = sender or (origin.id if origin is not None else "user")
+        message = Node(MESSAGE, text=text, sender=label, **data)
+        message.agent_id = agent.id
+        self._stamp(message)
+        agent.inbox.append(message)
+        self._nodes[message.id] = message
+        self._emit("node", message)
+        if by is not None:
+            self._link(MESSAGE, by.id, message.id)
+        return message
 
-        return persistence.load_graph(path)
+    @locked
+    def deliver(self, agent: Agent) -> list[Node]:
+        """Move queued messages into the agent's history, unless it is mid-action."""
+        last = _last(agent)
+        if not agent.inbox or (last is not None and (last.type == LLM or last.pending)):
+            return []
+        delivered, agent.inbox = agent.inbox, []
+        agent.nodes.extend(delivered)
+        self._emit("deliver", agent)
+        return delivered
 
-    # -- private ------------------------------------------------------------
+    @locked
+    def add_edge(
+        self, kind: str | Edge, source: Any = None, target: Any = None, **data: Any
+    ) -> Edge:
+        """Add an application edge between two agents or nodes; the engine never reads it."""
+        edge = kind if isinstance(kind, Edge) else None
+        if edge is None:
+            edge = Edge(kind, getattr(source, "id", source), getattr(target, "id", target), data)
+        if edge.structural:
+            raise GraphError(f"{edge.kind!r} edges are written by the engine")
+        if edge.id in self._edges:
+            raise GraphError(f"edge {edge.id!r} is already in this graph")
+        for end in (edge.source, edge.target):
+            if end not in self._agents and end not in self._nodes:
+                raise GraphError(f"edge endpoint {end!r} is not in this graph")
+        edge.data = strict_json(edge.data, "edge data")
+        return self._add_edge(edge)
 
-    def _require(self, *nodes: Node | None) -> None:
-        for node in nodes:
-            if node is not None and node.id not in self._nodes:
-                raise InvariantError(f"{node.type} {node.id!r} is not in the graph")
+    @locked
+    def remove_edge(self, edge: Edge | str) -> None:
+        found = self._edges.get(getattr(edge, "id", edge))
+        if found is None:
+            raise KeyError(f"no edge {edge!r}")
+        if found.structural:
+            raise GraphError(f"{found.kind!r} edges are written by the engine")
+        self._unlink(found)
+        self._emit("edge", found)
 
-    def _require_agent(self, agent: Node) -> None:
-        self._require(agent)
-        if agent.type != AGENT_START:
-            raise InvariantError(f"expected an agent_start, not {agent.type} {agent.id!r}")
+    @locked
+    def link_return(self, done: Node, consumer: Node, **data: Any) -> Edge:
+        """The ``return`` edge from a ``done`` to the cell or message its result reached."""
+        for edge in self.edges(kind=RETURN, source=done.id, target=consumer.id):
+            return edge
+        return self._link(RETURN, done.id, consumer.id, **data)
 
-    def _default_name(self, config: str | None, by: Node | None) -> str:
+    def _link(self, kind: str, source: str, target: str, **data: Any) -> Edge:
+        return self._add_edge(Edge(kind, source, target, data))
+
+    def _add_edge(self, edge: Edge) -> Edge:
+        self._stamp(edge)
+        self._index(edge)
+        self._emit("edge", edge)
+        return edge
+
+    def _index(self, edge: Edge) -> None:
+        self._edges[edge.id] = edge
+        self._out[edge.source].append(edge.id)
+        self._in[edge.target].append(edge.id)
+        if edge.kind == SPAWN:
+            source = (
+                self._agents.get(edge.source) or self._agents[self._nodes[edge.source].agent_id]
+            )
+            self._parent[edge.target] = source.id
+            self._children[source.id].append(edge.target)
+
+    def _unlink(self, edge: Edge) -> None:
+        if self._edges.pop(edge.id, None) is None:
+            return
+        self._out[edge.source].remove(edge.id)
+        self._in[edge.target].remove(edge.id)
+        if edge.kind == SPAWN and (parent := self._parent.pop(edge.target, None)):
+            self._children[parent].remove(edge.target)
+
+    def _default_name(self, config: str | None, parent: Agent | None) -> str:
         """The config name (``root`` for a root) for the first top-level agent of a kind, else ``<name>-<n>``."""
         base = config or "root"
-        launcher = None if by is None else self.node(by.agent_id)
-        peers = (
-            self.children(launcher)
-            if launcher is not None
-            else [a for a in self.agents() if self.launcher(a) is None]
-        )
+        peers = self.children(parent) if parent is not None else self.roots()
         used = {peer.name for peer in peers}
-        if launcher is None and base not in used:
+        if parent is None and base not in used:
             return base
         index = 0
         while f"{base}-{index}" in used:
             index += 1
         return f"{base}-{index}"
 
-    def _last(self, agent_id: str) -> Node:
-        """The agent's last own node: its ``agent_start`` until it appends."""
-        return self._nodes[self._tail[agent_id]]
+    # -- edits ------------------------------------------------------------------
 
-    def _append_unchecked(self, *items: Item, removing: bool = False) -> list[Item]:
-        """Index and log ``items`` in order, checking only that ids are new.
+    def edit(self, node: Node, *, dry_run: bool = False, **data: Any) -> Invalidation:
+        """Change a node's data. Its agent is rewound to it, and whatever used its old content redoes."""
+        return self._apply("edit", node, data, dry_run, lambda g, n: g._edit(n, data))
 
-        Structural rules are the caller's job: the history writes check them,
-        and ``Graph.load`` runs ``check_invariants`` over the whole result.
-        With ``removing``, each item is an edge already in the graph.
+    def delete(self, node: Node, *, dry_run: bool = False) -> Invalidation:
+        """Remove a node and everything after it from its agent's history."""
+        return self._apply("delete", node, {}, dry_run, lambda g, n: g._delete(n))
+
+    def remove(self, agent: Agent, *, dry_run: bool = False) -> Invalidation:
+        """Remove an agent, its subtree, and what they caused."""
+        return self._apply(
+            "remove", agent, {}, dry_run, lambda g, a: g._remove_agent(a, Invalidation())
+        )
+
+    def replace(
+        self,
+        cell: Node,
+        index: int,
+        value: Any = _MISSING,
+        *,
+        agent: Agent | None = None,
+        dry_run: bool = False,
+    ) -> Invalidation:
+        """Bind the cell's ``index``-th saved call to ``value`` or another ``agent``; the cell re-runs.
+
+        A launch takes another agent (the old child is removed). An ``await``
+        takes a value or the agent to await instead. A tool call takes a value.
         """
-        logged: list[Item] = []
-        for item in items:
-            seq = len(self._log)
-            if removing:
-                item = replace(self._edges[item.id], removed_seq=seq)
-                self._edges[item.id] = item
-            elif isinstance(item, Node):
-                if item.id in self._nodes:
-                    raise InvariantError(f"duplicate node id {item.id!r}")
-                item.seq = seq
-                if item.type == AGENT_START:
-                    item.agent_id = item.agent_id or item.id
-                    self._tail[item.id] = item.id
-                elif item.type == MESSAGE:
-                    self._inbox.setdefault(item.agent_id, []).append(item.id)
-                self._nodes[item.id] = item
-                self._out.setdefault(item.id, [])
-                self._in.setdefault(item.id, [])
-                self._by_agent.setdefault(item.agent_id, []).append(item.id)
-                self._by_type.setdefault(item.type, []).append(item.id)
-            else:
-                if item.id in self._edges:
-                    raise InvariantError(f"duplicate edge id {item.id!r}")
-                item = replace(item, seq=seq)
-                self._edges[item.id] = item
-                self._out.setdefault(item.source, []).append(item.id)
-                self._in.setdefault(item.target, []).append(item.id)
-                target = self._nodes.get(item.target)
-                if item.kind == NEXT and target is not None and target.type != AGENT_START:
-                    self._tail[target.agent_id] = target.id
-                    queued = self._inbox.get(target.agent_id)
-                    if queued and target.id in queued:
-                        queued.remove(target.id)
-            self._log.append(item)
-            logged.append(item)
-        return logged
+        if (value is _MISSING) == (agent is None):
+            raise TypeError("replace takes exactly one of a value or agent=")
+        saved = cell.data.get("calls") or []
+        details: dict[str, Any] = {"index": index}
+        if 0 <= index < len(saved):
+            details = {"tool": saved[index]["tool"], **details}
+        if agent is not None:
+            details["agent"] = agent.id
+        else:
+            details["value"] = strict_json(value, "replacement value")
+        return self._apply(
+            "replace",
+            cell,
+            details,
+            dry_run,
+            lambda g, c: g._replace(c, index, value, g.agent(agent.id) if agent else None),
+        )
+
+    def _apply(
+        self,
+        op: str,
+        target: Agent | Node,
+        details: dict[str, Any],
+        dry_run: bool,
+        change: Callable[[Graph, Any], Invalidation],
+    ) -> Invalidation:
+        with self._lock:
+            if target.id not in self:
+                raise KeyError(f"{target!r} is not in this graph")
+            # Run it on a copy first, so an edit that fails part-way changes nothing.
+            trial = self.copy()
+            trial.busy = set(self.busy)
+            invalidation = change(trial, trial._find(target.id))
+            if dry_run:
+                return invalidation
+            invalidation = change(self, self._find(target.id))
+            self.edits.append({"op": op, "target": target.id, **details, **invalidation.as_dict()})
+            self._emit("edit", invalidation)
+            return invalidation
+
+    def _find(self, item_id: str) -> Agent | Node:
+        return self._agents.get(item_id) or self._nodes[item_id]
+
+    def _edit(self, node: Node, data: dict[str, Any]) -> Invalidation:
+        inv = Invalidation()
+        owner = self.owner(node)
+        self._check_free(owner)
+        node.data.update(strict_json(data, "node data"))
+        if node in owner.inbox:
+            return inv
+        for edge in self.edges(kind=RETURN, source=node.id):
+            self._unlink(edge)
+            self._stale(self._nodes.get(edge.target), inv)
+        self._cut(owner, owner.nodes.index(node) + 1, inv)
+        for fork_id in list(self._forks.get(node.id, ())):
+            if fork_id in self._agents:
+                self._cut(self._agents[fork_id], 0, inv)
+        return inv
+
+    def _delete(self, node: Node) -> Invalidation:
+        inv = Invalidation()
+        owner = self.owner(node)
+        self._check_free(owner)
+        if node in owner.inbox:
+            self._retract(node, inv)
+        else:
+            self._cut(owner, owner.nodes.index(node), inv)
+        return inv
+
+    def _replace(self, cell: Node, index: int, value: Any, agent: Agent | None) -> Invalidation:
+        inv = Invalidation()
+        owner = self.owner(cell)
+        self._check_free(owner)
+        saved = cell.data.get("calls") or []
+        if not 0 <= index < len(saved):
+            raise GraphError(f"cell {cell.id!r} saved no call {index}")
+        entry = saved[index]
+        tool, old = entry["tool"], self._agents.get(entry.get("agent", ""))
+        if tool == calls.LAUNCH:
+            if agent is None:
+                raise GraphError("a launch can only be replaced by another agent")
+            for edge in self.edges(kind=SPAWN, target=agent.id):
+                self._unlink(edge)
+            self._link(SPAWN, cell.id, agent.id)
+            if old is not None and old is not agent:
+                calls.rebind(cell, old.id, agent.id)
+                self._remove_agent(old, inv)
+            entry["agent"] = agent.id
+        elif tool == calls.AWAIT:
+            replaced = [
+                edge.source
+                for edge in self.edges(kind=RETURN, target=cell.id)
+                if old is not None and self._nodes[edge.source].agent_id == old.id
+            ]
+            entry.clear()
+            entry.update(tool=tool, **({"agent": agent.id} if agent else {"value": value}))
+            self._rerun(cell, inv)
+            # The old agent's result reached this cell and was swapped out, so it isn't
+            # delivered again as a message.
+            for done in replaced:
+                self._link(RETURN, done, cell.id, replaced=True)
+            return inv
+        else:
+            if agent is not None:
+                raise GraphError(f"a {tool} call can only be replaced by a value")
+            entry.clear()
+            entry.update(tool=tool, value=strict_json(value, "value"))
+        self._rerun(cell, inv)
+        return inv
+
+    def _check_free(self, agent: Agent) -> None:
+        if agent.id in self.busy:
+            raise GraphError(f"agent {agent.name!r} is stepping; edit it once its step lands")
+
+    def _cut(self, agent: Agent, keep: int, inv: Invalidation) -> None:
+        """Keep ``agent.nodes[:keep]``; drop the rest and everything it caused."""
+        dropped = agent.nodes[keep:]
+        if not dropped:
+            return
+        self._check_free(agent)
+        del agent.nodes[keep:]
+        inv._add("rewound", agent.id)
+        for node in reversed(dropped):
+            self._drop(node, inv)
+
+    def _drop(self, node: Node, inv: Invalidation) -> None:
+        """Forget a node, and undo what it caused: launches, messages, results it delivered, forks."""
+        if self._nodes.pop(node.id, None) is None:
+            return
+        inv._add("dropped", node.id)
+        for edge in self.edges(source=node.id):
+            self._unlink(edge)
+            if edge.kind == SPAWN and edge.target in self._agents:
+                self._remove_agent(self._agents[edge.target], inv)
+            elif edge.kind == MESSAGE and edge.target in self._nodes:
+                self._retract(self._nodes[edge.target], inv)
+            elif edge.kind == RETURN:
+                self._stale(self._nodes.get(edge.target), inv)
+        for edge in self.edges(target=node.id):
+            self._unlink(edge)
+        for fork_id in self._forks.pop(node.id, ()):
+            if fork_id in self._agents:
+                self._remove_agent(self._agents[fork_id], inv)
+
+    def _retract(self, message: Node, inv: Invalidation) -> None:
+        """Take back a message: from the inbox, or by rewinding its recipient to before it."""
+        recipient = self._agents.get(message.agent_id)
+        if recipient is None:
+            return
+        if message in recipient.inbox:
+            recipient.inbox.remove(message)
+            self._drop(message, inv)
+        elif message in recipient.nodes:
+            self._cut(recipient, recipient.nodes.index(message), inv)
+
+    def _stale(self, consumer: Node | None, inv: Invalidation) -> None:
+        """A result that ``consumer`` used changed: a message is taken back, a cell re-runs."""
+        if consumer is None or consumer.id not in self._nodes:
+            return
+        if consumer.type == MESSAGE:
+            self._retract(consumer, inv)
+        else:
+            self._rerun(consumer, inv)
+
+    def _rerun(self, cell: Node, inv: Invalidation) -> None:
+        """Rewind the cell's agent to it and mark it to run again; forks from it start over."""
+        owner = self.owner(cell)
+        self._check_free(owner)
+        for edge in self.edges(kind=RETURN, target=cell.id):
+            self._unlink(edge)
+        for fork_id in list(self._forks.pop(cell.id, ())):
+            if fork_id in self._agents:
+                self._remove_agent(self._agents[fork_id], inv)
+        self._cut(owner, owner.nodes.index(cell) + 1, inv)
+        for key in CELL_RESULTS:
+            cell.data.pop(key, None)
+        cell.type = CODE
+        cell.data[PENDING] = True
+        inv._add("rewound", owner.id)
+        inv._add("rerun", cell.id)
+
+    def _remove_agent(self, agent: Agent, inv: Invalidation) -> Invalidation:
+        if agent.id not in self._agents:
+            return inv
+        self._check_free(agent)
+        self._cut(agent, 0, inv)
+        for message in list(agent.inbox):
+            agent.inbox.remove(message)
+            self._drop(message, inv)
+        for edge in self.edges(touching=agent.id):
+            self._unlink(edge)
+            if edge.kind == SPAWN and edge.source == agent.id and edge.target in self._agents:
+                self._remove_agent(self._agents[edge.target], inv)
+        if agent.base is not None and agent.id in self._forks.get(agent.base.id, ()):
+            self._forks[agent.base.id].remove(agent.id)
+        del self._agents[agent.id]
+        self._children.pop(agent.id, None)
+        inv._add("removed", agent.id)
+        if agent.id in inv.rewound:
+            inv.rewound.remove(agent.id)
+        return inv
+
+    # -- copies and files -------------------------------------------------------
+
+    def copy(self) -> Graph:
+        """A full, independent copy (same ids), for editing without losing the original."""
+        from rlmflow.graph.persistence import from_records, to_records
+
+        return from_records(to_records(self))
+
+    def save(self, path: str | Path) -> Path:
+        """Write the graph and its argument blobs as a run directory."""
+        from rlmflow.graph import persistence
+
+        return persistence.save_graph(self, path)
+
+    @classmethod
+    def load(cls, path: str | Path) -> Graph:
+        """Read a run directory written by ``save``."""
+        from rlmflow.graph import persistence
+
+        return persistence.load_graph(path)
 
 
-def check_invariants(g: Graph) -> None:
-    """Walk the whole graph; raise ``InvariantError`` at the first broken rule.
-
-    The graph's history writes keep these true one at a time. This walk is for a
-    log read from disk: every node owned by an agent, one predecessor per node,
-    each agent's history one chain from its ``agent_start``, forks only at landed
-    nodes, an acyclic launcher tree, and acyclic ``depends_on`` declared before
-    the consumer starts.
-    """
-    nodes = g._nodes
-    for node in nodes.values():
-        if node.type == AGENT_START:
-            if node.agent_id != node.id:
-                raise InvariantError(f"agent {node.id!r} must own itself")
-        elif getattr(nodes.get(node.agent_id), "type", None) != AGENT_START:
-            raise InvariantError(f"{node.type} {node.id!r} names unknown agent {node.agent_id!r}")
-    predecessor: dict[str, Edge] = {}
-    successor: dict[str, str] = {}
-    forks: list[Edge] = []
-    launcher: dict[str, str] = {}
-    depends: dict[str, list[Edge]] = {}
-    for edge in g._edges.values():
-        for endpoint in (edge.source, edge.target):
-            if endpoint not in nodes:
-                raise InvariantError(f"edge endpoint {endpoint!r} is not in the graph")
-        source, target = nodes[edge.source], nodes[edge.target]
-        if edge.kind == NEXT:
-            if target.id in predecessor:
-                raise InvariantError(f"{target.type} {target.id!r} already has a predecessor")
-            predecessor[target.id] = edge
-            if target.type == AGENT_START:
-                forks.append(edge)
-                continue
-            if source.agent_id != target.agent_id:
-                raise InvariantError(
-                    f"{target.type} {target.id!r} follows {source.id!r} of another agent"
-                )
-            if source.id in successor:
-                raise InvariantError(f"{source.type} {source.id!r} has two successors")
-            successor[source.id] = target.id
-        elif edge.kind == FROM:
-            if source.type == AGENT_START:
-                if source.id in launcher:
-                    raise InvariantError(f"agent {source.id!r} already has a launcher")
-                launcher[source.id] = target.agent_id
-            elif source.type != MESSAGE:
-                raise InvariantError(
-                    f"a from edge leaves an agent_start or message, not {source.type}"
-                )
-        elif edge.kind == DEPENDS_ON:
-            if source.type != AGENT_START or target.type != AGENT_START:
-                raise InvariantError("depends_on edges connect agent_start nodes")
-            if source.id == target.id:
-                raise InvariantError(f"agent {source.id!r} cannot depend on itself")
-            depends.setdefault(source.id, []).append(edge)
-    for edge in forks:
-        source = nodes[edge.source]
-        if source.type != AGENT_START and source.id not in predecessor:
-            raise InvariantError(f"cannot fork at undelivered {source.type} {source.id!r}")
-    for agent in g.agents():
-        reached, current = {agent.id}, agent.id
-        while current in successor:
-            current = successor[current]
-            reached.add(current)
-        for node_id in g._by_agent.get(agent.id, ()):
-            node = nodes[node_id]
-            if node_id in reached or node.type == MESSAGE and node_id not in predecessor:
-                continue
-            if node_id not in predecessor:
-                raise InvariantError(f"{node.type} {node_id!r} has no incoming next edge")
-            raise InvariantError(f"{node.type} {node_id!r} is not in its agent's history")
-        owner, seen = agent.id, set()
-        while owner in launcher:
-            seen.add(owner)
-            owner = launcher[owner]
-            if owner in seen:
-                raise InvariantError(f"agent {owner!r} cannot launch itself")
-        first = successor.get(agent.id)
-        for edge in depends.get(agent.id, ()):
-            if first is not None and edge.seq > predecessor[first].seq:
-                raise InvariantError(f"agent {agent.id!r} has already started")
-    _check_depends_acyclic(depends)
+def _last(agent: Agent) -> Node | None:
+    """The agent's latest node: its own last node, else a fork's base."""
+    return agent.nodes[-1] if agent.nodes else agent.base
 
 
-def _check_depends_acyclic(depends: Mapping[str, list[Edge]]) -> None:
-    done: set[str] = set()
-    for root in depends:
-        path: set[str] = set()
-        stack: list[tuple[str, bool]] = [(root, False)]
-        while stack:
-            agent_id, leaving = stack.pop()
-            if leaving:
-                path.discard(agent_id)
-                done.add(agent_id)
-                continue
-            if agent_id in done:
-                continue
-            if agent_id in path:
-                raise InvariantError(f"depends_on cycle through {agent_id!r}")
-            path.add(agent_id)
-            stack.append((agent_id, True))
-            stack.extend((edge.target, False) for edge in depends.get(agent_id, ()))
-
-
-__all__ = [
-    "DEPENDS_ON",
-    "Edge",
-    "FROM",
-    "Graph",
-    "InvariantError",
-    "NEXT",
-    "REPORTS_TO",
-    "STRUCTURAL",
-    "StaleFrontier",
-    "check_invariants",
-    "new_edge_id",
-    "new_graph_id",
-]
+__all__ = ["Graph", "GraphError", "Invalidation"]

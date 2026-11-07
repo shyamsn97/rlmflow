@@ -18,7 +18,6 @@ from rlmflow.runtime import (
     DEFAULT_PREIMPORTS,
     base_namespace,
     build_docker_argv,
-    get_tool_metadata,
 )
 from rlmflow.runtime.repl_client import invoke_tool_call
 from rlmflow.tools import tool
@@ -35,45 +34,32 @@ WRITE_A_NOTE = block(
 )
 
 
-def test_tool_restore_metadata_and_saved_calls_are_generic():
+def test_host_tool_results_are_saved_and_returned_on_replay():
     g, root = agent_graph("root")
     action = g.append(root, Node(CODE, code=""))
-    calls: list[tuple[str, str]] = []
+    ran: list[tuple[str, object]] = []
 
-    @tool("First tool.", proxy=True, restore="result")
+    @tool("First tool.")
     def first(value):
-        calls.append(("first", value))
+        ran.append(("first", value))
         return {"value": value}
 
-    @tool("Second tool.", proxy=True, restore="result")
-    def second(value):
-        calls.append(("second", value))
-        return value.upper()
+    @tool("Opaque tool.")
+    def opaque(value):
+        ran.append(("opaque", value))
+        return object()
 
-    @tool("Custom restore.", proxy=True, restore=lambda saved, prefix: (prefix, saved))
-    def custom(prefix):
-        return prefix.lower()
+    assert invoke_tool_call(first, action, 0, ("a",), {}) == {"value": "a"}
+    assert invoke_tool_call(first, action, 0, ("ignored",), {}) == {"value": "a"}
+    assert invoke_tool_call(first, action, 1, ("b",), {}) == {"value": "b"}
+    invoke_tool_call(opaque, action, 0, ("x",), {})
+    invoke_tool_call(opaque, action, 0, ("y",), {})
 
-    assert get_tool_metadata(first).restore == "result"
-    assert invoke_tool_call(first, action, 0, False, ("a",), {}) == {"value": "a"}
-    assert invoke_tool_call(second, action, 0, False, ("b",), {}) == "B"
-    assert invoke_tool_call(first, action, 0, True, ("ignored",), {}) == {"value": "a"}
-    assert invoke_tool_call(custom, action, 0, False, ("VALUE",), {}) == "value"
-    assert invoke_tool_call(custom, action, 0, True, ("restored",), {}) == (
-        "restored",
-        "value",
-    )
-    assert action.data["calls"] == {
-        "first": {"0": {"value": "a"}},
-        "second": {"0": "B"},
-        "custom": {"0": "value"},
-    }
-    assert calls == [("first", "a"), ("second", "b")]
-
-    with pytest.raises(TypeError, match="restore"):
-        tool("Invalid.", restore="again")
-    with pytest.raises(ValueError, match="proxy=True"):
-        tool("Local.", restore="result")
+    assert action.data["calls"] == [
+        {"tool": "first", "value": {"value": "a"}},
+        {"tool": "first", "value": {"value": "b"}},
+    ]
+    assert ran == [("first", "a"), ("first", "b"), ("opaque", "x"), ("opaque", "y")]
 
 
 class RecordingWorkerSession:
@@ -180,7 +166,8 @@ def test_subprocess_runtime_uses_selected_python_and_working_directory(tmp_path)
 
 def test_subprocess_runtime_exposes_the_agents_tree():
     code = block(
-        'submit(AGENTS.get().path + "|" + str(len(AGENTS.get_siblings())) + "|" '
+        'submit(AGENTS.self.path + "|" + str(len(AGENTS.children)) + "|" '
+        '+ AGENTS["root"].status + "|" + str(len(AGENTS)) + "|" + str("root" in AGENTS) + "|" '
         "+ AGENTS.render_graph())"
     )
     flow = ScriptedFlow(
@@ -188,7 +175,7 @@ def test_subprocess_runtime_exposes_the_agents_tree():
         runtime=SubprocessRuntime(),
     )
     try:
-        assert flow.run("q") == "root|0|root (root) [running] (you)"
+        assert flow.run("q") == "root|0|running|1|True|root (root) [running] (you)"
     finally:
         asyncio.run(flow.aclose())
 

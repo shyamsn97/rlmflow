@@ -77,7 +77,7 @@ def test_concurrent_worker_outputs_route_by_execution(tmp_path):
 def test_concurrent_host_rpc_routes_to_each_tenant(tmp_path):
     calls = []
 
-    @tool("Record an agent value.", proxy=True)
+    @tool("Record an agent value.")
     async def record(value):
         await asyncio.sleep(0.01)
         calls.append(value)
@@ -107,7 +107,7 @@ def test_concurrent_host_rpc_routes_to_each_tenant(tmp_path):
 def test_gather_overlaps_async_host_tools_in_one_tenant(tmp_path):
     barrier = asyncio.Barrier(2)
 
-    @tool("Meet another host call.", proxy=True)
+    @tool("Meet another host call.")
     async def rendezvous(value):
         await barrier.wait()
         return value
@@ -347,7 +347,7 @@ def test_cancelling_shared_execution_kills_worker_group(tmp_path):
     async def cancel():
         started = asyncio.Event()
 
-        @tool("Block until this execution is cancelled.", proxy=True)
+        @tool("Block until this execution is cancelled.")
         async def wait_forever():
             started.set()
             await asyncio.Event().wait()

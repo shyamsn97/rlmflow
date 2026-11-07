@@ -5,7 +5,7 @@ Claude finishes replying. A prompt creates the root (``harness="interactive"``)
 or becomes a user message to it; Flow steps it, which opens the root's turn,
 and your session's ``rlmflow repl`` cells land in that turn through the agent
 token in ``.rlmflow/serve.json``. ``/stop`` ends the turn. If the root is left
-waiting on agents it started, ``/stop`` holds until their results open its next
+idle on agents it started, ``/stop`` holds until their results open its next
 turn and returns them, so the Stop hook can hand them to Claude.
 
 Between prompts the run loop idles; the graph is checkpointed under
@@ -31,7 +31,7 @@ from rlmflow.agent_tools.hooks import RUN_COMMAND, STOP_WAIT
 from rlmflow.agent_tools.server import Turn
 from rlmflow.graph.config import harness_path
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import CODE, DONE, MESSAGE, WAITING, Node, Step
+from rlmflow.graph.nodes import CODE, DONE, IDLE, MESSAGE, Agent, Node, Step
 from rlmflow.harnesses.interactive import read_transcript
 from rlmflow.harnesses.sessions import (
     Session,
@@ -66,7 +66,7 @@ class Serve:
         *,
         graph_dir: str | Path,
         project: str | Path,
-        root: Node | None = None,
+        root: Agent | None = None,
         root_config: AgentConfig | None = None,
         session_id: str | None = None,
     ) -> None:
@@ -175,7 +175,7 @@ class Serve:
             return {"bound": False}
         if self.root is None:
             task = text.removeprefix(RUN_COMMAND).strip() if text.startswith(RUN_COMMAND) else text
-            self.root = self.graph.create_agent(task, name="root")
+            self.root = self.graph.add_agent(task, name="root")
             self.agent_token = self.flow.agent_tools.attach(self.root)
         elif self.flow.agent_tools.open_turn(self.root) is None:
             self.graph.send(self.root, text, sender="user")
@@ -201,7 +201,7 @@ class Serve:
         if session_id not in self._briefed:
             self._briefed.add(session_id)
             parts.append(turn.step.agent.config.load_harness().prompt(self.flow, turn.step))
-            has_cells = any(node.type == CODE for node in self.graph.history(turn.step.node))
+            has_cells = any(node.type == CODE for node in self.graph.history(turn.step.agent))
             if has_cells and not Session.for_step(turn.step).resume:
                 parts.append(await resume_prompt(self.flow, turn.step))
         if turn.token not in self._shown:
@@ -223,7 +223,7 @@ class Serve:
         usage, text, self._transcript_line = read_transcript(
             body.get("transcript_path") or "", self._transcript_line
         )
-        mark = len(self.graph)
+        mark = self.graph._seq
         turn.ended.set_result(
             TurnResult(
                 session_id=session_id, text=body.get("last_assistant_message") or text, usage=usage
@@ -233,7 +233,7 @@ class Serve:
         if landed is None:
             raise RuntimeError(f"the root's turn did not land: {self.error or 'timed out'}")
         reply: dict[str, Any] = {"bound": True, "landed": landed.type}
-        if landed.type == WAITING:
+        if landed.type == IDLE:
             timeout = float(body.get("timeout", STOP_WAIT))
             following = await until(lambda: self._next_turn(turn), timeout)
             if following is not None:
@@ -248,10 +248,10 @@ class Serve:
         return {"bound": True, "stopping": True}
 
     def _turn_end_since(self, mark: int) -> Node | None:
-        for node in reversed(self.graph.nodes(agent=self.root)):
+        for node in reversed(self.root.nodes):
             if node.seq < mark:
                 return None
-            if node.type in (WAITING, DONE):
+            if node.type in (IDLE, DONE):
                 return node
         return None
 
@@ -273,7 +273,8 @@ async def until(probe: Callable[[], T | None], timeout: float, interval: float =
 def pending(step: Step) -> list[Node]:
     """The messages at the end of the step's history, which the turn opened on."""
     found: list[Node] = []
-    for node in reversed(step.graph.history(step.node)):
+    history = step.graph.history(step.node) if isinstance(step.node, Node) else []
+    for node in reversed(history):
         if node.type != MESSAGE:
             break
         found.append(node)
@@ -288,7 +289,7 @@ def interactive_config(base: AgentConfig | None = None) -> AgentConfig:
     )
 
 
-def ran_interactively(agent: Node) -> bool:
+def ran_interactively(agent: Agent) -> bool:
     """An ``interactive`` fork, or a root a serve ran with the interactive harness."""
     if agent.config_name == INTERACTIVE_CONFIG:
         return True
@@ -296,16 +297,16 @@ def ran_interactively(agent: Node) -> bool:
     return agent.config_name is None and recorded.get("harness") == INTERACTIVE
 
 
-def interactive_root(graph: Graph) -> Node | None:
+def interactive_root(graph: Graph) -> Agent | None:
     """The latest agent in ``graph`` your session drives."""
     found = [agent for agent in graph.agents() if ran_interactively(agent)]
     return found[-1] if found else None
 
 
-def last_session(graph: Graph, agent: Node) -> str | None:
+def last_session(graph: Graph, agent: Agent) -> str | None:
     """The session that ended ``agent``'s latest turn; a fork has none of its own."""
-    for node in reversed(graph.own_history(agent)):
-        if node.type in (WAITING, DONE) and node.data.get("session_id"):
+    for node in reversed(agent.nodes):
+        if node.type in (IDLE, DONE) and node.data.get("session_id"):
             return node.data["session_id"]
     return None
 
@@ -330,9 +331,9 @@ def serve_main(
         graph = Graph()
     root_agent = None
     if root is not None:
-        from rlmflow.agent_tools.tools import resolve
+        from rlmflow.agent_tools.view import resolve_agent
 
-        root_agent = resolve(graph, root)
+        root_agent = resolve_agent(graph, root)
     flow = build_flow(options, workdir=project)
 
     async def main() -> None:

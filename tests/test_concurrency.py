@@ -15,9 +15,7 @@ def fanout(*names):
     )
 
 
-JOIN_ATTACHED = block(
-    "answers = [await c for c in AGENTS.get_children()]\nsubmit(','.join(answers))"
-)
+JOIN_CHILDREN = block("answers = [await c for c in AGENTS.children]\nsubmit(','.join(answers))")
 
 
 class BarrierLLM:
@@ -28,7 +26,7 @@ class BarrierLLM:
         self.parent = parent or fanout("a", "b")
 
     def chat(self, messages):
-        if first_user(messages) == "parent":
+        if first_user(messages).startswith("parent"):
             return self.parent
         self.barrier.wait(timeout=5)
         return block("submit('c')")
@@ -81,37 +79,35 @@ def test_a_finished_child_keeps_its_repl():
     assert list(flow.runtime.repls) == []
 
 
-def test_attached_subtrees_get_a_thread_each():
+def test_host_spawned_subtrees_get_a_thread_each():
     g, root = agent_graph("parent")
-    a = g.spawn("a", name="a")
-    b = g.spawn("b", name="b")
-    g.attach(root, a, b)
+    a = g.add_agent("a", parent=root, name="a")
+    b = g.add_agent("b", parent=root, name="b")
 
     assert (
-        run_result(ScriptedFlow(BarrierLLM(2, parent=JOIN_ATTACHED), workers=2), g, root) == "c,c"
+        run_result(ScriptedFlow(BarrierLLM(2, parent=JOIN_CHILDREN), workers=2), g, root) == "c,c"
     )
     assert g.children(root) == [a, b]
 
 
-def test_attached_children_with_queued_messages_step_once_each():
+def test_host_spawned_children_with_queued_messages_step_once_each():
     calls = 0
 
     class LLM:
         async def chat(self, messages):
             nonlocal calls
-            if first_user(messages) == "parent":
-                return JOIN_ATTACHED
+            if first_user(messages).startswith("parent"):
+                return JOIN_CHILDREN
             calls += 1
             assert messages[-1]["content"].startswith("recover")
             await asyncio.sleep(0.05)
             return block("submit('ok')")
 
     g, root = agent_graph("parent")
-    first = g.spawn("first", name="first")
-    second = g.spawn("second", name="second")
+    first = g.add_agent("first", parent=root, name="first")
+    second = g.add_agent("second", parent=root, name="second")
     g.send(first, "recover first")
     g.send(second, "recover second")
-    g.attach(root, first, second)
     flow = ScriptedFlow(LLM())
 
     async def run():

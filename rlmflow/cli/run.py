@@ -1,9 +1,8 @@
-"""``rlmflow run`` and ``rlmflow tui``: Fire classes that build a Flow and drive it.
+"""``rlmflow run``: a Fire class that builds a Flow and drives it.
 
-Constructor flags pick the model, runtime, and tools. Methods take the query —
-``rlmflow run tui "fix the tests"`` opens the dashboard, ``rlmflow run print
-"fix the tests"`` streams the tree. ``rlmflow tui`` is the dashboard with no
-``print`` verb, because that is the only thing it does.
+Constructor flags pick the model, runtime, and tools. ``rlmflow run print "fix
+the tests"`` (or ``rlmflow run --query "fix the tests"``) streams the tree and
+prints the answer.
 """
 
 from __future__ import annotations
@@ -26,11 +25,11 @@ API_KEYS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
 class RunCLI:
     """Run a coding agent over --workdir, checkpointing to <workdir>/graph.
 
-    Flags pick the model and runtime; the verb picks the surface.
+    Flags pick the model and runtime.
 
-        rlmflow run tui "add a test for parse_args"
+        rlmflow run print "add a test for parse_args"
         rlmflow run print "fix the failing test"
-        rlmflow run --model gpt-5 --workdir ./proj tui
+        rlmflow run --model gpt-5 --workdir ./proj --query "fix the failing test"
     """
 
     def __init__(
@@ -65,88 +64,17 @@ class RunCLI:
             }
         )
 
-    def tui(self, query: str | None = None) -> None:
-        """Open the Textual dashboard. Needs ``pip install "rlmflow[tui]"``.
-
-        Args:
-          query: What to do. Omit it to open the dashboard with nothing running.
-        """
-        run_agent(
-            self.query if query is None else str(query),
-            self.options,
-            headless=False,
-            resume=self.resume,
-        )
-
     def print(self, query: str | None = None) -> None:
-        """Skip the dashboard: stream the tree and print the final answer.
+        """Stream the tree and print the final answer.
 
         Args:
           query: What to do. Required unless ``--resume`` already has a run.
         """
-        run_agent(
-            self.query if query is None else str(query),
-            self.options,
-            headless=True,
-            resume=self.resume,
-        )
+        run_agent(self.query if query is None else str(query), self.options, resume=self.resume)
 
     def __str__(self) -> str:
-        """``rlmflow run`` with no verb opens the dashboard."""
-        self.tui()
-        return ""
-
-
-class TuiCLI:
-    """Open the coding agent in the Textual dashboard.
-
-    Same flags as ``rlmflow run``, always interactive. Needs
-    ``pip install "rlmflow[tui]"``.
-
-        rlmflow tui
-        rlmflow tui --query "add a test for parse_args"
-        rlmflow tui --workdir ./proj --model gpt-5
-    """
-
-    def __init__(
-        self,
-        query: str | None = None,
-        model: str | None = None,
-        fast_model: str | None = None,
-        reasoning_effort: str | None = None,
-        workdir: str | None = None,
-        docker_image: str | None = None,
-        max_depth: int | None = None,
-        max_iters: int | None = None,
-        workers: int | None = None,
-        tools: str | None = None,
-        resume: str | None = None,
-        flow: str | None = None,
-    ) -> None:
-        self.query = None if query is None else str(query)
-        self.resume = resume
-        self.options, _ = resolve_options(
-            {
-                "model": model,
-                "fast_model": fast_model,
-                "reasoning_effort": reasoning_effort,
-                "workdir": workdir,
-                "docker_image": docker_image,
-                "max_depth": max_depth,
-                "max_iters": max_iters,
-                "workers": workers,
-                "tools": tools,
-                "flow": flow,
-            }
-        )
-
-    def __str__(self) -> str:
-        run_agent(
-            self.query,
-            self.options,
-            headless=False,
-            resume=self.resume,
-        )
+        """``rlmflow run --query "..."`` with no verb is ``print``."""
+        self.print()
         return ""
 
 
@@ -154,11 +82,10 @@ def run_agent(
     query: str | None,
     options: RunOptions,
     *,
-    headless: bool = False,
     resume: str | Path | None = None,
     flow: Any = None,
 ) -> None:
-    """Run the coding agent. Headless streams one query; otherwise the TUI opens."""
+    """Run the coding agent: stream one query, printing the tree as it grows."""
     workdir = Path(options.workdir).expanduser().resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     graph_dir = workdir / "graph"
@@ -171,10 +98,7 @@ def run_agent(
     # Naming a model we did not choose would be a lie when --flow built the flow.
     model = options.model if own_flow else (options.flow or "custom flow")
     print(f"rlmflow · {model} · {options.docker_image or 'local'} · {workdir}")
-    if headless:
-        _run_headless(flow, query, root, graph_dir)
-    else:
-        _run_tui(flow, query, root, graph_dir)
+    _run_headless(flow, query, root, graph_dir)
     print(f"run saved to {graph_dir}")
 
 
@@ -268,7 +192,7 @@ def require_api_key(model: str, environ: dict[str, str] | None = None) -> None:
 
 
 def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> None:
-    """No dashboard: stream one query, printing the tree as it grows."""
+    """Stream one query, printing the tree as it grows."""
     from rlmflow import Graph
     from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveTreeRenderer
 
@@ -278,7 +202,7 @@ def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> 
     consumers.init(flow)
     if graph is None:
         graph = Graph()
-        agent = graph.create_agent(query or "")
+        agent = graph.add_agent(query or "")
     else:
         agent = _first_agent(graph)
         if query:
@@ -296,27 +220,8 @@ def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> 
     print(f"\n{graph.result(agent) or '(no result)'}\n")
 
 
-def _run_tui(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> None:
-    """The dashboard drives its own turns; it only needs the flow and a place to save.
-
-    A query here is the opening turn, not a different mode: the panels are up
-    while it runs, and the prompt is there when it finishes.
-    """
-    from rlmflow.cli.tui import FlowTUI
-    from rlmflow.consumers import GraphCheckpointer
-
-    ui = FlowTUI(graph, sink=GraphCheckpointer(graph_dir))
-    ui.init(flow)
-    try:
-        ui.run(query=query)
-    finally:
-        flow.runtime.close_repls()
-
-
 def _first_agent(graph: Any) -> Any:
-    from rlmflow.view.text import top_level
-
-    tops = top_level(graph)
+    tops = graph.roots()
     if not tops:
         raise CliError("the saved run has no agents")
     return tops[0]
@@ -330,7 +235,6 @@ def _ask(graph: Any, query: str) -> None:
 
 __all__ = [
     "RunCLI",
-    "TuiCLI",
     "build_flow",
     "load_factory",
     "load_root",

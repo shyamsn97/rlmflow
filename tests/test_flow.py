@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import threading
 import time
@@ -18,28 +19,29 @@ from helpers import (
 from helpers import reasoning_repl as block
 
 from rlmflow import (
-    AGENT_START,
     CODE,
-    DEPENDS_ON,
     DONE,
-    FROM,
-    LLM_OUTPUT,
-    NEXT,
+    IDLE,
+    LLM,
+    MESSAGE,
+    RETURN,
+    SPAWN,
     AgentConfig,
-    AgentHandle,
     Input,
     LLMChunk,
     LLMUsage,
     Node,
     SequentialPool,
-    StaleFrontier,
+    attach_image,
 )
 from rlmflow.agent_tools import tools as agent_tools
-from rlmflow.graph import Graph, Step
-from rlmflow.graph.persistence import node_record
+from rlmflow.agent_tools.view import AgentHandle
+from rlmflow.graph import Graph, Step, calls
+from rlmflow.graph.persistence import FORMAT_VERSION, node_record
 from rlmflow.harnesses import repl
+from rlmflow.llm.anthropic import anthropic_content
 from rlmflow.runtime import LocalRuntime
-from rlmflow.tools import repl_tools, split_args, tool
+from rlmflow.tools import check_args, repl_tools, tool, tool_from_schema
 from rlmflow.utils import truncate_output
 
 
@@ -78,11 +80,6 @@ def test_submit():
     assert llm.calls[0][0]["role"] == "system"
 
 
-def depends(g, agent):
-    """``(as, producer id)`` for each dependency edge, in write order."""
-    return tuple((e.data.get("as"), e.target) for e in g.edges(kind=DEPENDS_ON, source=agent.id))
-
-
 def reload(g, path):
     """Save ``g`` to ``path`` and load it back as a cold graph."""
     g.save(path)
@@ -112,12 +109,24 @@ def test_config_prompt_overrides_sections_by_key():
     prompt = repl_prompt(
         ScriptedFlow(ScriptedLLM([])),
         "x",
-        prompt={"protocol": "Be terse.", "agents": None, "style": "No emoji."},
+        prompt={
+            "protocol": "Be terse.",
+            "agents": None,
+            "orchestration": None,
+            "style": "No emoji.",
+        },
     )
     assert prompt.startswith("Be terse.")
     assert "submit(" in prompt
     assert "AGENTS" not in prompt
     assert prompt.endswith("No emoji.")
+
+
+def test_only_agents_that_can_launch_get_the_orchestration_skill():
+    flow = ScriptedFlow(ScriptedLLM([]))
+    assert "# Orchestrating agents in rlmflow" in repl_prompt(flow, "x")
+    assert "name: orchestrate" not in repl_prompt(flow, "x")
+    assert "# Orchestrating agents" not in repl_prompt(flow, "x", max_depth=0)
 
 
 def test_a_harness_subclass_replaces_the_whole_prompt():
@@ -173,7 +182,7 @@ def test_max_iters():
         run_result(ScriptedFlow(llm), g, root, root_config=AgentConfig(max_iters=3))
         == "best effort"
     )
-    assert len(g.nodes(LLM_OUTPUT)) == 3
+    assert len(g.nodes(LLM)) == 3
 
 
 def test_iters_and_budget_are_unbounded_unless_set():
@@ -214,7 +223,7 @@ def test_described_large_argument_survives_save_and_load(tmp_path):
     )
 
     run = g.save(tmp_path / "described-input")
-    loaded = Graph.load(run).node(root.id)
+    loaded = Graph.load(run).agent(root.id)
 
     assert loaded.resolved_args() == {"document": document}
     assert loaded.argument_descriptions() == {"document": "A large source document."}
@@ -240,19 +249,19 @@ def test_graph_spawn_stores_a_config_name_without_a_flow(tmp_path):
         label: str
 
     g = Graph()
-    agent = g.spawn("classify", config="classifier", text="hi")
+    agent = g.add_agent("classify", config="classifier", text="hi")
 
     assert agent.args == {"text": "hi"}
     assert agent.name == "classifier"
     assert agent.config_name == "classifier"
-    loaded = reload(g, tmp_path / "run").node(agent.id)
+    loaded = reload(g, tmp_path / "run").agent(agent.id)
     assert loaded.config_name == "classifier"
 
     flow = ScriptedFlow(ScriptedLLM([("classify", block("submit({'label': text})"))]))
     config = flow.add_config(AgentConfig(name="classifier", output_schema=Label))
     assert config.output_schema["properties"]["label"]["type"] == "string"
     graph = Graph()
-    graph.spawn("classify", config="classifier", text="hi")
+    graph.add_agent("classify", config="classifier", text="hi")
     flow.run(graph)
     [classified] = graph.agents()
     assert classified.config is config
@@ -262,7 +271,7 @@ def test_graph_spawn_stores_a_config_name_without_a_flow(tmp_path):
 def test_graph_edited_without_a_flow_runs_on_a_fresh_flow(tmp_path):
     """Spawn, append history, and fork with ops alone; a new Flow builds every REPL."""
     g = Graph()
-    a = g.create_agent("count", name="a")
+    a = g.add_agent("count", name="a")
     cell = g.append(a, Node(CODE, code="n = 41", output=""))
     b = g.fork(cell, name="b")
     g.send(a, "finish a")
@@ -279,14 +288,15 @@ def test_graph_edited_without_a_flow_runs_on_a_fresh_flow(tmp_path):
     )
     flow.run(loaded)
 
-    assert loaded.result(loaded.node(a.id)) == 42
-    assert loaded.result(loaded.node(b.id)) == 43
+    assert loaded.result(loaded.agent(a.id)) == 42
+    assert loaded.result(loaded.agent(b.id)) == 43
+    assert [node.type for node in loaded.history(loaded.agent(b.id))][:2] == [CODE, MESSAGE]
 
 
 def test_replay_rebuilds_a_fork_that_never_stepped():
     flow = ScriptedFlow(ScriptedLLM([]))
     g = Graph()
-    a = g.create_agent("count", name="a")
+    a = g.add_agent("count", name="a")
     cell = g.append(a, Node(CODE, code="n = 41", output=""))
     fork = g.fork(cell, name="fork")
 
@@ -300,13 +310,13 @@ def test_agent_added_mid_stream_is_scheduled():
     llm = ScriptedLLM([("first", block("submit('one')")), ("second", block("submit('two')"))])
     flow = ScriptedFlow(llm)
     g = Graph()
-    first = g.create_agent("first")
+    first = g.add_agent("first")
     added = []
 
     async def drive():
         async for _step in flow.run_streaming(g):
             if not added:
-                added.append(g.create_agent("second"))
+                added.append(g.add_agent("second"))
 
     asyncio.run(drive())
 
@@ -328,7 +338,7 @@ def test_keep_n_messages_keeps_the_tail_and_a_truncation_notice():
         == "best effort"
     )
 
-    messages = repl.ReplHarness().messages(flow, Step(g, root, g.frontier(root)))
+    messages = repl.ReplHarness().messages(flow, Step.latest(g, root))
     assert messages[0]["role"] == "system"
     assert len(messages) == 5  # system, truncation notice, then the last three
     assert messages[1]["content"] == repl.TRUNCATION_TEXT
@@ -347,7 +357,7 @@ def test_streaming_until_idle():
     g, root = agent_graph("look")
     seen = asyncio.run(stream(flow, g, "idle"))
     assert seen[-1].type == CODE and seen[-1].data["output"].strip() == "peek"
-    assert not g.terminal(root)
+    assert not g.status(root) == "done"
 
     rest = asyncio.run(stream(flow, g, "done"))
     assert rest[-1].type == DONE and g.result(root) == "finished"
@@ -362,7 +372,7 @@ def test_each_streamed_step_names_its_agent_and_node():
         return [step async for step in flow.run_streaming(g)]
 
     steps = asyncio.run(collect())
-    assert [step.node.type for step in steps] == [LLM_OUTPUT, CODE, LLM_OUTPUT, DONE]
+    assert [step.node.type for step in steps] == [LLM, CODE, LLM, CODE, DONE]
     assert all(step.agent is root and step.graph is g for step in steps)
 
 
@@ -390,104 +400,135 @@ def test_children_run_in_parallel():
     own = {node.id for node in g.history(root)}
     assert all(node.agent_id == root.id for node in g.history(root))
     assert own.isdisjoint(node.id for node in g.history(children[0]))
-    assert g.history(children[0])[0] is children[0]
+    assert [node.type for node in g.history(children[0])] == [LLM, CODE, DONE]
 
     # Children are created during the model turn's cell; the cell records them.
-    [cell] = [n for n in g.history(root) if n.type == CODE and n.launched()]
-    assert cell.launched() == [child.id for child in children]
-    [turn] = {g.node(e.target) for child in children for e in g.edges(kind=FROM, source=child.id)}
-    assert turn.type == LLM_OUTPUT and g.prev(cell) is turn
+    history = g.history(root)
+    [cell] = [n for n in history if n.type == CODE and calls.launched(n)]
+    assert calls.launched(cell) == [child.id for child in children]
+    assert history[history.index(cell) - 1].type == LLM
+    spawns = g.edges(kind=SPAWN, source=cell.id)
+    assert [edge.target for edge in spawns] == [child.id for child in children]
+    assert [g.parent(child) for child in children] == [root, root]
+
+    # Each awaited result returns to the cell, so none is also sent as a message.
+    returns = g.edges(kind=RETURN, target=cell.id)
+    assert {edge.source for edge in returns} == {child.nodes[-1].id for child in children}
+    assert not g.nodes(MESSAGE)
 
     streamed = asyncio.run(stream(ScriptedFlow(llm), agent_graph("split this up")[0], "done"))
-    assert sum(node.type == AGENT_START for node in streamed) == 2
+    assert sum(node.type == DONE for node in streamed) == 3
 
 
-def test_handle_valued_args_build_a_flat_dependency_graph(tmp_path):
-    parent = block(
-        "parser = launch_agent('parse-source')\n"
-        "fixtures = launch_agent('inspect-fixtures')\n"
-        "reconciler = launch_agent(\n"
-        "    'reconcile-inputs',\n"
-        "    parsed=Input(parser, description='Parsed source counts.'),\n"
-        "    fixtures=fixtures,\n"
-        ")\n"
-        "critic = launch_agent('critique-answer', reconciler=reconciler)\n"
-        "print(await critic)"
+def test_unawaited_children_report_in_one_batched_message():
+    class FanOutLLM:
+        """Children finish while the parent's next model call is in flight."""
+
+        async def chat(self, messages):
+            task, last = first_user(messages), trailing_user_text(messages)
+            if task.startswith("child"):
+                while len(root.nodes) < 2:
+                    await asyncio.sleep(0.01)
+                return block(f"submit({task.upper()!r})")
+            if "Agents you started have finished" in last:
+                return block("submit('collected')")
+            if "launched" in last:
+                while not all(g.status(child) == "done" for child in g.children(root)):
+                    await asyncio.sleep(0.01)
+                return block("print('between turns')")
+            return block("launch_agent('child a')\nlaunch_agent('child b')\nprint('launched')")
+
+    g, root = agent_graph("fan out")
+
+    assert run_result(ScriptedFlow(FanOutLLM()), g, root) == "collected"
+    children = g.children(root)
+    assert [g.result(child) for child in children] == ["CHILD A", "CHILD B"]
+    [message] = [node for node in g.history(root) if node.type == MESSAGE]
+    assert message.data["sender"] == "rlmflow"
+    assert "[result root.default-0]" in message.data["text"]
+    assert "[result root.default-1]" in message.data["text"]
+    returns = g.edges(kind=RETURN, target=message.id)
+    assert {edge.source for edge in returns} == {child.nodes[-1].id for child in children}
+    assert all(g.edges(kind=RETURN, source=child.nodes[-1].id) for child in children)
+
+
+def test_awaiting_an_agent_you_did_not_launch_raises_in_the_cell():
+    llm = ScriptedLLM(
+        [
+            ("you can only await agents you launched", block("submit('refused')")),
+            ("curious", block("print(await AGENTS['peer'])")),
+            ("peer task", block("submit('peer answer')")),
+        ]
+    )
+    g = Graph()
+    peer = g.add_agent("peer task", name="peer")
+    curious = g.add_agent("curious", name="curious")
+
+    flow = ScriptedFlow(llm)
+    flow.run(g)
+
+    assert g.result(peer) == "peer answer"
+    assert g.result(curious) == "refused"
+    cell = next(node for node in g.history(curious) if node.type == CODE)
+    assert cell.data["error"]
+    assert "NotYourAgent" in cell.data["output"]
+    assert not g.edges(kind=RETURN, target=cell.id)
+
+
+def test_a_worker_repl_raises_host_errors_as_their_own_types():
+    code = (
+        "try:\n    await AGENTS['peer']\nexcept NotYourAgent:\n    print('not mine')\n"
+        "try:\n    launch_agent('x', spec=AGENTS['peer'])\nexcept TypeError:\n    print('bad arg')"
     )
     llm = ScriptedLLM(
         [
-            ("build-dag", parent),
-            ("parse-source", block("submit({'count': 2})")),
-            ("inspect-fixtures", block("submit('F')")),
-            ("reconcile-inputs", block("submit(f\"{parsed['count']}:{fixtures}\")")),
-            ("critique-answer", block("submit(reconciler + '!')")),
-            ("2:F!", block("submit('done')")),
+            ("not mine", block("submit('ok')")),
+            ("curious", block(code)),
+            ("peer task", block("submit('peer answer')")),
+        ]
+    )
+    g = Graph()
+    g.add_agent("peer task", name="peer")
+    curious = g.add_agent("curious", name="curious")
+
+    ScriptedFlow(llm, runtime=LocalRuntime(repl_timeout=10)).run(g)
+
+    cell = next(node for node in g.history(curious) if node.type == CODE)
+    assert cell.data["output"].split() == ["not", "mine", "bad", "arg"]
+    assert g.result(curious) == "ok"
+
+
+def test_a_launch_argument_must_be_a_result_not_an_agent():
+    llm = ScriptedLLM(
+        [
+            (
+                "await the agent first",
+                block(
+                    "consumer = launch_agent('consume-source', source=await source)\n"
+                    "print(await consumer)"
+                ),
+            ),
+            (
+                "build-dag",
+                block(
+                    "source = launch_agent('produce-source')\n"
+                    "launch_agent('consume-source', source=source)"
+                ),
+            ),
+            ("produce-source", block("submit('A')")),
+            ("consume-source", block("submit(source + '!')")),
+            ("A!", block("submit('done')")),
         ]
     )
     g, root = agent_graph("build-dag")
 
     assert run_result(ScriptedFlow(llm), g, root) == "done"
-    parser, fixtures, reconciler, critic = g.children(root)
-    assert {g.depth(agent) for agent in g.children(root)} == {1}
-    assert depends(g, reconciler) == (("parsed", parser.id), ("fixtures", fixtures.id))
-    assert depends(g, critic) == (("reconciler", reconciler.id),)
-    assert reconciler.args == {}
-    assert g.inputs(reconciler) == {"parsed": {"count": 2}, "fixtures": "F"}
-    [described] = g.edges(kind=DEPENDS_ON, source=reconciler.id, target=parser.id)
-    assert described.data["description"] == "Parsed source counts."
-    assert g.inputs(critic) == {"reconciler": "2:F"}
-
-    tasks = [first_user(messages) for messages in llm.calls]
-    assert tasks.index("reconcile-inputs") > tasks.index("parse-source")
-    assert tasks.index("reconcile-inputs") > tasks.index("inspect-fixtures")
-    assert tasks.index("critique-answer") > tasks.index("reconcile-inputs")
-
-    loaded = reload(g, tmp_path / "dependency-run")
-    assert depends(loaded, loaded.node(reconciler.id)) == depends(g, reconciler)
-    assert depends(loaded, loaded.node(critic.id)) == depends(g, critic)
-
-
-def test_shared_source_feeds_multiple_flat_consumers():
-    parent = block(
-        "source = launch_agent('shared-source')\n"
-        "solver = launch_agent('solve-source', source=source)\n"
-        "reviewer = launch_agent('review-source', source=source)\n"
-        "print(await asyncio.gather(solver, reviewer))"
-    )
-    llm = ScriptedLLM(
-        [
-            ("fan-out", parent),
-            ("shared-source", block("submit('evidence')")),
-            ("solve-source", block("submit(source + ':solved')")),
-            ("review-source", block("submit(source + ':reviewed')")),
-            ("['evidence:solved', 'evidence:reviewed']", block("submit('done')")),
-        ]
-    )
-    g, root = agent_graph("fan-out")
-
-    assert run_result(ScriptedFlow(llm), g, root, root_config=AgentConfig(max_depth=2)) == "done"
-    source, solver, reviewer = g.children(root)
-    assert depends(g, solver) == (("source", source.id),)
-    assert depends(g, reviewer) == (("source", source.id),)
-    [cell] = [n for n in g.history(root) if n.type == CODE and n.launched()]
-    assert set(cell.launched()) == {source.id, solver.id, reviewer.id}
-
-
-def _launch_graph():
-    graph = Graph()
-    root = graph.create_agent("root")
-    cell = graph.append(root, Node(CODE, code="launch"))
-    return graph, root, cell
-
-
-def test_launch_args_accept_mixed_strings_and_top_level_handles():
-    g, _root, cell = _launch_graph()
-    source = g.spawn("source", by=cell, name="source", config="default")
-    handle = AgentHandle(source.id, "source", "root.source")
-
-    plain, inputs = split_args(g, {"prompt": "immediate", "evidence": handle})
-    assert plain == {"prompt": "immediate"}
-    assert inputs == {"evidence": source}
+    source, consumer = g.children(root)
+    assert source.task == "produce-source"
+    assert consumer.args == {"source": "A"}
+    [refused] = [node for node in g.history(root) if node.type == CODE and node.data["error"]]
+    assert "TypeError" in refused.data["output"]
+    assert calls.launched(refused) == [source.id]
 
 
 @pytest.mark.parametrize(
@@ -496,70 +537,37 @@ def test_launch_args_accept_mixed_strings_and_top_level_handles():
         {"nested": {"handle": "not-an-agent-ref"}},
         {"nested": ["not", "top-level"]},
         {"number": 3},
+        {"described": Input({"rows": [1, 2]}, description="Rows.")},
     ],
 )
 def test_launch_args_accept_nested_json_values(args):
-    assert split_args(_launch_graph()[0], args) == (args, {})
+    assert check_args(args) == args
 
 
 @pytest.mark.parametrize("value", [{1, 2}, object(), {1: "bad key"}])
 def test_launch_args_reject_non_json_values(value):
     with pytest.raises(TypeError, match="JSON-compatible|non-string"):
-        split_args(_launch_graph()[0], {"value": value})
+        check_args({"value": value})
 
 
 @pytest.mark.parametrize("name", ["bad-name", "class", "task"])
 def test_launch_args_require_python_variable_names(name):
     with pytest.raises(ValueError, match="invalid invocation|'task' is the invocation"):
-        split_args(_launch_graph()[0], {name: "value"})
+        check_args({name: "value"})
 
 
-def test_launch_args_reject_unknown_and_nested_handles():
-    g, _root, cell = _launch_graph()
-    source = g.spawn("source", by=cell, name="source", config="default")
-    source_handle = AgentHandle(source.id, "source", "root.source")
-
-    with pytest.raises(ValueError, match="unknown agent"):
-        split_args(g, {"missing": AgentHandle("missing", "missing", "root.missing")})
-    with pytest.raises(TypeError, match="nests a handle"):
-        split_args(g, {"nested": [source_handle]})
-
-
-def test_dependency_scheduler_resumes_a_saved_blocked_agent(tmp_path):
-    parent = block(
-        "source = launch_agent('produce-source')\n"
-        "consumer = launch_agent('consume-source', source=source)\n"
-        "print(await consumer)"
-    )
-    llm = ScriptedLLM(
-        [
-            ("resume-dag", parent),
-            ("produce-source", block("submit('A')")),
-            ("consume-source", block("submit(source + '!')")),
-            ("A!", block("submit('resumed')")),
-        ]
-    )
-    g, root = agent_graph("resume-dag")
-    flow = ScriptedFlow(llm)
-    deep = AgentConfig(max_depth=2)
-
-    def source_done(step):
-        return step.node.type == DONE and step.agent.name == "default-0"
-
-    stopped = asyncio.run(stream(flow, g, source_done, root_config=deep))
-    assert g.node(stopped[-1].agent_id).name == "default-0"
-    source, consumer = g.children(root)
-    assert depends(g, consumer) == (("source", source.id),)
-    assert consumer in g.ready()
-    assert g.frontier(consumer) is consumer
-
-    restored = reload(g, tmp_path / "blocked-run")
-    assert (
-        run_result(ScriptedFlow(llm), restored, restored.node(root.id), root_config=deep)
-        == "resumed"
-    )
-    assert restored.inputs(restored.node(consumer.id)) == {"source": "A"}
-    assert len(restored.children(restored.node(root.id))) == 2
+@pytest.mark.parametrize(
+    "value",
+    [
+        AgentHandle("agent_source", "source", "root.source"),
+        [AgentHandle("agent_source", "source", "root.source")],
+        {"ref": {"$rlmflow_agent": "agent_source"}},
+        Input(AgentHandle("agent_source", "source", "root.source"), description="Source."),
+    ],
+)
+def test_launch_args_reject_agents_anywhere(value):
+    with pytest.raises(TypeError, match="await the agent first and pass its result"):
+        check_args({"evidence": value})
 
 
 def test_plan_query_allows_iterative_investigation_before_delegation():
@@ -583,7 +591,7 @@ def test_plan_query_allows_iterative_investigation_before_delegation():
     )
 
     assert run_result(ScriptedFlow(llm), g, root) == "done"
-    assert sum(node.type == LLM_OUTPUT for node in g.history(root)) == 4
+    assert sum(node.type == LLM for node in g.history(root)) == 4
     assert len(g.children(root)) == 2
     outputs = [node.data["output"].strip() for node in g.history(root) if node.type == CODE]
     assert outputs[:2] == ["preview", "['requirement A', 'requirement B']"]
@@ -599,21 +607,28 @@ def test_save_writes_a_run_directory(tmp_path):
 
     run = g.save(tmp_path / "run")
     saved = json.loads((run / "graph.json").read_text())
-    assert set(saved) == {"format", "id", "items"}
+    assert set(saved) == {"format", "id", "agents", "nodes", "edges", "edits"}
+    assert saved["format"] == FORMAT_VERSION == 5
     assert saved["id"] == g.id
-    items = saved["items"]
-    assert [item["id"] for item in items] == [item.id for item in g.items()]
-    assert items[0]["data"]["args"] == {"doc": "hi"}
+    assert saved["edits"] == []
+    assert [record["id"] for record in saved["agents"]] == [agent.id for agent in g.agents()]
+    assert [record["id"] for record in saved["nodes"]] == [node.id for node in g.nodes()]
+    assert [record["id"] for record in saved["edges"]] == [edge.id for edge in g.edges()]
+    root_record = saved["agents"][0]
+    assert root_record["args"] == {"doc": "hi"}
+    assert root_record["nodes"] == [node.id for node in root.nodes]
 
     child = g.children(root)[0]
-    [launcher] = g.edges(kind=FROM, source=child.id)
-    edges = [item for item in items if "kind" in item]
-    assert {"kind": FROM, "source": child.id, "target": launcher.target} in [
-        {key: edge[key] for key in ("kind", "source", "target")} for edge in edges
+    [cell] = [node for node in root.nodes if calls.launched(node)]
+    assert {"kind": SPAWN, "source": cell.id, "target": child.id} in [
+        {key: edge[key] for key in ("kind", "source", "target")} for edge in saved["edges"]
     ]
-    child_nodes = [item for item in items if item.get("agent_id") == child.id]
-    assert [item["id"] for item in child_nodes] == [node.id for node in g.history(child)]
-    assert child_nodes[0]["data"]["task"] == "do a"
+    child_record = next(record for record in saved["agents"] if record["id"] == child.id)
+    assert child_record["task"] == "do a"
+    assert child_record["config"] == "default"
+    assert child_record["nodes"] == [node.id for node in g.history(child)]
+    child_nodes = [record for record in saved["nodes"] if record["agent"] == child.id]
+    assert [record["id"] for record in child_nodes] == child_record["nodes"]
 
 
 def test_run_records_seq_and_timing():
@@ -637,24 +652,15 @@ def test_run_records_seq_and_timing():
     for agent in (root, *g.children(root)):
         seqs = [node.seq for node in g.history(agent)]
         assert seqs == sorted(set(seqs))
-    assert [item.seq for item in g.items()] == list(range(len(g.items())))
+    every = [*g.agents(), *g.nodes(), *g.edges()]
+    assert sorted(item.seq for item in every) == list(range(len(every)))
 
-    # Only nodes a harness returned are timed; agent_start and message are written.
-    stepped = [node for node in g.nodes() if node.type in (LLM_OUTPUT, CODE, DONE)]
-    assert stepped and all(node.timing()["duration_ms"] >= 0 for node in stepped)
-    written = g.agents()
-    assert written and all(node.timing() == {} for node in written)
-
-
-def test_appending_off_the_frontier_is_refused():
-    llm = ScriptedLLM([("count", block("x = 2\nprint(x)")), ("2", block("submit(x * 3)"))])
-    g, root = agent_graph("count for me")
-    assert run_result(ScriptedFlow(llm), g, root) == 6
-
-    stale = g.history(root)[1]
-    with pytest.raises(StaleFrontier, match="frontier"):
-        g.append(root, Node(CODE, code=""), after=stale)
-    assert len(g.edges(kind=NEXT, source=stale.id)) == 1
+    # Model turns and cells are timed; messages are written by senders.
+    stepped = [node for node in g.nodes() if node.type in (LLM, CODE)]
+    assert stepped and all(node.finished_at >= node.started_at for node in stepped)
+    written = g.send(root, "and then?")
+    assert written.started_at is None
+    assert written.seq == len(every)
 
 
 def test_structured_output_is_stored_parsed():
@@ -664,7 +670,7 @@ def test_structured_output_is_stored_parsed():
     assert run_result(
         ScriptedFlow(llm), g, root, root_config=AgentConfig(output_schema=schema)
     ) == {"n": 41}
-    assert node_record(g.frontier(root))["data"]["result"] == {"n": 41}
+    assert node_record(g.history(root)[-1])["data"]["result"] == {"n": 41}
 
 
 def test_plain_text_json_reply_is_validated_against_the_schema():
@@ -701,7 +707,7 @@ def test_unstructured_submission_keeps_json_values():
     g, root = agent_graph("return value")
 
     assert run_result(ScriptedFlow(llm), g, root) == expected
-    assert node_record(g.frontier(root))["data"]["result"] == expected
+    assert node_record(g.history(root)[-1])["data"]["result"] == expected
 
 
 def test_unstructured_submission_rejects_non_json_values():
@@ -731,7 +737,7 @@ def test_json_submission_crosses_worker_and_persistence_boundary(tmp_path):
     finally:
         asyncio.run(flow.aclose())
     loaded = reload(g, tmp_path / "json-submission")
-    assert loaded.result(loaded.node(root.id)) == {"n": [1, True, None]}
+    assert loaded.result(loaded.agent(root.id)) == {"n": [1, True, None]}
 
 
 def test_worker_submission_rejects_non_json_values_and_recovers():
@@ -814,7 +820,7 @@ def test_protocol_error_survives_save_load_and_rebuild(tmp_path):
     loaded = reload(g, tmp_path / "protocol-error")
 
     resumed = ScriptedLLM([("stored", block("submit(secret + 1)"))])
-    assert run_result(ScriptedFlow(resumed), loaded, loaded.node(root.id)) == 42
+    assert run_result(ScriptedFlow(resumed), loaded, loaded.agent(root.id)) == 42
     assert sum(1 for n in loaded.nodes(CODE) if n.data["error"]) == 1
 
 
@@ -848,9 +854,11 @@ def test_save_load_roundtrip(tmp_path):
     run_result(ScriptedFlow(llm), g, root)
 
     loaded = reload(g, tmp_path / "run")
-    loaded_root = loaded.node(root.id)
-    assert [item.id for item in loaded.items()] == [item.id for item in g.items()]
-    assert (loaded.result(loaded_root), loaded.terminal(loaded_root)) == ("AB", True)
+    loaded_root = loaded.agent(root.id)
+    assert [agent.id for agent in loaded.agents()] == [agent.id for agent in g.agents()]
+    assert [node.id for node in loaded.nodes()] == [node.id for node in g.nodes()]
+    assert [edge.id for edge in loaded.edges()] == [edge.id for edge in g.edges()]
+    assert (loaded.result(loaded_root), loaded.status(loaded_root) == "done") == ("AB", True)
     [child] = loaded.children(loaded_root)
     assert loaded.path(child) == "root.default-0"
     assert loaded.result(child) == "A"
@@ -862,9 +870,9 @@ def paused_run(tmp_path, name="run"):
     llm = ScriptedLLM([("count", block("secret = 41\nprint('stored')"))])
     g, root = agent_graph("count for me")
     asyncio.run(stream(ScriptedFlow(llm), g, "idle"))
-    assert g.frontier(root).type == CODE
+    assert g.history(root)[-1].type == CODE
     loaded = reload(g, tmp_path / name)
-    return loaded, loaded.node(root.id)
+    return loaded, loaded.agent(root.id)
 
 
 def test_resuming_a_saved_run_rebuilds_its_repl(tmp_path):
@@ -881,7 +889,7 @@ def test_the_rebuild_waits_until_code_needs_the_repl(tmp_path):
     flow = ScriptedFlow(llm)
 
     async def stop_before_execution():
-        async for _ in flow.run_streaming(loaded, until=lambda step: step.node.type == LLM_OUTPUT):
+        async for _ in flow.run_streaming(loaded, until=lambda step: step.node.type == LLM):
             pass
 
     asyncio.run(stop_before_execution())
@@ -901,21 +909,30 @@ def test_halting_mid_delegation_resumes_without_relaunching():
                 "results = await asyncio.gather(slow, fast)\n"
                 "submit(f'{seed}:' + ''.join(results))"
             )
+        calls.append(task)
         if task == "slow":
             return block("await asyncio.sleep(0.2)\nsubmit('S')")
         return block("submit('F')")
 
+    calls: list[str] = []
     g, root = agent_graph("parent")
     flow = ScriptedFlow(StubLLM(reply), runtime=LocalRuntime(repl_timeout=10))
 
     async def halt_at_first_child():
-        async for _ in flow.run_streaming(g, until=lambda step: step.node.type == AGENT_START):
+        async for _ in flow.run_streaming(g, until=lambda step: step.agent is not root):
             pass
 
     try:
         asyncio.run(halt_at_first_child())
+        [cell] = [node for node in root.nodes if node.type == CODE]
+        assert cell.pending
+        kept = list(g.children(root))
+        assert kept
         assert run_result(flow, g, root) == "40:SF"
         assert sorted(child.name for child in g.children(root)) == ["fast", "slow"]
+        assert [node.id for node in root.nodes if node.type == CODE] == [cell.id]
+        assert set(kept) <= set(g.children(root))
+        assert sorted(calls) == ["fast", "slow"]
     finally:
         asyncio.run(flow.aclose())
 
@@ -932,7 +949,7 @@ def test_rebuild_reads_recorded_child_answers_instead_of_relaunching(tmp_path):
         stream(ScriptedFlow(llm), g, parent_turn_ended, root_config=AgentConfig(max_depth=2))
     )
     loaded = reload(g, tmp_path / "run")
-    loaded_root = loaded.node(root.id)
+    loaded_root = loaded.agent(root.id)
 
     resumed = ScriptedLLM([("20", block("submit('parent saw ' + answer)"))])
     assert run_result(ScriptedFlow(resumed), loaded, loaded_root) == "parent saw 20"
@@ -958,40 +975,142 @@ def test_rebuild_restores_llm_query_result_without_another_model_call(tmp_path):
 
     flow = ScriptedFlow(resumed, runtime=LocalRuntime(repl_timeout=10))
     try:
-        assert run_result(flow, loaded, loaded.node(root.id)) == "recorded"
+        assert run_result(flow, loaded, loaded.agent(root.id)) == "recorded"
     finally:
         asyncio.run(flow.aclose())
     assert len(resumed.calls) == 1
 
 
-JOIN_CHILDREN = block("print([await c for c in AGENTS.get_children()])")
+GATHER_THREE = block(
+    "kids = [launch_agent(f'child {i}') for i in range(3)]\nprint(await asyncio.gather(*kids))"
+)
 
 
-def test_attached_subtree_runs_and_reports_to_its_new_parent():
+def gathered_run():
+    """A finished run whose root awaited three children in one cell."""
+    llm = ScriptedLLM(
+        [
+            ("'CHILD 2']", block("submit('original')")),
+            ("fan out", GATHER_THREE),
+            ("child", block("submit(task.upper())")),
+        ]
+    )
+    g, root = agent_graph("fan out")
+    assert run_result(ScriptedFlow(llm), g, root) == "original"
+    cell = next(node for node in root.nodes if node.type == CODE)
+    return g, root, cell
+
+
+def test_replacing_an_awaited_result_reruns_the_cell_in_place():
+    g, root, cell = gathered_run()
+    children = g.children(root)
+    saved = cell.data["calls"]
+    assert [entry["tool"] for entry in saved] == ["launch_agent"] * 3 + ["await"] * 3
+    assert saved[4]["agent"] == children[1].id
+
+    preview = g.replace(cell, 4, "SWAPPED", dry_run=True)
+    assert preview.rerun == [cell.id]
+    assert [node.type for node in root.nodes] == [LLM, CODE, LLM, CODE, DONE]
+    assert g.edits == []
+
+    invalidation = g.replace(cell, 4, "SWAPPED")
+    assert invalidation.rerun == [cell.id]
+    assert invalidation.rewound == [root.id]
+    assert invalidation.removed == []
+    assert [node.type for node in root.nodes] == [LLM, CODE]
+    assert cell.pending and g.status(root) == "running"
+    assert cell.data["calls"][4]["value"] == "SWAPPED"
+    assert g.edits[-1]["op"] == "replace"
+
+    resumed = ScriptedLLM([("SWAPPED", block("submit('swapped')"))])
+    assert run_result(ScriptedFlow(resumed), g, root) == "swapped"
+    assert root.nodes[1] is cell
+    assert not cell.pending
+    assert cell.data["output"].strip() == "['CHILD 0', 'SWAPPED', 'CHILD 2']"
+    assert [node.type for node in root.nodes] == [LLM, CODE, LLM, CODE, DONE]
+    # Nothing relaunched, and the swapped-out child's result isn't delivered as a message.
+    assert g.children(root) == children
+    assert len(resumed.calls) == 1
+    assert not g.nodes(MESSAGE)
+    assert len(g.edges(kind=RETURN, target=cell.id)) == 3
+
+
+def test_editing_a_childs_result_reruns_the_cell_that_awaited_it(tmp_path):
+    g, root, cell = gathered_run()
+    loaded = reload(g, tmp_path / "run")
+    loaded_root, loaded_cell = loaded.agent(root.id), loaded.node(cell.id)
+    first = loaded.children(loaded_root)[0]
+
+    invalidation = loaded.edit(first.nodes[-1], result="EDITED")
+    assert invalidation.rerun == [cell.id]
+    assert root.id in invalidation.rewound
+    assert loaded.result(first) == "EDITED"
+    assert [node.type for node in loaded_root.nodes] == [LLM, CODE]
+    assert loaded_cell.pending
+
+    resumed = ScriptedLLM([("EDITED", block("submit('edited')"))])
+    assert run_result(ScriptedFlow(resumed), loaded, loaded_root) == "edited"
+    assert loaded_cell.data["output"].strip() == "['EDITED', 'CHILD 1', 'CHILD 2']"
+    assert len(resumed.calls) == 1
+    assert loaded.edges(kind=RETURN, source=first.nodes[-1].id, target=cell.id)
+    assert not loaded.nodes(MESSAGE)
+
+
+JOIN_CHILDREN = block("print([await c for c in AGENTS.children])")
+
+
+def test_host_spawned_child_runs_and_returns_to_its_parent(tmp_path):
     g, root = agent_graph("parent")
-    branch = g.spawn("child", name="branch0")
-    g.attach(root, branch)
+    branch = g.add_agent("child", parent=root, name="branch0")
+    [spawn] = g.edges(kind=SPAWN, target=branch.id)
+    assert spawn.source == root.id
+    assert branch.config_name == "default"
+
+    loaded = reload(g, tmp_path / "run")
+    loaded_root, loaded_branch = loaded.agent(root.id), loaded.agent(branch.id)
+    assert loaded.children(loaded_root) == [loaded_branch]
 
     flow = ScriptedFlow(
         ScriptedLLM(
             [
-                ("now report to you", JOIN_CHILDREN),
                 ("['finished']", block("submit('finished')")),
+                ("parent", JOIN_CHILDREN),
                 ("child", block("submit('finished')")),
             ]
         )
     )
 
-    assert run_result(flow, g, root) == "finished"
-    assert g.children(root) == [branch]
-    assert g.path(branch) == "root.branch0"
+    assert run_result(flow, loaded, loaded_root) == "finished"
+    assert loaded.path(loaded_branch) == "root.branch0"
+    cell = next(node for node in loaded_root.nodes if node.type == CODE)
+    [returned] = loaded.edges(kind=RETURN, target=cell.id)
+    assert returned.source == loaded_branch.nodes[-1].id
 
 
-def test_controller_attaches_multiple_subtrees_between_streams():
+def test_stopping_on_a_childs_done_still_delivers_its_result():
+    g = Graph()
+    root = g.add_agent("parent")
+    g.append(root, Node(IDLE))
+    child = g.add_agent("child", parent=root, name="child")
+    flow = ScriptedFlow(ScriptedLLM([("child", block("submit('finished')"))]))
+
+    async def drive() -> None:
+        async for _ in flow.run_streaming(g, until=lambda s: s.node.type == DONE):
+            pass
+
+    asyncio.run(drive())
+
+    [message] = root.inbox
+    assert "finished" in message.data["text"]
+    [returned] = g.edges(kind=RETURN, target=message.id)
+    assert returned.source == child.nodes[-1].id
+
+
+def test_host_adds_prepared_children_between_streams():
     llm = ScriptedLLM(
         [
             ("['A', 'B']", block("submit('AB')")),
-            ("now report to you", JOIN_CHILDREN),
+            ("prepared", JOIN_CHILDREN),
             ("prepare", block("print('prepared')")),
             ("child a", block("submit(value)")),
             ("child b", block("submit(value)")),
@@ -1001,22 +1120,17 @@ def test_controller_attaches_multiple_subtrees_between_streams():
     g, root = agent_graph("prepare")
 
     def prepared(task, name, code):
-        """A subtree built in its own graph, as a controller would prepare it."""
-        side = Graph()
-        agent = side.spawn(task, name=name)
-        side.append(agent, Node(CODE, code=code, output=task))
-        g.merge(side)
+        """A child with a recorded cell, as a controller would prepare it."""
+        agent = g.add_agent(task, parent=root, name=name)
+        g.append(agent, Node(CODE, code=code, output=task))
         return agent
 
     async def main():
         async for _step in flow.run_streaming(g, until="idle"):
             pass
 
-        children = [
-            prepared("child a", "a", "value = 'A'"),
-            prepared("child b", "b", "value = 'B'"),
-        ]
-        g.attach(root, *children)
+        prepared("child a", "a", "value = 'A'")
+        prepared("child b", "b", "value = 'B'")
 
         async for _step in flow.run_streaming(g):
             pass
@@ -1025,24 +1139,13 @@ def test_controller_attaches_multiple_subtrees_between_streams():
 
     assert g.result(root) == "AB"
     assert [child.name for child in g.children(root)] == ["a", "b"]
-
-
-def test_attach_message_survives_save_load(tmp_path):
-    g, root = agent_graph("parent")
-    branch = g.spawn("child", name="branch0")
-    message = g.attach(root, branch)
-
-    loaded = reload(g, tmp_path / "run")
-    [loaded_message] = loaded.inbox(loaded.node(root.id))
-
-    assert loaded_message.data == message.data
-    assert [c.name for c in loaded.children(loaded.node(root.id))] == ["branch0"]
+    assert [g.result(child) for child in g.children(root)] == ["A", "B"]
 
 
 def test_rebuilding_agents_can_skip_their_own_unrepeatable_work(tmp_path):
     trace: list[str] = []
 
-    @tool("Record a live side effect.", proxy=True)
+    @tool("Record a live side effect.")
     def log(value):
         trace.append(value)
 
@@ -1056,7 +1159,7 @@ def test_rebuilding_agents_can_skip_their_own_unrepeatable_work(tmp_path):
     loaded = reload(g, tmp_path / "run")
     resumed = ScriptedFlow(ScriptedLLM([("set up", block("submit('ok')"))]))
     resumed.inject("log", log)
-    assert run_result(resumed, loaded, loaded.node(root.id)) == "ok"
+    assert run_result(resumed, loaded, loaded.agent(root.id)) == "ok"
     assert trace == ["live"]  # the rebuild saw RLMFLOW_REPLAY=1 and skipped it
 
 
@@ -1067,7 +1170,7 @@ def test_a_finished_run_resumes_to_its_recorded_answer(tmp_path):
 
     loaded = reload(g, tmp_path / "run")
     idle = ScriptedLLM([])
-    assert run_result(ScriptedFlow(idle), loaded, loaded.node(root.id)) == "six"
+    assert run_result(ScriptedFlow(idle), loaded, loaded.agent(root.id)) == "six"
     assert idle.calls == []  # nothing left to step
 
 
@@ -1165,8 +1268,9 @@ def test_saving_again_rewrites_the_whole_log(tmp_path):
     g.save(run)
 
     loaded = Graph.load(run)
-    assert [item.id for item in loaded.items()] == [item.id for item in g.items()]
-    assert loaded.inbox(loaded.node(root.id)) == [loaded.node(follow_up.id)]
+    assert [node.id for node in loaded.nodes()] == [node.id for node in g.nodes()]
+    assert [edge.id for edge in loaded.edges()] == [edge.id for edge in g.edges()]
+    assert loaded.agent(root.id).inbox == [loaded.node(follow_up.id)]
 
 
 def test_max_depth_refusal():
@@ -1258,7 +1362,7 @@ def test_background_child_outlives_root_and_stream_drains_it():
 
     flow = ScriptedFlow(BackgroundLLM(), workers=2)
     g = Graph()
-    root = g.create_agent("launch without joining")
+    root = g.add_agent("launch without joining")
 
     async def run():
         observed = []
@@ -1266,7 +1370,7 @@ def test_background_child_outlives_root_and_stream_drains_it():
             observed.append(step.node)
             if step.node.type == DONE and step.agent is root:
                 assert g.result(root) == "running"
-                assert not g.terminal(g.children(root)[0])
+                assert not g.status(g.children(root)[0]) == "done"
                 release_child.set()
         await flow.aclose()
         return observed
@@ -1294,7 +1398,7 @@ def test_child_handle_waits_on_a_later_turn():
             ),
             ("child task", block("submit('child answer')")),
             ("queued default-0", wait),
-            ("[handoff root.default-0]", wait),
+            ("[result root.default-0]", wait),
         ]
     )
     g, root = agent_graph("start later")
@@ -1367,12 +1471,12 @@ def test_agents_result_matches_a_collected_child():
         [
             ("inspect waited", block("waited = launch_agent('child task')\nprint(await waited)")),
             ("child task", block("submit('child answer')")),
-            ("child answer", block("submit(await AGENTS.get(waited).wait_for_result())")),
+            ("child answer", block("submit(await AGENTS[waited])")),
         ]
     )
     flow = ScriptedFlow(llm)
     g = Graph()
-    root = g.create_agent("inspect waited")
+    root = g.add_agent("inspect waited")
 
     assert run_result(flow, g, root) == "child answer"
 
@@ -1404,7 +1508,7 @@ def test_step_failure_reaches_the_caller():
 
 
 def test_custom_tool_is_injected():
-    @tool("Upper-case a string.")
+    @tool("Upper-case a string.", where="repl")
     def shout(text: str) -> str:
         return text.upper()
 
@@ -1412,6 +1516,118 @@ def test_custom_tool_is_injected():
     flow = ScriptedFlow(llm, tools=[shout])
     g, root = agent_graph("say it")
     assert run_result(flow, g, root) == "HI"
+
+
+def prompt_text(llm) -> str:
+    return "\n".join(message["content"] for message in llm.calls[0])
+
+
+def test_a_plain_function_is_a_host_tool_described_by_its_docstring():
+    lock = threading.Lock()  # unpicklable, so this only works if the call stays on the host
+    calls: list[str] = []
+
+    def lookup(word: str) -> str:
+        """Look up a word in the host's dictionary."""
+        with lock:
+            calls.append(word)
+        return word[::-1]
+
+    llm = ScriptedLLM([("", block("submit(lookup('abc'))"))])
+    flow = ScriptedFlow(llm, tools=[lookup])
+    g, root = agent_graph("look it up")
+    assert run_result(flow, g, root) == "cba"
+    assert calls == ["abc"]
+    assert "`lookup(word: str) -> str`: Look up a word in the host's dictionary." in prompt_text(
+        llm
+    )
+
+
+def test_a_tool_from_a_json_schema_gets_a_signature_and_dict_arguments():
+    received: list[dict] = []
+
+    async def call(arguments: dict) -> str:
+        received.append(arguments)
+        return f"{arguments['city']} x{arguments.get('days', 1)}"
+
+    forecast = tool_from_schema(
+        "forecast",
+        "Weather for a city.",
+        {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "default": 1},
+                "city": {"type": "string", "description": "City name."},
+            },
+            "required": ["city"],
+        },
+        call,
+    )
+    llm = ScriptedLLM([("", block("submit(await forecast('Austin', days=3))"))])
+    g, root = agent_graph("weather")
+    assert run_result(ScriptedFlow(llm, tools=[forecast]), g, root) == "Austin x3"
+    assert received == [{"city": "Austin", "days": 3}]
+    assert (
+        "`await forecast(city: str, days: int = 1)`: Weather for a city. Arguments: `city`: City name."
+        in prompt_text(llm)
+    )
+
+
+def test_a_toolkit_is_opened_for_the_run_and_closed_after_it():
+    events: list[str] = []
+
+    class Counter:
+        async def open(self):
+            events.append("open")
+
+            def count() -> int:
+                """Count calls."""
+                events.append("count")
+                return 7
+
+            return [count]
+
+        async def close(self):
+            events.append("close")
+
+    flow = ScriptedFlow(ScriptedLLM([("", block("submit(count())"))]), tools=[Counter()])
+    g, root = agent_graph("count")
+    assert run_result(flow, g, root) == 7
+    assert events == ["open", "count", "close"]
+    assert "count" not in flow.tools
+
+
+def test_an_attached_image_reaches_the_model_with_the_cells_output(tmp_path):
+    picture = tmp_path / "frame.png"
+    picture.write_bytes(b"\x89PNG fake")
+
+    def look() -> str:
+        """Look at the frame."""
+        attach_image(picture)
+        return "looked"
+
+    llm = ScriptedLLM([("looked", block("submit('ok')")), ("look", block("print(look())"))])
+    g, root = agent_graph("look")
+    assert run_result(ScriptedFlow(llm, tools=[look]), g, root) == "ok"
+
+    code = next(n for n in g.history(root) if n.type == CODE)
+    assert code.data["images"] == [str(picture)]
+    text, image = llm.calls[1][-1]["content"]
+    assert text["text"].startswith("looked")
+    assert image == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64," + base64.b64encode(b"\x89PNG fake").decode()},
+    }
+
+
+def test_anthropic_gets_image_parts_as_base64_blocks():
+    content = [
+        {"type": "text", "text": "out"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}},
+    ]
+    assert anthropic_content(content) == [
+        {"type": "text", "text": "out"},
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "QUJD"}},
+    ]
 
 
 def test_child_config_output_schema_comes_back_parsed():
@@ -1456,7 +1672,7 @@ def test_child_config_model_routes_children():
     )
 
     g = Graph()
-    root = g.create_agent("delegate")
+    root = g.add_agent("delegate")
 
     assert run_result(flow, g, root) == "parent saw cheap result"
     assert g.children(root)[0].config.model == "fast"
@@ -1610,7 +1826,7 @@ def test_exhausted_budget_rejects_new_children():
     flow = ScriptedFlow(ScriptedLLM([]))
     g, root = agent_graph("parent")
     root.bind_config(AgentConfig(max_budget=1))
-    turn = g.append(root, Node(LLM_OUTPUT, text="", usage={"output_tokens": 1}))
+    turn = g.append(root, Node(LLM, text="", usage={"output_tokens": 1}))
 
     with pytest.raises(RuntimeError, match="max_budget"):
         agent_tools.spawn(flow, Step(g, root, turn), "too late")

@@ -18,7 +18,19 @@ from pathlib import Path
 
 import cloudpickle
 
-from rlmflow import CODE, DONE, LLM_OUTPUT, AgentConfig, Flow, Graph, Node, Step, current_step
+from rlmflow import (
+    CODE,
+    DONE,
+    IDLE,
+    LLM,
+    Agent,
+    AgentConfig,
+    Flow,
+    Graph,
+    Node,
+    Step,
+    current_step,
+)
 from rlmflow.consumers import LiveGraphTree
 from rlmflow.harnesses.repl import ReplHarness, llm_turns
 from rlmflow.llm import client_for
@@ -333,7 +345,7 @@ class ShepherdFlow(Flow):
 async def play_jam(
     flow: Flow,
     g: Graph,
-    worker: Node,
+    worker: Agent,
     pushes: int,
     *,
     construct: str = CONSTRUCT,
@@ -350,7 +362,7 @@ async def play_jam(
     """
 
     def written(text: str) -> Step:
-        return Step(g, worker, g.append(worker, Node(LLM_OUTPUT, text=text)))
+        return Step(g, worker, g.append(worker, Node(LLM, text=text)))
 
     # Each written turn is followed by its cell, run the way the live loop runs it.
     yield written(f"construct the Sokoban game\n\n```repl\n{construct}\n```")
@@ -370,7 +382,7 @@ async def play_jam(
             return
 
 
-def board(flow: Flow, agent: Node) -> str:
+def board(flow: Flow, agent: Agent) -> str:
     return flow.runtime.get_env_var(agent, "board") or ""
 
 
@@ -443,7 +455,7 @@ async def run_shepherd(
     # One graph holds the whole run: the worker, the shepherd, its previews, and
     # the recovery branches it adopts.
     g = Graph()
-    worker = g.spawn(WORKER_QUERY, config="worker")
+    worker = g.add_agent(WORKER_QUERY, config="worker")
 
     # The terminal view is the same shape as the other examples': one live agent
     # tree, redrawn in place, whether or not a Gradio dashboard is also running.
@@ -475,7 +487,7 @@ async def run_shepherd(
     if tree is not None:
         tree.track(g, label="run")
 
-    def announce(agent: Node, name: str) -> None:
+    def announce(agent: Agent, name: str) -> None:
         """Name a lane."""
         labels[agent.id] = name
         panels.label(agent, name)
@@ -550,7 +562,7 @@ async def run_shepherd(
             plans,
             expected_plans=n_branches,
         )
-        shepherd = g.spawn(
+        shepherd = g.add_agent(
             META_QUERY.format(n=n_branches),
             config="shepherd",
             jam=json.dumps(tools["jam"]),
@@ -575,9 +587,19 @@ async def run_shepherd(
                 dashboard.finish(f"done — {message}")
             return
 
+        # Every branch is a fork of the worker launched by the cell that recorded the
+        # plans, so the shepherd adopts them as its children and the search is one tree.
+        planning = g.history(shepherd)[-1]
         branches = [
             await prepare_branch(
-                flow, g, worker, plan, index, branch_pushes, slack=12 if simple_moves else 4
+                flow,
+                g,
+                worker,
+                plan,
+                index,
+                branch_pushes,
+                slack=12 if simple_moves else 4,
+                by=planning,
             )
             for index, plan in enumerate(plans)
         ]
@@ -589,14 +611,19 @@ async def run_shepherd(
             )
             dashboard.set_status("running recovery branches in parallel…")
 
-        # The shepherd adopts every branch; it hears from each one as it finishes.
-        g.attach(shepherd, *(branch.agent for branch in branches))
+        # The shepherd ends its turn waiting on its branches, so it takes no model
+        # turn while they play; their results reach it as messages as they finish.
+        show(Step(g, shepherd, g.append(shepherd, Node(IDLE))))
 
         def collected(step: Step) -> bool:
-            return (step.node.type == CODE and step.agent.id == shepherd.id) or expired()
+            return all(g.status(branch.agent) == "done" for branch in branches) or expired()
 
         async for item in checkpoint_stream(flow.run_streaming(g, until=collected), g, run_dir):
             show(item)
+        # The run stops as the last branch lands, before its result is posted, so post
+        # what is still owed, take the results in, then finish with the pick.
+        flow.deliver_results(g, shepherd)
+        g.deliver(shepherd)
 
         best = max(branches, key=lambda branch: branch.score)
         cut_short = " · stopped at the time budget" if expired() else ""

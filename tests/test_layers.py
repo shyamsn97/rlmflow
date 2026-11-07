@@ -22,14 +22,13 @@ LAYERS = {
     "rlmflow.cli": 6,
     "rlmflow.consumers": 6,
     "rlmflow.view": 6,
-    "rlmflow.rao": 6,
     "rlmflow.__main__": 6,
     "rlmflow": 6,
 }
 
-# Modules that sit lower than their package. Layer-0 modules import nothing
-# from rlmflow.
-OVERRIDES: dict[str, int] = {}
+# Modules that sit at a different layer from their package. Layer-0 modules
+# import nothing from rlmflow; the MCP toolkit builds tools.
+OVERRIDES: dict[str, int] = {"rlmflow.integrations.mcp": 4}
 
 
 def module_name(path: Path) -> str:
@@ -118,8 +117,8 @@ def test_the_repl_worker_imports_only_leaf_modules():
     assert not found, "\n".join(found)
 
 
-def test_the_worker_copy_of_the_agent_reference_key_matches_the_graph():
-    from rlmflow.graph.nodes import AGENT_REF_KEY
+def test_the_worker_names_of_saved_calls_match_the_graph():
+    from rlmflow.graph import calls
     from rlmflow.runtime import repl
 
-    assert repl.AGENT_REF_KEY == AGENT_REF_KEY
+    assert (repl.AGENT_WAIT_TOOL, repl.AGENT_SEND_TOOL) == (calls.AWAIT, calls.SEND)

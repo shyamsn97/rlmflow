@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
 
-from rlmflow.graph.nodes import CODE, DONE, MESSAGE, WAITING, Node, Step, running_step
+from rlmflow.graph.nodes import CODE, DONE, IDLE, MESSAGE, Agent, Node, Step, running_step
 
 
 class Pool(ABC):
@@ -186,7 +186,7 @@ class StepResult:
     error: BaseException | None = None
 
     @property
-    def agent(self) -> Node:
+    def agent(self) -> Agent:
         return self.step.agent
 
 
@@ -202,7 +202,7 @@ class TaskQueue:
     def __bool__(self) -> bool:
         return bool(self.running)
 
-    def __contains__(self, agent: Node) -> bool:
+    def __contains__(self, agent: Agent) -> bool:
         return agent.id in self.running
 
     def submit(self, step: Step, fn: Callable[[Step], Awaitable[StepResult]]) -> None:
@@ -245,7 +245,7 @@ class TaskQueue:
         async with self.changed:
             await self.changed.wait_for(predicate)
 
-    async def cancel(self, agents: Iterable[Node] | None = None) -> None:
+    async def cancel(self, agents: Iterable[Agent] | None = None) -> None:
         """Cancel the steps of these agents, or of every agent when omitted."""
         keys = set(self.running) if agents is None else {agent.id for agent in agents}
         tasks = [task for key, (_step, task) in self.running.items() if key in keys]
@@ -263,7 +263,7 @@ _FULL_RUN = frozenset({"done", "finished"})
 _BOUNDARIES: dict[str, Boundary] = {
     # Messages are written by senders, not steps.
     "next": lambda step: step.node.type != MESSAGE,
-    "idle": lambda step: step.node.type in (CODE, WAITING, DONE),
+    "idle": lambda step: step.node.type in (CODE, IDLE, DONE),
 }
 
 

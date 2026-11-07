@@ -2,11 +2,8 @@
 
 Run an agent, or read one you already ran::
 
-    rlmflow tui                                   the coding agent in the dashboard
-    rlmflow tui --query "add a test"              same, first turn already going
-    rlmflow run tui "add a test for parse_args"   same, query as a positional
-    rlmflow run print "fix the failing test"      no dashboard, just the stream
-    rlmflow run --workdir ./proj --model gpt-5 tui
+    rlmflow run print "add a test for parse_args" the coding agent: stream the tree, print the answer
+    rlmflow run --workdir ./proj --model gpt-5 --query "fix the failing test"
     rlmflow view show runs/coding/graph           the tree, then the timeline
     rlmflow view show runs/coding/graph --step 3  just that step, with its content
     rlmflow render html runs/coding/graph r.html  steppable, single file
@@ -217,7 +214,7 @@ class VersionCLI:
             installed = "unknown"
         print(f"rlmflow {installed}")
         print(f"python {platform.python_version()} on {platform.system().lower()}")
-        extras = ("openai", "anthropic", "textual", "rich", "gradio", "docker", "modal", "PIL")
+        extras = ("openai", "anthropic", "rich", "gradio", "docker", "modal", "PIL")
         present = [name for name in extras if importlib.util.find_spec(name) is not None]
         print(f"extras: {', '.join(present) if present else 'none'}")
         return ""
@@ -236,10 +233,7 @@ class PluginCLI:
 class RlmflowCLI:
     """Run agents, and read the graphs they leave behind.
 
-    rlmflow tui                             the coding agent, in the dashboard
-    rlmflow tui --query "fix the tests"     same, with the first turn underway
-    rlmflow run tui "fix the tests"         the dashboard, query as a positional
-    rlmflow run print "fix the tests"       no dashboard: stream it, print the answer
+    rlmflow run print "fix the tests"       the coding agent: stream it, print the answer
     rlmflow view show runs/coding/graph     the agent tree, then the timeline
     rlmflow render gif runs/coding/graph r.gif
     rlmflow config show                     resolved settings and where each came from
@@ -247,11 +241,10 @@ class RlmflowCLI:
     """
 
     def __init__(self) -> None:
-        from rlmflow.cli.run import RunCLI, TuiCLI
+        from rlmflow.cli.run import RunCLI
         from rlmflow.cli.view import RenderCLI, ViewCLI
 
         self.run = RunCLI
-        self.tui = TuiCLI
         self.view = ViewCLI()
         self.render = RenderCLI()
         self.config = ConfigCLI()

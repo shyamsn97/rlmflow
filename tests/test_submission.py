@@ -10,8 +10,8 @@ def test_immediate_submission_adds_no_model_turn():
 
     assert run_result(flow, g, root) == "answer"
     history = g.history(root)
-    assert [node.type for node in history] == ["agent_start", "llm_output", "done"]
-    assert history[-1].data["code"] == "submit('answer')"
+    assert [node.type for node in history] == ["llm", "code", "done"]
+    assert history[-2].data["code"] == "submit('answer')"
 
 
 def test_stdout_submission_is_accepted_without_an_extra_turn():
@@ -20,8 +20,8 @@ def test_stdout_submission_is_accepted_without_an_extra_turn():
     g, root = agent_graph("Count the records.")
 
     assert run_result(flow, g, root) == "Answer: 4"
-    assert sum(node.type == "llm_output" for node in g.history(root)) == 1
-    assert g.frontier(root).data["output"] == "count=4"
+    assert sum(node.type == "llm" for node in g.history(root)) == 1
+    assert g.history(root)[-2].data["output"] == "count=4"
 
 
 def test_finish_alias_is_gone():
@@ -43,7 +43,7 @@ def test_output_schema_failure_is_a_code_error_and_the_agent_retries():
     assert run_result(flow, g, root, root_config=AgentConfig(output_schema=schema)) == {"ok": True}
     rejected = next(node for node in g.history(root) if node.type == CODE)
     assert rejected.data["error"] is True and "ok" in rejected.data["output"]
-    assert g.frontier(root).type == DONE
+    assert g.history(root)[-1].type == DONE
 
 
 def test_output_schema_accepts_a_json_text_reply():
@@ -59,4 +59,4 @@ def test_plain_text_reply_is_the_final_answer():
     g, root = agent_graph("Answer.")
 
     assert run_result(flow, g, root) == "The answer is 4."
-    assert [node.type for node in g.history(root)] == ["agent_start", "llm_output", "done"]
+    assert [node.type for node in g.history(root)] == ["llm", "done"]

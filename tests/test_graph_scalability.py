@@ -4,25 +4,21 @@ import pytest
 from helpers import agent_graph
 
 from rlmflow import (
-    AGENT_START,
     CODE,
-    DEPENDS_ON,
-    LLM_OUTPUT,
+    LLM,
+    Agent,
     AgentConfig,
-    Edge,
     Graph,
-    InvariantError,
     LLMUsage,
     Node,
     persistence,
 )
+from rlmflow.graph import calls
 
 
-def chain(length: int) -> tuple[Graph, Node, list[Node]]:
+def chain(length: int) -> tuple[Graph, Agent, list[Node]]:
     g, root = agent_graph("deep")
-    nodes: list[Node] = [root]
-    for index in range(length - 1):
-        nodes.append(g.append(root, Node(CODE, code=str(index), output="")))
+    nodes = [g.append(root, Node(CODE, code=str(index), output="")) for index in range(length)]
     return g, root, nodes
 
 
@@ -34,12 +30,23 @@ def test_deep_graph_operations_are_iterative(tmp_path):
 
     g.save(tmp_path / "deep")
     loaded = Graph.load(tmp_path / "deep")
-    assert len(loaded.history(loaded.node(root.id))) == 10_000
+    assert len(loaded.history(loaded.agent(root.id))) == 10_000
     assert len(loaded) == len(g)
 
     fork = g.fork(nodes[4_999])
-    assert g.history(fork) == [*nodes[:5_000], fork]
-    assert g.frontier(fork) is nodes[4_999]
+    assert g.history(fork) == nodes[:5_000]
+    assert g.history(fork)[-1] is nodes[4_999]
+
+
+def test_deep_agent_chains_are_iterative():
+    g, root = agent_graph("deep")
+    agent = root
+    for _ in range(2_000):
+        agent = g.add_agent("deeper", parent=agent)
+
+    assert (len(g.lineage(agent)) - 1) == 2_000
+    assert len(g.subtree(root)) == 2_001
+    assert g.lineage(agent)[0] is root
 
 
 def test_fork_and_persistence_preserve_full_config_without_sharing_values(tmp_path):
@@ -59,7 +66,7 @@ def test_fork_and_persistence_preserve_full_config_without_sharing_values(tmp_pa
 
     fork = g.fork(root, name="forked")
     g.save(tmp_path / "configured")
-    loaded = Graph.load(tmp_path / "configured").node(root.id)
+    loaded = Graph.load(tmp_path / "configured").agent(root.id)
 
     assert fork.config_name == root.config_name is None
     assert loaded.config == root.config
@@ -69,65 +76,54 @@ def test_fork_and_persistence_preserve_full_config_without_sharing_values(tmp_pa
 
 def test_reads_count_usage_agents_and_errors():
     g, root = agent_graph("indexed")
-    g.append(root, Node(LLM_OUTPUT, text="answer", usage={"input_tokens": 7, "output_tokens": 3}))
+    g.append(root, Node(LLM, text="answer", usage={"input_tokens": 7, "output_tokens": 3}))
     cell = g.append(root, Node(CODE, code="delegate", output=""))
-    child = g.spawn("child", by=cell, name="child")
+    child = g.add_agent("child", parent=cell, name="child")
     error = g.append(child, Node(CODE, code="1/0", output="ZeroDivisionError", error=True))
 
     assert g.usage() == LLMUsage(input_tokens=7, output_tokens=3)
     assert g.usage([child]) == LLMUsage()
-    assert g.tree(root) == [root, child]
-    assert g.node(child.id) is child
+    assert g.subtree(root) == [root, child]
+    assert g.agent(child.id) is child
     assert [n for n in g.nodes(CODE) if n.data.get("error")] == [error]
-    assert len(g.nodes()) == 5
+    assert len(g.nodes()) == 3 and len(g.agents()) == 2
 
 
-def test_saved_log_is_flat_ordered_and_strict(tmp_path):
+def test_saved_graph_is_flat_ordered_and_strict(tmp_path):
     g, _root, _nodes = chain(4)
     run = g.save(tmp_path / "run")
     document = json.loads((run / "graph.json").read_text())
 
-    assert set(document) == {"format", "id", "items"}
-    assert [item["seq"] for item in document["items"]] == list(range(len(document["items"])))
-    assert all("children" not in item and "parent_id" not in item for item in document["items"])
+    assert set(document) == {"format", "id", "agents", "nodes", "edges", "edits"}
+    seqs = [item["seq"] for item in document["nodes"]]
+    assert seqs == sorted(seqs)
+    assert all("children" not in item and "parent_id" not in item for item in document["agents"])
 
     def broken(edit) -> Graph:
         data = json.loads(json.dumps(document))
-        edit(data["items"])
+        edit(data["nodes"])
         (run / "graph.json").write_text(json.dumps(data))
         return Graph.load(run)
 
-    with pytest.raises(ValueError, match="out of log order"):
-        broken(lambda items: items.reverse())
     with pytest.raises(ValueError, match="unknown node type 'unknown_query'"):
         broken(lambda items: items[1].update(type="unknown_query"))
+    with pytest.raises(ValueError, match="unknown node type 'llm_output'"):
+        broken(lambda items: items[1].update(type="llm_output"))
     with pytest.raises(TypeError, match="data must be an object"):
         broken(lambda items: items[1].update(data=[]))
-
-
-def test_graph_rejects_dependency_cycles_and_missing_producers():
-    g, root = agent_graph("root")
-    cell = g.append(root, Node(CODE, code="launch", output=""))
-    left = g.spawn("left", by=cell, name="left")
-    right = g.spawn("right", by=cell, name="right", depends_on=[left])
-
-    with pytest.raises(InvariantError):
-        g.add_edge(Edge(kind=DEPENDS_ON, source=left.id, target=right.id))
-    with pytest.raises(InvariantError):
-        g.spawn("orphan", depends_on=[Node(AGENT_START, task="missing")])
 
 
 def test_persistence_validates_and_round_trips_recorded_calls(tmp_path):
     g, root = agent_graph("root")
     cell = Node(CODE, code="query", output="done")
-    cell.record_call("llm_query", 0, {"answer": 42})
+    calls.record(cell, "llm_query", 0, value={"answer": 42})
     g.append(root, cell)
 
     g.save(tmp_path / "run")
     [loaded_cell] = Graph.load(tmp_path / "run").nodes(CODE)
-    assert loaded_cell.calls("llm_query") == {0: {"answer": 42}}
+    assert calls.saved(loaded_cell, "llm_query", 0)["value"] == {"answer": 42}
 
-    cell.data["calls"]["llm_query"]["1"] = object()
+    cell.data["calls"].append({"tool": "llm_query", "value": object()})
     with pytest.raises(TypeError, match="must be strict JSON"):
         g.save(tmp_path / "bad")
 
@@ -135,43 +131,39 @@ def test_persistence_validates_and_round_trips_recorded_calls(tmp_path):
 def test_graph_file_is_the_atomic_save_commit_point(tmp_path, monkeypatch):
     g, root, _nodes = chain(2)
     run = g.save(tmp_path / "run")
-    committed = [item.id for item in g.items()]
+    committed = [node.id for node in g.nodes()]
     g.append(root, Node(CODE, code="new work", output=""))
-    write_json = persistence._write_json
+    write_text = persistence._write_text
 
-    def interrupt_graph_commit(path, data):
+    def interrupt_graph_commit(path, text):
         if path.name == "graph.json":
             raise OSError("simulated crash before graph commit")
-        write_json(path, data)
+        write_text(path, text)
 
-    monkeypatch.setattr(persistence, "_write_json", interrupt_graph_commit)
+    monkeypatch.setattr(persistence, "_write_text", interrupt_graph_commit)
     with pytest.raises(OSError, match="simulated crash"):
         g.save(run)
 
-    assert [item.id for item in Graph.load(run).items()] == committed
+    assert [node.id for node in Graph.load(run).nodes()] == committed
 
 
 def test_large_args_are_content_addressed_once(tmp_path):
     large = "payment,row\n" + ("merchant,100.00\n" * 8_000)
     g, root = agent_graph("root", args={"data": large})
     cell = g.append(root, Node(CODE, code="delegate", output=""))
-    child = g.spawn("child", by=cell, name="child", data=large)
+    child = g.add_agent("child", parent=cell, name="child", data=large)
 
     run = g.save(tmp_path / "run")
     graph_text = (run / "graph.json").read_text(encoding="utf-8")
-    refs = [
-        item["data"]["args"]["data"]
-        for item in json.loads(graph_text)["items"]
-        if item.get("type") == AGENT_START
-    ]
+    refs = [agent["args"]["data"] for agent in json.loads(graph_text)["agents"]]
 
     assert len(list((run / "blobs").iterdir())) == 1
-    assert len({json.dumps(ref, sort_keys=True) for ref in refs}) == 1
+    assert len(refs) == 2 and len({json.dumps(ref, sort_keys=True) for ref in refs}) == 1
     assert large not in graph_text
 
     loaded = Graph.load(run)
-    assert loaded.node(root.id).args["data"] == large
-    assert loaded.node(child.id).args["data"] == large
+    assert loaded.agent(root.id).args["data"] == large
+    assert loaded.agent(child.id).args["data"] == large
 
 
 def test_removed_tree_apis_have_no_compatibility_aliases():
@@ -179,4 +171,6 @@ def test_removed_tree_apis_have_no_compatibility_aliases():
         assert not hasattr(Node, name), name
     for name in ("frontier", "sub_agents", "transcript", "result", "save", "load"):
         assert not hasattr(Node, name), name
+    for name in ("attach", "merge", "as_of", "items", "depends_on", "inputs", "tree", "terminal"):
+        assert not hasattr(Graph, name), name
     assert not hasattr(persistence, "to_document")

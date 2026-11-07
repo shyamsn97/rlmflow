@@ -1,32 +1,34 @@
 # Graph manipulation
 
 Tiny self-contained scripts that show what an `rlmflow.Graph` can do. No
-LLM keys needed — every example builds its own graph by hand and reads it back
-with `Graph`'s methods, so they finish in milliseconds and can be read top-to-bottom.
+LLM keys needed: they build their graph by hand, or run a scripted model that
+stands in for the LLM, so they finish in seconds and can be read top-to-bottom.
 
-The graph is an append-only log. `g.append` continues an agent, `g.fork`
-branches from an earlier node to revise history, and `g.attach` gives agents
-prepared elsewhere a launch action under a parent. There is intentionally no
-in-place delete or reparent operation.
+A graph holds agents, the nodes of each agent's history, and the edges between
+them (`spawn`, `return`, `message`, `fork`). `g.append` continues an agent,
+`g.spawn` launches one, `g.fork` branches from an earlier node, and `g.edit`,
+`g.delete`, `g.remove` and `g.replace` change the past: each returns the
+`Invalidation` it caused (pass `dry_run=True` to only see it), and the next
+`flow.run(g)` redoes just that.
 
 | script | what it shows |
 |---|---|
-| `01_query.py` | `g.nodes()`, node types, errors, token usage, and the final result |
+| `01_query.py` | `g.agents()`, `g.nodes()`, edges, errors, statuses, token usage, and the final result |
 | `02_navigate.py` | each agent's history, its children, and an indented agent tree |
-| `03_edit_frontier.py` | message a finished agent, reject stale edits, and revise with `g.fork` |
+| `03_edit.py` | `g.edit` a child's result and `g.replace` one saved call (with `dry_run`), then message a finished agent |
 | `04_save_load.py` | `g.save()` / `Graph.load()` run-directory round-trip |
-| `05_timeline.py` | every prefix of the log is an earlier graph |
+| `05_timeline.py` | `replay(g)`: the graph after each agent and node, as real earlier graphs |
 | `06_fork.py` | `g.fork` for divergent branches that share a prefix |
-| `07_attach_subtree.py` | import agents from another graph and adopt them with `g.attach` |
+| `07_host_spawn.py` | finished agents written from host code, and `g.add_agent(parent=...)` to launch a child |
 | `deep_tree.py` | build a deep agent tree with `g.spawn`, print it, plot it |
 
 Run any of them directly:
 
 ```bash
 python examples/graph/01_query.py
-python examples/graph/03_edit_frontier.py
+python examples/graph/03_edit.py
 python examples/graph/05_timeline.py
-python examples/graph/07_attach_subtree.py
+python examples/graph/07_host_spawn.py
 python examples/graph/deep_tree.py --depth 3 --branch 2
 ```
 

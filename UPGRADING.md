@@ -1,3 +1,52 @@
+# Upgrading to core v2
+
+Core v2 rebuilds the graph around agents and edges and makes it editable. Saved
+runs from earlier versions don't load; rerun them.
+
+## The graph
+
+| Before | Now |
+| --- | --- |
+| `agent_start` node | The `Agent` record: `agent.nodes`, `agent.inbox`, `agent.task`, `agent.args`. `g.agent(id)`, not `g.node(id)`. |
+| `llm_output` | `llm` (`rlmflow.LLM`) |
+| `waiting` | `idle`, only for session agents waiting for messages |
+| `from` / `next` edges | `spawn`, `return`, `message`; an agent's order is its `nodes` list, and a fork is `agent.base` |
+| `g.attach(parent, *agents)` | `g.add_agent(task, parent=agent)` |
+| `g.depends_on`, `inputs={...}` | Await the producer and pass its result |
+| `reports_to` edges | Message the agent, or add your own edge kind with `g.add_edge` |
+| `g.as_of(seq)` | `rlmflow.view.timeline.snapshot(g, count)` |
+| Append-only history | `g.edit`, `g.delete`, `g.remove`, `g.replace` |
+| `g.store`, `STORE_TOOLS` | A host tool over your own dict (see the orchestrate skill's task board) |
+
+```python
+g = Graph()
+root = g.add_agent("Audit this repository.")
+flow.run(g)
+
+g.history(root)  # [llm, code, ..., done], no agent_start
+cell = next(n for n in g.history(root) if n.type == "code")
+cell.data["calls"]  # what each tool call in the cell returned
+g.replace(cell, 0, "cached")  # the cell re-runs with this value
+g.edit(g.history(g.children(root)[0])[-1], result="42", dry_run=True)
+```
+
+## Agent code
+
+- `await agent` and `await agent.send(...)` work for agents you launched and their
+  descendants. For anyone else, `agent.send(...)` and read the reply at your next
+  turn; awaiting raises `NotYourAgent`.
+- `launch_agent(task, spec=other_agent)` raises `TypeError`; use
+  `launch_agent(task, spec=await other_agent)`.
+- `send_agent(target, message)` is gone; use `AGENTS[target].send(message)`.
+- `AGENTS.siblings` is gone; use `AGENTS.parent.children`.
+- `agent.status` is `"done"`, `"idle"` or `"running"`.
+
+## Removed integrations
+
+`FlowLLM`, `messages_to_query`, `TinkerClient`, `DSPyFlow`, the Textual TUI
+(`rlmflow tui`, `FlowTUI`) and `rlmflow.rao` are removed. `rlmflow run print
+"..."` (or `rlmflow run --query "..."`) streams the agent tree in the terminal.
+
 # Upgrading to 0.7
 
 Version 0.7 is a clean break. It removes the old transition registry, async launch admission, model-selected child policy, and model-facing `structured_query` surface. The old `finish(value)` completion name remains executable only as a hidden compatibility alias for persisted REPL code; new agent code and prompt documentation use `submit(value)`.
@@ -7,10 +56,10 @@ Version 0.7 is a clean break. It removes the old transition registry, async laun
 `rlmflow.graph.reads` and `rlmflow.graph.ops` are gone; call the same functions on the graph, without passing it:
 
 ```python
-g.result(agent)          # was reads.result(g, agent)
-g.history(agent)         # was reads.history(g, agent)
-g.send(agent, "text")    # was ops.send(g, agent, "text")
-g.fork(node, name="b")   # was ops.fork(g, node, name="b")
+g.result(agent)  # was reads.result(g, agent)
+g.history(agent)  # was reads.history(g, agent)
+g.send(agent, "text")  # was ops.send(g, agent, "text")
+g.fork(node, name="b")  # was ops.fork(g, node, name="b")
 ```
 
 ## Child launch
@@ -173,13 +222,13 @@ Node chat `render()` is also removed. `build_messages(user_prompt, flow)` is the
 
 `@tool` is the only tool decorator; `@toolset`, `FileTools`, the `BuiltIns` class, and `@tool(inject=...)` are removed. `description` is a string. Replace a toolset class with module-level `@tool` functions grouped in a tuple; `Flow(tools=[...])` flattens one level of nesting.
 
-For proxied tools whose external work must not repeat during namespace reconstruction, use `@tool(..., restore="result")`. Successful JSON results are saved on the owning action. Pass a restore callable only when that JSON value must be rebuilt into a runtime object.
+Host tools' JSON results are saved on the cell that called them, so rebuilding a REPL returns them instead of calling the tool again; `@tool` takes no `restore=` or `receipt=`. Results that aren't JSON, or are over 64KB, aren't saved and run again on replay.
 
 `FILE_TOOLS` is now a tuple of functions. Replace `FILE_TOOLS.read_file` with `from rlmflow.tools.files import read_file`.
 
 `Flow.build_tools(node)` is the complete model-visible tool map. Flow-owned built-ins, configured application tools, and subclass-provided environment tools are all ordinary decorated callables in that map. The prompt renders it directly; invocation arguments are bound as direct REPL variables alongside `asyncio` and internal execution bindings. Use `flow.llm_query` from host code.
 
-Normal tools are serialized into local workers. Use `@tool(..., proxy=True)` when a tool must execute against host-owned mutable state or another host-only resource.
+Tools execute on the host by default, so they can use host-owned state, clients and connections. Use `@tool(..., where="repl")` for a pure function that should be copied into the worker instead. `proxy=True` is gone; delete it.
 
 ## REPL preimports
 

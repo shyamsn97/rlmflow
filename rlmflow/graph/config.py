@@ -198,7 +198,7 @@ def can_spawn(graph: Any, agent: Any) -> bool:
 
     if agent is None:
         return False
-    return agent.config.max_depth > 0 and graph.depth(agent) < agent.config.max_depth
+    return agent.config.max_depth > 0 and len(graph.lineage(agent)) - 1 < agent.config.max_depth
 
 
 def at_leaf(flow: Any = None, node: Any = None) -> bool:

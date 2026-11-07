@@ -7,7 +7,7 @@ import importlib.util
 import shutil
 from pathlib import Path
 
-from rlmflow import AGENT_START, Graph
+from rlmflow import Graph
 
 
 def build_graph():
@@ -37,10 +37,13 @@ def main() -> None:
     run_dir = g.save(out_dir / "run")
     loaded = Graph.load(run_dir)
 
+    def ids(graph: Graph) -> list[str]:
+        return [item.id for item in [*graph.agents(), *graph.nodes(), *graph.edges()]]
+
     print(f"saved: {run_dir}")
-    print("agents:", [loaded.path(agent) for agent in loaded.nodes(AGENT_START)])
-    print("result:", loaded.result(loaded.node(root.id)))
-    print("roundtrip:", [item.id for item in loaded.items()] == [item.id for item in g.items()])
+    print("agents:", [loaded.path(agent) for agent in loaded.agents()])
+    print("result:", loaded.result(loaded.agent(root.id)))
+    print("roundtrip:", ids(loaded) == ids(g))
 
 
 if __name__ == "__main__":

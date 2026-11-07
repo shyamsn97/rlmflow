@@ -5,7 +5,7 @@ This walks through the pieces that matter in the engine:
 1. Node-by-node execution that advances a caller-owned graph.
 2. Persisting a run with ``g.save()`` / ``Graph.load()``.
 3. Latest-state inspection across agents.
-4. Time travel: every log position is an earlier graph.
+4. Time travel: the graph after each agent and node is an earlier graph.
 5. Graph summaries (``g.nodes()``, ``g.usage()``).
 6. Gym-style stepping with a scalar reward.
 
@@ -22,16 +22,16 @@ import sys
 from pathlib import Path
 
 from rlmflow import (
-    AGENT_START,
     FILE_TOOLS,
+    Agent,
     AgentConfig,
     Flow,
     Graph,
     GraphCheckpointer,
     LLMUsage,
     LocalRuntime,
-    Node,
 )
+from rlmflow.view import replay
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -93,34 +93,24 @@ def banner(msg: str) -> None:
     print(f"{'=' * 60}{RESET}\n")
 
 
-async def run(flow: Flow, g: Graph, out_dir: Path) -> list[int]:
-    """Stream the run, checkpointing periodically and noting the log position of every node."""
-    positions = [g.items()[-1].seq]
+async def run(flow: Flow, g: Graph, out_dir: Path) -> None:
+    """Stream the run, checkpointing periodically and printing every node as it lands."""
     async for step in checkpoint_stream(flow.run_streaming(g), g, out_dir):
         print(f"{g.path(step.agent)}  {step.node.type}")
-        positions.append(step.node.seq)
-    return positions
 
 
-def as_of(g: Graph, seq: int) -> Graph:
-    """The graph as it stood once item ``seq`` (and the edges that landed with it) was written."""
-    items = g.items()
-    later = [item.seq for item in items if isinstance(item, Node) and item.seq > seq]
-    return g.as_of(later[0] - 1 if later else items[-1].seq)
-
-
-async def gym_loop(flow: Flow, g: Graph, root: Node, out_dir: Path) -> list[float]:
+async def gym_loop(flow: Flow, g: Graph, root: Agent, out_dir: Path) -> list[float]:
     rewards: list[float] = []
     step = 0
     checkpoint = GraphCheckpointer(out_dir)
     try:
-        while not g.terminal(root):
+        while not g.status(root) == "done":
             async for item in flow.run_streaming(g, until="next"):
                 checkpoint.handle(item, g)
             step += 1
-            reward = 1.0 if g.terminal(root) else 0.0
+            reward = 1.0 if g.status(root) == "done" else 0.0
             rewards.append(reward)
-            print(f"step {step}: state={g.frontier(root).type} reward={reward}")
+            print(f"step {step}: state={g.history(root)[-1].type} reward={reward}")
     finally:
         checkpoint.close()
     return rewards
@@ -148,41 +138,39 @@ def main() -> None:
 
     banner("1. Step-by-step execution")
     g = Graph()
-    root = g.create_agent("Create hello.py and goodbye.py. Delegate each file.")
-    positions = asyncio.run(run(flow, g, workdir / "run"))
+    root = g.add_agent("Create hello.py and goodbye.py. Delegate each file.")
+    asyncio.run(run(flow, g, workdir / "run"))
     print(f"\n{GREEN}Result:{RESET} {g.result(root)}")
 
     banner("2. Persistence — g.save() / Graph.load()")
     path = g.save(workdir / "run")
     loaded = Graph.load(path)
     print(
-        f"Saved + reloaded {len(loaded.nodes(AGENT_START))} agents and "
-        f"{len(loaded.nodes())} states from {path}"
+        f"Saved + reloaded {len(loaded.agents())} agents and "
+        f"{len(loaded.nodes())} nodes from {path}"
     )
 
     banner("3. Latest state per agent")
-    for agent in loaded.nodes(AGENT_START):
-        print(f"  {loaded.path(agent)}: {loaded.frontier(agent).type}")
+    for agent in loaded.agents():
+        print(f"  {loaded.path(agent)}: {loaded.status(agent)} at {loaded.history(agent)[-1].type}")
 
-    banner("4. Time travel — any log position is an earlier graph")
-    for idx, seq in enumerate(positions):
-        past = as_of(g, seq)
-        print(
-            f"{CYAN}step {idx}{RESET}: root [{past.frontier(past.node(root.id)).type}]  "
-            f"agents={len(past.nodes(AGENT_START))}"
-        )
+    banner("4. Time travel — the graph after each step is an earlier graph")
+    for idx, past in enumerate(replay(g)):
+        history = past.history(past.agent(root.id))
+        latest = history[-1].type if history else "start"
+        print(f"{CYAN}step {idx}{RESET}: root [{latest}]  agents={len(past.agents())}")
 
     banner("5. Graph summary")
     usage = g.usage()
-    print(f"Agents:  {len(g.nodes(AGENT_START))}")
-    print(f"States:  {len(g.nodes())}")
+    print(f"Agents:  {len(g.agents())}")
+    print(f"Nodes:   {len(g.nodes())}")
     print(f"Tokens:  {usage.total:,} ({usage.input_tokens:,} in / {usage.output_tokens:,} out)")
-    print(f"Final:   {g.frontier(root).type}")
+    print(f"Final:   {g.history(root)[-1].type}")
 
     banner("6. Gym-style loop")
     flow3 = file_flow(workdir, AgentConfig(model="demo", max_depth=0, max_iters=args.max_iters))
     g3 = Graph()
-    root3 = g3.create_agent("Write a haiku about recursion to haiku.txt")
+    root3 = g3.add_agent("Write a haiku about recursion to haiku.txt")
     rewards = asyncio.run(gym_loop(flow3, g3, root3, workdir / "gym-run"))
     print(f"{GREEN}Result:{RESET} {g3.result(root3)}")
     print(f"Total reward: {sum(rewards):.1f}")

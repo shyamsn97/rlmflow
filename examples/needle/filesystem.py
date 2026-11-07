@@ -153,7 +153,7 @@ def main():
         )
 
         g = Graph()
-        root = g.create_agent(
+        root = g.add_agent(
             f"There are {args.num_files} text files in haystack/. "
             "Exactly one line in one file matches the pattern "
             "`The magic number is <number>`. Find and return the number. "

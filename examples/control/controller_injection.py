@@ -17,7 +17,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import CODE, AgentConfig, Flow, Graph, LLMUsage, Node, Step
+from rlmflow import CODE, Agent, AgentConfig, Flow, Graph, LLMUsage, Node, Step
 from rlmflow.harnesses.repl import ReplHarness
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -49,16 +49,16 @@ def banner(title: str) -> None:
     print("=" * 72)
 
 
-def state_types(g: Graph, agent: Node) -> list[str]:
+def state_types(g: Graph, agent: Agent) -> list[str]:
     return [state.type for state in g.history(agent)]
 
 
-def assert_types(g: Graph, agent: Node, expected: list[str]) -> None:
+def assert_types(g: Graph, agent: Agent, expected: list[str]) -> None:
     actual = state_types(g, agent)
     assert actual == expected, f"expected states {expected}, got {actual}"
 
 
-def print_states(label: str, g: Graph, agent: Node) -> None:
+def print_states(label: str, g: Graph, agent: Agent) -> None:
     print(f"\n{label}")
     print("state types:", " -> ".join(state_types(g, agent)))
 
@@ -68,13 +68,13 @@ def observation_injection() -> None:
 
     flow = Flow(llm_clients={"demo": DemoLLM()})
     g = Graph()
-    agent = g.create_agent("Wait for a controller note, then submit.")
+    agent = g.add_agent("Wait for a controller note, then submit.")
     agent.bind_config(CONFIG)
-    assert_types(g, agent, ["agent_start"])
+    assert_types(g, agent, [])
 
     extra = g.append(agent, Node(CODE, code="", output=OBSERVATION))
-    assert_types(g, agent, ["agent_start", "code"])
-    assert g.frontier(agent) is extra
+    assert_types(g, agent, ["code"])
+    assert g.history(agent)[-1] is extra
 
     print_states("after the controller appended its observation", g, agent)
 
@@ -104,7 +104,7 @@ def controller_stop_instruction() -> None:
 
     flow = Flow(llm_clients={"demo": DemoLLM()})
     g = Graph()
-    agent = g.create_agent("This run will be stopped by the controller.")
+    agent = g.add_agent("This run will be stopped by the controller.")
     run_dir = example_run_dir("controller-injection") / "controller-stop-instruction"
 
     async def run_with_controller_stop() -> None:

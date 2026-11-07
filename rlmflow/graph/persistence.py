@@ -1,27 +1,152 @@
-"""Persist a graph as its ordered item log plus content-addressed argument blobs."""
+"""Save a graph as ``graph.json`` (its agents, nodes, edges and edits) plus argument blobs."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from rlmflow.graph.config import RECURSE, AgentConfig, transform_argument
-from rlmflow.graph.graph import Edge, Graph, InvariantError, check_invariants
-from rlmflow.graph.nodes import AGENT_START, NODE_TYPES, Node, isoformat, strict_json
+from rlmflow.graph.config import RECURSE, transform_argument
+from rlmflow.graph.graph import Graph, GraphError
+from rlmflow.graph.nodes import NODE_TYPES, Agent, Edge, Node, strict_json
 
-#: Bumped on any incompatible change. Format 2 (configs saved on the graph) is
-#: converted on load; anything older is refused.
-FORMAT_VERSION = 3
+#: Bumped on any incompatible change; older formats are not read.
+FORMAT_VERSION = 5
 ARG_BLOB_THRESHOLD_BYTES = 64 * 1024
 ARG_BLOB_REF_KEY = "$rlmflow_arg_blob"
 
 
+def node_record(node: Node) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "id": node.id,
+        "type": node.type,
+        "agent": node.agent_id,
+        "seq": node.seq,
+        "created_at": isoformat(node.created_at),
+        "data": strict_json(node.data, f"node {node.id!r} data"),
+    }
+    if node.metadata:
+        record["metadata"] = strict_json(node.metadata, f"node {node.id!r} metadata")
+    if node.started_at is not None and node.finished_at is not None:
+        record["timing"] = {
+            "started_at": isoformat(node.started_at),
+            "finished_at": isoformat(node.finished_at),
+            "duration_ms": round((node.finished_at - node.started_at) * 1000, 3),
+        }
+    return record
+
+
+def agent_record(agent: Agent) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "id": agent.id,
+        "name": agent.name,
+        "task": agent.task,
+        "args": strict_json(agent.args, f"agent {agent.name!r} args"),
+        "config": agent.config_name,
+        "seq": agent.seq,
+        "created_at": isoformat(agent.created_at),
+        "nodes": [node.id for node in agent.nodes],
+        "inbox": [node.id for node in agent.inbox],
+    }
+    if agent.base is not None:
+        record["base"] = agent.base.id
+    if agent.metadata:
+        record["metadata"] = strict_json(agent.metadata, f"agent {agent.name!r} metadata")
+    return record
+
+
+def edge_record(edge: Edge) -> dict[str, Any]:
+    return {
+        "id": edge.id,
+        "kind": edge.kind,
+        "source": edge.source,
+        "target": edge.target,
+        "data": dict(edge.data),
+        "seq": edge.seq,
+    }
+
+
+def to_records(graph: Graph) -> dict[str, Any]:
+    """The graph as one JSON document."""
+    with graph._lock:
+        return {
+            "format": FORMAT_VERSION,
+            "id": graph.id,
+            "agents": [agent_record(agent) for agent in graph.agents()],
+            "nodes": [node_record(node) for node in graph.nodes()],
+            "edges": [edge_record(edge) for edge in graph.edges()],
+            "edits": strict_json(graph.edits, "edits"),
+        }
+
+
+def from_records(document: dict[str, Any]) -> Graph:
+    """Rebuild a graph from ``to_records``."""
+    graph = Graph(_text(document.get("id"), "graph id"))
+    nodes: dict[str, Node] = {}
+    for raw in _list(document, "nodes"):
+        node = Node(_node_type(raw), **_dict(raw.get("data"), "node data"))
+        node.id = _text(raw.get("id"), "node id")
+        node.agent_id = _text(raw.get("agent"), f"node {node.id} agent")
+        node.seq = int(raw.get("seq", -1))
+        node.metadata = dict(raw.get("metadata") or {})
+        node.created_at = _epoch(raw.get("created_at")) or node.created_at
+        timing = raw.get("timing") or {}
+        node.started_at = _epoch(timing.get("started_at"))
+        node.finished_at = _epoch(timing.get("finished_at"))
+        nodes[node.id] = node
+    for raw in _list(document, "agents"):
+        agent = Agent(
+            str(raw.get("task") or ""),
+            name=_text(raw.get("name"), "agent name"),
+            args=_dict(raw.get("args"), "agent args"),
+            config=raw.get("config"),
+        )
+        agent.id = _text(raw.get("id"), "agent id")
+        agent.seq = int(raw.get("seq", -1))
+        agent.metadata = dict(raw.get("metadata") or {})
+        agent.created_at = _epoch(raw.get("created_at")) or agent.created_at
+        for key, target in (("nodes", agent.nodes), ("inbox", agent.inbox)):
+            for node_id in raw.get(key) or []:
+                node = nodes.get(node_id)
+                if node is None or node.agent_id != agent.id:
+                    raise GraphError(f"agent {agent.id!r} lists unknown node {node_id!r}")
+                target.append(node)
+        if raw.get("base"):
+            agent.base = nodes.get(raw["base"])
+            if agent.base is None:
+                raise GraphError(f"fork {agent.id!r} has unknown base {raw['base']!r}")
+            graph._forks[agent.base.id].append(agent.id)
+        graph._agents[agent.id] = agent
+    placed = {node.id for agent in graph._agents.values() for node in (*agent.nodes, *agent.inbox)}
+    if placed != set(nodes):
+        raise GraphError("every node must be in exactly one agent's history or inbox")
+    graph._nodes = {node.id: node for node in sorted(nodes.values(), key=lambda n: n.seq)}
+    for raw in _list(document, "edges"):
+        edge = Edge(
+            _text(raw.get("kind"), "edge kind"),
+            _text(raw.get("source"), "edge source"),
+            _text(raw.get("target"), "edge target"),
+            dict(raw.get("data") or {}),
+            _text(raw.get("id"), "edge id"),
+            int(raw.get("seq", -1)),
+        )
+        for end in (edge.source, edge.target):
+            if end not in graph:
+                raise GraphError(f"edge {edge.id!r} points at missing {end!r}")
+        graph._index(edge)
+    graph.edits = list(document.get("edits") or [])
+    graph._seq = 1 + max(
+        [-1, *(a.seq for a in graph._agents.values()), *(n.seq for n in nodes.values())]
+        + [e.seq for e in graph._edges.values()]
+    )
+    return graph
+
+
 class _ArgBlobStore:
-    """Content-address large agent arguments once per persisted graph."""
+    """Content-address large agent arguments once per saved graph."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -63,160 +188,75 @@ def _resolve_arg(value: Any, blob_path: Path) -> Any:
     return transform_argument(value, resolve_blob, path="")
 
 
-def node_record(node: Node) -> dict[str, Any]:
-    """One node as a JSON log record."""
-    record: dict[str, Any] = {
-        "id": node.id,
-        "type": node.type,
-        "agent_id": node.agent_id,
-        "seq": node.seq,
-        "created_at": isoformat(node.created_at),
-        "data": strict_json(node.data, f"node {node.id!r} data"),
-    }
-    if node.metadata:
-        record["metadata"] = strict_json(node.metadata, f"node {node.id!r} metadata")
-    timing = node.timing()
-    if timing:
-        record["timing"] = timing
-    return record
-
-
-def edge_record(edge: Edge) -> dict[str, Any]:
-    return {
-        "id": edge.id,
-        "kind": edge.kind,
-        "source": edge.source,
-        "target": edge.target,
-        "data": dict(edge.data),
-        "seq": edge.seq,
-        "removed_seq": edge.removed_seq,
-    }
-
-
 def save_graph(graph: Graph, path: str | Path) -> Path:
-    """Atomically write the graph log, moving large arguments into ``blobs/``."""
+    """Atomically write ``graph.json``, moving large arguments into ``blobs/``."""
     run = Path(path)
     run.mkdir(parents=True, exist_ok=True)
+    document = to_records(graph)
     blobs = _ArgBlobStore(run / "blobs")
-    records = []
-    for item in graph.items():
-        if isinstance(item, Edge):
-            records.append(edge_record(item))
-            continue
-        record = node_record(item)
-        if item.type == AGENT_START:
-            record["data"]["args"] = blobs.encode(record["data"].get("args", {}))
-        records.append(record)
-    document = {
-        "format": FORMAT_VERSION,
-        "id": graph.id,
-        "items": records,
-    }
-    _write_json(run / "graph.json", document)
+    for record in document["agents"]:
+        record["args"] = blobs.encode(record["args"])
+    _write_text(run / "graph.json", json.dumps(document, indent=2, ensure_ascii=False) + "\n")
     return run
 
 
 def load_graph(path: str | Path) -> Graph:
-    """Read a run directory: index its log, then check the whole graph once."""
+    """Read a run directory written by ``save_graph``."""
     run = Path(path)
-    data = _read_json(run / "graph.json")
-    version = data.get("format")
-    if version not in (2, FORMAT_VERSION):
+    try:
+        document = json.loads((run / "graph.json").read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{run / 'graph.json'} is not valid JSON: {exc}") from exc
+    if not isinstance(document, dict):
+        raise TypeError(f"{run / 'graph.json'} must contain a JSON object")
+    version = document.get("format")
+    if version != FORMAT_VERSION:
         raise ValueError(
             f"{run} was saved in run format {version or 1}, and this rlmflow reads only "
-            f"format {FORMAT_VERSION}. Runs from before the harness refactor can't be "
-            "loaded; rerun them with this version."
+            f"format {FORMAT_VERSION}; rerun it with this version."
         )
-    records = data.get("items")
-    if not isinstance(records, list):
-        raise ValueError("graph field 'items' must be a list")
-    graph_id = data.get("id")
-    if not isinstance(graph_id, str) or not graph_id:
-        raise ValueError("graph has an invalid id")
-    graph = Graph(graph_id)
-    try:
-        for position, raw in enumerate(records):
-            if not isinstance(raw, dict):
-                raise TypeError(f"graph item {position} must be an object")
-            if raw.get("seq") != position and raw.get("removed_seq") != position:
-                raise ValueError(f"graph item {position} is out of log order")
-            removing = "kind" in raw and raw.get("removed_seq") is not None
-            graph._append_unchecked(_log_item(graph, raw, run), removing=removing)
-        if version == 2:
-            _convert_format_2(graph)
-        check_invariants(graph)
-    except InvariantError as exc:
-        raise InvariantError(f"invalid graph log: {exc}") from exc
-    return graph
-
-
-def _log_item(graph: Graph, raw: dict[str, Any], run: Path) -> Node | Edge:
-    if "kind" in raw:
-        if raw.get("removed_seq") is not None:
-            current = graph._edges.get(raw["id"])
-            if current is None or current.structural or not current.active:
-                raise InvariantError(f"cannot remove edge {raw['id']!r}")
-            return current
-        return Edge(
-            kind=raw["kind"],
-            source=raw["source"],
-            target=raw["target"],
-            data=dict(raw.get("data") or {}),
-            id=raw["id"],
-        )
-    node_type = raw.get("type")
-    if node_type not in NODE_TYPES:
-        raise ValueError(f"unknown node type {node_type!r}")
-    data = raw.get("data")
-    if not isinstance(data, dict):
-        raise TypeError(f"node {raw.get('id')!r} data must be an object")
-    node = Node(node_type, **data)
-    node.id = raw["id"]
-    agent_id = raw.get("agent_id")
-    if not isinstance(agent_id, str) or not agent_id:
-        raise ValueError(f"node {raw.get('id')!r} has an invalid agent_id")
-    node.agent_id = agent_id
-    node.metadata = dict(raw.get("metadata") or {})
-    if raw.get("created_at"):
-        node.created_at = _epoch(raw["created_at"])
-    timing = raw.get("timing") or {}
-    node.started_at = _epoch(timing.get("started_at"))
-    node.finished_at = _epoch(timing.get("finished_at"))
-    if node_type == AGENT_START:
-        node.data["args"] = {
-            name: _resolve_arg(value, run / "blobs") for name, value in node.args.items()
+    for record in _list(document, "agents"):
+        record["args"] = {
+            name: _resolve_arg(value, run / "blobs")
+            for name, value in _dict(record.get("args"), "agent args").items()
         }
-    return node
+    return from_records(document)
 
 
-def _convert_format_2(graph: Graph) -> None:
-    """Format 2 saved each agent's whole config in ``data``; keep it as the record and the name as the config."""
-    for agent in graph.agents():
-        saved = agent.data.pop("config", None)
-        if not isinstance(saved, dict):
-            continue
-        agent.metadata.setdefault("config", AgentConfig.from_dict(saved).to_dict())
-        if graph.launcher(agent) is not None:
-            agent.data["config"] = saved.get("name", "default")
+def _node_type(raw: dict[str, Any]) -> str:
+    kind = raw.get("type")
+    if kind not in NODE_TYPES:
+        raise ValueError(f"unknown node type {kind!r}")
+    return kind
+
+
+def _list(document: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    items = document.get(key)
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        raise ValueError(f"graph field {key!r} must be a list of objects")
+    return items
+
+
+def _dict(value: Any, what: str) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError(f"{what} must be an object")
+    return dict(value)
+
+
+def _text(value: Any, what: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{what} must be a non-empty string")
+    return value
+
+
+def isoformat(stamp: float) -> str:
+    return datetime.fromtimestamp(stamp, UTC).isoformat()
 
 
 def _epoch(stamp: str | None) -> float | None:
     return datetime.fromisoformat(stamp).timestamp() if stamp else None
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"{path} is not valid JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        raise TypeError(f"{path} must contain a JSON object")
-    return data
-
-
-def _write_json(path: Path, data: dict[str, Any]) -> None:
-    text = json.dumps(data, indent=2, default=str, ensure_ascii=False)
-    _write_text(path, text + "\n")
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -226,18 +266,16 @@ def _write_text(path: Path, text: str) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
-    directory = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(directory)
-    finally:
-        os.close(directory)
 
 
 __all__ = [
     "ARG_BLOB_THRESHOLD_BYTES",
     "FORMAT_VERSION",
+    "agent_record",
     "edge_record",
+    "from_records",
     "load_graph",
     "node_record",
     "save_graph",
+    "to_records",
 ]

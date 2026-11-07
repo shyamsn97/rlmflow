@@ -1,24 +1,29 @@
 """REPL tools: the ``@tool`` decorator, its prompt docs, and the namespace each cell runs in.
 
 The namespace is the same for every harness, since every cell runs in our REPL:
-``submit``, ``launch_agent``, ``llm_query``, ``send_agent``, ``ask_agent``,
-``AGENTS``, ``Input``, plus the host's own tools.
+``submit``, ``launch_agent``, ``llm_query``, ``AGENTS`` (with ``await agent``
+and ``agent.send``), ``Input``, plus the host's own tools.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import functools
 import hashlib
 import inspect
 import json
 import threading
 from collections.abc import Callable, Iterable, Mapping
-from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any, NoReturn
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, Protocol, runtime_checkable
 
 from rlmflow.agent_tools import tools as agent_tools
-from rlmflow.agent_tools.view import AgentHandle, agent_handle, build_agent_directory, resolve_agent
-from rlmflow.engine.handoff import AWAITED_KEY
+from rlmflow.agent_tools.view import (
+    AgentHandle,
+    agent_handle,
+    build_agent_directory,
+    resolve_agent,
+)
 from rlmflow.graph.config import (
     RECURSE,
     Input,
@@ -27,14 +32,15 @@ from rlmflow.graph.config import (
     validate_argument_name,
     visit_argument,
 )
-from rlmflow.graph.graph import STRUCTURAL, Edge
-from rlmflow.graph.nodes import AGENT_REF_KEY, Node, Step, agent_ref_id, current_code
+from rlmflow.graph.nodes import DONE, Node, Step, current_code, record_metadata
 from rlmflow.runtime.repl import (
+    AGENT_REF_KEY,
+    AGENT_SEND_TOOL,
     AGENT_WAIT_TOOL,
     AGENTS_BINDING,
     DoneSignal,
+    NotYourAgent,
     ToolMetadata,
-    ToolRestore,
     get_tool_metadata,
 )
 
@@ -42,41 +48,166 @@ if TYPE_CHECKING:
     from rlmflow.flow import Flow
 
 
+Where = Literal["host", "repl"]
+
+
 def tool(
-    description: str,
+    description: str | None = None,
     *,
     name: str | None = None,
-    proxy: bool = False,
+    where: Where = "host",
     is_async: bool | None = None,
     when: Callable[..., bool] | None = None,
-    restore: ToolRestore = None,
 ) -> Callable:
     """Attach tool metadata to ``fn``.
 
-    ``is_async`` records whether agent code must ``await`` the tool; it defaults
-    to ``async def`` detection. ``when`` is ``(flow, node) -> bool``: when false,
-    the tool is left out of the prompt and the REPL. ``restore="result"`` saves
-    the result of a successful call on the cell's ``code`` node and returns it
-    when the REPL is rebuilt; a callable rebuilds a richer value from it.
+    ``description`` defaults to the first paragraph of ``fn``'s docstring.
+    ``where="host"`` (the default) runs the tool in this process, where its
+    clients and connections live; agent code calls it over the REPL protocol.
+    ``where="repl"`` copies it into the agent's REPL (and sandbox), for pure
+    functions that should run next to the agent's files. ``is_async`` records
+    whether agent code must ``await`` the tool; it defaults to ``async def``
+    detection. ``when`` is ``(flow, node) -> bool``: when false, the tool is
+    left out of the prompt and the REPL.
+
+    A host tool's JSON result is saved on the cell that called it, so running
+    the cell again (after an edit, or to rebuild its REPL) returns it instead of
+    calling the tool twice.
     """
-    if restore is not None and restore != "result" and not callable(restore):
-        raise TypeError("tool restore must be None, 'result', or a callable")
-    if restore is not None and not proxy:
-        raise ValueError("tool restore requires proxy=True")
+    if where not in ("host", "repl"):
+        raise ValueError(f"tool where must be 'host' or 'repl', not {where!r}")
 
     def decorator(fn):
         resolved = inspect.iscoroutinefunction(fn) if is_async is None else is_async
+        text = description if description is not None else _first_paragraph(fn.__doc__)
         fn._tool_meta = ToolMetadata(
             name=name or fn.__name__.removeprefix("tool_"),
-            description=description.strip(),
-            proxy=proxy,
+            description=text.strip(),
+            proxy=where == "host",
             is_async=resolved,
             when=when,
-            restore=restore,
         )
         return fn
 
     return decorator
+
+
+def _saves(fn: Callable, *, receipt: Callable[..., Any], restore: Callable[..., Any]) -> Callable:
+    """A built-in tool that saves ``receipt(result, ...)`` and replays with ``restore(entry, ...)``."""
+    fn._tool_meta = dataclasses.replace(fn._tool_meta, receipt=receipt, restore=restore)
+    return fn
+
+
+def _first_paragraph(doc: str | None) -> str:
+    return inspect.cleandoc(doc).split("\n\n", 1)[0].replace("\n", " ") if doc else ""
+
+
+def as_tool(fn: Any) -> Any:
+    """``fn`` as a tool: a plain function gets metadata from its docstring and runs on the host."""
+    if get_tool_metadata(fn) is not None or not inspect.isroutine(fn):
+        return fn
+    if inspect.iscoroutinefunction(fn):
+
+        @functools.wraps(fn)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            return await fn(*args, **kwargs)
+
+    else:
+
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            return fn(*args, **kwargs)
+
+    return tool()(wrapper)
+
+
+_JSON_TYPES: dict[str, Any] = {
+    "string": str,
+    "integer": int,
+    "number": float,
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+}
+
+
+def _json_type(prop: Mapping[str, Any]) -> str | None:
+    kind = prop.get("type")
+    if isinstance(kind, list):
+        kind = next((item for item in kind if item != "null"), None)
+    return kind if isinstance(kind, str) else None
+
+
+def tool_from_schema(
+    name: str,
+    description: str,
+    parameters: Mapping[str, Any] | None,
+    call: Callable[[dict[str, Any]], Any],
+    *,
+    is_async: bool | None = None,
+    where: Where = "host",
+    when: Callable[..., bool] | None = None,
+) -> Callable:
+    """A tool whose arguments are a JSON Schema object, as MCP and function-calling APIs describe them.
+
+    ``call(arguments)`` runs it with the arguments the agent passed, as a dict
+    (only those it passed, so the callee applies its own defaults).
+    """
+    parameters = parameters or {}
+    properties: Mapping[str, Any] = parameters.get("properties") or {}
+    required = set(parameters.get("required") or [])
+    ordered = [
+        *(p for p in properties if p in required),
+        *(p for p in properties if p not in required),
+    ]
+    signature = inspect.Signature(
+        [
+            inspect.Parameter(
+                prop,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                default=inspect.Parameter.empty
+                if prop in required
+                else properties[prop].get("default"),
+                annotation=_JSON_TYPES.get(
+                    _json_type(properties[prop]) or "", inspect.Parameter.empty
+                ),
+            )
+            for prop in ordered
+        ]
+    )
+    notes = [
+        f"`{prop}`: {properties[prop]['description']}"
+        for prop in ordered
+        if properties[prop].get("description")
+    ]
+    text = description.strip() + (" Arguments: " + "; ".join(notes) + "." if notes else "")
+
+    if inspect.iscoroutinefunction(call) if is_async is None else is_async:
+
+        async def fn(*args: Any, **kwargs: Any) -> Any:
+            return await call(dict(signature.bind(*args, **kwargs).arguments))
+
+    else:
+
+        def fn(*args: Any, **kwargs: Any) -> Any:
+            return call(dict(signature.bind(*args, **kwargs).arguments))
+
+    fn.__name__ = fn.__qualname__ = name
+    fn.__signature__ = signature  # type: ignore[attr-defined]
+    return tool(text, name=name, where=where, when=when)(fn)
+
+
+@runtime_checkable
+class Toolkit(Protocol):
+    """Tools that need a live resource, such as a server connection.
+
+    The Flow awaits ``open()`` on its own event loop when a run starts, adds the
+    tools it returns, and awaits ``close()`` and removes them when the run ends.
+    """
+
+    async def open(self) -> Iterable[Any]: ...
+
+    async def close(self) -> None: ...
 
 
 def tool_allowed(fn: Any, flow: Any = None, node: Any = None) -> bool:
@@ -90,11 +221,12 @@ def format_tool_line(fn: Callable) -> str:
         return ""
     try:
         sig = str(inspect.signature(fn, eval_str=True))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, NameError):
         sig = "(...)"
-    sig = sig.replace("rlmflow.agent_tools.view.", "")
+    sig = sig.replace("rlmflow.agent_tools.view.", "").replace("AgentHandle", "Agent")
     prefix = "await " if meta.is_async else ""
-    return f"- `{prefix}{meta.name}{sig}`: {meta.description}"
+    line = f"- `{prefix}{meta.name}{sig}`"
+    return f"{line}: {meta.description}" if meta.description else line
 
 
 def format_tool_docs(tools: Mapping[str, Any]) -> str:
@@ -112,17 +244,15 @@ RESERVED_TOOLS = frozenset(
     {
         "submit",
         "launch_agent",
-        "send_agent",
-        "ask_agent",
-        "connect_agent",
-        "disconnect_agent",
         "llm_query",
         "Input",
+        "NotYourAgent",
         "asyncio",
         "ENV",
         "AGENTS",
         AGENTS_BINDING,
         AGENT_WAIT_TOOL,
+        AGENT_SEND_TOOL,
     }
 )
 
@@ -131,7 +261,7 @@ def as_tool_items(tools: Any) -> list[Any]:
     """Normalize ``Flow(tools=...)`` to a flat list; one level of nesting is flattened."""
     if tools is None:
         return []
-    if callable(tools):
+    if callable(tools) or isinstance(tools, Toolkit):
         return [tools]
     if isinstance(tools, Iterable) and not isinstance(tools, (str, bytes)):
         items: list[Any] = []
@@ -151,10 +281,10 @@ def as_tool_items(tools: Any) -> list[Any]:
 # -- built-in tools -----------------------------------------------------------
 
 LAUNCH_DESCRIPTION = """\
-Start an agent and return its handle immediately. `config=` names one of the \
-configs listed below (default: `default`). JSON keyword arguments, or other agents' \
-handles, become the new agent's REPL variables; wrap one as `Input(value, \
-description="...")` to explain it. `await handle` returns its result.
+Start an agent and return it immediately as an `Agent`. `config=` names one of the \
+configs listed below (default: `default`). JSON keyword arguments become the new agent's \
+REPL variables; wrap one as `Input(value, description="...")` to explain it. \
+`await agent` returns its result.
 
 Example — launch independent work together, then collect it:
 ```repl
@@ -180,58 +310,45 @@ def _on_flow_loop(flow: Flow, fn: Callable[[], Any]) -> Any:
     return asyncio.run_coroutine_threadsafe(run(), owner).result()
 
 
-def _producer(g: Any, value: Any) -> Node | None:
-    agent_id = value.agent_id if isinstance(value, AgentHandle) else agent_ref_id(value)
-    if agent_id is None:
-        return None
-    if agent_id not in g or g.node(agent_id).type != "agent_start":
-        raise ValueError(f"handle refers to unknown agent {agent_id!r}")
-    return g.node(agent_id)
-
-
 def _check_json(path: str, value: Any) -> Any:
-    if isinstance(value, AgentHandle) or agent_ref_id(value) is not None:
-        raise TypeError(f"argument {path!r} nests a handle; pass handles as top-level arguments")
+    if isinstance(value, AgentHandle) or (isinstance(value, dict) and AGENT_REF_KEY in value):
+        raise TypeError(f"argument {path!r} is an agent; await the agent first and pass its result")
     if value is None or isinstance(value, (str, bool, int)):
         return value
     if isinstance(value, float):
         json.dumps(value, allow_nan=False)
         return value
     if isinstance(value, dict):
-        if AGENT_REF_KEY in value:
-            raise TypeError(f"argument {path!r} must contain an exact agent reference")
         return RECURSE
     if isinstance(value, list):
         return RECURSE
-    raise TypeError(f"argument {path!r} must be JSON-compatible or an agent handle")
+    raise TypeError(f"argument {path!r} must be JSON-compatible")
 
 
-def split_args(g: Any, args: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """JSON arguments, and top-level handles that become ``depends_on`` inputs."""
-    plain: dict[str, Any] = {}
-    inputs: dict[str, Any] = {}
+def check_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Launch arguments: named like Python variables, and strict JSON (``Input`` allowed)."""
     for name, value in args.items():
         validate_argument_name(name)
         wrapped = input_parts(value)
-        raw, description = wrapped if wrapped is not None else (value, None)
-        producer = _producer(g, raw)
-        if producer is not None:
-            inputs[name] = Input(producer, description=description) if description else producer
-            continue
-        visit_argument(raw, _check_json, path=name)
-        plain[name] = value
-    return plain, inputs
+        visit_argument(wrapped[0] if wrapped is not None else value, _check_json, path=name)
+    return args
+
+
+def _handle_for(g: Any, entry: dict[str, Any], *_args: Any, **_kwargs: Any) -> AgentHandle:
+    """The handle a saved launch or send returns again."""
+    agent_id = entry.get("agent", "")
+    if agent_id in g:
+        return agent_handle(g, g.agent(agent_id))
+    return AgentHandle(agent_id=agent_id, name="(removed)", path="(removed)")
+
+
+def _agent_saved(handle: AgentHandle, *_args: Any, **_kwargs: Any) -> dict[str, str]:
+    return {"agent": handle.agent_id}
 
 
 def launch_tool(flow: Flow, step: Step):
     g = step.graph
     lock = threading.Lock()
-
-    def restore_launch(saved: object, task: str = "", **_ignored: Any) -> AgentHandle:
-        agent_id = agent_ref_id(saved)
-        if agent_id not in g:
-            raise ValueError(f"recorded launch points to missing agent {agent_id!r}")
-        return agent_handle(g, g.node(agent_id))
 
     configs = ", ".join(
         f"`{name}` (model `{config.model}`"
@@ -241,21 +358,66 @@ def launch_tool(flow: Flow, step: Step):
     )
     description = LAUNCH_DESCRIPTION + (f"\nConfigs: {configs}" if configs else "")
 
-    @tool(description, proxy=True, is_async=False, restore=restore_launch)
+    @tool(description, is_async=False)
     def launch_agent(
         task: str, *, config: str | None = None, name: str | None = None, **args: Any
     ) -> AgentHandle:
         def launch() -> AgentHandle:
             with lock:
-                plain, inputs = split_args(g, args)
                 child = agent_tools.spawn(
-                    flow, step, task, config=config, name=name, inputs=inputs or None, **plain
+                    flow, step, task, config=config, name=name, **check_args(args)
                 )
                 return agent_handle(g, child)
 
         return _on_flow_loop(flow, launch)
 
-    return launch_agent
+    return _saves(launch_agent, receipt=_agent_saved, restore=functools.partial(_handle_for, g))
+
+
+def await_tool(flow: Flow, step: Step):
+    """``await agent``: wait for an agent this one launched, and save which one it was."""
+    g = step.graph
+
+    def returned(done: Node) -> Any:
+        """The result of ``done``, with the ``return`` edge to the cell that got it."""
+        cell = current_code()
+        if cell is not None and cell.id in g:
+            g.link_return(done, cell)
+        return done.data.get("result")
+
+    async def result_of(agent_id: str, *, check: bool) -> Any:
+        target = resolve_agent(g, agent_id)
+        if check and step.agent not in g.lineage(target)[:-1]:
+            raise NotYourAgent(
+                f"you can only await agents you launched; {target.name!r} is not one. "
+                f"Message it with AGENTS[{target.name!r}].send(...) and end your turn "
+                "to read its reply."
+            )
+        if g.status(target) != "done":
+            if flow.queue is None:
+                raise RuntimeError("awaiting an agent requires a running Flow")
+            await flow.queue.join(lambda: target.id not in g or g.status(target) == "done")
+            if target.id not in g:
+                raise RuntimeError(f"agent {target.name!r} was removed")
+        return returned(g.history(target)[-1])
+
+    def restore(entry: dict[str, Any], agent_id: str) -> Any:
+        if "value" in entry:
+            return entry["value"]
+        done = g._nodes.get(entry.get("done", ""))
+        if done is not None and done.type == DONE:
+            return returned(done)
+        return result_of(entry.get("agent") or agent_id, check=False)
+
+    def receipt(_result: Any, agent_id: str) -> dict[str, str]:
+        target = resolve_agent(g, agent_id)
+        return {"agent": target.id, "done": g.history(target)[-1].id}
+
+    @tool("Wait for an agent you launched and return its result.")
+    async def wait_agent(agent_id: str) -> Any:
+        return await result_of(agent_id, check=True)
+
+    return _saves(wait_agent, receipt=receipt, restore=restore)
 
 
 def _model_help(flow: Flow, default_model: str | None) -> str:
@@ -290,7 +452,7 @@ async def query(
     value = reply if normalized is None else schemas.parse(reply, normalized)
     code = current_code()
     if code is not None:
-        code.annotate(
+        record_metadata(
             "llm_query.calls",
             {
                 "model": model,
@@ -299,6 +461,7 @@ async def query(
                 "usage": usage.as_dict(),
             },
             append=True,
+            node=code,
         )
     return value
 
@@ -311,7 +474,7 @@ def llm_query_tool(flow: Flow, step: Step):
         "one-shot transform, not multi-step owned work." + _model_help(flow, default_model)
     )
 
-    @tool(description, proxy=True, restore="result")
+    @tool(description)
     async def llm_query(
         prompt: str,
         *,
@@ -333,7 +496,6 @@ def llm_query_tool(flow: Flow, step: Step):
 def submit_tool(flow: Flow, step: Step):
     @tool(
         "Submit your final result as a string or strict JSON value. A valid result completes you.",
-        proxy=True,
     )
     def submit(answer: object) -> NoReturn:
         raise DoneSignal(agent_tools.done(flow, step, answer))
@@ -342,119 +504,24 @@ def submit_tool(flow: Flow, step: Step):
 
 
 def send_tool(flow: Flow, step: Step):
+    g = step.graph
+
     @tool(
-        "Queue a message for another agent without waiting. It reaches that agent "
-        "at its next turn and reopens a finished agent. Returns the message id.",
-        proxy=True,
+        "Queue a message for another agent and return that agent immediately. The "
+        "message reaches it at its next turn and reopens it if it finished.",
         is_async=False,
-        restore="result",
     )
-    def send_agent(target: Any, message: str) -> str:
-        return _on_flow_loop(flow, lambda: agent_tools.send(flow, step, target, message).id)
+    def send_agent(target: Any, message: str) -> AgentHandle:
+        def send() -> AgentHandle:
+            agent = resolve_agent(g, target)
+            if agent.id == step.agent.id:
+                raise ValueError("an agent cannot message itself")
+            agent_tools.send(flow, step, agent, message)
+            return agent_handle(g, agent)
 
-    return send_agent
+        return _on_flow_loop(flow, send)
 
-
-def ask_tool(flow: Flow, step: Step):
-    g = step.graph
-
-    @tool(
-        "Send a message to another agent and wait for the result of its next finished turn.",
-        proxy=True,
-        restore="result",
-    )
-    async def ask_agent(target: Any, message: str) -> Any:
-        agent = resolve_agent(g, target)
-        if agent.id == step.agent.id:
-            raise ValueError("an agent cannot ask itself")
-        if flow.queue is None:
-            raise RuntimeError("ask_agent requires a running Flow")
-        with waiting(flow, g, step.agent, agent):
-            sent = agent_tools.send(flow, step, agent, message)
-
-            def answered() -> bool:
-                delivered = g.edges(kind="next", target=sent.id)
-                frontier = g.frontier(agent)
-                return (
-                    bool(delivered) and frontier.type == "done" and frontier.seq > delivered[0].seq
-                )
-
-            await flow.queue.join(answered)
-        return g.result(agent)
-
-    return ask_agent
-
-
-def connect_tool(flow: Flow, step: Step):
-    g = step.graph
-
-    @tool(
-        "Add an edge `kind` from you to another agent, with JSON `**data`; "
-        "`reports_to` sends your results to it. Returns the edge id.",
-        proxy=True,
-        is_async=False,
-        restore="result",
-    )
-    def connect_agent(target: Any, kind: str, **data: Any) -> str:
-        if not isinstance(kind, str) or not kind or kind in STRUCTURAL:
-            raise ValueError(f"edge kind must be a non-empty application kind, not {kind!r}")
-        edge = Edge(kind=kind, source=step.agent.id, target=resolve_agent(g, target).id, data=data)
-        return _on_flow_loop(flow, lambda: g.add_edge(edge).id)
-
-    return connect_agent
-
-
-def disconnect_tool(flow: Flow, step: Step):
-    g = step.graph
-
-    @tool("Remove an edge you added by id.", proxy=True, is_async=False, restore="result")
-    def disconnect_agent(edge_id: str) -> None:
-        _on_flow_loop(flow, lambda: g.remove_edge(edge_id))
-
-    return disconnect_agent
-
-
-@contextmanager
-def waiting(flow: Flow, g: Any, waiter: Node, target: Node):
-    """Register ``waiter -> target`` for the length of a wait, refusing cycles."""
-    seen: set[str] = set()
-    stack = [target.id]
-    while stack:
-        current = stack.pop()
-        if current == waiter.id:
-            raise RuntimeError(f"waiting on {target.name!r} would deadlock: it waits on this agent")
-        if current in seen:
-            continue
-        seen.add(current)
-        stack.extend(flow._waits.get(current, ()))
-        stack.extend(producer.id for producer in g.producers(g.node(current)))
-    targets = flow._waits.setdefault(waiter.id, [])
-    targets.append(target.id)
-    try:
-        yield
-    finally:
-        targets.remove(target.id)
-        if not targets:
-            flow._waits.pop(waiter.id, None)
-
-
-def wait_agent_tool(flow: Flow, step: Step):
-    g = step.graph
-
-    @tool("Wait for an existing agent and return its result.", proxy=True)
-    async def wait_agent(agent_id: str) -> Any:
-        target = resolve_agent(g, agent_id)
-        if not g.terminal(target):
-            if flow.queue is None:
-                raise RuntimeError("waiting for an agent requires a running Flow")
-            with waiting(flow, g, step.agent, target):
-                await flow.queue.join(lambda: g.terminal(target))
-        code = current_code()
-        if code is not None and target.id not in code.data.setdefault(AWAITED_KEY, []):
-            code.data[AWAITED_KEY].append(target.id)
-        return g.result(target)
-
-    return wait_agent
+    return _saves(send_agent, receipt=_agent_saved, restore=functools.partial(_handle_for, g))
 
 
 def repl_tools(flow: Flow, step: Step) -> dict[str, Any]:
@@ -463,10 +530,6 @@ def repl_tools(flow: Flow, step: Step) -> dict[str, Any]:
     if can_spawn(step.graph, step.agent):
         tools["launch_agent"] = launch_tool(flow, step)
     tools["llm_query"] = llm_query_tool(flow, step)
-    tools["send_agent"] = send_tool(flow, step)
-    tools["ask_agent"] = ask_tool(flow, step)
-    tools["connect_agent"] = connect_tool(flow, step)
-    tools["disconnect_agent"] = disconnect_tool(flow, step)
     tools.update({name: fn for name, fn in flow.tools.items() if tool_allowed(fn, flow, step.node)})
     return tools
 
@@ -478,23 +541,29 @@ def build_namespace(flow: Flow, step: Step) -> dict[str, Any]:
         **repl_tools(flow, step),
         **flow.namespace_for(step),
         "Input": Input,
+        "NotYourAgent": NotYourAgent,
         "asyncio": asyncio,
         "AGENTS": agents,
         AGENTS_BINDING: agents,
-        AGENT_WAIT_TOOL: wait_agent_tool(flow, step),
+        AGENT_WAIT_TOOL: await_tool(flow, step),
+        AGENT_SEND_TOOL: send_tool(flow, step),
     }
 
 
 __all__ = [
     "RESERVED_TOOLS",
+    "Toolkit",
+    "Where",
+    "as_tool",
     "as_tool_items",
     "build_namespace",
+    "check_args",
     "format_tool_docs",
     "launch_tool",
     "query",
     "repl_tools",
-    "split_args",
     "tool",
     "tool_allowed",
+    "tool_from_schema",
     "tool_name",
 ]

@@ -22,24 +22,22 @@ uv run --locked --python 3.12 --extra openai \
   --num-lines 1000000 --model gpt-5-mini --fast-model gpt-5-nano
 
 uv run --locked --python 3.12 --extra openai --extra image \
-  python examples/coding/boids/boids.py \
-  --runner rlmflow --model gpt-5 --fast-model gpt-5-mini --force
+  python examples/coding/boids/boids.py
 ```
 
-OOLONG and MazeBench remain in the separate [benchmark harness](../docs/benchmarks.md), where their results can be compared across the same runtime matrix.
+OOLONG is in [`benchmarks/`](../benchmarks/README.md), which compares Claude Code, Claude Code with rlmflow, and rlmflow's own harness on the same tasks.
 
 ## Scripts
 
 | Script                                                                       | What it shows                                                      |
 | ---------------------------------------------------------------------------- | ------------------------------------------------------------------ |
 | [`showcase.py`](showcase.py)                                                 | End-to-end `Flow` run, persistence, and gym-style stepping         |
-| [`drop_in_llm.py`](drop_in_llm.py)                                           | Minimal `FlowLLM` as a drop-in LLM                                 |
 | [`llm_query_fanout.py`](llm_query_fanout.py)                                 | Concurrent `llm_query` calls with `asyncio.gather`                 |
 | [`skills.py`](skills.py)                                                     | On-disk skills + dynamic prompt section                            |
 | [`structured_output.py`](structured_output.py)                               | Root + child `output_schema` validation                            |
 | [`summarizer.py`](summarizer.py)                                             | Recursive map-reduce summarization                                 |
 | [`providers/claude_code_delegation.py`](providers/claude_code_delegation.py) | Claude Code children through a named `claude_code` config          |
-| [`collaboration/shared_board.py`](collaboration/shared_board.py)             | Shared task board: every task is an agent, `AGENTS` is the context |
+| [`collaboration/shared_board.py`](collaboration/shared_board.py)             | Shared task board: workers claim and post tasks through host tools  |
 
 ```bash
 python examples/showcase.py
@@ -54,10 +52,10 @@ python examples/providers/claude_code_delegation.py
 
 | Folder                                       | What it shows                                                                                                                                       |
 | -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`architectures/`](architectures/)           | One small run per graph shape (tree, pipeline, review loop), plus an index of where every shape in the README grid comes from                       |
 | [`needle/`](needle/)                         | Needle-in-haystack (in-memory + filesystem variants; [`harnesses/`](needle/harnesses/) runs it on every harness)                                    |
 | [`coding/`](coding/)                         | Interactive file-editing agent plus the flagship model-designed Boids browser build                                                                 |
 | [`autoresearch/`](autoresearch/)             | TinyStories autoresearch loop with Modal GPU trials                                                                                                 |
-| [`research/textcraft/`](research/textcraft/) | Gymnasium TextCraft-Synth environment, grouped recursive rollouts, exact per-agent credit, and Tinker RLOO training                                 |
 | [`shepherd/`](shepherd/)                     | Live meta-agent recovers a jammed Sokoban worker by forking its graph and replaying recovery branches in parallel, with board panels + a node trace |
 
 [`shepherd/README.md`](shepherd/README.md) has the canonical run and artifact commands. [`docs/shepherd.md`](../docs/shepherd.md) is the worked-run walkthrough: the jam, the plans the meta-agent wrote against it, what each recovery branch did, and how a profile user-prompt modifier adds the live board to the current worker turn.
@@ -138,7 +136,7 @@ python examples/sandboxes/docker_agent.py --docker-image rlmflow:local
 python examples/sandboxes/modal_agent.py --model gpt-5
 ```
 
-The Docker runtime needs only the core package and the host `docker` CLI. Install `rlmflow[modal]` for Modal; `rlmflow[sandbox]` is an equivalent convenience extra.
+The Docker runtime needs only the core package and the host `docker` CLI. Install `rlmflow[modal]` for Modal.
 
 For fully locked-down local runs, pass a `DockerRuntime`:
 

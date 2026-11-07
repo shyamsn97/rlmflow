@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
-from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +13,6 @@ from rlmflow import Graph, LLMChunk, LLMUsage, PooledLLMClient, SequentialPool, 
 from rlmflow.llm import LLMClient, as_chunk, join_chunks, stream_with_retry
 from rlmflow.llm.anthropic import AnthropicClient
 from rlmflow.llm.openai import OpenAIClient
-from rlmflow.llm.tinker import TinkerClient
 
 
 @pytest.fixture(autouse=True)
@@ -83,59 +80,6 @@ def test_pooled_client_streams_sync_iterators_from_a_worker():
     assert [chunk.text for chunk in chunks] == ["a", "b"]
     assert chunks[-1].usage == LLMUsage(1, 2)
     assert stream_threads != [main_thread]
-
-
-def test_tinker_stream_is_one_chunk_from_completion():
-    class _StubTinker(TinkerClient):
-        def __init__(self):
-            self.last_usage = None
-
-        def completion(self, messages, *args, **kwargs):
-            usage = LLMUsage(3, 4)
-            self.last_usage = usage
-            return "sampled", usage
-
-    chunks = list(_StubTinker().stream([{"role": "user", "content": "hi"}]))
-    assert [chunk.text for chunk in chunks] == ["sampled"]
-    assert chunks[-1].usage == LLMUsage(3, 4)
-
-
-def test_tinker_extracts_text_from_new_cookbook_content_blocks():
-    parsed = SimpleNamespace(
-        content=[
-            {"type": "thinking", "thinking": "hidden chain of thought"},
-            {"type": "text", "text": "```repl\nprint(1)\n```"},
-        ]
-    )
-
-    assert TinkerClient._message_text(parsed) == "```repl\nprint(1)\n```"
-
-
-def test_tinker_serializes_renderer_tokenizer_borrows():
-    class BorrowCheckedRenderer:
-        def __init__(self):
-            self.borrowed = threading.Lock()
-
-        def build_generation_prompt(self, messages):
-            if not self.borrowed.acquire(blocking=False):
-                raise RuntimeError("Already borrowed")
-            try:
-                time.sleep(0.01)
-                return messages
-            finally:
-                self.borrowed.release()
-
-        def get_stop_sequences(self):
-            return []
-
-    client = object.__new__(TinkerClient)
-    client.renderer = BorrowCheckedRenderer()
-    client._renderer_lock = threading.Lock()
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(client._render_prompt, [[{"content": "a"}], [{"content": "b"}]]))
-
-    assert [prompt for prompt, _stop in results] == [[{"content": "a"}], [{"content": "b"}]]
 
 
 def test_join_matches_stream_chunks():
@@ -396,12 +340,12 @@ def test_flow_consumes_the_pooled_stream_primitive():
 
     llm = StreamLLM()
     g = Graph()
-    root = g.spawn("go")
+    root = g.add_agent("go")
     flow = ScriptedFlow(llm)
     flow.run(g)
     assert g.result(root) == "ok"
     assert llm.chat_calls == 0
-    [output] = g.nodes("llm_output")
+    [output] = g.nodes("llm")
     assert LLMUsage.of(output.data["usage"]) == LLMUsage(2, 2)
 
 

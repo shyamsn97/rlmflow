@@ -24,7 +24,7 @@ reviewer = AgentConfig(
     name="reviewer",
     model="gpt-5-mini",
     prompt={
-        "agents": None,                                      # drop the AGENTS section
+        "agents": None,  # drop the AGENTS section
         "style": "Report only actionable findings, most severe first.",  # added last
     },
 )
@@ -70,7 +70,7 @@ The REPL harness (`rlmflow.harnesses.repl`):
 | `protocol`  | one fenced `repl` block per turn; `submit(value)`, or a reply with no block, finishes          |
 | `verify`    | check the answer against the inputs before submitting; surface failures, don't paper over them |
 | `tools`     | the REPL tools this agent can call, including the configs `launch_agent` takes                 |
-| `agents`    | `AGENTS`, `send_agent` and `ask_agent`                                                         |
+| `agents`    | `Agent` and `AGENTS`                                                                           |
 | `arguments` | the task arguments by name and size; their values are REPL variables                           |
 | `schema`    | the output schema, when the config has one                                                     |
 

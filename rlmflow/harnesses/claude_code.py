@@ -4,14 +4,17 @@ Needs ``rlmflow[claude]`` (``claude-agent-sdk``), which bundles the Claude Code
 CLI; sign in once with ``claude`` (or set ``ANTHROPIC_API_KEY``).
 
 Claude runs with your own settings (permissions, ``CLAUDE.md``, MCP servers,
-plugins); rlmflow only allows ``rlmflow`` commands on top of them.
+plugins); rlmflow only allows ``rlmflow`` commands on top of them, and turns off
+Claude Code's own cross-session messaging (``SendMessage``, ``ListAgents``), so
+agents message each other with ``Agent.send`` and every message is in the graph.
 
 ``harness_options``:
 
 - ``mcp``: also offer the agent tools over MCP, with ``repl`` as ``python(code)``.
 - ``command``: a ``claude`` executable to use instead of the SDK's bundled one.
 - ``sdk``: fields merged into ``ClaudeAgentOptions`` (``permission_mode``,
-  ``max_turns``, ``plugins``, ...). ``allowed_tools`` there is extended, not replaced.
+  ``max_turns``, ``plugins``, ...). ``allowed_tools`` and ``disallowed_tools``
+  there are extended, not replaced.
 """
 
 from __future__ import annotations
@@ -33,6 +36,9 @@ if TYPE_CHECKING:
     from rlmflow.flow import Flow
 
 
+NATIVE_MESSAGING_TOOLS = ("SendMessage", "ListAgents")
+
+
 @dataclass(frozen=True)
 class ClaudeCodeOptions(SessionOptions):
     command: str | None = None
@@ -46,6 +52,10 @@ class ClaudeCodeOptions(SessionOptions):
             "Bash(rlmflow:*)",
             *(["mcp__rlmflow"] if self.mcp else []),
         ]
+
+    def disallowed_tools(self) -> list[str]:
+        """The user's ``sdk`` disallowed tools plus Claude Code's own messaging between sessions."""
+        return [*self.sdk.get("disallowed_tools", []), *NATIVE_MESSAGING_TOOLS]
 
 
 class ClaudeCodeHarness(SessionHarness):
@@ -92,6 +102,7 @@ class ClaudeCodeHarness(SessionHarness):
             "cli_path": options.command,
             **options.sdk,
             "allowed_tools": options.allowed_tools(),
+            "disallowed_tools": options.disallowed_tools(),
         }
         if session.resume:
             fields.update(resume=session.id, fork_session=session.fork)

@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from rlmflow.graph.nodes import Node
+from rlmflow.graph.nodes import Agent
 
 
 class LocalWorkspace:
@@ -19,16 +19,16 @@ class LocalWorkspace:
     def __init__(self, directory: str | Path | None = None) -> None:
         self.directory = Path(directory) if directory is not None else None
 
-    def path(self, agent: Node) -> Path:
+    def path(self, agent: Agent) -> Path:
         return (self.directory or Path.cwd()).resolve()
 
-    def branch(self, child: Node, parent: Node) -> None:
+    def branch(self, child: Agent, parent: Agent) -> None:
         return None
 
-    async def snapshot(self, agent: Node) -> Any:
+    async def snapshot(self, agent: Agent) -> Any:
         return None
 
-    async def checkout(self, agent: Node, snapshot: Any) -> None:
+    async def checkout(self, agent: Agent, snapshot: Any) -> None:
         return None
 
 
@@ -64,7 +64,7 @@ class GitWorktrees:
         #: Agent id -> the commit its worktree starts from, when not ``HEAD``.
         self.bases: dict[str, str] = {}
 
-    def path(self, agent: Node) -> Path:
+    def path(self, agent: Agent) -> Path:
         """The agent's worktree, created on first use."""
         tree = self.root / agent.id
         if not tree.exists():
@@ -73,20 +73,20 @@ class GitWorktrees:
             git(self.repo, "worktree", "add", "--detach", str(tree), base)
         return tree
 
-    def branch(self, child: Node, parent: Node) -> None:
+    def branch(self, child: Agent, parent: Agent) -> None:
         """Start ``child`` from ``parent``'s files as they are now."""
         if (self.root / parent.id).exists():
             self.bases[child.id] = self._snapshot(parent)
         elif parent.id in self.bases:
             self.bases[child.id] = self.bases[parent.id]
 
-    async def snapshot(self, agent: Node) -> str:
+    async def snapshot(self, agent: Agent) -> str:
         return await asyncio.to_thread(self._snapshot, agent)
 
-    async def checkout(self, agent: Node, snapshot: str) -> None:
+    async def checkout(self, agent: Agent, snapshot: str) -> None:
         await asyncio.to_thread(self._checkout, agent, snapshot)
 
-    def _snapshot(self, agent: Node) -> str:
+    def _snapshot(self, agent: Agent) -> str:
         tree_dir = self.path(agent)
         head = git(tree_dir, "rev-parse", "HEAD")
         with tempfile.TemporaryDirectory() as scratch:
@@ -107,7 +107,7 @@ class GitWorktrees:
         git(self.repo, "update-ref", f"refs/rlmflow/{commit}", commit)
         return commit
 
-    def _checkout(self, agent: Node, snapshot: str) -> None:
+    def _checkout(self, agent: Agent, snapshot: str) -> None:
         tree_dir = self.root / agent.id
         if not tree_dir.exists():
             self.bases[agent.id] = snapshot

@@ -2,35 +2,32 @@
 
 `rlmflow` runs an agent and reads the graph it leaves behind. Everything here also works as `python -m rlmflow …`, and `rlmflow --help` (or `--help` on any command) prints the same information from the source.
 
-Every command is a Fire class: constructor arguments are flags, methods are verbs. `rlmflow run --model gpt-5 tui "fix the tests"` instantiates `Run` with `--model`, then calls `tui` with the query.
+Every command is a Fire class: constructor arguments are flags, methods are verbs. `rlmflow run --model gpt-5 print "fix the tests"` instantiates `Run` with `--model`, then calls `print` with the query.
 
 ```bash
-rlmflow tui                                   # coding agent, in the dashboard
-rlmflow run print "fix the failing test"      # same agent, no dashboard
+rlmflow run print "fix the failing test"      # coding agent: stream it, print the answer
 rlmflow view show runs/coding/graph           # the tree, then the timeline
 rlmflow render gif runs/coding/graph run.gif  # the run, animated
 rlmflow config show                           # what a run would use, and why
 rlmflow version                               # version, Python, installed extras
 ```
 
-## `rlmflow tui` and `rlmflow run`
+## `rlmflow run`
 
-Both drive a coding agent with `FILE_TOOLS` over `--workdir` (the current directory by default), checkpointing the graph to `<workdir>/graph`. Launched children submit against `CODING_HANDOFF_SCHEMA` (`done`, `diff_summary`, `concerns`, `followups`) so the parent sees a memo rather than `"done"`; the root itself stays untyped. The dashboard needs `pip install "rlmflow[tui]"`.
+Drives a coding agent with `FILE_TOOLS` over `--workdir` (the current directory by default), streaming the agent tree and checkpointing the graph to `<workdir>/graph`. Launched children submit against `CODING_HANDOFF_SCHEMA` (`done`, `diff_summary`, `concerns`, `followups`) so the parent sees a memo rather than `"done"`; the root itself stays untyped.
 
 ```bash
-rlmflow tui                                     # dashboard, waiting for a query
-rlmflow tui --query "add a test for parse_args" # dashboard, first turn underway
-rlmflow run tui "add a test for parse_args"     # same, query as a positional
-rlmflow run print "fix the failing test"        # headless: stream it, print the answer
-rlmflow run --workdir ./proj --model gpt-5 tui
-rlmflow tui --docker-image rlmflow:local
-rlmflow tui --resume ./proj/graph               # continue a saved run
-rlmflow tui --flow mypkg.agents:build           # your own Flow instead of this one
+rlmflow run print "fix the failing test"           # stream it, print the answer
+rlmflow run --query "add a test for parse_args"    # the same, query as a flag
+rlmflow run --workdir ./proj --model gpt-5 print "add a test"
+rlmflow run --docker-image rlmflow:local print "add a test"
+rlmflow run --resume ./proj/graph print "now update the docs"   # continue a saved run
+rlmflow run --flow mypkg.agents:build print "add a test"        # your own Flow
 ```
 
 | Flag                         | What it changes                                                                                                               |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `--query`                    | Opening turn. On `run`, the verb can take this as a positional instead.                                                       |
+| `--query`                    | Opening turn. `print` can take it as a positional instead.                                                                    |
 | `--model`, `--fast-model`    | The root's model and the `worker` config's. `claude*` goes to Anthropic, anything else to OpenAI.                             |
 | `--reasoning-effort`         | `minimal`, `low`, `medium`, `high`. Reaches OpenAI reasoning models; ignored elsewhere.                                       |
 | `--workdir`                  | The directory the agent reads and edits, and where `graph/` lands.                                                            |
@@ -41,7 +38,7 @@ rlmflow tui --flow mypkg.agents:build           # your own Flow instead of this 
 | `--resume DIR`               | Continue a saved run instead of starting a new one.                                                                           |
 | `--flow module:factory`      | A zero-argument callable returning a `Flow`, from the project or an installed package. Also `flow = "..."` in `rlmflow.toml`. |
 
-`run print` is the one to reach for in a pipe, a CI job, or anywhere without a terminal. It streams the same nodes through `LiveTreeRenderer` and exits with `0` on success, `1` on a handled error, `2` on bad usage.
+It works in a pipe, a CI job, or anywhere without a terminal: it streams the nodes through `LiveTreeRenderer` and exits with `0` on success, `1` on a handled error, `2` on bad usage.
 
 Anything the flags cannot say stays in Python: write a factory that returns the `Flow` you want — custom prompts, tools, runtimes, profiles — and point `--flow` at it. Set `flow` in `rlmflow.toml` instead and `rlmflow serve` (so `/rlmflow:run` in your own Claude Code session) uses it too.
 
@@ -49,6 +46,7 @@ Anything the flags cannot say stays in Python: write a factory that returns the 
 # mypkg/agents.py
 from rlmflow import FILE_TOOLS, AgentConfig, CODING_HANDOFF_SCHEMA, Flow, LocalRuntime
 from rlmflow.llm import client_for
+
 
 def build() -> Flow:
     return Flow(
@@ -107,8 +105,8 @@ rlmflow config path   # the files that are read, and whether they exist
 rlmflow config init   # write a starter rlmflow.toml holding what is in effect
 ```
 
-Provider keys stay the clients' business: set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` as usual. `run` / `tui` check the one your model needs is present and say so plainly if it is not, rather than failing inside the SDK.
+Provider keys stay the clients' business: set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` as usual. `run` checks the one your model needs is present and say so plainly if it is not, rather than failing inside the SDK.
 
 ## Extending it
 
-The CLI is a [Fire](https://github.com/google/python-fire) component in [`rlmflow/cli/`](https://github.com/shyamsn97/rlmflow/tree/main/rlmflow/cli). `RlmflowCLI` composes `RunCLI`, `TuiCLI`, `ViewCLI`, `RenderCLI`, `ConfigCLI`, and `VersionCLI` onto one root. Fire turns each constructor into flags, each method into a verb, and each docstring into help. Adding a command is a class plus a line in `RlmflowCLI.__init__`.
+The CLI is a [Fire](https://github.com/google/python-fire) component in [`rlmflow/cli/`](https://github.com/shyamsn97/rlmflow/tree/main/rlmflow/cli). `RlmflowCLI` composes `RunCLI`, `ViewCLI`, `RenderCLI`, `ConfigCLI`, and `VersionCLI` onto one root. Fire turns each constructor into flags, each method into a verb, and each docstring into help. Adding a command is a class plus a line in `RlmflowCLI.__init__`.

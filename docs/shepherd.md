@@ -26,7 +26,8 @@ For simplicity, we introduce two main tools in the worker's REPL:
 def goto(row, col=None):  # walk anywhere reachable; never disturbs a box
     print(game.goto(row, col))
 
-def push(direction):      # shove what you stand against, once per turn
+
+def push(direction):  # shove what you stand against, once per turn
     print(game.push(direction))
 ```
 
@@ -76,11 +77,12 @@ This run starts jammed on purpose: the worker shoves `B1` right eight times unti
 The meta agent can now come up with distinct new pathways to explore and pick any of those eight spots to revert to, leading to some pretty diverse trajectories. This is done by giving the shepherd agent access to the following tools:
 
 ```python
-@tool("Inspect the worker after rewinding pushes, without playing.", proxy=True)
+@tool("Inspect the worker after rewinding pushes, without playing.")
 async def preview(rewind: int) -> dict:
     """Board, boxes, goals and legal pushes as of `rewind` pushes ago."""
 
-@tool("Record {rewind, order} recovery plans, then stop.", proxy=True)
+
+@tool("Record {rewind, order} recovery plans, then stop.")
 def branch(specs: list[Plan]) -> str:
     """Each plan is one revert depth plus the box-to-goal order for that worker."""
 ```
@@ -133,7 +135,7 @@ plans = [
 branch(plans)
 ```
 
-After the host attached and ran those recovery children, their joined outcomes were:
+After the host forked and ran those recovery children, their joined outcomes were:
 
 ```text
 ['stuck', 'solved', 'solved', 'solved', 'solved', 'solved', 'stuck', 'solved']
@@ -146,12 +148,13 @@ A plan is two decisions: where to revert back to, and what strategy to hand the 
 The host takes each plan's revert depth and turns it into a graph edit:
 
 ```python
-cut = push_turns(worker)[-depth].prev
-fork = cut.fork()
-await flow.replay(fork)
+history = g.history(worker)
+cut = history[history.index(push_turns(g, worker)[-depth]) - 1]
+fork = g.fork(cut, name=f"branch{index}", parent=planning_cell)
+await flow.replay(g, fork)
 ```
 
-`fork()` copies the graph and drops everything after the point it reverted to; `replay` re-runs the retained actions into a new REPL.
+`cut` is the node just before the push `depth` pushes back. `g.fork(cut)` copies nothing: the fork's history is the worker's history up to `cut`, and everything after that point is simply not part of it. `parent=planning_cell`, the shepherd's cell that recorded the plans, makes the fork a child of the shepherd. `replay` re-runs the retained cells into the fork's own REPL, so its board is the one the worker had at that point.
 
 #### Step 4 — resume: each fork is a sub-agent
 
