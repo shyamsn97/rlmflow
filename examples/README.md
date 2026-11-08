@@ -66,8 +66,8 @@ After a Shepherd run, `make showcase-shepherd-assets` redraws the agent summary 
 
 | Folder                     | What it shows                                                   |
 | -------------------------- | --------------------------------------------------------------- |
-| [`graph/`](graph/)         | Offline Node API (inspect, append, fork, attach subtrees, save) |
-| [`control/`](control/)     | Delegation, branching, injection                                |
+| [`graph/`](graph/)         | Offline graph API (inspect, append, fork, edit, launch, save)   |
+| [`control/`](control/)     | Delegation, branching, controller edits                         |
 | [`sandboxes/`](sandboxes/) | Docker and Modal remote execution                               |
 | [`providers/`](providers/) | DSPy, MCP, Tinker adapters                                      |
 
@@ -117,14 +117,15 @@ A finished run is saved automatically under `_runs/`:
 python examples/summarizer.py        # saves to examples/_runs/summarizer/
 ```
 
-The saved directory holds `graph.json`, the graph's item log (plus `blobs/` for large arguments). Read it back as the same graph the run held in memory:
+The saved directory holds `graph.json`, the graph's nodes and edges (plus `blobs/` for large inputs). Read it back as the same graph the run held in memory:
 
 ```python
 from rlmflow import Graph
+from rlmflow.view.text import kind
 
 g = Graph.load("examples/_runs/summarizer")
 for node in g.nodes():
-    print(g.path(g.node(node.agent_id)), node.type)
+    print(g.path(g.owner(node)), kind(node))
 ```
 
 ## Docker And Modal

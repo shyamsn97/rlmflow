@@ -91,13 +91,14 @@ Keyword arguments to `run` become variables in the root's REPL: `flow.run("Find 
 ```python
 import asyncio
 from rlmflow import Graph
+from rlmflow.view.text import kind
 
 
 async def main():
     g = Graph()
     root = g.add_agent("Build a text adventure game in Python, with combat and inventory.")
     async for step in flow.run_streaming(g):
-        print(g.path(step.agent), step.node.type)  # every node as it lands
+        print(g.path(step.agent), kind(step.node))  # every node as it finishes
     print(g.result(root))
     g.save("workdir/graph")  # reload with Graph.load
 
@@ -113,9 +114,9 @@ The agent writes ordinary Python. These are the calls that build the graph:
 
 | Call | What it does |
 | --- | --- |
-| `launch_agent(task, config="worker", **args)` | Start an agent with a fresh context; `**args` become its variables. Returns the `Agent` at once. |
+| `launch_agent(task, config="worker", **args)` | Start an agent with a fresh context; `**args` become its variables. Returns a handle at once. |
 | `await agent`, `await asyncio.gather(*agents)` | Wait for the results of agents you launched. |
-| `agent.send(message)` | Message an agent, reopening it if it finished. For an agent you launched, `await` it for the reply. |
+| `agent.send(message, **inputs)` | Message an agent, reopening it if it finished; `**inputs` become its variables. For an agent you launched, `await` it for the reply. |
 | `AGENTS["name"]` | Any agent in the run, by name, path or id, with its status, result, parent and children. |
 | `llm_query(prompt, schema=...)` | One model call with no history. |
 | `submit(value)` | Finish with a result. |
@@ -161,7 +162,7 @@ flow = Flow(
 )
 ```
 
-Claude Code and pi agents keep their own tools, settings and `CLAUDE.md`, and reach the REPL and agent tools through the `rlmflow repl` command, so their cells, launches and messages land in the same graph as everyone else's.
+Claude Code and pi agents keep their own tools, settings and `CLAUDE.md`, and reach the REPL and agent tools through the `rlmflow repl` command, so their code, launches and messages land in the same graph as everyone else's.
 
 **Your Claude Code session as the root.** Load the plugin and start a run; your session becomes the root agent and can launch workers:
 
@@ -195,7 +196,7 @@ See [Claude Code and pi as agents](docs/usage.md#claude-code-and-pi-as-agents) a
 
 ## Results
 
-Real runs of the examples below, Nov 2–4 2026. [Example results](docs/design/example-results.md) has the per-run tables, figures and caveats.
+Real runs of the examples below, Nov 2–4 2026. [Example results](docs/example_results.md) has the per-run tables, figures and caveats.
 
 | Example | What it shows | Result |
 | --- | --- | --- |
@@ -278,80 +279,80 @@ python examples/coding/boids/boids.py --harness claude_code
 
 ## How the graph is built
 
-A graph holds agents, the nodes in each agent's history, and edges between them. An agent's history is a list of nodes:
+A graph holds nodes and edges. A node is one chat message: the text the model reads, inputs that become REPL variables, and the code the REPL runs. An agent is its root node, and its history is a list of nodes:
 
 ```mermaid
 flowchart LR
-  b{{"llm<br/>reply with a repl block"}} --> c["code<br/>cell and its output"] --> d{{llm}} --> e(("done<br/>result"))
+  r[/"root<br/>task and arguments"/] --> b{{"model turn<br/>reply, its repl block, output"}} --> c{{"model turn"}} --> d(("model turn<br/>submit(result)"))
 ```
 
-A model call lands an `llm` node; running its cell lands a `code` node; `submit(...)`, or a reply with no `repl` block, lands `done`. A `message` node is anything that arrives from outside: a batch of results, a peer's message, a controller's nudge. A Claude Code or pi session that ends its turn waiting for messages lands `idle`. Edges are what crosses between agents: `spawn` from the cell that launched an agent, `return` from a child's `done` to wherever its result went, `message` from the cell that sent one, and `fork` from a branch to the node it branched at. Below, solid arrows are an agent's history and dotted arrows are edges.
+Each model call is one assistant node: the reply, the code from its `repl` block, and what that code printed. `submit(...)` in the code, or a reply with no `repl` block, marks that node terminal with the agent's result. Everything that arrives from outside is a user node: a batch of results, a peer's message, a controller's nudge, with any values it carries bound as variables. A Claude Code or pi session that ends its turn waiting for messages marks its last node idle. Edges are what crosses between agents: `spawn` from the node that launched an agent, `return` from a child's terminal node to wherever its result went, `write` from the node that sent a message, and `fork` from the node a branch continues from. Below, solid arrows are an agent's history and dotted arrows are edges.
 
-**`launch_agent` + `await`.** Launching adds an agent and a `spawn` edge from the cell. Awaiting it inside the cell returns the child's result in place, and a `return` edge records that the cell used it:
-
-```mermaid
-flowchart LR
-  subgraph parent
-    p1{{"llm<br/>h = launch_agent(task)<br/>print(await h)"}} --> p2["code"] --> p3{{llm}} --> p4((done))
-  end
-  subgraph child
-    c1{{llm}} --> c2((done))
-  end
-  p2 -. spawn .-> c1
-  c2 -. return .-> p2
-```
-
-**`launch_agent` without awaiting.** The child runs in the background. When it finishes, its result reaches the parent in a `message` at the parent's next turn:
+**`launch_agent` + `await`.** Launching adds an agent and a `spawn` edge from the node whose code launched it. Awaiting it in the same code returns the child's result in place, and a `return` edge records that the node used it:
 
 ```mermaid
 flowchart LR
   subgraph parent
-    p1{{"llm<br/>launch_agent(task)"}} --> p2[code] --> p3{{llm}} --> p4[code] --> p5[/"message<br/>child's result"/] --> p6{{llm}} --> p7((done))
+    p0[/root/] --> p1{{"h = launch_agent(task)<br/>print(await h)"}} --> p2((done))
   end
   subgraph child
-    c1{{llm}} --> c2((done))
+    c0[/root/] --> c1((done))
   end
-  p2 -. spawn .-> c1
-  c2 -. return .-> p5
+  p1 -. spawn .-> c0
+  c1 -. return .-> p1
 ```
 
-**`agent.send(message)`.** A message lands in the target's history at its next turn, even if the target already finished: a finished agent reopens and takes another turn. You can await only agents you launched (and theirs), so `await child.send(...)` returns the child's reply, while peers answer with a message of their own:
+**`launch_agent` without awaiting.** The child runs in the background. When it finishes, its result reaches the parent in a user node before the parent's next turn, bound as a variable named after the child:
+
+```mermaid
+flowchart LR
+  subgraph parent
+    p0[/root/] --> p1{{"launch_agent(task)"}} --> p2{{model turn}} --> p3[/"results<br/>worker_0 = ..."/] --> p4((done))
+  end
+  subgraph child
+    c0[/root/] --> c1((done))
+  end
+  p1 -. spawn .-> c0
+  c1 -. return .-> p3
+```
+
+**`agent.send(message, **inputs)`.** A message is a user node appended to the target's history, even if the target already finished: a finished agent reopens and takes another turn. You can await only agents you launched (and theirs), so `await child.send(...)` returns the child's reply, while peers answer with a message of their own:
 
 ```mermaid
 flowchart LR
   subgraph alice
-    a1{{"llm<br/>AGENTS['bob'].send('...')"}} --> a2["code"] --> a3[/"message<br/>bob's reply"/] --> a4{{llm}} --> a5((done))
+    a0[/root/] --> a1{{"AGENTS['bob'].send('...')"}} --> a2[/"from bob"/] --> a3((done))
   end
   subgraph bob
-    b1{{llm}} --> b2((done)) --> b3[/"message<br/>from alice"/] --> b4{{"llm<br/>AGENTS['alice'].send('...')"}} --> b5[code] --> b6((done))
+    b0[/root/] --> b1((done)) --> b2[/"from alice"/] --> b3{{"AGENTS['alice'].send('...')"}} --> b4((done))
   end
-  a2 -. message .-> b3
-  b5 -. message .-> a3
+  a1 -. write .-> b2
+  b3 -. write .-> a2
 ```
 
-**`g.fork(node)`.** A fork is a new agent that branches off any node. It shares the history up to that node, so its REPL is rebuilt by replaying those cells, and then it continues on its own; the original is untouched. Shepherd forks one jammed worker at eight different points:
+**`g.fork(node)`.** A fork is a new root that continues from any node. It shares the history up to that node, so its REPL is rebuilt by running that history again, and then it continues on its own; the original is untouched. Shepherd forks one jammed worker at eight different points:
 
 ```mermaid
 flowchart LR
   subgraph worker
-    w1{{llm}} --> w2[code] --> w3{{llm}} --> w4(("done<br/>stuck"))
+    w0[/root/] --> w1{{model turn}} --> w2{{model turn}} --> w3(("done<br/>stuck"))
   end
   subgraph fork["branch"]
-    f1[/"message<br/>new plan"/] --> f2{{llm}} --> f3(("done<br/>solved"))
+    f0[/"fork root"/] --> f1[/"new plan"/] --> f2{{model turn}} --> f3(("done<br/>solved"))
   end
-  f1 -. fork .-> w2
+  w1 -. fork .-> f0
 ```
 
-**Editing.** The graph is plain data and fully editable, with no `Flow` running. `g.edit(node, ...)`, `g.delete(node)`, `g.remove(agent)` and `g.replace(call, value)` change it, and the edges say what depended on the change: the agent rewinds to the edited node, and a cell that used an edited result re-runs in place on the next `flow.run(g)`. Each returns what it invalidated, and `dry_run=True` only reports it:
+**Editing.** The graph is plain data and fully editable, with no `Flow` running. `g.edit(node, ...)`, `g.delete(node)`, `g.remove(agent)` and `g.replace(node, i, value)` change it, and the edges say what depended on the change: the agent rewinds to the edited node, and a node whose code used an edited result reruns in place on the next `flow.run(g)`. Each returns what it invalidated, and `dry_run=True` only reports it:
 
 ```python
 child = g.children(root)[0]
-print(g.edit(g.history(child)[-1], result="42", dry_run=True))  # what would redo
-g.edit(g.history(child)[-1], result="42")
-flow.run(g)  # the parent's cell re-runs with 42
+print(g.edit(g.last_turn(child), result="42", dry_run=True))  # what would redo
+g.edit(g.last_turn(child), result="42")
+flow.run(g)  # the parent's code reruns with 42
 ```
 
-Host code can also `g.send(agent, text)`, `g.fork(node)`, `g.add_agent(...)`, `g.add_edge("peer", a, b)`, `g.save(path)` and `Graph.load(path)`. See [Usage](docs/usage.md#change-a-run) and the [graph tour](examples/graph/).
+Host code can also `g.send(agent, text, **inputs)`, `g.fork(node)`, `g.add_agent(...)`, `g.link("peer", a, b)`, `g.save(path)` and `Graph.load(path)`. See [Usage](docs/usage.md#change-a-run) and the [graph tour](examples/graph/).
 
 ## Tools
 

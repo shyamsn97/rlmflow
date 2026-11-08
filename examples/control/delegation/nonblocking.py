@@ -12,15 +12,15 @@ from rlmflow import AgentConfig, Flow, Graph, LLMUsage
 
 ROOT_REPLY = """\
 ```repl
-alpha = launch_agent("Return alpha.", name="alpha")
-beta = launch_agent("Return beta.", name="beta")
-print("queued:", alpha.name, beta.name)
+first = launch_agent("Return alpha.", name="alpha")
+second = launch_agent("Return beta.", name="beta")
+print("queued:", first.name, second.name)
 ```"""
 
 WAIT_REPLY = """\
 ```repl
-alpha_result = await alpha
-beta_result = await beta
+alpha_result = await first
+beta_result = await second
 submit(f"{alpha_result}, {beta_result}")
 ```"""
 
@@ -48,7 +48,7 @@ def main() -> None:
     try:
         flow.run(g, root_config=AgentConfig(model="scripted", max_iters=3))
         result = g.result(root)
-        child_results = {child.name: g.result(child) for child in g.children(root)}
+        child_results = {child.root_data.name: g.result(child) for child in g.children(root)}
         print("root:", result)
         print("children:", child_results)
         assert result == "alpha finished, beta finished"

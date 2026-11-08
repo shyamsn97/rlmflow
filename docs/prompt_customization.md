@@ -3,7 +3,7 @@
 Every harness builds its system prompt from named sections. `prompt_sections(flow, step)` returns them as a dict, in order, and `prompt(flow, step)` puts the config's `prompt` overrides on top and joins them:
 
 ```python
-sections = {**harness.prompt_sections(flow, step), **step.agent.config.prompt}
+sections = {**harness.prompt_sections(flow, step), **step.config.prompt}
 "\n\n".join(text.strip() for text in sections.values() if text and text.strip())
 ```
 
@@ -36,12 +36,12 @@ flow = Flow(configs=[reviewer])
 Subclass the harness when the text depends on the step, such as a board, a budget, or files that change during the run:
 
 ```python
-from rlmflow.harnesses.repl import ReplHarness, llm_turns
+from rlmflow.harnesses.repl import ReplHarness, turns
 
 
 class BudgetHarness(ReplHarness):
     def prompt_sections(self, flow, step):
-        left = step.agent.config.max_iters - llm_turns(step)
+        left = step.config.max_iters - turns(step)
         return {**super().prompt_sections(flow, step), "budget": f"{left} turns left."}
 
 
@@ -70,7 +70,7 @@ The REPL harness (`rlmflow.harnesses.repl`):
 | `protocol`  | one fenced `repl` block per turn; `submit(value)`, or a reply with no block, finishes          |
 | `verify`    | check the answer against the inputs before submitting; surface failures, don't paper over them |
 | `tools`     | the REPL tools this agent can call, including the configs `launch_agent` takes                 |
-| `agents`    | `Agent` and `AGENTS`                                                                           |
+| `agents`    | agent handles and `AGENTS`                                                                     |
 | `arguments` | the task arguments by name and size; their values are REPL variables                           |
 | `schema`    | the output schema, when the config has one                                                     |
 

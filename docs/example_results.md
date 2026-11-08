@@ -20,7 +20,7 @@ python examples/shepherd/render_graph.py --run-dir examples/_runs/results/shephe
 
 A worker plays Sokoban and jams a box against a wall after 8 pushes. The shepherd reads the stuck transcript, previews the board at each rewind depth, and forks 8 branches from 8 different points in the worker's history, each with its own plan.
 
-![Shepherd graph](../static/results/shepherd-graph.png)
+![Shepherd graph](static/results/shepherd-graph.png)
 
 | Branch | Pushes undone | Outcome | Turns |
 | --- | ---: | --- | ---: |
@@ -31,7 +31,7 @@ A worker plays Sokoban and jams a box against a wall after 8 pushes. The shepher
 
 The rewind depth is what decided the outcome. Every branch that undid 6 or more pushes solved the puzzle; every branch that kept 3 or more of the jammed pushes stayed stuck. A single retry from the jam point would have failed. The run took about 8 minutes, 293 nodes and 288k input / 101k output tokens.
 
-![Rewind animation](../static/results/shepherd-rewind.gif)
+![Rewind animation](static/results/shepherd-rewind.gif)
 
 The animation plays the jam, undoes it push by push to the chosen depth, then replays the winning branch.
 
@@ -53,11 +53,11 @@ env -u ANTHROPIC_API_KEY python examples/needle/harnesses/run.py --all --no-viz 
 
 Claude Code root, Claude Code searchers:
 
-![Needle, Claude Code root and workers](../static/results/needle-claude-claude.png)
+![Needle, Claude Code root and workers](static/results/needle-claude-claude.png)
 
 REPL root, REPL searchers:
 
-![Needle, REPL root and workers](../static/results/needle-repl-repl.png)
+![Needle, REPL root and workers](static/results/needle-repl-repl.png)
 
 The graph has the same shape whichever harness runs which agent: the dashed lines are results coming back to the root. Claude Code sessions use many more input tokens because each turn carries Claude Code's own system prompt and tool output. The pi combinations were skipped because `pi` is not installed here.
 
@@ -73,13 +73,13 @@ A gpt-5 planner proposes changes to a small GPT trained on TinyStories. Each tri
 
 **REPL implementers** (8 trials, 161k input / 60k output tokens): baseline 1.155 → **0.920** with a 2× learning rate. Dropout 0 also beat the baseline (1.001).
 
-![Autoresearch, REPL implementers](../static/results/autoresearch-repl-progress.png)
+![Autoresearch, REPL implementers](static/results/autoresearch-repl-progress.png)
 
 **Claude Code implementers** (8 trials, about $1.25 of Claude Code usage): baseline 1.155 → **0.866** with a 3× learning rate. Claude Code also corrected two plans that didn't match the code. Weight decay was already 0.1, so it tested 0.3. There was no step constant, so it halved the batch size to double the steps (0.959).
 
-![Autoresearch, Claude Code implementers](../static/results/autoresearch-claude-progress.png)
+![Autoresearch, Claude Code implementers](static/results/autoresearch-claude-progress.png)
 
-![Autoresearch lineage](../static/results/autoresearch-claude-lineage.png)
+![Autoresearch lineage](static/results/autoresearch-claude-lineage.png)
 
 Both runs found the same lesson: the baseline is under-trained, and a larger learning rate is worth about 0.2–0.3 bpb. An earlier Claude Code run (0.837, 6 of 8 trials finished) hit a Modal startup race when trials launched concurrently. That is fixed with a lock in `modal_runner.py`, and it didn't recur.
 
@@ -91,7 +91,7 @@ python examples/collaboration/decentralized_peers.py --model gpt-5-mini
 
 Three top-level agents with no manager. Alice asks bob and carol for their numbers with `await asyncio.gather(send_agent("bob", ...), send_agent("carol", ...))`, adds them, and sends the total back without waiting. Result: alice submitted 6 (correct), and bob and carol each answered "knows the total is 6". 21 nodes, 6k tokens.
 
-![Peers graph](../static/results/peers-graph.png)
+![Peers graph](static/results/peers-graph.png)
 
 ## Boids: peers building components
 
@@ -105,9 +105,9 @@ Three top-level agents (`peer1`, `peer2`, `peer3`) with no manager share one dir
 
 Their tools are generic: the file tools, their own REPL (Python, so they can run node themselves), and `open_page`, which loads a page in headless Chrome and returns its console output with no pass/fail. Grading happens after the run and the agents never see it: the page must load with no console errors, and the recording shows how it moves.
 
-![Boids, built by three Claude Code peers](../static/results/boids-peers.gif)
+![Boids, built by three Claude Code peers](static/results/boids-peers.gif)
 
-![The peers' message graph](../static/results/boids-peers-graph.png)
+![The peers' message graph](static/results/boids-peers-graph.png)
 
 In the Claude Code run above, all three peers proposed a split at once. They converged on peer1's, which peer1 wrote into `INTERFACE.md`, then adapted to each other's constructor signatures. Each reported its timings and per-species speeds (151, 113, 75 and 126 px/s). The 21 messages are the dashed lines in the graph. The peers added extras nobody asked for: mouse attract and repel, pause, trail and glow toggles, and a legend.
 
@@ -124,13 +124,13 @@ In the Claude Code run above, all three peers proposed a split at once. They con
 
 All five loaded with no console errors, so load-only validation can't tell the good runs from the broken ones. These verdicts come from watching the recordings. Mid-run frames from the first four:
 
-![gpt-5 runs 1–3 and Claude Code before the fix](../static/results/boids-gpt5-and-claude-v3.png)
+![gpt-5 runs 1–3 and Claude Code before the fix](static/results/boids-gpt5-and-claude-v3.png)
 
 **Why the first gpt-5 runs broke.** The two broken apps had physics bugs in gpt-5's own code. Run 2's cohesion averaged `position × affinity` with negative affinities, so it pulled every boid toward (0, 0). In both runs, separation was about 100× weaker than cohesion. Patching only those lines makes both flock. No agent noticed, because none of them ran the simulation or looked at it; `open_page` only returned console output. The Claude Code peers wrote probe pages and ran node themselves.
 
 **The rerun with screenshots.** The REPL harness can now show images to the model: a host tool calls `attach_image(path)`, and the image goes out with that cell's output (`rlmflow/graph/nodes.py`, `rlmflow/harnesses/repl.py`). `open_page` now also shows the agent evenly spaced screenshots of the page. On three new gpt-5 runs all three apps flock. The tool isn't why: 4 of the 9 agents opened the page, and none in run 3. Run 3's renderer draws with additive blending (`globalCompositeOperation = 'lighter'`), so 2000 overlapping boids add up to near-white, which a single screenshot would have shown. The difference from the first round is mostly variance in the physics gpt-5 writes, and gpt-5 still treats "loads without errors" as done.
 
-![gpt-5 reruns 1–3, early (top) and late (bottom) frames](../static/results/boids-gpt5-v6.png)
+![gpt-5 reruns 1–3, early (top) and late (bottom) frames](static/results/boids-gpt5-v6.png)
 
 **Harness bug found here.** Claude Code has its own `SendMessage` and `ListAgents` tools for messaging other sessions on the same machine. The first Claude Code peers used those instead of `send_agent`, so none of their coordination was in the graph. peer3 sent its proposal outside rlmflow and ended its turn, and since rlmflow had no message to wake it with, it never came back. The Claude Code harness now disallows those two tools (`rlmflow/harnesses/claude_code.py`), so messages go through `send_agent`.
 

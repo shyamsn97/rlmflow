@@ -6,7 +6,7 @@ A guide for choosing between rlmflow and other agent frameworks.
 
 rlmflow is a Python library for building **recursive agents as controllable execution graphs**.
 
-It gives an LLM a REPL and recursive delegation tools, then persists every query, action, observation, child call, wait, resume, and result as typed nodes you can inspect, step, visualize, fork, replay, resume, and branch into new workspaces.
+It gives an LLM a REPL and recursive delegation tools, then persists every query, action, observation, child call, wait, resume, and result as nodes you can inspect, step, visualize, fork, replay, resume, and branch into new workspaces.
 
 ## Decision matrix
 
@@ -34,7 +34,7 @@ It gives an LLM a REPL and recursive delegation tools, then persists every query
 
 - Step-level control (pause, inspect, resume)
 - Typed graph state with save/load persistence, fork, and time-travel
-- Parallel child execution with a thread pool
+- Parallel child agents, with a cap on concurrent model calls
 - `agents/` persistence for per-agent state logs
 - Direct invocation arguments for per-agent task data
 - Interactive visualization (Gradio viewer)
@@ -87,7 +87,7 @@ It gives an LLM a REPL and recursive delegation tools, then persists every query
 
 **Choose AutoGen** when you need async multi-agent messaging at scale, OpenTelemetry, or Microsoft ecosystem integration.
 
-**Choose rlmflow** when you want a direct Node step/stream API where the entire recursive execution is one inspectable tree.
+**Choose rlmflow** when you want a direct step/stream API where the entire recursive execution is one inspectable tree.
 
 ### vs SWE-agent / OpenHands
 

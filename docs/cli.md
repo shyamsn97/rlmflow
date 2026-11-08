@@ -33,7 +33,7 @@ rlmflow run --flow mypkg.agents:build print "add a test"        # your own Flow
 | `--workdir`                  | The directory the agent reads and edits, and where `graph/` lands.                                                            |
 | `--docker-image`             | Swaps `LocalRuntime` for `DockerRuntime` on that image.                                                                       |
 | `--max-depth`, `--max-iters` | The `default` config: roots and plain `launch_agent` calls.                                                                   |
-| `--workers`                  | How many agents may run at once.                                                                                              |
+| `--workers`                  | How many model calls may run at once.                                                                                         |
 | `--tools`                    | `files` (the default) or `none` for a bare REPL.                                                                              |
 | `--resume DIR`               | Continue a saved run instead of starting a new one.                                                                           |
 | `--flow module:factory`      | A zero-argument callable returning a `Flow`, from the project or an installed package. Also `flow = "..."` in `rlmflow.toml`. |

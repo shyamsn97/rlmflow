@@ -123,7 +123,7 @@ def _board_solved(board: str) -> bool:
 def _panels_html(panels: list[tuple[str, str]], picked: str) -> str:
     if not panels:
         return "<em>waiting for the worker…</em>"
-    cells = []
+    blocks = []
     for label, board in panels:
         is_pick = bool(picked) and label.split()[:1] == [picked]
         solved = "solved" in label.lower() or _board_solved(board)
@@ -132,12 +132,12 @@ def _panels_html(panels: list[tuple[str, str]], picked: str) -> str:
         color = "#d29922" if is_pick else ("#2ea043" if solved else "#8b949e")
         ring = "outline:2px solid #d29922;outline-offset:3px;" if is_pick else ""
         badge = " ◀ picked" if is_pick else ""
-        cells.append(
+        blocks.append(
             f"<div style='display:inline-block;vertical-align:top;margin:8px;{ring}'>"
             f"<div style='color:{color};font-weight:600;margin-bottom:4px'>{label}{badge}</div>"
             f"{_board_html(board)}</div>"
         )
-    return "<div style='white-space:nowrap;overflow-x:auto'>" + "".join(cells) + "</div>"
+    return "<div style='white-space:nowrap;overflow-x:auto'>" + "".join(blocks) + "</div>"
 
 
 def _proposals_md(proposals: list[tuple[int, str]]) -> str:

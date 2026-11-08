@@ -71,10 +71,11 @@ def score(result: str) -> tuple[int, dict[str, str]]:
 
 def run_branch(root: Path, idx: int) -> tuple[str, int, dict[str, str], int]:
     llm = MockLLM(seed=idx)
-    flow = Flow(llm_clients={"mock": llm})
+    config = AgentConfig(model="mock", max_iters=10)
+    flow = Flow(llm_clients={"mock": llm}, configs=[config])
     g = Graph()
     agent = g.add_agent(QUERY)
-    flow.run(g, root_config=AgentConfig(model="mock", max_iters=10))
+    flow.run(g, root_config=config)
     # Each branch persists to its own directory (graph.json).
     g.save(root / f"branch_{idx}")
     flow.runtime.close_repls()

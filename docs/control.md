@@ -9,6 +9,7 @@ read and change the graph however you like.
 ```python
 import asyncio
 from rlmflow import AgentConfig, Flow, Graph
+from rlmflow.view.text import kind
 
 g = Graph()
 root = g.add_agent("Audit this repository.")
@@ -18,7 +19,7 @@ flow = Flow(configs=[AgentConfig(model="gpt-5", max_depth=2)])  # "default"
 
 async def drive():
     async for step in flow.run_streaming(g):
-        print(g.path(step.agent), step.node.type)
+        print(g.path(step.agent), kind(step.node))
 
 
 asyncio.run(drive())
@@ -29,8 +30,8 @@ print(g.result(root))
 `flow.run(g)` runs a graph you built and returns it. With an `output_schema`, the
 result has been validated against the schema.
 
-Pass `until="next"` for one node, `until="idle"` to stop at the next `code`,
-`idle` or `done`, or a `(step) -> bool` callable. See [Streaming](streaming.md).
+Pass `until="next"` for one of an agent's own nodes, `until="idle"` to stop at
+the next node that ran code or ended a turn, or a `(step) -> bool` callable. See [Streaming](streaming.md).
 
 ## Per-agent limits
 
@@ -70,7 +71,7 @@ g.send(g.roots()[0], "Now check the tests too.")
 flow.run(g, root_config=AgentConfig(max_depth=2, max_iters=40))
 ```
 
-Each agent records the config it last ran with in `metadata["config"]`. That
+Each agent records the config it last ran with in `root_data.metadata["config"]`. That
 copy is for viewers and is never read back to drive a run.
 
 ### Named configs
@@ -108,13 +109,13 @@ flow.add_config(AgentConfig(name="claude", harness="claude_code", harness_option
 ```
 
 External sessions reach the same agent tools from the shell through
-`rlmflow repl`, so every cell they run lands as a `code` node. They keep their
+`rlmflow repl`, so all the code they run lands as nodes in their history. They keep their
 own tools and permissions.
 
 ## Multi-turn runs
 
-A finished agent is one whose last node is `done`. Send it a message and it runs
-again, with its REPL and history intact:
+A finished agent is one whose last turn submitted (`g.status(agent) == "done"`).
+Send it a message and it runs again, with its REPL and history intact:
 
 ```python
 flow.run(g)
@@ -133,23 +134,24 @@ depended on what it changed, and returns what it invalidated
 without changing anything:
 
 ```python
-cell = next(n for n in g.history(root) if n.type == "code")
+node = next(n for n in g.history(root) if n.runs_code)
 
-g.edit(cell, code="print(len(docs))")  # rewind root to the cell, with new code
+g.edit(node, code="print(len(docs))")  # rewind root to the node, with new code
 g.delete(g.history(root)[-1])  # drop the last node; the agent redoes it
 g.remove(g.children(root)[0])  # an agent, its subtree, what they caused
-g.replace(cell, 0, "cached")  # the cell's first saved call returns this instead
+g.replace(node, 0, "cached")  # the node's first saved call returns this instead
 flow.run(g)
 ```
 
-When a child's result changes, the cell that awaited it is marked pending. On
-the next run it executes again in place: its other calls return their saved
-values, so only the changed one is new. A results message built from a changed
-result is removed and delivered again. Edits are refused while an affected agent
-is stepping, and every edit is logged in `g.edits`. The full rules are in
+When a child's result changes, the node that awaited it is set ready. On the
+next run it runs again in place: its other calls return their saved values, so
+only the changed one is new. A results message built from a changed result is
+taken back and delivered again. The full rules are in
 [The graph](node_model.md#editing).
 
-To edit during a stream, stop it first: `until="idle"` returns at a clean point.
+To edit during a stream, either stop it first (`until="idle"` returns at a clean
+point) or go through the Flow, which stops the affected agents before it
+applies the edit: `await flow.edit(g, "edit", node, code=...)`.
 
 ```python
 async for _ in flow.run_streaming(g, until="idle"):
@@ -165,23 +167,23 @@ async for _ in flow.run_streaming(g):
 continues on its own; nothing is copied and the original is untouched:
 
 ```python
-cell = next(n for n in g.history(root) if n.type == "code")
-branch = g.fork(cell, name="retry", config="worker")
+node = next(n for n in g.history(root) if n.runs_code)
+branch = g.fork(node, name="retry", config="worker")
 g.send(branch, "Try a different approach.")
 flow.run(g)
 ```
 
-The fork's REPL is rebuilt by replaying the shared cells; launches and
+The fork's REPL is rebuilt by running the shared history again; launches and
 `llm_query` calls in them return their recorded results, so finished children
 aren't run again. There is no merge: continue the branch you want.
 
 ## Launching agents
 
-Agent code starts another agent with `launch_agent`, which returns an `Agent`
+Agent code starts another agent with `launch_agent`, which returns a handle
 immediately:
 
 ```python
-launch_agent(task: str, *, config: str | None = None, name: str | None = None, **args) -> Agent
+launch_agent(task: str, *, config: str | None = None, name: str | None = None, **args) -> AgentHandle
 ```
 
 `config=` names one of the Flow's configs (default `"default"`), which sets the
@@ -220,21 +222,21 @@ result = await launch_agent(
 )
 ```
 
-A child keeps running after the cell that launched it ends. Wait for it in a
-later cell with `await child`, or don't: when it finishes, its result reaches
-its parent in a results message at the parent's next turn, unless a cell already
-awaited it. A parent that has finished stays finished; only a message reopens it.
+A child keeps running after the code that launched it ends. Wait for it in a
+later turn with `await child`, or don't: when it finishes, its result reaches
+its parent in a results message at the parent's next turn, bound as a variable
+named after the child, unless some code already awaited it. A parent that has finished stays finished; only a message reopens it.
 
-## The `Agent` object
+## Agent handles
 
-`launch_agent` returns an `Agent`, and `AGENTS[selector]` looks one up by name,
-path or id. Both give the same object:
+`launch_agent` returns an `AgentHandle`, and `AGENTS[selector]` looks one up by
+name, path or id. Both give the same object:
 
 ```python
 agent = AGENTS["researcher"]
 await agent  # its result (only for agents you launched, or they did)
 await agent.send("Check 2019 too.")  # message it and wait for its reply (same rule)
-agent.send("FYI: schema changed.")  # message any agent without waiting
+agent.send("FYI: schema changed.", rows=rows)  # message any agent; rows becomes a variable there
 agent.status  # "done" | "idle" | "running"
 agent.done(), agent.result()  # result() raises unless it had finished
 agent.parent, agent.children
@@ -246,14 +248,14 @@ agent.name, agent.path, agent.config, agent.task
 ```python
 AGENTS.self  # this agent
 AGENTS.parent, AGENTS.children
-AGENTS.edges(kind="peer")  # edges you added with g.add_edge
+AGENTS.edges(kind="peer")  # edges you added with g.link
 "researcher" in AGENTS, len(AGENTS), [a.name for a in AGENTS]
 AGENTS.print_graph(show_results=True)
 ```
 
-Everything except `await` reads a snapshot taken when the cell started, so it
-doesn't change inside a cell, and an agent launched in this cell appears in
-`AGENTS` from the next one. Awaiting an agent that isn't your descendant raises
+Everything except `await` reads a snapshot taken when the code started, so it
+doesn't change while it runs, and an agent launched in this code appears in
+`AGENTS` from the next code it runs. Awaiting an agent that isn't your descendant raises
 `NotYourAgent`; message it and read its reply at your next turn.
 
 ## Save and load
@@ -265,8 +267,8 @@ flow.run(g)
 ```
 
 Loading restores the graph, not the REPLs. The first time a Flow steps an agent
-whose REPL it doesn't hold, it rebuilds it by replaying the agent's recorded
-cells: tool calls with saved results return them, launches resolve to the
+whose REPL it doesn't hold, it rebuilds it by running the agent's history
+again: tool calls with saved results return them, launches resolve to the
 existing children, and `llm_query` doesn't repeat a request. Nothing is
 appended; `ENV["RLMFLOW_REPLAY"]` is `"1"` while it happens, so agent code can
 skip other work it shouldn't repeat.
@@ -349,21 +351,21 @@ from rlmflow.integrations.mcp import MCPTools
 flow = Flow(tools=[MCPTools("python", "weather_server.py")])
 ```
 
-A host tool's JSON result is saved on the cell that called it, and replay
-returns it instead of calling again. Results that aren't JSON, or are over 64KB,
-aren't saved, so those calls run again on replay. A tool can also record
-metadata on the calling cell:
+A host tool marked `@tool(cache=True)` has its JSON result saved on the node
+that called it, keyed by its arguments, and replay returns it instead of
+calling again. Other tools, and results over 64KB, run again on replay. A tool
+can also record metadata on the calling node:
 
 ```python
-@tool("Fetch one remote record.")
+@tool("Fetch one remote record.", cache=True)
 def fetch_record(key: str) -> dict:
     value = remote_fetch(key)
     record_metadata("records.fetched", {"key": key, "source": "primary"}, append=True)
     return value
 ```
 
-Every saved call can be replaced from host code with `g.replace(cell, index, value)`,
-where `index` is the call's position in `cell.data["calls"]`.
+Every saved call can be replaced from host code with `g.replace(node, index, value)`,
+where `index` is the call's position in `node.calls`.
 
 Add or remove tools later; both reach REPLs that are already open:
 
@@ -389,5 +391,5 @@ Host code can use the same with `flow.llm_query(...)`.
 A REPL lives until something closes it, and submitting does not close it: a
 finished agent keeps its namespace, because a message can reopen it. Close one
 with `flow.runtime.close_repl(agent)`, all of them with
-`flow.runtime.close_repls()`, and every Flow resource (queued work, thread pool,
-REPLs) with `await flow.aclose()`.
+`flow.runtime.close_repls()`, and every Flow resource (turns in flight, model
+clients, REPLs) with `await flow.aclose()`.

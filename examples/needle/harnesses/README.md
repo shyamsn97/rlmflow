@@ -71,7 +71,7 @@ A config's `model` means whatever its harness takes:
 - for `claude_code`, Claude's `--model` (`--claude-model`; `default` keeps your Claude setting);
 - for `pi`, pi's `--model` (`--pi-model`, with `--pi-provider`).
 
-Claude Code and pi agents run in the same working directory, use their own read tools on the files, and reach the agent tools (`launch_agent`, `submit`, ...) through `rlmflow repl`. Their cells land in the graph as `code` nodes like a REPL agent's. To wait for searchers they either `await` the handles in a cell or end their turn and get resumed with the results; a handle's `.done()` is a snapshot from the start of the cell, so polling it in a loop never sees a searcher finish.
+Claude Code and pi agents run in the same working directory, use their own read tools on the files, and reach the agent tools (`launch_agent`, `submit`, ...) through `rlmflow repl`. Each `rlmflow repl` call lands in the graph as its own node with the code it ran, like a REPL agent's turn. To wait for searchers they either `await` the handles in that code or end their turn and get resumed with the results; a handle's `.done()` is a snapshot from when the code started, so polling it in a loop never sees a searcher finish.
 
 If `pi` isn't on your PATH, install it anywhere and pass the binary: `--pi-command /path/to/node_modules/.bin/pi`.
 

@@ -38,7 +38,7 @@ def main() -> None:
     loaded = Graph.load(run_dir)
 
     def ids(graph: Graph) -> list[str]:
-        return [item.id for item in [*graph.agents(), *graph.nodes(), *graph.edges()]]
+        return [item.id for item in [*graph.nodes(), *graph.edges()]]
 
     print(f"saved: {run_dir}")
     print("agents:", [loaded.path(agent) for agent in loaded.agents()])

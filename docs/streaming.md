@@ -1,141 +1,137 @@
-# Streaming and task scheduling
+# Streaming and turns
 
-`Flow.run_streaming(g)` is the execution driver. It keeps one step in flight for
-every ready agent, including agents added to the graph while the stream runs,
-yields a `Step` for each node as it lands, and stops at a boundary.
+`Flow.run_streaming(g)` is the execution driver. It keeps one turn in flight for
+every running agent, including agents added to the graph while the stream runs,
+yields a `Step` for each node as it finishes, and stops at a boundary.
 
 ```python
 from rlmflow import AgentConfig, Flow, Graph
+from rlmflow.view.text import kind
 
 g = Graph()
 root = g.add_agent("Audit this repository.")
 
 flow = Flow(configs=[AgentConfig(model="gpt-5-mini")])
 async for step in flow.run_streaming(g):
-    print(g.path(step.agent), step.node.type, [e.kind for e in step.edges])
+    print(g.path(step.agent), kind(step.node), [e.kind for e in step.edges])
 
 print(g.result(root))
 ```
 
-The graph is durable state. The queue holds only live execution state.
+The graph is durable state. The Flow holds only live execution state.
 
 ```text
 durable                      live
 ─────────────────────        ───────────────────────────
 Graph                        Flow.run_streaming
-  agents, histories            TaskQueue: one task per agent
-  inboxes                      asyncio tasks, waiters
-  edges, edits                 Pool / Runtime resources
+  root nodes, histories        flow.tasks: one turn per agent
+  edges                        REPL locks, waiters
+                               Runtime resources
 ```
 
 ## Source map
 
 - [`rlmflow/flow.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/flow.py):
-  `run_streaming` (the driver loop), `_schedule`, `run_step` (one step),
-  `rerun` (a cell an edit invalidated), `deliver_results`.
-- [`rlmflow/engine/scheduler.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/engine/scheduler.py):
-  `StepResult`, `TaskQueue`, `Pool`/`ThreadPool`/`SequentialPool`, `resolve_boundary`.
+  `run_streaming` (the driver loop), `_schedule`, `_turn` (one turn),
+  `run_node` (run one node in the agent's REPL), `deliver_results`, `edit`.
 - [`rlmflow/graph/graph.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/graph/graph.py):
-  `status`, `deliver`, `busy`, `subscribe`.
+  `status`, `last_turn`, `send`.
+- [`rlmflow/graph/calls.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/graph/calls.py):
+  `CallLog`, what a node's tool calls saved.
 
 ## The driver loop
 
 ```text
-subscribe to the graph (every landed node is queued for the stream)
 open toolkits
-deliver unseen results to every agent that is between turns
-schedule
-loop while anything is in flight:
-    result = await queue.next()          # a finished step, or a wake-up
-    if a step finished: unmark busy, deliver results to its agent and its parent
-    yield a Step for every node that landed since; stop if the boundary says so
-    notify waiters (cells awaiting agents re-check the graph)
-    re-raise a root's infrastructure error
-    schedule
-finally: unsubscribe, cancel what's in flight, close toolkits
+loop:
+    forget finished turns; re-raise a root's error
+    for every agent with no turn in flight:
+        attach unseen results
+        if status is "running": send the budget's final-turn message if due, start a turn
+    yield a Step for every node that finished since; stop if the boundary says so
+    if no turn is in flight: stop
+    wait for the graph to change
+finally: cancel what's in flight, attach remaining results, close toolkits
 ```
 
-`_schedule` goes through every agent whose `g.status` is `"running"` and has no
-step in flight: it sends the budget's final-turn message if the run is nearly
-out of tokens, moves the inbox into the history (`g.deliver`), marks the agent
-busy and submits `run_step`.
+Every node that finishes wakes the driver, and so does `flow.wake()`, which is
+safe from any thread. Anything that writes to the graph during a stream (code
+launching an agent, a peer's message, host code calling `g.send` between steps)
+is scheduled on the next pass.
 
-Because the loop reacts to graph writes, anything that writes to the graph during
-a stream (a cell launching an agent, a peer's message, a host thread calling
-`g.send`) wakes the driver, and the new work is scheduled on the next pass.
+## One turn
 
-## One step, one node
-
-`run_step(step)` either runs a pending cell again, or calls the agent's harness
-and appends the node it returns. The native `repl` harness:
+A turn runs the node an edit left ready, if there is one; otherwise it calls the
+agent's harness. The native `repl` harness:
 
 ```text
-last node is none, a message or code  -> call the model          -> llm
-last node is llm with one repl block  -> run the cell            -> code, then done if it submitted
-last node is llm with no repl block   -> the reply is the answer -> done
+call the model with the history         -> one assistant node with the reply
+reply has one repl block                -> its code runs in place; terminal if it submitted
+reply has no repl block                 -> the reply is the answer; terminal
+reply has several, empty or open blocks -> the node records the error; nothing runs
 ```
 
-A cell lands pending when it starts, and is filled in when it finishes.
+The node records `seen`, how many history entries the prompt had, so a message
+that arrived during the model call is still unread and the agent takes another
+turn.
 
 Session harnesses (`claude_code`, `pi`, `interactive`) run one session turn per
-step; cells the session runs through `rlmflow repl` land as `code` nodes during
-the turn, and the turn ends with `idle` (it is waiting for agents it launched or
-for unread results) or `done`.
+step; code the session runs through `rlmflow repl` lands as nodes during the
+turn, and the turn ends with a node carrying `seen` and either `terminal` or
+`idle` (it is waiting for agents it launched or for unread results).
 
-A step that raises lands `done` with the error as its result. Cancellation is
-not caught.
+A turn that raises appends a terminal node with the error as its result.
+Cancellation is not caught.
 
-## TaskQueue
+## Waiting
 
 ```python
-queue.submit(step, fn)  # run fn(step) unless this agent already has a step in flight
-await queue.next()  # the next StepResult, or None when only woken
-queue.wake()  # ask the driver to look for new work; safe from any thread
-await queue.join(pred)  # wait until pred() holds after some processed change
-await queue.cancel()  # cancel every step (or some agents')
+flow.tasks  # agent id -> its turn in flight
+flow.wake()  # ask the driver to look again; safe from any thread
+await flow.wait_for(pred)  # wait until pred() holds, checked whenever the graph changes
 ```
 
-`await child` in a cell is a `join` on "the child is done". It runs on the
-Flow's event loop, so a cell blocked on a child doesn't hold a pool slot.
+`await child` in agent code is a `wait_for` on "the child is done". It runs on
+the Flow's event loop, so code blocked on a child holds no model slot.
 
-## Pool versus Runtime
+## Workers versus Runtime
 
-`Pool` places model compute: `ThreadPool(workers)` bounds how many model calls
-run at once, `SequentialPool` runs one at a time. `Runtime` places code: one REPL
-per agent, in a worker process, container or sandbox. A parent awaiting its
-children holds neither.
+`Flow(workers=n)` bounds how many model calls run at once; by default there is
+no bound. `Runtime` places code: one REPL per agent, in a worker process,
+container or sandbox. A parent awaiting its children holds neither.
 
 ## Stream boundaries
 
 | `until` | Stops after |
 | --- | --- |
-| `"done"` (default) | Nothing is ready or in flight. |
-| `"next"` | The next node a step produced (messages are written by senders, so they don't count). |
-| `"idle"` | The next `code`, `idle` or `done`. |
+| `"done"` (default) | No turn is in flight and no agent is running. |
+| `"next"` | The next node an agent wrote itself (messages are written by senders, so they don't count). |
+| `"idle"` | The next node that ran code or ended a turn. |
 | a callable | The first `step` for which `until(step)` is true. |
 
-Stopping cancels the steps still in flight. A cell cut off mid-run stays
-pending, keeping what it saved: the agents it launched keep running on the next
-stream, and the next run executes the cell again in place, so its launches
-return the same agents and its finished awaits their saved results. Nothing a
-child did is paid for twice. Any other step that was cut off (a model call, a
-session turn) runs again. A run saved mid-cell loads the same way.
+Stopping cancels the turns still in flight. A node cut off mid-run goes back to
+ready, keeping what it saved: the agents it launched keep running on the next
+stream, and the next run executes it again in place, so its launches return the
+same agents and its finished awaits their saved results. Nothing a child did is
+paid for twice. Any other turn that was cut off (a model call, a session turn)
+runs again. A run saved mid-run loads the same way.
 
 ## Ordering
 
-Nodes are yielded in the order they landed. Within one agent that is its history
-order; across agents it is completion order, which `seq` records.
+Nodes are yielded in the order they finished. Within one agent that is its
+history order, which is the order its REPL ran things in; across agents it is
+completion order, which `seq` records.
 
 ## Failure behaviour
 
-Agent code that raises is an observation: the `code` node records the error and
-the model sees it next turn. A step that raises (a provider error, a harness
-crash) finishes its agent with `done` and an error; for a root it is also
+Agent code that raises is an observation: the node records the error and the
+model sees it next turn. A turn that raises (a provider error, a harness crash)
+finishes its agent with a terminal node and an error; for a root it is also
 re-raised from the stream.
 
-## Scheduler invariants
+## Invariants
 
-1. One step per agent in flight, enforced by `g.busy` and the queue.
-1. Every landed node is yielded exactly once.
-1. A message is delivered only at a turn boundary.
+1. One turn per agent in flight, kept by `flow.tasks`.
+1. Every finished node is yielded exactly once.
 1. Results are delivered once, recorded by `return` edges.
+1. Edits through `flow.edit` cancel the affected turns before they apply.

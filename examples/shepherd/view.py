@@ -13,9 +13,9 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from rlmflow import CODE, DONE, LLM, Agent, Edge, Flow, Graph, Node, Step
+from rlmflow import Edge, Flow, Graph, Node, Step
 from rlmflow.consumers import StreamConsumer
-from rlmflow.utils import find_repl_blocks
+from rlmflow.view.text import kind
 
 
 def _looks_like_grid(text: str) -> bool:
@@ -35,8 +35,8 @@ def side_by_side(labeled: list[tuple[str, str]], *, gap: str = "    ") -> str:
     widths = [max((len(line) for line in col), default=0) for col in cols]
     rows = []
     for r in range(height):
-        cells = [(col[r] if r < len(col) else "").ljust(w) for col, w in zip(cols, widths)]
-        rows.append(gap.join(cells).rstrip())
+        padded = [(col[r] if r < len(col) else "").ljust(w) for col, w in zip(cols, widths)]
+        rows.append(gap.join(padded).rstrip())
     return "\n".join(rows)
 
 
@@ -48,7 +48,7 @@ def grid_of_blocks(labeled: list[tuple[str, str]], *, cols: int = 4) -> str:
     return "\n\n".join(row for row in rows if row)
 
 
-def panel_status(flow: Flow, g: Graph, agent: Agent) -> str:
+def panel_status(flow: Flow, g: Graph, agent: Node) -> str:
     """Live one-line status for a board panel, read from the agent's REPL env."""
     env = flow.runtime.repl_for(agent).env
     pushes = env.get("pushes")
@@ -72,15 +72,16 @@ def panel_status(flow: Flow, g: Graph, agent: Agent) -> str:
 def trace_line(g: Graph, node: Node, labels: dict[str, str]) -> str:
     """One compact line for the streamed node."""
     agent = g.owner(node)
-    lane = labels.get(agent.id, agent.name)
-    if node.type == LLM:
-        detail = (find_repl_blocks(node["text"]) or [node["text"]])[0]
-    elif node.type == DONE:
-        detail = f"submit({node.get('result')!r})"
+    lane = labels.get(agent.id, agent.root_data.name)
+    label = kind(node)
+    if label == "done":
+        detail = f"submit({node.result!r})"
+    elif node.runs_code:
+        detail = node.code
     else:
-        detail = node.get("output") or node.get("text") or ""
-    head = next((line for line in (detail or "").splitlines() if line.strip()), "")
-    return f"[{lane:>9}] {node.type:<13} {head.strip()[:88]}"
+        detail = node.output or node.text
+    head = next((line for line in detail.splitlines() if line.strip()), "")
+    return f"[{lane:>9}] {label:<13} {head.strip()[:88]}"
 
 
 def export_run_traces(
@@ -119,7 +120,7 @@ class PanelViewer(StreamConsumer):
 
     One panel per agent the host named with :meth:`label`, keyed by the agent's
     id in first-seen order; scratch agents such as previews never get a lane. Each panel shows that agent's board (via
-    ``board_of``) or its latest ``code`` output grid, so the worker and every
+    ``board_of``) or the grid its latest code printed, so the worker and every
     recovery branch animate as their streams advance. Safe to share across
     concurrently-gathered streams: node handling runs on one asyncio loop, so
     updates never interleave.
@@ -131,9 +132,9 @@ class PanelViewer(StreamConsumer):
         title: str = "",
         cols: int = 4,
         every_s: float = 0.1,
-        status_of: Callable[[Agent], str] | None = None,
-        board_of: Callable[[Agent], str] | None = None,
-        frames_of: Callable[[Agent], list[str]] | None = None,
+        status_of: Callable[[Node], str] | None = None,
+        board_of: Callable[[Node], str] | None = None,
+        frames_of: Callable[[Node], list[str]] | None = None,
         frame_ms: int = 70,
         sink: Callable[[list[tuple[str, str]]], None] | None = None,
         paint: bool = True,
@@ -143,7 +144,7 @@ class PanelViewer(StreamConsumer):
         self.every_s = every_s
         self.status_of = status_of
         # When set, refresh each panel's board from the live game (or other
-        # source) instead of scraping ``code`` output for a grid.
+        # source) instead of scraping code output for a grid.
         self.board_of = board_of
         # When set, this reads a lane's current-turn sub-step frames (e.g.
         # ``env["frames"]`` published by the game) and plays them out one-by-one, so
@@ -166,19 +167,19 @@ class PanelViewer(StreamConsumer):
         self._order: list[str] = []
         self._labels: dict[str, str] = {}
         self._blocks: dict[str, str] = {}
-        self._agents: dict[str, Agent] = {}
+        self._agents: dict[str, Node] = {}
         self._root_labels: dict[str, str] = {}
         self._last_paint = 0.0
         self._closed = False
 
-    def label(self, agent: Agent, label: str) -> None:
+    def label(self, agent: Node, label: str) -> None:
         """Give ``agent`` a lane under ``label`` (e.g. "worker"/"shepherd")."""
         self._root_labels[agent.id] = label
         if agent.id in self._labels:
             self._labels[agent.id] = label
 
-    def _default_label(self, agent: Agent) -> str:
-        return self._root_labels.get(agent.id) or agent.name
+    def _default_label(self, agent: Node) -> str:
+        return self._root_labels.get(agent.id) or agent.root_data.name
 
     def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
         item = item.node if isinstance(item, Step) else item
@@ -186,9 +187,9 @@ class PanelViewer(StreamConsumer):
             return
         agents = [a for a in graph.agents() if a.id in self._root_labels]
         for agent in agents:
-            self._observe(agent, item if item.agent_id == agent.id else None)
+            self._observe(agent, item if item.owner == agent.id else None)
         # Play out this turn's per-sub-step frames so a box-level push visibly walks
-        # the player around cell-by-cell instead of snapping (looking teleporty).
+        # the player around square by square instead of snapping (looking teleporty).
         if self.frames_of is not None:
             for agent in agents:
                 self._animate(agent)
@@ -197,13 +198,13 @@ class PanelViewer(StreamConsumer):
             return
         self._paint()
 
-    def _safe_frames(self, agent: Agent) -> list[str]:
+    def _safe_frames(self, agent: Node) -> list[str]:
         try:
             return list(self.frames_of(agent) or [])  # type: ignore[misc]
         except Exception:  # noqa: BLE001 - a viewer must never crash a run
             return []
 
-    def _animate(self, agent: Agent) -> None:
+    def _animate(self, agent: Node) -> None:
         """Paint this turn's sub-step frames for ``agent`` in sequence (short delay
         each) so the walk-around before each shove is visible. ``frames`` is the
         current turn only (replaced each turn), so we play it once — when it differs
@@ -220,7 +221,7 @@ class PanelViewer(StreamConsumer):
             if delay and i < len(frames) - 1:
                 time.sleep(delay)
 
-    def _observe(self, agent: Agent, changed: Node | None) -> None:
+    def _observe(self, agent: Node, changed: Node | None) -> None:
         key = agent.id
         if key not in self._order:
             self._order.append(key)
@@ -237,8 +238,8 @@ class PanelViewer(StreamConsumer):
                 board = None
             if board:
                 self._blocks[key] = board
-        elif changed is not None and changed.type == CODE:
-            text = (changed.get("output") or "").rstrip()
+        elif changed is not None and changed.runs_code:
+            text = changed.output.rstrip()
             if _looks_like_grid(text) or key not in self._blocks:
                 self._blocks[key] = text
 

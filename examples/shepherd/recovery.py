@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TypedDict
 
-from rlmflow import CODE, DONE, LLM, MESSAGE, Agent, Flow, Graph, Node, tool
+from rlmflow import Flow, Graph, Node, tool
+from rlmflow.harnesses.repl import final_node
 
 
 class Plan(TypedDict):
@@ -26,52 +27,40 @@ def score(env: dict) -> float:
     return -1000.0 - float(env.get("dist", 0))
 
 
-def landed_push(output: Node | None) -> bool:
+def landed_push(node: Node) -> bool:
     """True when a turn's stdout reports a push that actually moved a box.
 
     ``Sokoban.push`` announces success with a ``pushed ...`` line, but a worker
     may print its own reasoning around it, so scan the lines rather than
     requiring the report to come first.
     """
-    if output is None:
-        return False
-    return any(
-        line.lstrip().startswith("pushed ") for line in (output.get("output") or "").splitlines()
-    )
+    return any(line.lstrip().startswith("pushed ") for line in node.output.splitlines())
 
 
-def push_turns(g: Graph, agent: Agent) -> list[Node]:
+def push_turns(g: Graph, agent: Node) -> list[Node]:
     """Successful worker pushes, oldest first.
 
     Judged by what the turn's output reports rather than what its code called: under
     ``--simple-moves`` a shove is spelled ``move(...)``, so reading the code would
     find no pushes at all and leave the shepherd nothing to rewind.
     """
-    history = g.history(agent)
-    pushes = []
-    for index, node in enumerate(history):
-        if node.type != LLM:
-            continue
-        output = history[index + 1] if index + 1 < len(history) else None
-        if output is not None and output.type == CODE and landed_push(output):
-            pushes.append(node)
-    return pushes
+    return [node for node in g.history(agent) if node.runs_code and landed_push(node)]
 
 
-def rewind_point(g: Graph, agent: Agent, rewind: int) -> tuple[Node | Agent, int]:
-    """The node just before the push ``rewind`` pushes back, or the agent itself if none."""
+def rewind_point(g: Graph, agent: Node, rewind: int) -> tuple[Node, int]:
+    """The turn just before the push ``rewind`` pushes back, or the agent's root if none."""
     pushes = push_turns(g, agent)
     if not pushes:
         raise ValueError("worker has no pushes to rewind")
     depth = max(1, min(int(rewind), len(pushes)))
     history = g.history(agent)
     index = history.index(pushes[-depth]) - 1
-    while index >= 0 and history[index].type == MESSAGE:
+    while index > 0 and history[index].role == "user":
         index -= 1
-    return (history[index] if index >= 0 else agent), depth
+    return history[index], depth
 
 
-def snapshot(flow: Flow, agent: Agent, rewind: int = 0) -> dict:
+def snapshot(flow: Flow, agent: Node, rewind: int = 0) -> dict:
     """The agent's board as plain data, read from its REPL env.
 
     The game itself lives wherever its REPL runs, which is a worker process under
@@ -95,17 +84,17 @@ def snapshot(flow: Flow, agent: Agent, rewind: int = 0) -> dict:
 async def replayed_fork(
     flow: Flow,
     g: Graph,
-    worker: Agent,
+    worker: Node,
     rewind: int,
     name: str,
     *,
-    by: Node | Agent | None = None,
+    by: Node | None = None,
     extra_turns: int | None = None,
     done: str | None = None,
-) -> tuple[Agent, int]:
+) -> tuple[Node, int]:
     """Fork ``worker`` ``rewind`` pushes back and rebuild the fork's REPL there.
 
-    ``by`` (a cell or an agent) makes the fork a child of that agent.
+    ``by`` (a node) makes the fork a child of the agent that node belongs to.
     ``extra_turns`` caps the fork at that many turns past the fork point.
     ``done`` finishes it at once, before its REPL is rebuilt, so a running flow
     never picks it up.
@@ -113,13 +102,14 @@ async def replayed_fork(
     cut, depth = rewind_point(g, worker, rewind)
     config = None
     if extra_turns is not None:
-        kept = g.history(cut) if isinstance(cut, Node) else []
-        turns = sum(node.type == LLM for node in kept)
-        capped = replace(flow.config(worker.config_name), name=name, max_iters=turns + extra_turns)
+        turns = sum("seen" in node.data for node in g.history(cut))
+        capped = replace(
+            flow.config(worker.root_data.config_name), name=name, max_iters=turns + extra_turns
+        )
         config = flow.add_config(capped).name
     fork = g.fork(cut, name=name, parent=by, config=config)
     if done is not None:
-        g.append(fork, Node(DONE, result=done))
+        g.append(fork, final_node(done, len(g.history(fork))))
     await flow.replay(g, fork)
     return fork, depth
 
@@ -128,7 +118,7 @@ async def replayed_fork(
 class Branch:
     flow: Flow
     g: Graph
-    agent: Agent
+    agent: Node
     index: int
     rewind: int
     order: list[str]
@@ -168,7 +158,7 @@ class Branch:
 def recovery_tools(
     flow: Flow,
     g: Graph,
-    worker: Agent,
+    worker: Node,
     plans: list[Plan] | None = None,
     *,
     expected_plans: int | None = None,
@@ -231,15 +221,15 @@ def recovery_tools(
 async def prepare_branch(
     flow: Flow,
     g: Graph,
-    worker: Agent,
+    worker: Node,
     plan: Plan,
     index: int,
     budget: int,
     slack: int = 4,
     *,
-    by: Node | Agent | None = None,
+    by: Node | None = None,
 ) -> Branch:
-    """Fork the worker for ``plan`` and queue its orders; ``by`` (the shepherd's cell) adopts it."""
+    """Fork the worker for ``plan`` and queue its orders; ``by`` (the shepherd's planning turn) adopts it."""
     # ``budget`` is a push allowance, not a turn count, so the branch also needs turns
     # for the ones that land nothing: a refused action ends its turn, and under
     # ``--simple-moves`` the worker routes itself and misroutes more. Too little slack
@@ -250,7 +240,7 @@ async def prepare_branch(
     state = snapshot(flow, fork, depth)
     order = plan["order"]
     order_text = ", then ".join(order)
-    fork.args["_shepherd_order"] = order_text
+    fork.root_data.metadata["shepherd_order"] = order_text
     g.send(
         fork,
         f"Rewound {depth} pushes. This is a fresh recovery attempt, so "

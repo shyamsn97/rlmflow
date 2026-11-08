@@ -5,11 +5,17 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rlmflow import DONE, Graph, Node
+from rlmflow import Graph, Node
+from rlmflow.view.text import kind
 
 
 def print_history(g: Graph, agent: Node) -> None:
-    print("  " + " -> ".join(f"{node.type}" for node in g.history(agent)))
+    print("  " + " -> ".join(kind(node) for node in g.history(agent)))
+
+
+def finish(g: Graph, agent: Node, result: str) -> None:
+    """Append the turn that ends ``agent`` with ``result``."""
+    g.append(agent, Node("assistant", result=result, seen=len(g.history(agent)), terminal=True))
 
 
 def main() -> None:
@@ -23,11 +29,11 @@ def main() -> None:
     conservative = g.fork(base, name="conservative")
     bold = g.fork(base, name="bold")
 
-    g.append(conservative, Node(DONE, result="ship a small patch release"))
-    g.append(bold, Node(DONE, result="ship a major release candidate"))
+    finish(g, conservative, "ship a small patch release")
+    finish(g, bold, "ship a major release candidate")
 
     for agent in (base, conservative, bold):
-        print(f"{agent.name}: {g.result(agent)!r}")
+        print(f"{agent.root_data.name}: {g.result(agent)!r}")
         print_history(g, agent)
     if args.out_dir is not None:
         print("saved:", g.save(args.out_dir))

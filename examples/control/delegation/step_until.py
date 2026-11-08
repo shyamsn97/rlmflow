@@ -1,14 +1,13 @@
 """Show minimal ``Flow.run_streaming(..., until=...)`` boundaries during delegation.
 
-Minimal Flow does not expose the old ``eager_children`` toggle. Delegation fans
-out child agents as independent asyncio tasks; blocking LLM calls are bounded
-by the flow's worker pool. This example focuses on the caller-facing control
-surface instead: choosing how much of the Node stream to consume with
+Delegation fans out child agents as independent asyncio tasks; ``Flow(workers=n)``
+caps how many model calls run at once. This example focuses on the caller-facing
+control surface: choosing how much of the node stream to consume with
 ``until=...``.
 
 A halt cancels whatever is still running. A parent halted part-way through a
-delegating block lands that block marked to re-run: the children it launched
-stay, and when the stream resumes the block re-runs in place, getting the same
+delegating node leaves that node ready to run again: the children it launched
+stay, and when the stream resumes the node re-runs in place, getting the same
 children back from its saved launches.
 
 Run:
@@ -23,7 +22,8 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import DONE, Agent, AgentConfig, Flow, Graph, Step
+from rlmflow import AgentConfig, Flow, Graph, Node, Step
+from rlmflow.view.text import kind
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -45,22 +45,22 @@ This example script is observing the graph stream, so keep the work small.
 """
 
 
-def print_tree(g: Graph, agent: Agent, depth: int = 0) -> None:
+def print_tree(g: Graph, agent: Node, depth: int = 0) -> None:
     """Each agent's history on one line, with its children indented below."""
-    history = " -> ".join(node.type for node in g.history(agent))
+    history = " -> ".join(kind(node) for node in g.history(agent))
     print(f"{'  ' * depth}[{g.path(agent)}] {history}")
     for child in g.children(agent):
         print_tree(g, child, depth + 1)
 
 
-def print_nodes(title: str, labels: list[str], g: Graph, root: Agent) -> None:
+def print_nodes(title: str, labels: list[str], g: Graph, root: Node) -> None:
     print(f"\n=== {title} ===")
     for label in labels:
         print(f"- {label}")
     print_tree(g, root)
 
 
-async def run_example(args: argparse.Namespace) -> tuple[Graph, Agent]:
+async def run_example(args: argparse.Namespace) -> tuple[Graph, Node]:
     config = AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)
     flow = Flow(configs=[config], workers=args.max_concurrency)
     g = Graph()
@@ -71,7 +71,7 @@ async def run_example(args: argparse.Namespace) -> tuple[Graph, Agent]:
     async def collect(**flow_kwargs) -> list[str]:
         """A label per landed node, taken as it lands: a halt can take nodes back."""
         stream = checkpoint_stream(flow.run_streaming(g, **flow_kwargs), g, out_dir)
-        return [f"{g.path(step.agent)}: {step.node.type}" async for step in stream]
+        return [f"{g.path(step.agent)}: {kind(step.node)}" async for step in stream]
 
     events = await collect(until="next")
     observed.extend(events)
@@ -85,7 +85,7 @@ async def run_example(args: argparse.Namespace) -> tuple[Graph, Agent]:
     print_nodes("until=<callable>: a child has taken its first step", events, g, root)
 
     def first_child_done(step: Step) -> bool:
-        return step.agent.id != root.id and step.node.type == DONE
+        return step.agent.id != root.id and step.node.data.get("terminal", False)
 
     events = await collect(until=first_child_done)
     observed.extend(events)
@@ -131,7 +131,7 @@ def main() -> None:
 
     g, root = asyncio.run(run_example(args))
     print("\n=== verdict ===")
-    print("Delegated children fan out as independent scheduler tasks.")
+    print("Delegated children fan out as independent asyncio tasks.")
     print("The caller chooses observation boundaries with run_streaming(..., until=...).")
     print(f"Result: {g.result(root)}")
     save_example_graph(g, "step-until", out_dir=args.out_dir)

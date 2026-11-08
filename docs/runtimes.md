@@ -19,13 +19,12 @@ Each agent gets its own worker process and Python namespace. User code can use o
 
 `Runtime.location` says where the REPL runs when that isn't this machine: `DockerRuntime` and `ModalRuntime` describe the container or sandbox and its working directory. Claude Code and pi sessions run their own tools on your machine, so their prompt includes that line and tells them to reach the REPL's files through `rlmflow repl`.
 
-A worker outlives the agent that answered in it: finishing does not close a REPL. A fan-out holds one worker per child until you close them. Close a run's REPLs with `close_repls=True` on `run`/`arun`/`run_streaming`, one with `flow.runtime.close_repl(agent)`, or everything the Flow owns with `await flow.aclose()` — see [Control](control.md#cleanup).
+A worker outlives the agent that answered in it: finishing does not close a REPL. A fan-out holds one worker per child until you close them. Close one with `flow.runtime.close_repl(agent)`, all of them with `flow.runtime.close_repls()`, or everything the Flow owns with `await flow.aclose()` — see [Control](control.md#cleanup).
 
 ## Working directory and tools
 
 ```python
 flow = rlmflow.Flow(
-    client,
     runtime=rlmflow.LocalRuntime(working_directory="./project"),
     tools=rlmflow.FILE_TOOLS,
 )
@@ -51,7 +50,7 @@ Before user code starts, the worker duplicates stdin and stdout for its private 
 
 ## Timeouts
 
-User execution is unbounded by default, allowing cells to wait for long-running subagents and tools. Pass `execution_timeout=<seconds>` to cap one execution:
+User execution is unbounded by default, allowing agent code to wait for long-running subagents and tools. Pass `execution_timeout=<seconds>` to cap one execution:
 
 ```python
 runtime = rlmflow.LocalRuntime(execution_timeout=3600)
@@ -61,9 +60,7 @@ A timeout terminates the entire worker because Python cannot safely kill an arbi
 
 ## Restore behavior
 
-Saved graphs remain the durable state. `restore="replay"` reconstructs unfinished namespaces before scheduling the run. `restore="lazy"` waits until an agent is about to execute code, then replays the recorded executions needed by that worker. `reuse_worker=True` restores process placement without sharing agent globals.
-
-Restore operates on physical worker sessions. If a colocated tenant is unfinished, its worker owner is rebuilt first so the child can reopen in that session. Each tenant then replays only its own namespace.
+Saved graphs remain the durable state; a worker's namespace is not saved. When a Flow is about to run code for an agent whose REPL it doesn't hold (a loaded run, a fork, an edit that cut its history), it opens a fresh worker and runs the agent's history again, with saved tool calls returning their results. `await flow.replay(g)` does this up front for every unfinished agent, and `await flow.replay(g, agent)` for one.
 
 ## Docker
 

@@ -15,6 +15,7 @@ import threading
 from pathlib import Path
 
 from rlmflow import AgentConfig, Flow, Graph, LLMUsage
+from rlmflow.view.text import kind
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -86,7 +87,7 @@ def main() -> None:
 
     async def drive() -> None:
         async for step in checkpoint_stream(flow.run_streaming(g, root_config=config), g, out_dir):
-            print(f"{g.path(step.agent)}  {step.node.type}")
+            print(f"{g.path(step.agent)}  {kind(step.node)}")
 
     asyncio.run(drive())
 

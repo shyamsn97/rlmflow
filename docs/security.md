@@ -35,7 +35,7 @@ Independent of the runtime:
 - `max_iters=None` — LLM calls per agent (set a number to cap).
 - `max_budget=None` — soft whole-run token threshold; exhaustion allows in-flight calls and one bottom-up final turn per unfinished agent.
 - `max_output_length=20_000` — truncate oversized stdout (official RLM's per-block cap).
-- `workers` — cap concurrent blocking LLM calls on the flow's thread pool.
+- `Flow(workers=n)` — cap concurrent model calls.
 
 ## Proxied tools
 
@@ -45,4 +45,4 @@ Tools you register are part of the trust boundary. The container can be sealed o
 
 ## Approval gates
 
-There is no built-in approval gate. To review code before it runs, subclass the runtime and check `code` in `execute(agent, code, graph)` before calling `super().execute(...)`; return or raise to refuse. A refused cell is an error the next model turn sees, so the agent can repair its plan.
+There is no built-in approval gate. To review code before it runs, subclass the runtime and check `code` in `execute(agent, code, graph)` before calling `super().execute(...)`; return or raise to refuse. Refused code is an error the next model turn sees, so the agent can repair its plan.

@@ -4,8 +4,8 @@ There is no root agent. Three peers are top-level agents in one graph, each
 holding a private number. Peers can't await each other: ``alice`` asks bob and
 carol for their numbers with ``AGENTS[name].send(...)`` and ends her turn; their
 replies arrive as messages and reopen her. Once she has both, she sends them the
-total. Every message is a ``message`` node with a ``message`` edge from the cell
-that sent it, so the saved graph records who told whom what.
+total. Every message is a node in the receiver's history with a ``write`` edge
+from the node whose code sent it, so the saved graph records who told whom what.
 
     python examples/collaboration/decentralized_peers.py --model gpt-5-mini
 """
@@ -17,7 +17,8 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import MESSAGE, AgentConfig, Flow, Graph, GraphCheckpointer, Step
+from rlmflow import WRITE, AgentConfig, Flow, Graph, GraphCheckpointer
+from rlmflow.view.text import kind
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -54,10 +55,9 @@ async def run(flow: Flow, g: Graph, out_dir: str, config: AgentConfig) -> None:
     """Drive every peer in ``g`` until none can step, checkpointing as items land."""
     checkpointer = GraphCheckpointer(out_dir)
     try:
-        async for item in flow.run_streaming(g, root_config=config):
-            checkpointer.handle(item, g)
-            if isinstance(item, Step):
-                print(f"{item.agent.name:<6}  {item.node.type}")
+        async for step in flow.run_streaming(g, root_config=config):
+            checkpointer.handle(step, g)
+            print(f"{step.agent.root_data.name:<6}  {kind(step.node)}")
     finally:
         checkpointer.close()
         flow.runtime.close_repls()
@@ -72,11 +72,11 @@ def build_graph() -> Graph:
 
 
 def print_messages(g: Graph) -> None:
-    """Each message a peer sent: a ``message`` edge from its cell, naming the sending agent."""
-    for edge in g.edges(kind=MESSAGE):
+    """Each message a peer sent: a ``write`` edge from the node that sent it."""
+    for edge in g.edges(kind=WRITE):
         message = g.node(edge.target)
-        sender = g.agent(edge.data["agent"]).name
-        print(f"  {sender} -> {g.owner(message).name}: {message['text']}")
+        sender = g.owner(g.node(edge.source)).root_data.name
+        print(f"  {sender} -> {g.owner(message).root_data.name}: {message.text}")
 
 
 def main() -> None:
@@ -98,7 +98,7 @@ def main() -> None:
     )
 
     print("\nresults:")
-    results = {peer.name: g.result(peer) for peer in g.agents()}
+    results = {peer.root_data.name: g.result(peer) for peer in g.agents()}
     for name, result in results.items():
         print(f"  {name}: {result!r}")
 

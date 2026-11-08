@@ -14,30 +14,28 @@ import io
 from collections.abc import Sequence
 from pathlib import Path
 
-from rlmflow import DONE, SPAWN, Agent, Graph, Node
+from rlmflow import SPAWN, Graph, Node
 from rlmflow.view.figure import graph_svg, parent_ids
 
-Item = Agent | Node
 
-
-def _launch_cell(g: Graph, root_nodes: Sequence[Node]) -> Node:
+def _launch_node(g: Graph, root_nodes: Sequence[Node]) -> Node:
     launches = [node for node in root_nodes if g.edges(kind=SPAWN, source=node.id)]
     if len(launches) != 1:
-        raise ValueError(f"expected one fan-out cell, found {len(launches)}")
+        raise ValueError(f"expected one fan-out node, found {len(launches)}")
     return launches[0]
 
 
-def _parallel_order(g: Graph, root: Agent) -> tuple[list[Item], list[tuple[int, str]]]:
-    """Return a parent-safe order of agents and nodes, and reveal boundaries with frame titles."""
+def _parallel_order(g: Graph, root: Node) -> tuple[list[Node], list[tuple[int, str]]]:
+    """Return a parent-safe order of the graph's nodes, and reveal boundaries with frame titles."""
     root_nodes = g.nodes(agent=root)
-    launch = _launch_cell(g, root_nodes)
+    launch = _launch_node(g, root_nodes)
     launch_index = root_nodes.index(launch)
-    prelude = [root, *root_nodes[: launch_index + 1]]
+    prelude = root_nodes[: launch_index + 1]
     tail = root_nodes[launch_index + 1 :]
     workers = g.children(root)
-    worker_items = [[worker, *g.nodes(agent=worker)] for worker in workers]
+    worker_items = [g.nodes(agent=worker) for worker in workers]
 
-    ordered: list[Item] = []
+    ordered: list[Node] = []
     frames: list[tuple[int, str]] = []
 
     for index, node in enumerate(prelude):
@@ -62,12 +60,12 @@ def _parallel_order(g: Graph, root: Agent) -> tuple[list[Item], list[tuple[int, 
         ordered.append(node)
         label = (
             f"root combines worker results · answer {g.result(root)}"
-            if node.type == DONE
+            if node.data.get("terminal")
             else "root combines completed worker results"
         )
         frames.append((len(ordered), label))
 
-    if {item.id for item in ordered} != {item.id for item in [*g.agents(), *g.nodes()]}:
+    if {node.id for node in ordered} != {node.id for node in g.nodes()}:
         raise ValueError("parallel ordering did not preserve the complete graph")
 
     parents = parent_ids(g)

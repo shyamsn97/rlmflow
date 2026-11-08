@@ -29,7 +29,7 @@ The checked-in September 2026 artifact records:
 - graph: 9 agents, 585 nodes;
 - usage: 439,855 input, 105,216 output, and 86,784 reasoning tokens.
 
-The graph retains one recoverable error cell: the shepherd wrote `await branch(...)` after the synchronous proxy had already recorded all eight plans. The host observed the plans and launched the recoveries normally; the error is preserved rather than edited out of the trace.
+The graph retains one recoverable error node: the shepherd wrote `await branch(...)` after the synchronous proxy had already recorded all eight plans. The host observed the plans and launched the recoveries normally; the error is preserved rather than edited out of the trace.
 
 Add `--gradio` and the `viewer` extra for the live browser board, or `--trace` for one terminal line per landed graph node:
 
@@ -42,8 +42,7 @@ uv run --locked --python 3.12 --extra openai --extra image --extra viewer \
 
 The run writes:
 
-- `worker/`: the standalone failed worker graph;
-- `shepherd/`: the complete v7 recovery tree, including the selected branch;
+- `graph/`: the whole run as one graph: the jammed worker, the shepherd, its previews, and the recovery branches it adopted;
 - `traces/worker.{json,gif}`: the deliberate jam;
 - `traces/branch0..branch7.{json,gif}`: each recovery trajectory.
 

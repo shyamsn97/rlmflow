@@ -5,7 +5,8 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-from rlmflow import Agent, Graph
+from rlmflow import Graph, Node
+from rlmflow.view.text import kind
 
 
 def build_graph():
@@ -19,12 +20,12 @@ def build_graph():
     return module.build_graph()
 
 
-def print_tree(g: Graph, agent: Agent, depth: int = 0) -> None:
+def print_tree(g: Graph, agent: Node, depth: int = 0) -> None:
     """One indented line per node of ``agent``'s history, then each child below it."""
     pad = "  " * depth
     print(f"{pad}{g.path(agent)} [{g.status(agent)}]")
     for node in g.history(agent):
-        print(f"{pad}  {node.type}")
+        print(f"{pad}  {kind(node)}")
     for child in g.children(agent):
         print_tree(g, child, depth + 1)
 

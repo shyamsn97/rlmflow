@@ -160,7 +160,7 @@ def main() -> None:
             max_iters=MAX_ITERS,
             harness_options={"paths": [str(install_example_skill(skills_dir))]},
         )
-        root.bind_config(config)
+        root.root_data.bind_config(config)
 
         print(f"Wrote skill artifact under: {skills_dir}")
         print("- skills/numpy-linear-algebra/SKILL.md")

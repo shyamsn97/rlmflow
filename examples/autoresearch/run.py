@@ -28,6 +28,7 @@ from rlmflow import (
     tool,
 )
 from rlmflow.consumers import WorkspaceSync
+from rlmflow.view.text import kind as node_kind
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -212,7 +213,7 @@ You implement one autoresearch trial. Your inputs `trial_dir`, `slug` and
   with your own file tools, changing only what the hypothesis needs. Do not touch
   any other file, use git, or run training.
 - Then submit it from the REPL. The Modal job takes several minutes, so give the
-  cell a long timeout and set your shell tool's timeout to its maximum:
+  code a long timeout and set your shell tool's timeout to its maximum:
       rlmflow repl --timeout 1500 'row = submit_trial(slug, hypothesis); print(row)'
 - If the row's status is `preflight_failed`, read the reported line, fix
   `train.py`, and submit again. Retry at most twice.
@@ -679,7 +680,7 @@ def run(args: argparse.Namespace) -> None:
     planner_note = ""
     if args.implementer_harness == "claude_code":
         # Claude Code's shell tool stops a command after 2 minutes by default;
-        # a submit_trial cell blocks for the whole Modal job.
+        # code that calls submit_trial blocks for the whole Modal job.
         bash_timeout_ms = str((args.modal_timeout_s + 300) * 1000)
         os.environ.setdefault("BASH_DEFAULT_TIMEOUT_MS", bash_timeout_ms)
         os.environ.setdefault("BASH_MAX_TIMEOUT_MS", bash_timeout_ms)
@@ -735,7 +736,7 @@ launch the next one.
 
     async def drive() -> None:
         async for step in checkpoint_stream(flow.run_streaming(g), g, graph_dir):
-            print(f"{g.path(step.agent):<20} {step.node.type}", flush=True)
+            print(f"{g.path(step.agent):<20} {node_kind(step.node)}", flush=True)
             if sync is not None:
                 sync.handle(step, g)
 
@@ -813,7 +814,7 @@ def _markdown_report(
             [
                 "## Best",
                 "",
-                f"**{_markdown_cell(best['name'])}** — score `{_format_score(best['score'])}` "
+                f"**{_markdown_text(best['name'])}** — score `{_format_score(best['score'])}` "
                 f"(trial {best['n']}, {_format_elapsed(best['time_elapsed'])})",
                 "",
                 str(best.get("hypothesis") or ""),
@@ -830,8 +831,8 @@ def _markdown_report(
     )
     for row in solutions:
         lines.append(
-            f"| {row['n']} | {_markdown_cell(row['name'])} | "
-            f"{_markdown_cell(row['hypothesis'])} | "
+            f"| {row['n']} | {_markdown_text(row['name'])} | "
+            f"{_markdown_text(row['hypothesis'])} | "
             f"{_format_elapsed(row['time_elapsed'])} | "
             f"{_format_score(row['score'])} |"
         )
@@ -884,7 +885,7 @@ def _empty_progress_svg() -> str:
     )
 
 
-def _markdown_cell(value: Any) -> str:
+def _markdown_text(value: Any) -> str:
     return str(value or "").replace("|", r"\|").replace("\n", " ")
 
 

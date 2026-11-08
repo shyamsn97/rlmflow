@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from rlmflow import Agent, AgentConfig, Flow, Graph
+from rlmflow import AgentConfig, Flow, Graph, Node
 from rlmflow.view import replay
+from rlmflow.view.text import kind
 
 REPLIES = [
     "```repl\nsource = 'print(1)'\nprint(len(source))\n```",
@@ -22,8 +23,8 @@ class ScriptedLLM:
         return REPLIES[min(turns, len(REPLIES) - 1)]
 
 
-def print_history(g: Graph, agent: Agent) -> None:
-    print("  " + (" -> ".join(node.type for node in g.history(agent)) or "(no nodes yet)"))
+def print_history(g: Graph, agent: Node) -> None:
+    print("  " + " -> ".join(kind(node) for node in g.history(agent)))
 
 
 def main() -> None:

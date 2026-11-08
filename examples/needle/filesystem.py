@@ -136,9 +136,9 @@ def main():
         if args.fast_model:
             configs.append(
                 AgentConfig(
-                    name="searcher",
+                    name="fast",
                     model=args.fast_model,
-                    description="cheap model for searching one batch of files",
+                    description="faster model",
                     max_iters=args.max_iters,
                     max_depth=0,
                 )

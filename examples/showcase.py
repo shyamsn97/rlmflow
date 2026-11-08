@@ -23,15 +23,16 @@ from pathlib import Path
 
 from rlmflow import (
     FILE_TOOLS,
-    Agent,
     AgentConfig,
     Flow,
     Graph,
     GraphCheckpointer,
     LLMUsage,
     LocalRuntime,
+    Node,
 )
 from rlmflow.view import replay
+from rlmflow.view.text import kind
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -96,10 +97,10 @@ def banner(msg: str) -> None:
 async def run(flow: Flow, g: Graph, out_dir: Path) -> None:
     """Stream the run, checkpointing periodically and printing every node as it lands."""
     async for step in checkpoint_stream(flow.run_streaming(g), g, out_dir):
-        print(f"{g.path(step.agent)}  {step.node.type}")
+        print(f"{g.path(step.agent)}  {kind(step.node)}")
 
 
-async def gym_loop(flow: Flow, g: Graph, root: Agent, out_dir: Path) -> list[float]:
+async def gym_loop(flow: Flow, g: Graph, root: Node, out_dir: Path) -> list[float]:
     rewards: list[float] = []
     step = 0
     checkpoint = GraphCheckpointer(out_dir)
@@ -110,7 +111,7 @@ async def gym_loop(flow: Flow, g: Graph, root: Agent, out_dir: Path) -> list[flo
             step += 1
             reward = 1.0 if g.status(root) == "done" else 0.0
             rewards.append(reward)
-            print(f"step {step}: state={g.history(root)[-1].type} reward={reward}")
+            print(f"step {step}: node={kind(g.tail(root))} reward={reward}")
     finally:
         checkpoint.close()
     return rewards
@@ -152,12 +153,11 @@ def main() -> None:
 
     banner("3. Latest state per agent")
     for agent in loaded.agents():
-        print(f"  {loaded.path(agent)}: {loaded.status(agent)} at {loaded.history(agent)[-1].type}")
+        print(f"  {loaded.path(agent)}: {loaded.status(agent)} at {kind(loaded.tail(agent))}")
 
     banner("4. Time travel — the graph after each step is an earlier graph")
     for idx, past in enumerate(replay(g)):
-        history = past.history(past.agent(root.id))
-        latest = history[-1].type if history else "start"
+        latest = kind(past.tail(past.agent(root.id)))
         print(f"{CYAN}step {idx}{RESET}: root [{latest}]  agents={len(past.agents())}")
 
     banner("5. Graph summary")
@@ -165,7 +165,7 @@ def main() -> None:
     print(f"Agents:  {len(g.agents())}")
     print(f"Nodes:   {len(g.nodes())}")
     print(f"Tokens:  {usage.total:,} ({usage.input_tokens:,} in / {usage.output_tokens:,} out)")
-    print(f"Final:   {g.history(root)[-1].type}")
+    print(f"Final:   {kind(g.tail(root))}")
 
     banner("6. Gym-style loop")
     flow3 = file_flow(workdir, AgentConfig(model="demo", max_depth=0, max_iters=args.max_iters))

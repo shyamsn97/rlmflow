@@ -13,8 +13,7 @@ Set `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY` for `claude*` models). The Claude C
 ## Run a task
 
 ```python
-from rlmflow import Flow
-from rlmflow.llm import client_for
+from rlmflow import AgentConfig, Flow
 
 flow = Flow(configs=[AgentConfig(model="gpt-5-mini")])  # "default": roots and plain launches
 flow.run("Add a and b", a=2, b=3)  # 5; keyword arguments become REPL variables
@@ -36,7 +35,7 @@ Inside async code, use `await flow.arun(g)` and `await flow.aclose()` when done.
 
 ## Configs
 
-An `AgentConfig` is a kind of agent: its harness, model, limits and prompt. The Flow holds them by name, and agents launch each other by that name. The graph only records which config each agent ran with (in its metadata, for display); running a saved graph uses the configs of the Flow you run it with.
+An `AgentConfig` is a kind of agent: its harness, model, limits and prompt. The Flow holds them by name, and agents launch each other by that name. The graph only records which config each agent ran with (in its root's `root_data.metadata`, for display); running a saved graph uses the configs of the Flow you run it with.
 
 | Field             | Default     | Meaning                                                                |
 | ----------------- | ----------- | ---------------------------------------------------------------------- |
@@ -75,7 +74,7 @@ Roots (agents made with `g.add_agent` and no `config=`) run with the run's `root
 ## Models
 
 ```python
-from rlmflow.llm import OpenAIClient, client_for
+from rlmflow import OpenAIClient
 
 flow = Flow(
     configs=[
@@ -139,11 +138,13 @@ flow = Flow(
 ## Stream and stop
 
 ```python
+from rlmflow.view.text import kind
+
 async for step in flow.run_streaming(g, until="idle"):
-    print(g.path(step.agent), step.node.type)
+    print(g.path(step.agent), kind(step.node))
 ```
 
-`until` is `"done"` (default), `"next"`, `"idle"` (the next `code`, `idle` or `done`), or a function of the step. Stop, look or change the graph, then call `run_streaming` again. Consumers handle the stream for you:
+`until` is `"done"` (default), `"next"`, `"idle"` (the next node that ran code or ended a turn), or a function of the step. Stop, look or change the graph, then call `run_streaming` again. Consumers handle the stream for you:
 
 ```python
 from rlmflow import ConsumerGroup, GraphCheckpointer, LiveGraphTree
@@ -162,25 +163,26 @@ More in [Streaming](streaming.md).
 ```python
 g.result(root)  # None until done
 g.status(root)  # "running" | "idle" | "done"
-g.history(root)  # the agent's nodes
+g.history(root)  # the agent's nodes, its root first
+g.last_turn(root)  # the node that ended its latest turn
 g.children(root)  # agents it launched; g.parent(agent) is the one that launched it
-g.edges(kind="return", target=cell.id)  # whose results reached a cell
+g.edges(kind="return", target=node.id)  # whose results reached a node
 g.usage()  # tokens; g.usage().cost_usd
-g.nodes("code", agent=root)
+[n for n in g.history(root) if n.runs_code]  # the nodes that ran code
 ```
 
-Agents, node types and edges: [The graph](node_model.md).
+Nodes, agents and edges: [The graph](node_model.md).
 
 ## Change a run
 
 ```python
-g.send(root, "Also report the file name.")  # a message; reopens a finished agent
+g.send(root, "Also report the file name.", ext=".py")  # a message; ext becomes a variable
 helper = g.add_agent("Collect the sources.", parent=root)  # a child, from host code
 retry = g.fork(
     some_node, name="retry", config="cheap"
 )  # branch from any node, optionally on another config
 g.edit(g.history(helper)[-1], result="...", dry_run=True)  # what changing a result would redo
-g.replace(cell, 0, "cached value")  # bind the cell's first saved call; the cell re-runs
+g.replace(node, 0, "cached value")  # bind the node's first saved call; the node reruns
 flow.run(g)
 ```
 
@@ -208,7 +210,7 @@ flow = Flow(configs=[claude])
 flow.run(task, root_config=AgentConfig(harness="claude_code", max_depth=1))
 ```
 
-Claude runs with your own Claude Code settings (permissions, `CLAUDE.md`, MCP servers, plugins); rlmflow only adds permission to run `rlmflow` commands. It reaches the agent tools through `rlmflow repl`, and those cells are recorded in the graph. Changes it makes with its own tools are not recorded, but the workspace snapshot at the end of each turn still has the files.
+Claude runs with your own Claude Code settings (permissions, `CLAUDE.md`, MCP servers, plugins); rlmflow only adds permission to run `rlmflow` commands. It reaches the agent tools through `rlmflow repl`, and the code it runs there is recorded in the graph. Changes it makes with its own tools are not recorded, but the workspace snapshot at the end of each turn still has the files.
 
 | `claude_code` option | Meaning                                                                                                        |
 | -------------------- | -------------------------------------------------------------------------------------------------------------- |

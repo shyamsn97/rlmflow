@@ -1,3 +1,98 @@
+# Upgrading to nodes, edges and a REPL
+
+The core is rebuilt on one record, `Node`, plus edges; an agent is its root
+node. See [The graph](docs/node_model.md) for the reference and
+[Internals](docs/internals.md) for how a run works. Saved runs in
+format 5 are not migrated: loading one raises, so rerun it.
+
+## Agents are root nodes
+
+| Before | Now |
+| --- | --- |
+| `Agent` record | The root `Node`; its identity is `root.root_data` (`RootData`) |
+| `agent.name`, `agent.task`, `agent.config_name` | `root.root_data.name`, `.task`, `.config_name` |
+| `agent.nodes` | `root.root_data.history[1:]` (the history starts with the root) |
+| `agent.args`, `agent.resolved_args()` | `root.input`, which is `{"task": ..., **args}` |
+| `agent.argument_descriptions()` | `root.root_data.arg_descriptions` |
+| `agent.bind_config(config)`, `agent.metadata` | `root.root_data.bind_config(config)`, `root.root_data.metadata` |
+| `node.agent_id` | `node.owner` (the root's id); `g.owner(node)` for the root |
+| `agent.base` | A `fork` edge from the base node to the fork's root; `g.base(fork)` |
+| `g.history(agent)` was `[]` for a fresh root | It starts with the root node |
+| `g.nodes("code", agent=a)` | `[n for n in g.history(a) if n.runs_code]`; `g.nodes()` includes roots |
+
+`g.add_agent(task, **args)`, `g.agents()`, `g.roots()`, `g.children(a)`,
+`g.parent(a)`, `g.status(a)`, `g.result(a)` and `g.path(a)` keep their names and
+take or return root nodes.
+
+## Node types become role, code and flags
+
+| Before | Now |
+| --- | --- |
+| `node.type == "llm"` | An assistant node with `"model" in node.data`; its `text` is the reply |
+| `node.type == "code"` | `node.runs_code`; the code is on the same node as the reply that wrote it |
+| `node.type == "message"` | `node.role == "user"`; `node.producer` says who sent it |
+| `node.type == "done"` | `node.data.get("terminal")`, with `node.result` |
+| `node.type == "idle"` | `node.data.get("idle")` |
+| `node.data["code" \| "output" \| "result" \| "text" \| "error"]` | `node.code`, `.output`, `.result`, `.text`, `.error` |
+| `node.data["calls"]` | `node.calls` |
+| `data["pending"]` | `node.state` is `"ready"` or `"running"` |
+
+`rlmflow.view.text.kind(node)` gives a display name (`agent`, `message`, `done`,
+`idle`, `model`, `code`, `reply`) for code that printed `node.type`. The node
+that ended a turn has `"seen" in node.data`; `g.last_turn(agent)` finds it.
+
+```python
+async for step in flow.run_streaming(g):
+    print(g.path(step.agent), kind(step.node))  # was step.node.type
+
+node = next(n for n in g.history(root) if n.runs_code)  # was n.type == "code"
+node.calls  # was node.data["calls"]
+g.replace(node, 0, "cached")
+```
+
+## Edges
+
+| Before | Now |
+| --- | --- |
+| `g.add_edge(kind, a, b, **data)` | `g.link(kind, a, b, **data)` |
+| `g.remove_edge(edge)` | `g.unlink(edge)` |
+| `g.link_return(done, node)` | `g.link(RETURN, done, node)` |
+| `message` edges | `write` edges, from the sending node to the message node |
+
+## Messages are nodes
+
+`g.inbox`, `agent.inbox` and `g.deliver` are gone. `g.send(agent, text, by=None,
+sender=None, **inputs)` appends a user node to the agent's history at once;
+its inputs become variables in the agent's REPL, and the agent reads it at its
+next turn. Agent code passes values the same way:
+`AGENTS["reviewer"].send("See these lines.", lines=[40, 41])`. Unawaited
+children's results arrive as one user node binding each result as a variable
+named after its child (`worker_0` for `worker-0`).
+
+## Model clients and workers
+
+`PooledLLMClient`, `Pool`, `ThreadPool`, `SequentialPool` and `TaskQueue` are
+removed, with `rlmflow.engine`. Cap concurrent model calls with
+`Flow(workers=n)`, and make one call with
+`await rlmflow.llm.complete(client, messages, timeout=...)` (or
+`flow.complete(messages, model)`). `LocalWorkspace` and `GitWorktrees` import
+from `rlmflow.workspaces` (or `rlmflow`).
+
+## Running code
+
+| Before | Now |
+| --- | --- |
+| `current_code()` | `current_step().node` |
+| `repl.seed(tools, args)` | `repl.seed(tools)`; arguments are the root's `input`, bound once when the root runs |
+| Saved calls matched by position per tool | Keyed by tool and arguments; `CallLog(node)` per run, on `step.calls` |
+| Every host tool's result saved | Only `@tool(cache=True)` host tools are saved |
+| `g.busy`, `g.revision`, `g.subscribe`, `g.edits` | Gone; edit a running graph with `await flow.edit(g, op, node, ...)` |
+
+## Saved runs
+
+`graph.json` is format 6: `nodes` (each root lists its history by id) and
+`edges`. Format 5 is not migrated.
+
 # Upgrading to core v2
 
 Core v2 rebuilds the graph around agents and edges and makes it editable. Saved
@@ -24,9 +119,9 @@ root = g.add_agent("Audit this repository.")
 flow.run(g)
 
 g.history(root)  # [llm, code, ..., done], no agent_start
-cell = next(n for n in g.history(root) if n.type == "code")
-cell.data["calls"]  # what each tool call in the cell returned
-g.replace(cell, 0, "cached")  # the cell re-runs with this value
+node = next(n for n in g.history(root) if n.type == "code")
+node.data["calls"]  # what each tool call in the node's code returned
+g.replace(node, 0, "cached")  # the node re-runs with this value
 g.edit(g.history(g.children(root)[0])[-1], result="42", dry_run=True)
 ```
 
@@ -222,7 +317,7 @@ Node chat `render()` is also removed. `build_messages(user_prompt, flow)` is the
 
 `@tool` is the only tool decorator; `@toolset`, `FileTools`, the `BuiltIns` class, and `@tool(inject=...)` are removed. `description` is a string. Replace a toolset class with module-level `@tool` functions grouped in a tuple; `Flow(tools=[...])` flattens one level of nesting.
 
-Host tools' JSON results are saved on the cell that called them, so rebuilding a REPL returns them instead of calling the tool again; `@tool` takes no `restore=` or `receipt=`. Results that aren't JSON, or are over 64KB, aren't saved and run again on replay.
+Host tools' JSON results are saved on the node that called them, so rebuilding a REPL returns them instead of calling the tool again; `@tool` takes no `restore=` or `receipt=`. Results that aren't JSON, or are over 64KB, aren't saved and run again on replay.
 
 `FILE_TOOLS` is now a tuple of functions. Replace `FILE_TOOLS.read_file` with `from rlmflow.tools.files import read_file`.
 

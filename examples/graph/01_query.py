@@ -2,40 +2,49 @@
 
 from __future__ import annotations
 
-from rlmflow import CODE, DONE, LLM, Agent, Graph, LLMUsage, Node
+import time
+
+from rlmflow import RETURN, Graph, LLMUsage, Node
+from rlmflow.view.text import kind
 
 
-def build_graph() -> tuple[Graph, Agent]:
+def turn(g: Graph, agent: Node, text: str = "", **fields) -> Node:
+    """Append one finished model turn to ``agent``: the reply, and the code it ran."""
+    node = Node("assistant", text, seen=len(g.history(agent)), **fields)
+    node.finished_at = time.time()
+    return g.append(agent, node)
+
+
+def build_graph() -> tuple[Graph, Node]:
     """Hand-build the graph a delegating run would have recorded."""
     g = Graph()
     root = g.add_agent("ship a tiny package", name="root")
-    g.append(
-        root,
-        Node(
-            LLM,
-            text=(
-                "splitting into two children\n```repl\n"
-                "write = launch_agent('write module')\n"
-                "test = launch_agent('run pytest')\n"
-                "print(await write, await test)\n```"
-            ),
-            usage=LLMUsage(input_tokens=120, output_tokens=40).as_dict(),
-        ),
+    code = (
+        "write = launch_agent('write module')\n"
+        "test = launch_agent('run pytest')\n"
+        "print(await write, await test)"
     )
-    # Children are launched by the cell that called launch_agent.
-    cell = g.append(
+    # Children are launched by the node whose code called launch_agent.
+    launch = turn(
+        g,
         root,
-        Node(CODE, code="print(await write, await test)", output="wrote pkg/__init__.py 3 passed"),
+        f"splitting into two children\n```repl\n{code}\n```",
+        code=code,
+        output="wrote pkg/__init__.py 3 passed",
+        usage=LLMUsage(input_tokens=120, output_tokens=40).as_dict(),
     )
 
-    writer = g.add_agent("write module", parent=cell, name="write")
-    g.append(writer, Node(DONE, result="wrote pkg/__init__.py"))
+    writer = g.add_agent("write module", parent=launch, name="write")
+    wrote = turn(g, writer, result="wrote pkg/__init__.py", terminal=True)
 
-    tester = g.add_agent("run pytest", parent=cell, name="test")
-    g.append(tester, Node(CODE, code="import pkg", output="ModuleNotFoundError: pkg", error=True))
-    g.append(tester, Node(DONE, result="3 passed"))
+    tester = g.add_agent("run pytest", parent=launch, name="test")
+    turn(g, tester, code="import pkg", output="ModuleNotFoundError: pkg", error=True)
+    passed = turn(g, tester, result="3 passed", terminal=True)
 
-    g.append(root, Node(DONE, result="package shipped"))
+    # Each child's final node links to the node whose ``await`` read its result.
+    g.link(RETURN, wrote, launch)
+    g.link(RETURN, passed, launch)
+    turn(g, root, result="package shipped", terminal=True)
     return g, root
 
 
@@ -50,16 +59,13 @@ def main() -> None:
 
     banner("agents / nodes / edges")
     print("agents:", [g.path(agent) for agent in g.agents()])
-    print("node types:", [node.type for node in g.nodes()])
+    print("node kinds:", [kind(node) for node in g.nodes()])
     print("edges:", [(edge.kind, g.path(g.agent(edge.target))) for edge in g.edges(kind="spawn")])
-    print(
-        "errors:",
-        [(g.path(g.owner(node)), node["output"]) for node in g.nodes(CODE) if node.get("error")],
-    )
+    print("errors:", [(g.path(g.owner(node)), node.output) for node in g.nodes() if node.error])
 
-    banner("frontier / status / result / tokens")
-    print("root frontier:", g.history(root)[-1].type)
-    print("statuses:", {agent.name: g.status(agent) for agent in g.agents()})
+    banner("tail / status / result / tokens")
+    print("root tail:", kind(g.tail(root)))
+    print("statuses:", {agent.root_data.name: g.status(agent) for agent in g.agents()})
     print("result:", g.result(root))
     print("tokens:", g.usage())
 

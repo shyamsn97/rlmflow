@@ -55,7 +55,7 @@ def main():
         "--max-concurrency",
         type=int,
         default=8,
-        help="Maximum number of concurrent tasks to run.",
+        help="Maximum number of model calls running at once.",
     )
     args = parser.parse_args()
 

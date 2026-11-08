@@ -4,12 +4,12 @@
 showing the board that agent finished on, because "solved" and "stuck" only mean
 something next to the position that earned them.
 
-``nodes.svg`` is the run itself — every saved ``Node``, typed and in order. That
+``nodes.svg`` is the run itself — every saved node, coloured by kind and in order. That
 picture is worth drawing because the shape is the claim: a short shepherd trunk,
 one node fanning into eight branches, and each branch a chain whose length *is*
 how long that recovery took. Nothing is summarised away.
 
-Boards are drawn as vector cells rather than the ``sprites`` tiles, so the figures
+Boards are drawn as vector squares rather than the ``sprites`` tiles, so the figures
 stay small, stay crisp at any zoom, and need no Pillow. The colours mirror
 ``sprites`` so a board here is recognisably the same board as in the GIFs.
 
@@ -28,7 +28,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from rlmflow import DONE, LLM, MESSAGE, SPAWN, Agent, Graph
+from rlmflow import SPAWN, Graph, Node
+from rlmflow.view.text import kind
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1]
 RUN_DIR = EXAMPLES_DIR / "_runs" / "shepherd"
@@ -66,11 +67,13 @@ BOX_IDS = "123456789"
 BOX_ON_GOAL_IDS = "ABCDEFGHI"
 BOARD_CHARS = frozenset("# .$*@+") | frozenset(BOX_IDS) | frozenset(BOX_ON_GOAL_IDS)
 
-# One colour per Node type, for the node-level figure.
+# One colour per node kind (``rlmflow.view.text.kind``), for the node-level figure.
 NODE_COLORS = {
-    "llm": "#a855f7",
-    "code": "#94a3b8",
+    "agent": "#1b2330",
     "message": "#0ea5a4",
+    "model": "#a855f7",
+    "code": "#94a3b8",
+    "reply": "#c084fc",
     "idle": "#f5a524",
     "done": "#34a853",
 }
@@ -107,32 +110,31 @@ class Branch:
         return "fresh board" if kept == 0 else f"keeps {kept} push{'es' if kept > 1 else ''}"
 
 
-def load_run(run_dir: Path) -> tuple[Graph, Agent, Agent]:
+def load_run(run_dir: Path) -> tuple[Graph, Node, Node]:
     """The saved run graph, with its worker and shepherd agents."""
     g = Graph.load(run_dir / "graph")
-    tops = {a.name: a for a in g.roots()}
+    tops = {a.root_data.name: a for a in g.roots()}
     if "worker" not in tops or "shepherd" not in tops:
         raise SystemExit(f"{run_dir} holds no shepherd run")
     return g, tops["worker"], tops["shepherd"]
 
 
-def llm_turns(g: Graph, agent: Agent) -> int:
-    return sum(node.type == LLM for node in g.history(agent))
+def model_turns(g: Graph, agent: Node) -> int:
+    """Turns with a reply, written or from the model; the closing result turns have none."""
+    return sum(node.role == "assistant" and bool(node.text) for node in g.history(agent))
 
 
-def rewind_depth(g: Graph, agent: Agent) -> int | None:
+def rewind_depth(g: Graph, agent: Node) -> int | None:
     """How far this branch rewound, per the note ``prepare_branch`` left it."""
-    for node in g.nodes(MESSAGE, agent=agent):
-        found = re.search(r"Rewound (\d+) pushes", node["text"])
+    for node in g.nodes(agent=agent):
+        found = node.role == "user" and re.search(r"Rewound (\d+) pushes", node.text)
         if found:
             return int(found.group(1))
     return None
 
 
-def picked_summary(g: Graph, shepherd: Agent) -> str:
-    for node in g.nodes(DONE, agent=shepherd):
-        return str(node.get("result") or "")
-    return ""
+def picked_summary(g: Graph, shepherd: Node) -> str:
+    return str(g.result(shepherd) or "")
 
 
 def final_boards(run_dir: Path) -> dict[str, str]:
@@ -159,17 +161,17 @@ def board_rows(text: str) -> list[str]:
     return [line for line in text.splitlines() if line and set(line) <= BOARD_CHARS]
 
 
-def read_branches(g: Graph, shepherd: Agent, winner: str, boards: dict[str, str]) -> list[Branch]:
+def read_branches(g: Graph, shepherd: Node, winner: str, boards: dict[str, str]) -> list[Branch]:
     return [
         Branch(
-            name=agent.name,
+            name=agent.root_data.name,
             rewind=rewind_depth(g, agent),
             outcome=str(g.result(agent) or "unfinished"),
-            turns=llm_turns(g, agent),
+            turns=model_turns(g, agent),
             nodes=len(g.history(agent)),
-            plan=str(agent.args.get("_shepherd_order", "")),
-            won=agent.name == winner,
-            board=boards.get(agent.name, ""),
+            plan=str(agent.root_data.metadata.get("shepherd_order", "")),
+            won=agent.root_data.name == winner,
+            board=boards.get(agent.root_data.name, ""),
         )
         for agent in g.children(shepherd)
     ]
@@ -258,26 +260,26 @@ class Canvas:
         if label:
             self.text(x + 9, (y0 + y1) / 2 + 4, label, size=11, fill=MUTED, anchor="start")
 
-    def board(self, x: float, y: float, rows: list[str], cell: float) -> tuple[float, float]:
-        """Draw a Sokoban board as one rect per cell. Returns its (width, height)."""
+    def board(self, x: float, y: float, rows: list[str], tile: float) -> tuple[float, float]:
+        """Draw a Sokoban board as one rect per square. Returns its (width, height)."""
         cols = max((len(row) for row in rows), default=0)
-        self.rect(x, y, cols * cell, len(rows) * cell, FLOOR, rx=2)
+        self.rect(x, y, cols * tile, len(rows) * tile, FLOOR, rx=2)
         for r, row in enumerate(rows):
             for c in range(cols):
                 glyph = row[c] if c < len(row) else " "
-                cx, cy = x + c * cell, y + r * cell
-                self._cell(cx, cy, cell, glyph)
-        return cols * cell, len(rows) * cell
+                cx, cy = x + c * tile, y + r * tile
+                self._square(cx, cy, tile, glyph)
+        return cols * tile, len(rows) * tile
 
-    def _cell(self, x: float, y: float, cell: float, glyph: str) -> None:
-        mid_x, mid_y = x + cell / 2, y + cell / 2
+    def _square(self, x: float, y: float, tile: float, glyph: str) -> None:
+        mid_x, mid_y = x + tile / 2, y + tile / 2
         if glyph == "#":
-            self.rect(x, y, cell, cell, WALL)
+            self.rect(x, y, tile, tile, WALL)
             return
         if glyph in ".+":
-            self.diamond(mid_x, mid_y, cell * 0.3, GOAL)
+            self.diamond(mid_x, mid_y, tile * 0.3, GOAL)
         if glyph in "@+":
-            self.circle(mid_x, mid_y, cell * 0.34, PLAYER)
+            self.circle(mid_x, mid_y, tile * 0.34, PLAYER)
             return
         index = BOX_IDS.find(glyph)
         locked = False
@@ -293,25 +295,25 @@ class Canvas:
         # as all-white and a stranded box stays visible at thumbnail size, which is
         # the whole difference between "solved" and "stuck".
         fill = BOX_COLORS[index % len(BOX_COLORS)]
-        inset = cell * (0.12 if locked else 0.2)
+        inset = tile * (0.12 if locked else 0.2)
         self.rect(
             x + inset,
             y + inset,
-            cell - inset * 2,
-            cell - inset * 2,
+            tile - inset * 2,
+            tile - inset * 2,
             fill,
             rx=1,
             stroke="#ffffff" if locked else FAIL_LINE,
-            stroke_width=max(1.0, cell * 0.14),
+            stroke_width=max(1.0, tile * 0.14),
         )
 
-    def legend(self, x: float, y: float, items: list[tuple[str, str]], cell: float = 21) -> None:
+    def legend(self, x: float, y: float, items: list[tuple[str, str]], tile: float = 21) -> None:
         """Swatch-and-label pairs, so the boards need no caption to be readable."""
         for glyph, label in items:
-            self.rect(x, y, cell, cell, FLOOR, rx=2)
-            self._cell(x, y, cell, glyph)
-            self.text(x + cell + 7, y + cell - 3, label, size=10.5, fill=MUTED, anchor="start")
-            x += cell + 14 + len(label) * 10.5 * SANS_ADVANCE
+            self.rect(x, y, tile, tile, FLOOR, rx=2)
+            self._square(x, y, tile, glyph)
+            self.text(x + tile + 7, y + tile - 3, label, size=10.5, fill=MUTED, anchor="start")
+            x += tile + 14 + len(label) * 10.5 * SANS_ADVANCE
 
     def render(self) -> str:
         return "\n".join(
@@ -343,12 +345,12 @@ def build_svg(
     total_nodes: int,
 ) -> str:
     pad, margin, gap = 12.0, 28.0, 14.0
-    branch_cell = 10.0
+    branch_tile = 10.0
     branch_grid = max(
         (len(row) for branch in branches for row in board_rows(branch.board)),
         default=12,
     )
-    box_w = max(132.0, branch_grid * branch_cell + pad * 2)
+    box_w = max(132.0, branch_grid * branch_tile + pad * 2)
     lane = len(branches) * box_w + (len(branches) - 1) * gap
     width = lane + margin * 2
     centre = width / 2
@@ -356,15 +358,15 @@ def build_svg(
     # Fixed offsets inside a branch box, so the board can never crowd the labels.
     board_top = 64.0
     branch_rows = max((len(board_rows(b.board)) for b in branches), default=0)
-    board_h = branch_rows * branch_cell
+    board_h = branch_rows * branch_tile
     y_outcome = board_top + board_h + (16 if board_h else 0)
     y_turns = y_outcome + 16
     branch_h = y_turns + 10
 
-    jam_cell = 14.0
+    jam_tile = 14.0
     jam_rows = board_rows(worker_board)
-    jam_board_w = max((len(r) for r in jam_rows), default=0) * jam_cell
-    jam_board_h = len(jam_rows) * jam_cell
+    jam_board_w = max((len(r) for r in jam_rows), default=0) * jam_tile
+    jam_board_h = len(jam_rows) * jam_tile
     jam_w = max(300.0, jam_board_w + pad * 2)
     jam_board_top = 52.0
     jam_h = jam_board_top + jam_board_h + (14 if jam_board_h else 0)
@@ -408,7 +410,7 @@ def build_svg(
         fill=MUTED,
     )
     if jam_rows:
-        c.board(centre - jam_board_w / 2, y_jam + jam_board_top, jam_rows, jam_cell)
+        c.board(centre - jam_board_w / 2, y_jam + jam_board_top, jam_rows, jam_tile)
     c.arrow(centre, y_jam + jam_h + 4, y_shepherd - 6, label="stuck transcript", dashed=True)
 
     # The shepherd.
@@ -450,8 +452,8 @@ def build_svg(
         )
         rows = board_rows(branch.board)
         if rows:
-            board_w = max(len(r) for r in rows) * branch_cell
-            c.board(mid - board_w / 2, y_branch + board_top, rows, branch_cell)
+            board_w = max(len(r) for r in rows) * branch_tile
+            c.board(mid - board_w / 2, y_branch + board_top, rows, branch_tile)
         c.text(
             mid,
             y_branch + y_outcome,
@@ -489,7 +491,7 @@ def build_svg(
     return c.render()
 
 
-def agent_chain(g: Graph, agent: Agent) -> list:
+def agent_chain(g: Graph, agent: Node) -> list:
     """The agent's history, in order, without descending into children."""
     return g.history(agent)
 
@@ -497,12 +499,12 @@ def agent_chain(g: Graph, agent: Agent) -> list:
 def rewind_marker(chain: list) -> int:
     """Index of the note ``prepare_branch`` left, which is where inherited history ends."""
     for index, node in enumerate(chain):
-        if node.type == MESSAGE and re.search(r"Rewound \d+ pushes", node["text"]):
+        if node.role == "user" and re.search(r"Rewound \d+ pushes", node.text):
             return index
     return 0
 
 
-def build_nodes_svg(g: Graph, shepherd: Agent, branches: list[Branch]) -> str:
+def build_nodes_svg(g: Graph, shepherd: Node, branches: list[Branch]) -> str:
     """Every saved Node, one square each: the trunk, the fan, and eight chains."""
     margin, pitch, dot = 28.0, 9.0, 7.0
     label_w, row_h, note_size = 74.0, 26.0, 11.0
@@ -545,7 +547,7 @@ def build_nodes_svg(g: Graph, shepherd: Agent, branches: list[Branch]) -> str:
         c.text(margin, y + dot, label, size=11.5, weight="600", anchor="start")
         c.rect(lane_x, y + dot / 2 - 0.5, max(len(chain) - 1, 0) * pitch + dot, 1.0, EDGE)
         for index, node in enumerate(chain):
-            fill = NODE_COLORS.get(node.type, NODE_FALLBACK)
+            fill = NODE_COLORS.get(kind(node), NODE_FALLBACK)
             # Nodes before the rewind marker were copied from the jam by the fork,
             # so fading them shows how much history each branch chose to keep.
             opacity = {"fill_opacity": 0.3} if index < inherited else {}
@@ -583,10 +585,10 @@ def build_nodes_svg(g: Graph, shepherd: Agent, branches: list[Branch]) -> str:
         )
 
     x = margin
-    for node_type, color in NODE_COLORS.items():
+    for label, color in NODE_COLORS.items():
         c.rect(x, y_legend, dot, dot, color, rx=1.5)
-        c.text(x + dot + 6, y_legend + dot, node_type, size=10.5, fill=MUTED, anchor="start")
-        x += dot + 12 + len(node_type) * 10.5 * SANS_ADVANCE
+        c.text(x + dot + 6, y_legend + dot, label, size=10.5, fill=MUTED, anchor="start")
+        x += dot + 12 + len(label) * 10.5 * SANS_ADVANCE
     c.rect(x, y_legend, dot, dot, NODE_FALLBACK, rx=1.5, fill_opacity=0.5)
     c.text(
         x + dot + 6,
@@ -624,12 +626,12 @@ def main() -> None:
     if not branches:
         raise SystemExit("that run has no recovery branches to draw")
 
-    worker_turns = llm_turns(g, worker)
+    worker_turns = model_turns(g, worker)
     # The jam is one push per turn, minus the turn that built the board.
     worker_pushes = max(0, worker_turns - 1)
 
     max_rewind = None
-    raw_rewind = shepherd.args.get("max_rewind")
+    raw_rewind = shepherd.input.get("max_rewind")
     if raw_rewind is not None and str(raw_rewind).strip().isdigit():
         max_rewind = int(str(raw_rewind).strip())
 
@@ -639,7 +641,7 @@ def main() -> None:
         worker_turns=worker_turns,
         worker_pushes=worker_pushes,
         worker_board=boards.get("worker", ""),
-        shepherd_turns=llm_turns(g, shepherd),
+        shepherd_turns=model_turns(g, shepherd),
         max_rewind=max_rewind,
         total_nodes=len(g.nodes()),
     )

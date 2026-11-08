@@ -82,7 +82,6 @@ examples/_runs/example-workspaces/*
 !examples/_runs/example-workspaces/skills-demo/skills/**
 benchmarks/eval/runs/*
 benchmarks/eval/comparisons/*/
-docs/research/*
 # Live test runs and per-project rlmflow serve state
 tests/live/_runs/
 .rlmflow/

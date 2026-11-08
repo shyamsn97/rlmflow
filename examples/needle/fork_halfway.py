@@ -1,7 +1,7 @@
 """Fork a Claude Code root halfway through the filesystem needle.
 
-The root runs until a cell has launched its search workers. The run stops
-there and the root is forked at that cell. The fork starts a fresh Claude Code
+The root runs until a node's code has launched its search workers. The run stops
+there and the root is forked at that node. The fork starts a fresh Claude Code
 session on the rebuilt REPL, so it has to pick the work up from ``notes`` and
 the worker handles already in its REPL instead of launching the search again.
 
@@ -19,8 +19,9 @@ from pathlib import Path
 
 from filesystem import NEEDLE_FILE_TOOLS, generate_haystack
 
-from rlmflow import CODE, DONE, AgentConfig, Flow, Graph, Node, SubprocessRuntime
+from rlmflow import AgentConfig, Flow, Graph, Node, SubprocessRuntime
 from rlmflow.consumers import GraphCheckpointer
+from rlmflow.view.text import kind
 
 
 def main() -> None:
@@ -63,22 +64,28 @@ def main() -> None:
         )
 
         def launched(step) -> bool:
-            return step.agent.id == root.id and step.node.type == CODE and bool(g.children(root))
+            return step.agent.id == root.id and step.node.runs_code and bool(g.children(root))
 
         async def drive() -> None:
             checkpointer = GraphCheckpointer(args.out_dir)
             try:
                 async for step in flow.run_streaming(g, until=launched, root_config=config):
                     checkpointer.handle(step, g)
-                    print(f"{g.path(step.agent):<20} {step.node.type}")
-                cell = g.history(root)[-1]
+                    print(f"{g.path(step.agent):<20} {kind(step.node)}")
+                launch = g.tail(root)
                 workers = g.children(root)
-                print(f"\n--- forking at {cell.id} after {len(workers)} workers launched ---\n")
-                fork = g.fork(cell, name="fork")
-                g.append(root, Node(DONE, result="[superseded by fork]"))
+                print(f"\n--- forking at {launch.id} after {len(workers)} workers launched ---\n")
+                fork = g.fork(launch, name="fork")
+                superseded = Node(
+                    "assistant",
+                    result="[superseded by fork]",
+                    seen=len(g.history(root)),
+                    terminal=True,
+                )
+                g.append(root, superseded)
                 async for step in flow.run_streaming(g, root_config=config):
                     checkpointer.handle(step, g)
-                    print(f"{g.path(step.agent):<20} {step.node.type}")
+                    print(f"{g.path(step.agent):<20} {kind(step.node)}")
             finally:
                 checkpointer.close()
                 await flow.aclose()
@@ -88,12 +95,12 @@ def main() -> None:
 
 
 def report(g: Graph, fork: Node, workers: list[Node], answer: str) -> None:
-    cells = [node["code"] for node in g.nodes(CODE, agent=fork.id) if node.get("code")]
+    code = [node.code for node in g.nodes(agent=fork) if node.runs_code]
     relaunched = g.children(fork)
     result = g.result(fork)
     print(f"\n{'=' * 40}")
-    print(f"fork cells:       {len(cells)}")
-    print(f"read notes:       {any('notes' in code for code in cells)}")
+    print(f"fork code runs:   {len(code)}")
+    print(f"read notes:       {any('notes' in text for text in code)}")
     print(f"workers reused:   {len(workers)}, new launches: {len(relaunched)}")
     print(f"result:           {result}")
     print(f"actual answer:    {answer}")

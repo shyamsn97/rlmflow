@@ -17,8 +17,9 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import CODE, Agent, AgentConfig, Flow, Graph, LLMUsage, Node, Step
+from rlmflow import AgentConfig, Flow, Graph, LLMUsage, Node, Step
 from rlmflow.harnesses.repl import ReplHarness
+from rlmflow.view.text import kind
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -49,18 +50,18 @@ def banner(title: str) -> None:
     print("=" * 72)
 
 
-def state_types(g: Graph, agent: Agent) -> list[str]:
-    return [state.type for state in g.history(agent)]
+def kinds(g: Graph, agent: Node) -> list[str]:
+    return [kind(node) for node in g.history(agent)]
 
 
-def assert_types(g: Graph, agent: Agent, expected: list[str]) -> None:
-    actual = state_types(g, agent)
-    assert actual == expected, f"expected states {expected}, got {actual}"
+def assert_kinds(g: Graph, agent: Node, expected: list[str]) -> None:
+    actual = kinds(g, agent)
+    assert actual == expected, f"expected nodes {expected}, got {actual}"
 
 
-def print_states(label: str, g: Graph, agent: Agent) -> None:
+def print_nodes(label: str, g: Graph, agent: Node) -> None:
     print(f"\n{label}")
-    print("state types:", " -> ".join(state_types(g, agent)))
+    print("nodes:", " -> ".join(kinds(g, agent)))
 
 
 def observation_injection() -> None:
@@ -69,14 +70,14 @@ def observation_injection() -> None:
     flow = Flow(llm_clients={"demo": DemoLLM()})
     g = Graph()
     agent = g.add_agent("Wait for a controller note, then submit.")
-    agent.bind_config(CONFIG)
-    assert_types(g, agent, [])
+    agent.root_data.bind_config(CONFIG)
+    assert_kinds(g, agent, ["agent"])
 
-    extra = g.append(agent, Node(CODE, code="", output=OBSERVATION))
-    assert_types(g, agent, ["code"])
-    assert g.history(agent)[-1] is extra
+    extra = g.append(agent, Node("user", OBSERVATION, producer="controller"))
+    assert_kinds(g, agent, ["agent", "message"])
+    assert g.tail(agent) is extra
 
-    print_states("after the controller appended its observation", g, agent)
+    print_nodes("after the controller appended its observation", g, agent)
 
     projected = ReplHarness().messages(flow, Step(g, agent, extra))[-1]["content"]
     assert OBSERVATION in projected
@@ -90,7 +91,7 @@ def observation_injection() -> None:
 
     asyncio.run(drive())
     assert g.result(agent) == "used the injected controller observation"
-    print_states("after stepping: run reacted and finished", g, agent)
+    print_nodes("after stepping: run reacted and finished", g, agent)
     print(f"result={g.result(agent)!r}")
     save_example_graph(
         g,
@@ -124,7 +125,7 @@ def controller_stop_instruction() -> None:
 
     asyncio.run(run_with_controller_stop())
     assert g.result(agent) == "controller stopped the run"
-    print_states("after controller stop instruction: clean submit(...)", g, agent)
+    print_nodes("after controller stop instruction: clean submit(...)", g, agent)
     print(f"result={g.result(agent)!r}")
     save_example_graph(
         g,

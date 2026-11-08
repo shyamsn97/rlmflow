@@ -9,53 +9,52 @@ No Flow, no LLM — just graph ops:
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
-from rlmflow import CODE, DONE, LLM, SPAWN, Agent, Graph, LLMUsage, Node
+from rlmflow import SPAWN, Graph, LLMUsage, Node
+from rlmflow.view.text import kind
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = EXAMPLES_DIR / "_runs" / "deep-tree"
 
 
-def grow(g: Graph, agent: Agent, *, depth: int, branch: int) -> None:
+def turn(g: Graph, agent: Node, text: str = "", **fields) -> Node:
+    """Append one finished model turn to ``agent``."""
+    node = Node("assistant", text, seen=len(g.history(agent)), **fields)
+    node.finished_at = time.time()
+    return g.append(agent, node)
+
+
+def grow(g: Graph, agent: Node, *, depth: int, branch: int) -> None:
     """Grow ``agent`` into a depth-``depth`` tree with ``branch`` children per fanout.
 
-    Children are launched by the cell that called ``launch_agent``, the way a
-    real run records it.
+    Children are launched by the node whose code called ``launch_agent``, the
+    way a real run records it.
     """
     path = g.path(agent)
-    g.append(
-        agent,
-        Node(
-            LLM,
-            text=f"plan at {path}",
-            usage=LLMUsage(input_tokens=10, output_tokens=5).as_dict(),
-        ),
-    )
+    usage = LLMUsage(input_tokens=10, output_tokens=5).as_dict()
 
     if depth <= 0:
-        g.append(agent, Node(CODE, code=f"print({path!r})", output=f"ran {path}"))
-        g.append(agent, Node(DONE, result=path))
+        code = f"print({path!r})"
+        turn(g, agent, f"plan at {path}", code=code, output=f"ran {path}", usage=usage)
+        turn(g, agent, result=path, terminal=True)
         return
 
-    cell = g.append(
-        agent,
-        Node(CODE, code="print(await asyncio.gather(*kids))", output=f"fanout from {path}"),
-    )
+    code = "print(await asyncio.gather(*kids))"
+    launch = turn(g, agent, f"plan at {path}", code=code, output=f"fanout from {path}", usage=usage)
     for index in range(branch):
-        child = g.add_agent(f"subtask of {path}", parent=cell, name=f"c{index}")
+        child = g.add_agent(f"subtask of {path}", parent=launch, name=f"c{index}")
         grow(g, child, depth=depth - 1, branch=branch)
-    g.append(agent, Node(DONE, result=f"merged:{path}"))
+    turn(g, agent, result=f"merged:{path}", terminal=True)
 
 
-Item = Agent | Node
-
-
-def tree_children(g: Graph) -> dict[str, list[Item]]:
-    """Each item's successors: an agent's first node, a node's next one, and the agents a cell launched."""
-    kids: dict[str, list[Item]] = {item.id: [] for item in [*g.agents(), *g.nodes()]}
+def tree_children(g: Graph) -> dict[str, list[Node]]:
+    """Each node's successors: the next node in its agent's history, and the agents it launched."""
+    kids: dict[str, list[Node]] = {node.id: [] for node in g.nodes()}
     for agent in g.agents():
-        for before, after in zip([agent, *agent.nodes], agent.nodes):
+        history = agent.root_data.history
+        for before, after in zip(history, history[1:]):
             kids[before.id].append(after)
     for edge in g.edges(kind=SPAWN):
         kids[edge.source].append(g.agent(edge.target))
@@ -63,8 +62,8 @@ def tree_children(g: Graph) -> dict[str, list[Item]]:
 
 
 def render_ascii(
-    node: Item,
-    kids: dict[str, list[Item]],
+    node: Node,
+    kids: dict[str, list[Node]],
     *,
     prefix: str = "",
     is_last: bool = True,
@@ -82,10 +81,10 @@ def render_ascii(
     return lines
 
 
-def render_agents(g: Graph, agent: Agent, *, prefix: str = "", is_last: bool = True) -> list[str]:
+def render_agents(g: Graph, agent: Node, *, prefix: str = "", is_last: bool = True) -> list[str]:
     """Render only the agent tree."""
     connector = "└── " if is_last else "├── "
-    label = f"{g.path(agent)}  [{g.history(agent)[-1].type}]"
+    label = f"{g.path(agent)}  [{kind(g.tail(agent))}]"
     lines = [f"{prefix}{connector}{label}" if prefix or not is_last else label]
     child_prefix = prefix + ("    " if is_last else "│   ")
     children = g.children(agent)
@@ -96,24 +95,22 @@ def render_agents(g: Graph, agent: Agent, *, prefix: str = "", is_last: bool = T
     return lines
 
 
-def _label(node: Item) -> str:
-    if isinstance(node, Agent):
-        return f"agent:{node.name}"
-    text = str(node.get("text") or node.get("output") or node.get("result") or "").replace(
-        "\n", " "
-    )
+def _label(node: Node) -> str:
+    if node.root_data is not None:
+        return f"agent:{node.root_data.name}"
+    text = str(node.text or node.output or node.result or "").replace("\n", " ")
     if len(text) > 40:
         text = text[:37] + "..."
     suffix = f" {text!r}" if text else ""
-    return f"{node.type}{suffix}"
+    return f"{kind(node)}{suffix}"
 
 
-def _layout(root: Item, kids: dict[str, list[Item]]) -> dict[str, tuple[float, float]]:
+def _layout(root: Node, kids: dict[str, list[Node]]) -> dict[str, tuple[float, float]]:
     """Assign (x, y) positions keyed by node id."""
     positions: dict[str, tuple[float, float]] = {}
     counter = {"x": 0.0}
 
-    def walk(node: Item, depth: int) -> None:
+    def walk(node: Node, depth: int) -> None:
         children = kids[node.id]
         if not children:
             positions[node.id] = (counter["x"], -float(depth))
@@ -128,10 +125,10 @@ def _layout(root: Item, kids: dict[str, list[Item]]) -> dict[str, tuple[float, f
     return positions
 
 
-def plot_tree(g: Graph, root: Agent, out: Path, *, title: str, show: bool) -> Path:
+def plot_tree(g: Graph, root: Node, out: Path, *, title: str, show: bool) -> Path:
     """Save a PNG (matplotlib) or SVG fallback of the node tree."""
     kids = tree_children(g)
-    nodes = {item.id: item for item in [*g.agents(), *g.nodes()]}
+    nodes = {node.id: node for node in g.nodes()}
     edges = [(parent, child.id) for parent, children in kids.items() for child in children]
     positions = _layout(root, kids)
 
@@ -179,7 +176,7 @@ def plot_tree(g: Graph, root: Agent, out: Path, *, title: str, show: bool) -> Pa
 
 
 def _plot_svg(
-    nodes: dict[str, Item],
+    nodes: dict[str, Node],
     positions: dict[str, tuple[float, float]],
     edges: list[tuple[str, str]],
     out: Path,
@@ -225,17 +222,17 @@ def _plot_svg(
     return out
 
 
-def _color(node: Item) -> str:
+def _color(node: Node) -> str:
     return {
         "agent": "#cfe8ff",
-        CODE: "#ffe6a8",
-        DONE: "#c8f7c5",
-        LLM: "#e8d5ff",
-    }.get(node.type, "#f0f0f0")
+        "code": "#ffe6a8",
+        "done": "#c8f7c5",
+        "model": "#e8d5ff",
+    }.get(kind(node), "#f0f0f0")
 
 
-def _short(node: Item) -> str:
-    return node.name if isinstance(node, Agent) else node.type
+def _short(node: Node) -> str:
+    return node.root_data.name if node.root_data is not None else kind(node)
 
 
 def main() -> None:

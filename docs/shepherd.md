@@ -10,7 +10,7 @@
 
 [Shepherd: Enabling Programmable Meta-Agents via Reversible Agentic Execution Traces](https://arxiv.org/abs/2605.10913) (Yu et al., 2026) argues that an agent's execution should be a reversible object rather than a one-way transcript. Record the run as a Git-like trace, and you can program a second model against it — a *meta-agent* that inspects any earlier point, reverts to it, then plans and steers parallel alternative routes.
 
-`rlmflow` already keeps a run as a durable graph of typed nodes, so Shepherd's four operations — observe, rewind, fork, re-instruct — are graph edits, and the meta-agent's forks are simply its own children.
+`rlmflow` already keeps a run as a durable graph of nodes, so Shepherd's four operations — observe, rewind, fork, re-instruct — are graph edits, and the meta-agent's forks are simply its own children.
 
 Only the revert itself works differently. The paper checkpoints the worker's process and filesystem, so any program comes back byte-identical. `rlmflow` already tracks every action as a node, so the cheap route is to fork the graph and replay those actions — no snapshot to take, and exactly as faithful whenever the environment is deterministic.
 
@@ -39,7 +39,7 @@ push("up")
 ```
 
 ```text
-walked (3, 2)->(4, 3) in 2 cells
+walked (3, 2)->(4, 3) in 2 squares
 pushed B1 up: (3, 3)->(2, 3)
 ```
 
@@ -148,13 +148,12 @@ A plan is two decisions: where to revert back to, and what strategy to hand the 
 The host takes each plan's revert depth and turns it into a graph edit:
 
 ```python
-history = g.history(worker)
-cut = history[history.index(push_turns(g, worker)[-depth]) - 1]
-fork = g.fork(cut, name=f"branch{index}", parent=planning_cell)
+cut, depth = rewind_point(g, worker, plan["rewind"])  # the turn before that push
+fork = g.fork(cut, name=f"branch{index}", parent=planning_turn)
 await flow.replay(g, fork)
 ```
 
-`cut` is the node just before the push `depth` pushes back. `g.fork(cut)` copies nothing: the fork's history is the worker's history up to `cut`, and everything after that point is simply not part of it. `parent=planning_cell`, the shepherd's cell that recorded the plans, makes the fork a child of the shepherd. `replay` re-runs the retained cells into the fork's own REPL, so its board is the one the worker had at that point.
+`cut` is the worker's turn just before the push `depth` pushes back. `g.fork(cut)` copies nothing: the fork is a new root with a `fork` edge from `cut`, its history is the worker's history up to `cut`, and everything after that point is simply not part of it. `parent=planning_turn`, the shepherd's turn that recorded the plans, makes the fork a child of the shepherd. `replay` runs the retained history again in the fork's own REPL, so its board is the one the worker had at that point.
 
 #### Step 4 — resume: each fork is a sub-agent
 

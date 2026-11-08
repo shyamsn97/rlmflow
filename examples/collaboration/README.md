@@ -9,8 +9,8 @@ root or manager agent.
 Peers can't await each other, so one asks the others for their values with
 `AGENTS[name].send(...)` and ends its turn; their replies arrive as messages and
 reopen it, and once it has both it sends them the total.
-Messages are `message` nodes with `message` edges from the cell that sent them,
-so the saved graph shows who told whom what.
+Each message is a node in the receiver's history with a `write` edge from the
+node whose code sent it, so the saved graph shows who told whom what.
 
     python examples/collaboration/decentralized_peers.py --model gpt-5-mini
 
@@ -26,12 +26,12 @@ pool of workers shares it, with no manager:
 | open tasks | `board_open()` |
 | claiming a task | `board_claim(id, worker)`; atomic, so exactly one worker wins |
 | a finished task's result | `board_finish(id, result)`, read back with `board_results()` |
-| workers | top-level agents run `--workers` at a time |
+| workers | top-level agents; `--workers` of them, with that many model calls at once |
 
-The tools run in the host process, so every worker sees the same board. Each
-call's result is saved on the `code` node that made it: the saved run records
-what each worker saw, and a rebuilt REPL replays those results instead of
-calling the board again.
+The tools run in the host process, so every worker sees the same board. They
+are `@tool(cache=True)`, so each call's result is saved on the node whose code
+made it: the saved run records what each worker saw, and a rebuilt REPL replays
+those results instead of calling the board again.
 
 ```bash
 python examples/collaboration/shared_board.py \
