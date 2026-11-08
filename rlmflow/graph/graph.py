@@ -604,8 +604,11 @@ class Graph:
                 for edge in self.edges(kind=RETURN, target=cell.id)
                 if old is not None and self._nodes[edge.source].agent_id == old.id
             ]
+            call_key = entry.get("key")
             entry.clear()
-            entry.update(tool=tool, **({"agent": agent.id} if agent else {"value": value}))
+            entry.update(
+                tool=tool, key=call_key, **({"agent": agent.id} if agent else {"value": value})
+            )
             self._rerun(cell, inv)
             # The old agent's result reached this cell and was swapped out, so it isn't
             # delivered again as a message.
@@ -615,8 +618,9 @@ class Graph:
         else:
             if agent is not None:
                 raise GraphError(f"a {tool} call can only be replaced by a value")
+            call_key = entry.get("key")
             entry.clear()
-            entry.update(tool=tool, value=strict_json(value, "value"))
+            entry.update(tool=tool, key=call_key, value=strict_json(value, "value"))
         self._rerun(cell, inv)
         return inv
 

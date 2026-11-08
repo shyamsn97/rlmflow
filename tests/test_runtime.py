@@ -13,6 +13,7 @@ from rlmflow import (
     SubprocessRuntime,
     WorkerRepl,
 )
+from rlmflow.graph import calls
 from rlmflow.graph.nodes import CODE, Node
 from rlmflow.runtime import (
     DEFAULT_PREIMPORTS,
@@ -34,32 +35,56 @@ WRITE_A_NOTE = block(
 )
 
 
-def test_host_tool_results_are_saved_and_returned_on_replay():
+def test_cached_host_tool_calls_are_saved_by_their_arguments():
     g, root = agent_graph("root")
     action = g.append(root, Node(CODE, code=""))
     ran: list[tuple[str, object]] = []
 
-    @tool("First tool.")
+    @tool("First tool.", cache=True)
     def first(value):
         ran.append(("first", value))
         return {"value": value}
 
-    @tool("Opaque tool.")
+    @tool("Opaque tool.", cache=True)
     def opaque(value):
         ran.append(("opaque", value))
         return object()
 
-    assert invoke_tool_call(first, action, 0, ("a",), {}) == {"value": "a"}
-    assert invoke_tool_call(first, action, 0, ("ignored",), {}) == {"value": "a"}
-    assert invoke_tool_call(first, action, 1, ("b",), {}) == {"value": "b"}
-    invoke_tool_call(opaque, action, 0, ("x",), {})
-    invoke_tool_call(opaque, action, 0, ("y",), {})
+    calls.begin(action)
+    assert invoke_tool_call(first, action, ("a",), {}) == {"value": "a"}
+    assert invoke_tool_call(first, action, ("b",), {}) == {"value": "b"}
+    invoke_tool_call(opaque, action, ("x",), {})
+    calls.forget(action)
 
-    assert action.data["calls"] == [
-        {"tool": "first", "value": {"value": "a"}},
-        {"tool": "first", "value": {"value": "b"}},
-    ]
-    assert ran == [("first", "a"), ("first", "b"), ("opaque", "x"), ("opaque", "y")]
+    calls.begin(action)
+    assert invoke_tool_call(first, action, ("b",), {}) == {"value": "b"}
+    assert invoke_tool_call(first, action, ("c",), {}) == {"value": "c"}
+    invoke_tool_call(opaque, action, ("x",), {})
+    unclaimed = calls.finish(action)
+
+    assert [entry["value"] for entry in unclaimed] == [{"value": "a"}]
+    assert [entry["value"] for entry in action.data["calls"]] == [{"value": "b"}, {"value": "c"}]
+    assert ran == [("first", "a"), ("first", "b"), ("opaque", "x"), ("first", "c"), ("opaque", "x")]
+    with pytest.raises(TypeError, match="must be JSON"):
+        invoke_tool_call(first, action, (object(),), {})
+
+
+def test_host_tools_without_cache_always_run():
+    g, root = agent_graph("root")
+    action = g.append(root, Node(CODE, code=""))
+    ran = []
+
+    @tool("Live tool.")
+    def live(value):
+        ran.append(value)
+        return value
+
+    calls.begin(action)
+    invoke_tool_call(live, action, ("a",), {})
+    invoke_tool_call(live, action, ("a",), {})
+    calls.forget(action)
+
+    assert ran == ["a", "a"] and "calls" not in action.data
 
 
 class RecordingWorkerSession:

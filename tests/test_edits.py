@@ -29,7 +29,7 @@ from rlmflow.view.timeline import replay, snapshot, steps, timeline
 def launch(g: Graph, cell: Node, task: str, index: int = 0, **kwargs):
     """``launch_agent(task)`` inside ``cell``: the child and the cell's saved launch."""
     child = g.add_agent(task, parent=cell, **kwargs)
-    calls.record(cell, calls.LAUNCH, index, agent=child.id)
+    calls.record(cell, calls.LAUNCH, f"launch-{index}", agent=child.id)
     return child
 
 
@@ -37,7 +37,7 @@ def awaited(g: Graph, cell: Node, *children) -> None:
     """``await child`` inside ``cell``: the saved awaits, and their return edges."""
     for index, child in enumerate(children):
         done = g.history(child)[-1]
-        calls.record(cell, calls.AWAIT, index, agent=child.id, done=done.id)
+        calls.record(cell, calls.AWAIT, f"await-{index}", agent=child.id, done=done.id)
         g.link_return(done, cell)
 
 
@@ -291,16 +291,16 @@ def test_replace_a_tool_call_with_a_value():
     g = Graph()
     root = g.add_agent("root")
     cell = g.append(root, Node(CODE, code="a = await llm_query('x'); b = await llm_query('y')"))
-    calls.record(cell, "llm_query", 0, value="old")
-    calls.record(cell, "llm_query", 1, value="keep")
+    calls.record(cell, "llm_query", "x", value="old")
+    calls.record(cell, "llm_query", "y", value="keep")
     reply = g.append(root, Node(LLM, text="next"))
     final = g.append(root, Node(DONE, result="old"))
 
     inv = g.replace(cell, call(cell, "llm_query"), "new")
 
     assert cell.data["calls"] == [
-        {"tool": "llm_query", "value": "new"},
-        {"tool": "llm_query", "value": "keep"},
+        {"tool": "llm_query", "key": "x", "value": "new"},
+        {"tool": "llm_query", "key": "y", "value": "keep"},
     ]
     assert cell.pending
     assert inv.rerun == [cell.id] and inv.rewound == [root.id]
@@ -321,7 +321,11 @@ def test_replace_an_await_with_a_value_keeps_the_old_result_from_being_delivered
     g = d.g
     inv = g.replace(d.cell, call(d.cell, calls.AWAIT), 5)
 
-    assert d.cell.data["calls"][call(d.cell, calls.AWAIT)] == {"tool": "await", "value": 5}
+    assert d.cell.data["calls"][call(d.cell, calls.AWAIT)] == {
+        "tool": "await",
+        "key": "await-0",
+        "value": 5,
+    }
     assert inv.rerun == [d.cell.id] and inv.removed == []
     assert d.worker.id in g and g.status(d.worker) == "done"
     [edge] = g.edges(kind=RETURN)
@@ -336,7 +340,11 @@ def test_replace_an_await_with_another_agent():
 
     inv = g.replace(d.cell, call(d.cell, calls.AWAIT), agent=other)
 
-    assert d.cell.data["calls"][call(d.cell, calls.AWAIT)] == {"tool": "await", "agent": other.id}
+    assert d.cell.data["calls"][call(d.cell, calls.AWAIT)] == {
+        "tool": "await",
+        "key": "await-0",
+        "agent": other.id,
+    }
     assert inv.rerun == [d.cell.id]
     assert g.edits[-1]["agent"] == other.id
 
@@ -375,7 +383,7 @@ def test_replace_refuses_mismatched_replacements():
     before = records(g)
     with pytest.raises(GraphError, match="only be replaced by another agent"):
         g.replace(d.cell, call(d.cell, calls.LAUNCH), "value")
-    calls.record(d.cell, "llm_query", 0, value="answer")
+    calls.record(d.cell, "llm_query", "q", value="answer")
     before = records(g)
     with pytest.raises(GraphError, match="only be replaced by a value"):
         g.replace(d.cell, call(d.cell, "llm_query"), agent=d.root)
@@ -450,6 +458,7 @@ def test_edits_are_logged_and_survive_save_and_load(tmp_path):
     cell = loaded.node(d.cell.id)
     assert cell.pending and cell.data["calls"][call(cell, calls.AWAIT)] == {
         "tool": "await",
+        "key": "await-0",
         "value": 7,
     }
     assert loaded.status(loaded.agent(d.root.id)) == "running"

@@ -85,12 +85,12 @@ Views, persistence and queries are functions that read the graph.
 @dataclass
 class Node:
     id: str
-    agent: str            # owner
-    type: str             # "llm" | "code" | "message" | "idle" | "done"
-    data: dict            # JSON
-    metadata: dict        # JSON, the application's
-    seq: int              # global order: when it (last) started
-    pending: bool         # its step started and hasn't finished
+    agent: str  # owner
+    type: str  # "llm" | "code" | "message" | "idle" | "done"
+    data: dict  # JSON
+    metadata: dict  # JSON, the application's
+    seq: int  # global order: when it (last) started
+    pending: bool  # its step started and hasn't finished
     started_at: float | None
     finished_at: float | None
 
@@ -100,17 +100,17 @@ class Agent:
     id: str
     name: str
     task: str
-    args: dict            # JSON, Input wrappers allowed
-    config: str | None    # a config name; None for a root
-    parent: str | None    # the cell (or agent) that launched it
-    base: str | None      # the node its history continues from
+    args: dict  # JSON, Input wrappers allowed
+    config: str | None  # a config name; None for a root
+    parent: str | None  # the cell (or agent) that launched it
+    base: str | None  # the node its history continues from
     nodes: list[Node]
     metadata: dict
     seq: int
 
 
 @dataclass
-class Link:               # application relationships only ("peer", ...)
+class Link:  # application relationships only ("peer", ...)
     kind: str
     source: str
     target: str
@@ -207,7 +207,7 @@ def status(self, agent):
     if not history or any(n.pending for n in agent.nodes):
         return "running"
     last_llm = max((i for i, n in enumerate(history) if n.type == "llm"), default=-1)
-    if any(n.type == "message" for n in history[last_llm + 1:]):
+    if any(n.type == "message" for n in history[last_llm + 1 :]):
         return "running"
     last = history[-1]
     return last.type if last.type in ("done", "idle") else "running"
@@ -220,10 +220,10 @@ def status(self, agent):
 ### State it keeps
 
 ```python
-tasks: dict[str, asyncio.Task]      # agent id -> its step in flight (was g.busy)
-repls: dict[str, str]               # agent id -> id of the last cell its live REPL ran
-changed: asyncio.Condition          # notified on every write the Flow makes
-landed: list[Node]                  # finished nodes to yield
+tasks: dict[str, asyncio.Task]  # agent id -> its step in flight (was g.busy)
+repls: dict[str, str]  # agent id -> id of the last cell its live REPL ran
+changed: asyncio.Condition  # notified on every write the Flow makes
+landed: list[Node]  # finished nodes to yield
 ```
 
 ### Rules it owns

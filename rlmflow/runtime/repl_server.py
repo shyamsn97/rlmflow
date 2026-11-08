@@ -104,7 +104,6 @@ class ProxyCall(WireModel):
     run_id: str
     tenant_id: str
     proxy: str
-    call_id: int
     restoring: bool = False
     args: list[JsonValue]
     kwargs: dict[str, JsonValue]
@@ -229,9 +228,6 @@ class ReplServer:
                     args = (as_json_value(args[0]),)
                 elif not args and set(kwargs) == {"answer"}:
                     kwargs = {"answer": as_json_value(kwargs["answer"])}
-            counts = binding.setdefault("_rpc_counts", {})
-            call_id = counts.get(name, 0)
-            counts[name] = call_id + 1
             request_id = self._next_proxy_id(name)
             future: Future[ProxyResponse] = Future()
             with self._state_lock:
@@ -242,7 +238,6 @@ class ReplServer:
                     run_id=binding["run_id"],
                     tenant_id=binding["tenant_id"],
                     proxy=name,
-                    call_id=call_id,
                     restoring=bool(binding.get("restoring")),
                     args=cast(list[object], encode_agent_references(list(args))),
                     kwargs=cast(
@@ -340,7 +335,7 @@ class ReplServer:
         tenant = self._tenant(message.tenant_id)
         binding = decode_host_value(message.binding)
         binding["restoring"] = message.restoring
-        tenant.seed({}, binding["args"])
+        tenant.seed({}, binding.pop("args", {}))
         tenant.env = binding["env"]
         for source, target in ((AGENT_WAIT_TOOL, "wait_agent"), (AGENT_SEND_TOOL, "send_agent")):
             tool = tenant.namespace.get(source)

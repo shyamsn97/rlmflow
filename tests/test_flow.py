@@ -11,6 +11,7 @@ from helpers import (
     StubLLM,
     TestRuntime,
     agent_graph,
+    counting_replies,
     first_user,
     run_result,
     stepping,
@@ -71,6 +72,12 @@ def test_truncate_output_preserves_traceback_tail():
     assert truncated.startswith("printed preview data")
     assert "truncated" in truncated
     assert truncated.endswith("boxes has no items")
+
+
+def test_reassigned_arguments_stick_across_cells():
+    llm = StubLLM(counting_replies(block("x = 999\ntask = 'changed'"), block("submit([x, task])")))
+    flow = ScriptedFlow(llm)
+    assert flow.run("keep it", x=1) == [999, "changed"]
 
 
 def test_submit():

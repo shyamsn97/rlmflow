@@ -116,12 +116,12 @@ def test_saved_graph_is_flat_ordered_and_strict(tmp_path):
 def test_persistence_validates_and_round_trips_recorded_calls(tmp_path):
     g, root = agent_graph("root")
     cell = Node(CODE, code="query", output="done")
-    calls.record(cell, "llm_query", 0, value={"answer": 42})
+    calls.record(cell, "llm_query", "q", value={"answer": 42})
     g.append(root, cell)
 
     g.save(tmp_path / "run")
     [loaded_cell] = Graph.load(tmp_path / "run").nodes(CODE)
-    assert calls.saved(loaded_cell, "llm_query", 0)["value"] == {"answer": 42}
+    assert calls.claim(loaded_cell, "llm_query", "q")["value"] == {"answer": 42}
 
     cell.data["calls"].append({"tool": "llm_query", "value": object()})
     with pytest.raises(TypeError, match="must be strict JSON"):

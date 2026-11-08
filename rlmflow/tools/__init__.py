@@ -24,6 +24,7 @@ from rlmflow.agent_tools.view import (
     build_agent_directory,
     resolve_agent,
 )
+from rlmflow.graph import calls
 from rlmflow.graph.config import (
     RECURSE,
     Input,
@@ -41,6 +42,7 @@ from rlmflow.runtime.repl import (
     DoneSignal,
     NotYourAgent,
     ToolMetadata,
+    encode_agent_references,
     get_tool_metadata,
 )
 
@@ -58,6 +60,7 @@ def tool(
     where: Where = "host",
     is_async: bool | None = None,
     when: Callable[..., bool] | None = None,
+    cache: bool = False,
 ) -> Callable:
     """Attach tool metadata to ``fn``.
 
@@ -70,12 +73,15 @@ def tool(
     detection. ``when`` is ``(flow, node) -> bool``: when false, the tool is
     left out of the prompt and the REPL.
 
-    A host tool's JSON result is saved on the cell that called it, so running
-    the cell again (after an edit, or to rebuild its REPL) returns it instead of
-    calling the tool twice.
+    ``cache=True`` declares a host tool's arguments and result JSON: each call is
+    saved on the cell that made it, keyed by its arguments, so running the cell
+    again (after an edit, or to rebuild its REPL) returns the saved result for
+    the same call instead of calling the tool twice. Other tools always run.
     """
     if where not in ("host", "repl"):
         raise ValueError(f"tool where must be 'host' or 'repl', not {where!r}")
+    if cache and where != "host":
+        raise ValueError("only host tools can cache their results")
 
     def decorator(fn):
         resolved = inspect.iscoroutinefunction(fn) if is_async is None else is_async
@@ -86,15 +92,22 @@ def tool(
             proxy=where == "host",
             is_async=resolved,
             when=when,
+            cache=cache,
         )
         return fn
 
     return decorator
 
 
-def _saves(fn: Callable, *, receipt: Callable[..., Any], restore: Callable[..., Any]) -> Callable:
-    """A built-in tool that saves ``receipt(result, ...)`` and replays with ``restore(entry, ...)``."""
-    fn._tool_meta = dataclasses.replace(fn._tool_meta, receipt=receipt, restore=restore)
+def _saves(
+    fn: Callable,
+    *,
+    key: Callable[..., str],
+    receipt: Callable[..., Any] | None = None,
+    restore: Callable[..., Any] | None = None,
+) -> Callable:
+    """A built-in tool saved under ``key(...)``, as ``receipt(result, ...)``, replayed with ``restore``."""
+    fn._tool_meta = dataclasses.replace(fn._tool_meta, key=key, receipt=receipt, restore=restore)
     return fn
 
 
@@ -346,6 +359,14 @@ def _agent_saved(handle: AgentHandle, *_args: Any, **_kwargs: Any) -> dict[str, 
     return {"agent": handle.agent_id}
 
 
+def _agent_id(g: Any, target: Any) -> Any:
+    """The id an agent reference names, for a call key; the reference itself if it names none."""
+    try:
+        return resolve_agent(g, target).id
+    except (KeyError, LookupError, TypeError, ValueError):
+        return encode_agent_references(target)
+
+
 def launch_tool(flow: Flow, step: Step):
     g = step.graph
     lock = threading.Lock()
@@ -371,7 +392,20 @@ def launch_tool(flow: Flow, step: Step):
 
         return _on_flow_loop(flow, launch)
 
-    return _saves(launch_agent, receipt=_agent_saved, restore=functools.partial(_handle_for, g))
+    def key(task: Any, *, config: Any = None, name: Any = None, **args: Any) -> str:
+        resolved = flow.configs.get(config or "default")
+        return calls.key(
+            calls.LAUNCH,
+            task,
+            config,
+            name,
+            check_args(args),
+            resolved.to_dict() if resolved is not None else None,
+        )
+
+    return _saves(
+        launch_agent, key=key, receipt=_agent_saved, restore=functools.partial(_handle_for, g)
+    )
 
 
 def await_tool(flow: Flow, step: Step):
@@ -417,7 +451,10 @@ def await_tool(flow: Flow, step: Step):
     async def wait_agent(agent_id: str) -> Any:
         return await result_of(agent_id, check=True)
 
-    return _saves(wait_agent, receipt=receipt, restore=restore)
+    def key(agent_id: Any) -> str:
+        return calls.key(calls.AWAIT, _agent_id(g, agent_id))
+
+    return _saves(wait_agent, key=key, receipt=receipt, restore=restore)
 
 
 def _model_help(flow: Flow, default_model: str | None) -> str:
@@ -490,7 +527,22 @@ def llm_query_tool(flow: Flow, step: Step):
         }
         return await query(flow, prompt, model=model or default_model, schema=schema, **sampling)
 
-    return llm_query
+    def key(
+        prompt: Any,
+        *,
+        model: Any = None,
+        schema: Any = None,
+        temperature: Any = None,
+        max_tokens: Any = None,
+    ) -> str:
+        from rlmflow import schema as schemas
+
+        normalized = schemas.json_schema_for(schema) if schema is not None else None
+        return calls.key(
+            "llm_query", prompt, model or default_model, normalized, temperature, max_tokens
+        )
+
+    return _saves(llm_query, key=key)
 
 
 def submit_tool(flow: Flow, step: Step):
@@ -512,16 +564,27 @@ def send_tool(flow: Flow, step: Step):
         is_async=False,
     )
     def send_agent(target: Any, message: str) -> AgentHandle:
-        def send() -> AgentHandle:
+        def send() -> tuple[AgentHandle, str]:
             agent = resolve_agent(g, target)
             if agent.id == step.agent.id:
                 raise ValueError("an agent cannot message itself")
-            agent_tools.send(flow, step, agent, message)
-            return agent_handle(g, agent)
+            node = agent_tools.send(flow, step, agent, message)
+            return agent_handle(g, agent), node.id
 
-        return _on_flow_loop(flow, send)
+        handle, message_id = _on_flow_loop(flow, send)
+        sent[id(handle)] = message_id
+        return handle
 
-    return _saves(send_agent, receipt=_agent_saved, restore=functools.partial(_handle_for, g))
+    #: The message each returned handle's send landed, until its call is saved.
+    sent: dict[int, str] = {}
+
+    def key(target: Any, message: Any) -> str:
+        return calls.key(calls.SEND, _agent_id(g, target), message)
+
+    def receipt(handle: AgentHandle, *_args: Any, **_kwargs: Any) -> dict[str, str]:
+        return {"agent": handle.agent_id, "message": sent.pop(id(handle), "")}
+
+    return _saves(send_agent, key=key, receipt=receipt, restore=functools.partial(_handle_for, g))
 
 
 def repl_tools(flow: Flow, step: Step) -> dict[str, Any]:

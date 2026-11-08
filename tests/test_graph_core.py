@@ -342,22 +342,31 @@ def test_usage_and_cost_sum_every_node_that_reports_them():
     assert g.usage().cost_usd == 0.25 and g.usage([a]).cost_usd == 0
 
 
-def test_saved_calls_match_the_nth_call_of_each_tool():
+def test_saved_calls_are_claimed_by_key_in_order():
     g = Graph()
     root = g.add_agent("root")
     cell = g.append(root, Node(CODE, code="await launch_agent('x')"))
     child = g.add_agent("child", parent=cell)
-    calls.record(cell, "llm_query", 1, value="second")
-    calls.record(cell, calls.LAUNCH, 0, agent=child.id)
-    calls.record(cell, "llm_query", 0, value="first")
-    calls.record(cell, "big", 0, value="x" * (calls.MAX_SAVED_BYTES + 1))
-    calls.record(cell, "live", 0, value=object())
+    same = calls.key("llm_query", "q")
+    assert same == calls.key("llm_query", "q") != calls.key("llm_query", "other")
+    calls.record(cell, "llm_query", same, value="first")
+    calls.record(cell, calls.LAUNCH, calls.key(calls.LAUNCH, "x"), agent=child.id)
+    calls.record(cell, "llm_query", same, value="second")
+    calls.record(cell, "big", "b", value="x" * (calls.MAX_SAVED_BYTES + 1))
+    calls.record(cell, "live", "l", value=object())
 
-    assert calls.saved(cell, "llm_query", 0)["value"] == "first"
-    assert calls.saved(cell, "llm_query", 1)["value"] == "second"
-    assert calls.saved(cell, "llm_query", 2) is None
-    assert calls.saved(cell, "big", 0) is None and calls.saved(cell, "live", 0) is None
+    calls.begin(cell)
+    assert calls.claim(cell, "llm_query", same)["value"] == "first"
+    assert calls.claim(cell, "llm_query", same)["value"] == "second"
+    assert calls.claim(cell, "llm_query", same) is None
+    assert calls.claim(cell, "big", "b") is None and calls.claim(cell, "live", "l") is None
+    assert [entry["tool"] for entry in calls.finish(cell)] == [calls.LAUNCH]
+    assert [entry["value"] for entry in cell.data["calls"]] == ["first", "second"]
+
+    calls.record(cell, calls.LAUNCH, calls.key(calls.LAUNCH, "x"), agent=child.id)
     assert calls.launched(cell) == [child.id]
+    with pytest.raises(TypeError, match="must be JSON"):
+        calls.key("tool", object())
     calls.rebind(cell, child.id, "agent_other")
     assert calls.launched(cell) == ["agent_other"]
 

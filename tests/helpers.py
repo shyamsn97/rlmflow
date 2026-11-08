@@ -84,7 +84,6 @@ class TestRuntime(Runtime):
     async def execute(self, agent: Agent, code: str, graph: Graph | None = None):
         repl = self.repl_for(agent, graph)
         cell = current_code()
-        counts: dict[str, int] = {}
 
         for name, original in tuple(repl.namespace.items()):
             metadata = get_tool_metadata(original) if callable(original) else None
@@ -92,9 +91,7 @@ class TestRuntime(Runtime):
                 continue
 
             def invoke(*args, _fn=original, _name=name, **kwargs):
-                call_id = counts.get(_name, 0)
-                counts[_name] = call_id + 1
-                return invoke_tool_call(_fn, cell, call_id, args, kwargs, name=_name)
+                return invoke_tool_call(_fn, cell, args, kwargs, name=_name)
 
             if inspect.iscoroutinefunction(original):
 

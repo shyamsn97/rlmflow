@@ -18,8 +18,9 @@ from rlmflow.engine.scheduler import (
     resolve_boundary,
 )
 from rlmflow.engine.workspaces import LocalWorkspace
+from rlmflow.graph import calls
 from rlmflow.graph.config import AgentConfig
-from rlmflow.graph.graph import CELL_RESULTS, Graph
+from rlmflow.graph.graph import CELL_RESULTS, Graph, GraphError
 from rlmflow.graph.nodes import (
     CODE,
     DONE,
@@ -240,6 +241,7 @@ class Flow:
 
     async def _run_cell(self, step: Step, cell: Node, code: str) -> ReplRun:
         g, agent = step.graph, step.agent
+        calls.begin(cell)
         with running_step(step), running_cell(cell):
             repl = self.runtime.repl_for(agent, g)
             repl.seed(build_namespace(self, step), {"task": agent.task, **agent.resolved_args()})
@@ -277,6 +279,7 @@ class Flow:
                     with replaying():
                         await self._run_cell(step, cell, cell.data["code"])
                 finally:
+                    calls.forget(cell)
                     repl.update_env({RLMFLOW_REPLAY: "0"})
             # Files last: rerun cells may have written to them.
             snapshot = next(
@@ -300,6 +303,7 @@ class Flow:
         """
         g, agent = step.graph, step.agent
         await self.prepare_repl(g, agent)
+        rerun = cell is not None
         if cell is None:
             cell = Node(CODE, code=code, **{PENDING: True})
             cell.started_at = time.time()
@@ -312,12 +316,18 @@ class Flow:
         try:
             run = await self._run_cell(step, cell, code)
         except asyncio.CancelledError:
+            calls.forget(cell)
             raise
         except BaseException as exc:
+            calls.forget(cell)
             cell.data.pop(PENDING, None)
             cell.finished_at = time.time()
             g.update(cell, output=f"{type(exc).__name__}: {exc}", error=True)
             raise
+        if rerun and run.status is not ReplStatus.DEAD:
+            self.undo_calls(g, calls.finish(cell))
+        else:
+            calls.forget(cell)
         output = truncate_output(run.output, agent.config.max_output_length)
         finished: dict[str, Any] = {"output": output, "error": run.failed}
         if run.status is ReplStatus.DEAD:
@@ -332,6 +342,20 @@ class Flow:
         if run.status is not ReplStatus.DEAD:
             self._live[agent.id] = _last_cell(g, agent)
         return cell, run
+
+    def undo_calls(self, g: Graph, entries: list[dict[str, Any]]) -> None:
+        """Undo saved calls a rerun didn't make again: remove the agents, take back the messages."""
+        for entry in entries:
+            target = entry.get("agent") if entry["tool"] == calls.LAUNCH else entry.get("message")
+            if entry["tool"] not in (calls.LAUNCH, calls.SEND) or target not in g:
+                continue
+            try:
+                if entry["tool"] == calls.LAUNCH:
+                    g.remove(g.agent(target))
+                else:
+                    g.delete(g.node(target))
+            except GraphError:
+                continue
 
     async def rerun(self, g: Graph, agent: Agent, cell: Node) -> Node:
         """Run a pending cell again in place; a submit adds its ``done``."""

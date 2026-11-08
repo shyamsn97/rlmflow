@@ -15,6 +15,7 @@ from rlmflow import (
     persistence,
     record_metadata,
 )
+from rlmflow.graph import calls
 from rlmflow.tools import tool
 
 
@@ -43,7 +44,7 @@ def test_node_metadata_is_strict_durable_and_forkable(tmp_path):
 
 
 def test_custom_proxy_tool_can_annotate_its_cell():
-    @tool("Tag this execution.")
+    @tool("Tag this execution.", cache=True)
     async def tag(value: str) -> str:
         record_metadata("custom.tags", {"value": value}, append=True)
         return value.upper()
@@ -60,7 +61,9 @@ def test_custom_proxy_tool_can_annotate_its_cell():
     cell = g.history(root)[-2]
     assert cell.data["code"].startswith("print(await tag")
     assert cell.metadata["custom.tags"] == [{"value": "alpha"}]
-    assert cell.data["calls"] == [{"tool": "tag", "value": "ALPHA"}]
+    assert cell.data["calls"] == [
+        {"tool": "tag", "key": calls.key("tag", ["alpha"], {}), "value": "ALPHA"}
+    ]
 
 
 class QueryLLM(LLMClient):
@@ -86,7 +89,13 @@ def test_llm_query_calls_are_recorded_on_the_cell():
     cell = g.history(root)[-2]
     [call] = cell.metadata["llm_query.calls"]
     assert call["model"] == "m" and call["usage"]["input_tokens"] == 3
-    assert cell.data["calls"] == [{"tool": "llm_query", "value": "an answer"}]
+    assert cell.data["calls"] == [
+        {
+            "tool": "llm_query",
+            "key": calls.key("llm_query", "ask me", "m", None, None, None),
+            "value": "an answer",
+        }
+    ]
 
 
 def test_llm_node_records_usage_model_and_timing():

@@ -62,7 +62,8 @@ class Repl(ABC):
     env: dict[str, Any]
 
     @abstractmethod
-    def seed(self, tools: dict[str, Callable[..., object]], args: dict[str, Any]) -> None: ...
+    def seed(self, tools: dict[str, Callable[..., object]], args: dict[str, Any]) -> None:
+        """Bind ``tools`` before a run; ``args`` only on the first seed, so cells can reassign them."""
 
     @abstractmethod
     def inject(self, name: str, fn: Any) -> None: ...
@@ -232,7 +233,7 @@ class LocalRepl:
         self._base: frozenset[str] = frozenset(self.namespace)
         self.env: dict[str, Any] = {}
         self.args: dict[str, Any] = {}
-        self._argument_names: set[str] = set()
+        self._seeded = False
         self.working_directory = (
             Path(working_directory).resolve() if working_directory is not None else None
         )
@@ -245,17 +246,17 @@ class LocalRepl:
             sys.stderr = _ContextStream(sys.stderr)
 
     def seed(self, tools: dict[str, Callable[..., object]], args: dict[str, Any]) -> None:
-        reserved = (set(self.namespace) - self._argument_names) | tools.keys()
-        collisions = sorted(args.keys() & reserved)
+        if self._seeded:
+            self.namespace.update(tools)
+            return
+        collisions = sorted(args.keys() & (set(self.namespace) | tools.keys()))
         if collisions:
             joined = ", ".join(collisions)
             raise ValueError(f"agent arguments collide with REPL bindings: {joined}")
-        for name in self._argument_names - args.keys():
-            self.namespace.pop(name, None)
         self.namespace.update(tools)
         self.namespace.update(args)
         self.args = dict(args)
-        self._argument_names = set(args)
+        self._seeded = True
 
     def inject(self, name: str, value: Any) -> None:
         self.namespace[name] = value
@@ -362,6 +363,10 @@ class ToolMetadata:
     #: ``(flow, node) -> bool``. ``None`` means always visible. Evaluated for
     #: both the prompt and the REPL binding.
     when: Callable[..., bool] | None = None
+    #: Save this host tool's results, keyed by its JSON arguments (``@tool(cache=True)``).
+    cache: bool = False
+    #: Built-in tools only. ``(*args, **kwargs) -> str``: the key a call is saved under.
+    key: Callable[..., str] | None = None
     #: Built-in tools only. ``(entry, *args, **kwargs) -> value``: what a saved call
     #: returns instead of running; by default the entry's ``value``.
     restore: Callable[..., Any] | None = None

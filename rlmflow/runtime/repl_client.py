@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import inspect
+import logging
 import threading
 import uuid
 from collections.abc import Callable
@@ -18,6 +19,7 @@ from rlmflow.graph import calls
 from rlmflow.graph.nodes import (
     Node,
     Step,
+    _replaying,
     current_code,
     current_step,
     replaying,
@@ -51,11 +53,12 @@ from rlmflow.utils import encode_host_value
 
 _NO_ANSWER = object()
 
+logger = logging.getLogger("rlmflow")
+
 
 def invoke_tool_call(
     fn: Callable[..., object],
     action: Node | None,
-    call_id: int,
     args: tuple[object, ...],
     kwargs: dict[str, object],
     *,
@@ -63,29 +66,42 @@ def invoke_tool_call(
 ) -> object:
     """Run one host tool call from the cell ``action``, or return what it saved.
 
-    ``call_id`` counts calls to ``name`` (the binding the code called) within the
-    cell, so the n-th call gets the n-th saved result. A call with nothing saved
-    runs, and its JSON result is saved on the cell.
+    Built-in tools and ``@tool(cache=True)`` tools are saved on the cell, keyed by
+    the call; a call that matches a saved one returns its result instead of
+    running. Other tools always run.
     """
     metadata = get_tool_metadata(fn)
     if name is None:
         name = metadata.name if metadata is not None else getattr(fn, "__name__", "tool")
-    entry = calls.saved(action, name, call_id) if action is not None else None
+    keyer = metadata.key if metadata is not None else None
+    if action is None or (keyer is None and not (metadata is not None and metadata.cache)):
+        return fn(*args, **kwargs)
+    call_key = (
+        keyer(*args, **kwargs)
+        if keyer is not None
+        else calls.key(name, encode_agent_references(list(args)), encode_agent_references(kwargs))
+    )
+    entry = calls.claim(action, name, call_key)
     if entry is not None:
         restore = metadata.restore if metadata is not None else None
         return (
             restore(deepcopy(entry), *args, **kwargs) if restore else deepcopy(entry.get("value"))
         )
+    if _replaying.get():
+        logger.warning(
+            "replay diverged: agent %s cell %s made a %s call it didn't make before",
+            action.agent_id,
+            action.id,
+            name,
+        )
     value = fn(*args, **kwargs)
 
     def save(result: object) -> object:
-        if action is None:
-            return result
         receipt = metadata.receipt if metadata is not None else None
         if receipt is not None:
-            calls.record(action, name, call_id, **receipt(result, *args, **kwargs))
+            calls.record(action, name, call_key, **receipt(result, *args, **kwargs))
         else:
-            calls.record(action, name, call_id, value=encode_agent_references(result))
+            calls.record(action, name, call_key, value=encode_agent_references(result))
         return result
 
     if bool(metadata and metadata.is_async) and inspect.isawaitable(value):
@@ -261,7 +277,6 @@ class WorkerSession:
                 value = invoke_tool_call(
                     fn,
                     state.code,
-                    message.call_id,
                     tuple(message.args),
                     dict(message.kwargs),
                     name=message.proxy,
@@ -312,9 +327,11 @@ class WorkerSession:
             "run_id": run_id,
             "tenant_id": tenant.tenant_id,
             "step_id": state.code.id if state.code is not None else run_id,
-            "args": dict(tenant.args),
             "env": dict(tenant.env),
         }
+        if not tenant.args_sent:
+            binding["args"] = dict(tenant.args or {})
+            tenant.args_sent = True
         agents = tenant.namespace.get(AGENTS_BINDING)
         if agents is not None:
             binding["agents"] = agents
@@ -370,7 +387,9 @@ class WorkerRepl(Repl):
         self.tenant_id = tenant_id or uuid.uuid4().hex
         self.namespace: dict[str, Any] = {}
         self.env: dict[str, Any] = {}
-        self.args: dict[str, Any] = {}
+        #: Arguments to bind in the worker, until its first run sends them.
+        self.args: dict[str, Any] | None = None
+        self.args_sent = False
         self.proxied: dict[str, Callable[..., object]] = {}
         self.closed = False
         self._run_lock = threading.Lock()
@@ -378,7 +397,8 @@ class WorkerRepl(Repl):
 
     def seed(self, tools: dict[str, Callable[..., object]], args: dict[str, Any]) -> None:
         self.namespace = dict(tools)
-        self.args = dict(args)
+        if self.args is None:
+            self.args = dict(args)
         for name, value in tools.items():
             if name not in {"ENV", "AGENTS", AGENTS_BINDING}:
                 self.inject(name, value)
