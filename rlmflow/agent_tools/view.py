@@ -12,7 +12,7 @@ from rlmflow.runtime.repl import AGENT_REF_KEY, AgentReference
 
 if TYPE_CHECKING:
     from rlmflow.graph.graph import Graph
-    from rlmflow.graph.nodes import Agent
+    from rlmflow.graph.nodes import Node
 
 AgentStatus = Literal["done", "idle", "running"]
 
@@ -25,7 +25,7 @@ def _json_safe(value: object) -> object:
 
 
 def _snapshot() -> AgentDirectory | None:
-    """The ``AGENTS`` snapshot of the running cell, if any."""
+    """The ``AGENTS`` snapshot of the running node, if any."""
     from rlmflow.runtime.repl import current_binding
 
     try:
@@ -51,7 +51,7 @@ class AgentHandle(AgentReference):
     ``await agent`` waits for the result of an agent you launched, and
     ``agent.send(message)`` messages any agent. Everything else (``status``,
     ``result()``, ``children``, ...) reads the ``AGENTS`` snapshot taken when
-    the cell started, so it doesn't change inside a cell; only ``await`` waits.
+    the code started, so it doesn't change while it runs; only ``await`` waits.
     """
 
     agent_id: str
@@ -106,7 +106,7 @@ class AgentHandle(AgentReference):
         return self.status == "done"
 
     def result(self) -> object | None:
-        """The result, or raise if the agent hadn't finished when the cell started."""
+        """The result, or raise if the agent hadn't finished when the code started."""
         record = self._record()
         if record is None or record.status != "done":
             raise asyncio.InvalidStateError(f"agent {self.path!r} is not done")
@@ -116,12 +116,13 @@ class AgentHandle(AgentReference):
         """Wait for the result of an agent you launched: ``await agent``."""
         return _binding("wait_agent", "awaiting agents")(self.agent_id).__await__()
 
-    def send(self, message: str) -> AgentHandle:
-        """Queue ``message`` for this agent, reopening it if it finished, and return it.
+    def send(self, message: str, **inputs: object) -> AgentHandle:
+        """Message this agent, reopening it if it finished, and return it.
 
-        ``await agent.send(...)`` also waits for its next result, for agents you launched.
+        Keyword arguments become variables in its REPL. ``await agent.send(...)``
+        also waits for its next result, for agents you launched.
         """
-        return _binding("send_agent", "messaging agents")(self.agent_id, message)
+        return _binding("send_agent", "messaging agents")(self.agent_id, message, **inputs)
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +153,7 @@ class AgentEdge:
 
 @dataclass(frozen=True, slots=True)
 class AgentDirectory:
-    """``AGENTS``: every agent in the run, as of when the cell started."""
+    """``AGENTS``: every agent in the run, as of when the code started."""
 
     viewer_id: str
     records: tuple[AgentRecord, ...]
@@ -189,7 +190,7 @@ class AgentDirectory:
 
     @property
     def self(self) -> AgentHandle:
-        """The agent running this cell."""
+        """The agent running this code."""
         return self._handle(self._by_id[self.viewer_id])
 
     @property
@@ -257,7 +258,7 @@ class AgentDirectory:
         print(self.render_graph(show_results=show_results, max_result_chars=max_result_chars))
 
 
-def build_agent_directory(graph: Graph, viewer: Agent) -> AgentDirectory:
+def build_agent_directory(graph: Graph, viewer: Node) -> AgentDirectory:
     """Snapshot every agent in ``graph`` as seen by ``viewer``."""
     records = []
     for agent in graph.agents():
@@ -266,10 +267,10 @@ def build_agent_directory(graph: Graph, viewer: Agent) -> AgentDirectory:
         records.append(
             AgentRecord(
                 agent_id=agent.id,
-                name=agent.name,
-                config=agent.config_name or "root",
+                name=agent.root_data.name,
+                config=agent.root_data.config_name or "root",
                 path=graph.path(agent),
-                task=agent.task,
+                task=agent.root_data.task,
                 parent_id=parent.id if parent is not None else None,
                 child_ids=tuple(child.id for child in graph.children(agent)),
                 status=status,  # type: ignore[arg-type]
@@ -279,16 +280,16 @@ def build_agent_directory(graph: Graph, viewer: Agent) -> AgentDirectory:
     links = tuple(
         AgentEdge(edge.id, edge.kind, edge.source, edge.target, _json_safe(dict(edge.data)))  # type: ignore[arg-type]
         for edge in graph.edges()
-        if not edge.structural and edge.source in graph._agents and edge.target in graph._agents
+        if not edge.structural and edge.source in graph._roots and edge.target in graph._roots
     )
     return AgentDirectory(viewer_id=viewer.id, records=tuple(records), links=links)
 
 
-def resolve_agent(g: Graph, selector: object) -> Agent:
-    """An agent by handle, id, path, or unique name."""
-    from rlmflow.graph.nodes import Agent
+def resolve_agent(g: Graph, selector: object) -> Node:
+    """An agent by root node, handle, id, path, or unique name."""
+    from rlmflow.graph.nodes import Node
 
-    if isinstance(selector, Agent):
+    if isinstance(selector, Node):
         return g.agent(selector.id)
     if isinstance(selector, AgentReference):
         selector = selector.agent_id
@@ -296,11 +297,11 @@ def resolve_agent(g: Graph, selector: object) -> Agent:
         selector = selector[AGENT_REF_KEY]
     if not isinstance(selector, str):
         raise TypeError("agent selector must be an agent or a string")
-    if selector in g._agents:
-        return g._agents[selector]
+    if selector in g._roots:
+        return g._roots[selector]
     agents = g.agents()
     matches = [a for a in agents if g.path(a) == selector] or [
-        a for a in agents if a.name == selector
+        a for a in agents if a.root_data.name == selector
     ]
     if len(matches) == 1:
         return matches[0]
@@ -309,8 +310,8 @@ def resolve_agent(g: Graph, selector: object) -> Agent:
     raise KeyError(f"unknown agent {selector!r}")
 
 
-def agent_handle(g: Graph, agent: Agent) -> AgentHandle:
-    return AgentHandle(agent_id=agent.id, name=agent.name, path=g.path(agent))
+def agent_handle(g: Graph, agent: Node) -> AgentHandle:
+    return AgentHandle(agent_id=agent.id, name=agent.root_data.name, path=g.path(agent))
 
 
 __all__ = [

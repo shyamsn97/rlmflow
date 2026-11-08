@@ -48,7 +48,6 @@ class RunRequest(BaseRequest):
     cmd: Literal["run"] = "run"
     code: str
     binding: str
-    restoring: bool = False
 
 
 class InjectRequest(BaseRequest):
@@ -104,7 +103,6 @@ class ProxyCall(WireModel):
     run_id: str
     tenant_id: str
     proxy: str
-    restoring: bool = False
     args: list[JsonValue]
     kwargs: dict[str, JsonValue]
 
@@ -119,7 +117,7 @@ class ProxyResponse(WireModel):
 
 
 def host_error(text: str, kind: str | None) -> Exception:
-    """The exception a failed host tool raises in the cell: its own type when the worker has it."""
+    """The exception a failed host tool raises in the REPL: its own type when the worker has it."""
     cls = NotYourAgent if kind == "NotYourAgent" else getattr(builtins, kind or "", None)
     if isinstance(cls, type) and issubclass(cls, Exception):
         try:
@@ -238,7 +236,6 @@ class ReplServer:
                     run_id=binding["run_id"],
                     tenant_id=binding["tenant_id"],
                     proxy=name,
-                    restoring=bool(binding.get("restoring")),
                     args=cast(list[object], encode_agent_references(list(args))),
                     kwargs=cast(
                         dict[str, object],
@@ -334,8 +331,6 @@ class ReplServer:
     def _run(self, message: RunRequest) -> None:
         tenant = self._tenant(message.tenant_id)
         binding = decode_host_value(message.binding)
-        binding["restoring"] = message.restoring
-        tenant.seed({}, binding.pop("args", {}))
         tenant.env = binding["env"]
         for source, target in ((AGENT_WAIT_TOOL, "wait_agent"), (AGENT_SEND_TOOL, "send_agent")):
             tool = tenant.namespace.get(source)

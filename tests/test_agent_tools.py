@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from helpers import ScriptedFlow, trailing_user_text
+from helpers import ScriptedFlow, code_nodes, own, trailing_user_text, turns
 from helpers import repl as block
 
-from rlmflow import CODE, DONE, LLM, MESSAGE, RETURN, Agent, AgentConfig, Graph, Step
+from rlmflow import RETURN, WRITE, AgentConfig, Graph, Node, Step
 from rlmflow.agent_tools import tools as agent_tools
 from rlmflow.graph import calls
 
@@ -31,7 +31,7 @@ def agent(flow, g, task, name, **config):
     record = g.add_agent(
         task, name=name, config=flow.add_config(AgentConfig(name=name, **config)).name
     )
-    record.bind_config(flow.config(name))
+    record.root_data.bind_config(flow.config(name))
     return record
 
 
@@ -56,16 +56,16 @@ def test_a_sibling_messages_a_finished_peer_and_reopens_it():
     ScriptedFlow(llm).run(g)
 
     assert g.result(root) == "sent"
-    a, b = (next(c for c in g.children(root) if c.name == name) for name in "ab")
+    a, b = (next(c for c in g.children(root) if c.root_data.name == name) for name in "ab")
     assert g.parent(a) is g.parent(b) is root
     assert g.result(a) == "sent" and g.result(b) == "b heard"
-    assert [n.type for n in b.nodes] == [LLM, CODE, DONE, MESSAGE, LLM, CODE, DONE]
-    message = b.nodes[3]
-    assert message.data["text"] == "hello from a" and message.data["sender"] == a.id
-    assert b.nodes[2].data["result"] == "b idle"
-    [edge] = g.edges(kind=MESSAGE, target=message.id)
-    sending_cell = g.node(edge.source)
-    assert g.owner(sending_cell) is a and "AGENTS['b'].send" in sending_cell.data["code"]
+    first, message, second = own(b)
+    assert first.data["terminal"] and first.result == "b idle"
+    assert message.role == "user" and message.text == "From root.a: hello from a"
+    assert message.producer == a.id and second.data["terminal"]
+    [edge] = g.edges(kind=WRITE, target=message.id)
+    sending_code = g.node(edge.source)
+    assert g.owner(sending_code) is a and "AGENTS['b'].send" in sending_code.code
 
 
 def test_awaiting_send_to_a_descendant_returns_its_reply():
@@ -86,14 +86,14 @@ def test_awaiting_send_to_a_descendant_returns_its_reply():
 
     assert g.result(a) == "pong"
     [b] = g.children(a)
-    assert [n.type for n in b.nodes] == [LLM, CODE, DONE, MESSAGE, LLM, CODE, DONE]
-    [cell] = g.nodes(CODE, agent=a.id)
-    saved = cell.data["calls"]
-    assert [e["agent"] for e in saved if e["tool"] == calls.SEND] == [b.id]
-    assert [e["agent"] for e in saved if e["tool"] == calls.AWAIT] == [b.id, b.id]
-    assert b.nodes[-1].id in {e.source for e in g.edges(kind=RETURN, target=cell.id)}
-    [edge] = g.edges(kind=MESSAGE, target=b.nodes[3].id)
-    assert edge.source == cell.id
+    ready, message, pong = own(b)
+    assert ready.result == "ready" and message.role == "user" and pong.result == "pong"
+    [code_node] = code_nodes(g, a)
+    assert [e["agent"] for e in code_node.calls if e["tool"] == calls.SEND] == [b.id]
+    assert [e["agent"] for e in code_node.calls if e["tool"] == calls.AWAIT] == [b.id, b.id]
+    assert pong.id in {e.source for e in g.edges(kind=RETURN, target=code_node.id)}
+    [edge] = g.edges(kind=WRITE, target=message.id)
+    assert edge.source == code_node.id
 
 
 def test_a_rebuilt_repl_gives_each_await_the_result_it_first_returned():
@@ -115,11 +115,11 @@ def test_a_rebuilt_repl_gives_each_await_the_result_it_first_returned():
     g = Graph()
     a = g.add_agent("be a")
     ScriptedFlow(llm).run(g)
-    cell = next(n for n in a.nodes if n.type == CODE)
-    assert cell.data["output"].strip() == "got ready pong"
+    code_node = code_nodes(g, a)[0]
+    assert code_node.output.strip() == "got ready pong"
     [b] = g.children(a)
-    assert {e.source for e in g.edges(kind=RETURN, target=cell.id)} == {
-        n.id for n in b.nodes if n.type == DONE
+    assert {e.source for e in g.edges(kind=RETURN, target=code_node.id)} == {
+        n.id for n in turns(g, b)
     }
 
     g.send(a, "again")
@@ -191,11 +191,11 @@ def test_awaiting_an_agent_that_is_not_a_descendant_raises_not_your_agent():
 
     assert g.result(root) == "refused"
     (child,) = g.children(root)
-    failed = next(n for n in child.nodes if n.type == CODE)
-    assert failed.data["error"] and "NotYourAgent" in failed.data["output"]
+    failed = code_nodes(g, child)[0]
+    assert failed.error and "NotYourAgent" in failed.output
 
 
-def test_a_fresh_flow_rebuilds_the_repl_from_recorded_cells(tmp_path):
+def test_a_fresh_flow_rebuilds_the_repl_from_recorded_code_nodes(tmp_path):
     llm = Scripted(
         [
             ("again", block("submit(x + 1)")),
@@ -224,6 +224,7 @@ def test_rebuilt_agent_tools_write_nothing():
             ("be a", block("h = launch_agent('child')\nAGENTS['b'].send('hello')\nprint('wrote')")),
             ("child", block("submit('kid')")),
             ("wrote", block("submit(await h)")),
+            ("(no output)", block("submit('heard')")),
         ]
     )
     g = Graph()
@@ -244,10 +245,13 @@ def test_rebuilt_agent_tools_write_nothing():
     assert g.result(a) == 1
     assert len(g.agents()) == agents_before
     assert len(g.edges()) == edges_before
-    assert sum(node.data.get("text") == "hello" for node in g.nodes()) == 1
+    assert sum(node.text.endswith(": hello") for node in g.nodes()) == 1
     new = [node for node in g.nodes() if node.id not in nodes_before]
-    assert [n.type for n in new] == [LLM, CODE, LLM, CODE, DONE]
-    assert all(g.owner(n) is a for n in new)
+    assert [(n.role, n.code) for n in new] == [
+        ("assistant", "print(h.name)"),
+        ("assistant", "submit(1)"),
+    ]
+    assert all(g.owner(n) is a for n in new) and new[-1].data["terminal"]
 
 
 def test_unknown_agents_are_a_key_error():
@@ -280,13 +284,13 @@ def test_launch_agent_takes_a_config_name_from_the_flow():
 
     assert g.result(root) == "small"
     [child] = g.children(root)
-    assert (child.name, child.config.name) == ("cheap-0", "cheap")
+    assert (child.root_data.name, child.root_data.config.name) == ("cheap-0", "cheap")
 
 
 # -- the agent_tools functions, called directly ----------------------------------
 
 
-def stepping_at(g: Graph, record: Agent) -> Step:
+def stepping_at(g: Graph, record: Node) -> Step:
     return Step.latest(g, record)
 
 

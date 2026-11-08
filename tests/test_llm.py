@@ -1,4 +1,4 @@
-"""LLM clients, streaming adapters, and pooled chat calls."""
+"""LLM clients, streaming adapters, and ``complete``."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ import threading
 from types import SimpleNamespace
 
 import pytest
-from helpers import ScriptedFlow, StubLLM
+from helpers import ScriptedFlow, StubLLM, turns
 
-from rlmflow import Graph, LLMChunk, LLMUsage, PooledLLMClient, SequentialPool, ThreadPool
-from rlmflow.llm import LLMClient, as_chunk, join_chunks, stream_with_retry
+from rlmflow import Graph, LLMChunk, LLMUsage
+from rlmflow.llm import LLMClient, as_chunk, complete, join_chunks, stream_with_retry
 from rlmflow.llm.anthropic import AnthropicClient
 from rlmflow.llm.openai import OpenAIClient
 
@@ -35,51 +35,53 @@ def test_default_stream_is_one_chunk_from_chat():
     assert chunks[-1].usage == LLMUsage(2, 3)
 
 
-def test_pooled_client_is_a_callable_chat_primitive():
+def test_complete_awaits_async_clients_with_kwargs_and_timeout():
     seen = {}
 
     class Client:
-        last_usage = LLMUsage(4, 5)
-
-        async def chat(self, messages, *, marker, timeout):
-            seen.update(messages=messages, marker=marker, timeout=timeout)
-            return "pooled"
+        async def completion(self, messages, *, marker):
+            seen.update(messages=messages, marker=marker)
+            return "async", LLMUsage(4, 5)
 
     messages = [{"role": "user", "content": "hi"}]
-    client = PooledLLMClient(
-        Client(),
-        SequentialPool(),
-        timeout=2,
-        request_kwargs={"marker": "sample"},
+
+    assert asyncio.run(complete(Client(), messages, timeout=2, marker="sample")) == (
+        "async",
+        LLMUsage(4, 5),
     )
-
-    assert asyncio.run(client(messages)) == ("pooled", LLMUsage(4, 5))
-    assert seen == {
-        "messages": messages,
-        "marker": "sample",
-        "timeout": 2,
-    }
+    assert seen == {"messages": messages, "marker": "sample"}
 
 
-def test_pooled_client_streams_sync_iterators_from_a_worker():
+def test_complete_runs_blocking_clients_on_a_thread():
     main_thread = threading.get_ident()
-    stream_threads = []
+    chat_threads = []
 
     class Client:
-        def stream(self, _messages):
-            stream_threads.append(threading.get_ident())
-            yield LLMChunk(text="a")
-            yield LLMChunk(text="b", usage=LLMUsage(1, 2))
+        last_usage = LLMUsage(1, 2)
 
-    async def collect():
-        client = PooledLLMClient(Client(), ThreadPool(workers=1))
-        return [chunk async for chunk in client.stream([])]
+        def chat(self, _messages):
+            chat_threads.append(threading.get_ident())
+            return "ab"
 
-    chunks = asyncio.run(collect())
+    assert asyncio.run(complete(Client(), [])) == ("ab", LLMUsage(1, 2))
+    assert chat_threads != [main_thread]
 
-    assert [chunk.text for chunk in chunks] == ["a", "b"]
-    assert chunks[-1].usage == LLMUsage(1, 2)
-    assert stream_threads != [main_thread]
+
+def test_complete_awaits_an_async_chat():
+    class Client:
+        async def chat(self, _messages):
+            return "awaited"
+
+    assert asyncio.run(complete(Client(), [])) == ("awaited", LLMUsage())
+
+
+def test_complete_times_out_a_hung_client():
+    class Hung:
+        async def completion(self, _messages):
+            await asyncio.sleep(10)
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(complete(Hung(), [], timeout=0.01))
 
 
 def test_join_matches_stream_chunks():
@@ -326,15 +328,15 @@ def test_anthropic_stream_forwards_sampling_kwargs():
     assert sent["stop_sequences"] == ["END"]
 
 
-def test_flow_consumes_the_pooled_stream_primitive():
-    class StreamLLM:
+def test_flow_consumes_a_clients_stream():
+    class StreamLLM(LLMClient):
         def __init__(self):
             self.chat_calls = 0
 
-        async def stream(self, messages, **_kwargs):
+        def stream(self, messages, *args, **kwargs):
             yield LLMChunk(text='```repl\nsubmit("ok")\n```', usage=LLMUsage(2, 2))
 
-        def chat(self, messages, **_kwargs):
+        def chat(self, messages, *args, **kwargs):
             self.chat_calls += 1
             raise AssertionError("chat must not run when stream is available")
 
@@ -345,8 +347,8 @@ def test_flow_consumes_the_pooled_stream_primitive():
     flow.run(g)
     assert g.result(root) == "ok"
     assert llm.chat_calls == 0
-    [output] = g.nodes("llm")
-    assert LLMUsage.of(output.data["usage"]) == LLMUsage(2, 2)
+    [turn] = turns(g, root)
+    assert LLMUsage.of(turn.data["usage"]) == LLMUsage(2, 2)
 
 
 def test_chat_only_fake_still_runs():
@@ -354,13 +356,12 @@ def test_chat_only_fake_still_runs():
     assert ScriptedFlow(llm).run("go") == "ok"
 
 
-def test_hung_async_stream_hits_request_timeout():
+def test_hung_client_hits_request_timeout():
     class Hung:
         request_timeout = 0.01
 
-        async def stream(self, messages, **_kwargs):
+        async def completion(self, messages, **_kwargs):
             await asyncio.sleep(10)
-            yield LLMChunk(text="nope")
 
     with pytest.raises(TimeoutError):
         ScriptedFlow(Hung()).run("hang")

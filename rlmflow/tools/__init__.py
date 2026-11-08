@@ -1,6 +1,6 @@
-"""REPL tools: the ``@tool`` decorator, its prompt docs, and the namespace each cell runs in.
+"""REPL tools: the ``@tool`` decorator, its prompt docs, and the namespace code runs in.
 
-The namespace is the same for every harness, since every cell runs in our REPL:
+The namespace is the same for every harness, since all code runs in our REPL:
 ``submit``, ``launch_agent``, ``llm_query``, ``AGENTS`` (with ``await agent``
 and ``agent.send``), ``Input``, plus the host's own tools.
 """
@@ -33,7 +33,7 @@ from rlmflow.graph.config import (
     validate_argument_name,
     visit_argument,
 )
-from rlmflow.graph.nodes import DONE, Node, Step, current_code, record_metadata
+from rlmflow.graph.nodes import RETURN, Node, Step, current_step, record_metadata
 from rlmflow.runtime.repl import (
     AGENT_REF_KEY,
     AGENT_SEND_TOOL,
@@ -74,7 +74,7 @@ def tool(
     left out of the prompt and the REPL.
 
     ``cache=True`` declares a host tool's arguments and result JSON: each call is
-    saved on the cell that made it, keyed by its arguments, so running the cell
+    saved on the node that made it, keyed by its arguments, so running the node
     again (after an edit, or to rebuild its REPL) returns the saved result for
     the same call instead of calling the tool twice. Other tools always run.
     """
@@ -412,40 +412,46 @@ def await_tool(flow: Flow, step: Step):
     """``await agent``: wait for an agent this one launched, and save which one it was."""
     g = step.graph
 
-    def returned(done: Node) -> Any:
-        """The result of ``done``, with the ``return`` edge to the cell that got it."""
-        cell = current_code()
-        if cell is not None and cell.id in g:
-            g.link_return(done, cell)
-        return done.data.get("result")
+    def returned(final: Node) -> Any:
+        """The result of ``final``, with the ``return`` edge to the node that got it."""
+        running = current_step()
+        node = running.node if running is not None else None
+        if (
+            node is not None
+            and node.id in g
+            and not g.edges(kind=RETURN, source=final.id, target=node.id)
+        ):
+            g.link(RETURN, final, node)
+        return final.result
 
     async def result_of(agent_id: str, *, check: bool) -> Any:
         target = resolve_agent(g, agent_id)
         if check and step.agent not in g.lineage(target)[:-1]:
+            name = target.root_data.name
             raise NotYourAgent(
-                f"you can only await agents you launched; {target.name!r} is not one. "
-                f"Message it with AGENTS[{target.name!r}].send(...) and end your turn "
+                f"you can only await agents you launched; {name!r} is not one. "
+                f"Message it with AGENTS[{name!r}].send(...) and end your turn "
                 "to read its reply."
             )
         if g.status(target) != "done":
-            if flow.queue is None:
+            if flow._graph is None:
                 raise RuntimeError("awaiting an agent requires a running Flow")
-            await flow.queue.join(lambda: target.id not in g or g.status(target) == "done")
+            await flow.wait_for(lambda: target.id not in g or g.status(target) == "done")
             if target.id not in g:
-                raise RuntimeError(f"agent {target.name!r} was removed")
-        return returned(g.history(target)[-1])
+                raise RuntimeError(f"agent {target.root_data.name!r} was removed")
+        return returned(g.last_turn(target))
 
     def restore(entry: dict[str, Any], agent_id: str) -> Any:
         if "value" in entry:
             return entry["value"]
-        done = g._nodes.get(entry.get("done", ""))
-        if done is not None and done.type == DONE:
-            return returned(done)
+        final = g._nodes.get(entry.get("done", ""))
+        if final is not None and final.data.get("terminal"):
+            return returned(final)
         return result_of(entry.get("agent") or agent_id, check=False)
 
     def receipt(_result: Any, agent_id: str) -> dict[str, str]:
         target = resolve_agent(g, agent_id)
-        return {"agent": target.id, "done": g.history(target)[-1].id}
+        return {"agent": target.id, "done": g.last_turn(target).id}
 
     @tool("Wait for an agent you launched and return its result.")
     async def wait_agent(agent_id: str) -> Any:
@@ -487,8 +493,8 @@ async def query(
     )
     reply, usage = await flow.complete([{"role": "user", "content": text}], model, **sampling)
     value = reply if normalized is None else schemas.parse(reply, normalized)
-    code = current_code()
-    if code is not None:
+    running = current_step()
+    if running is not None:
         record_metadata(
             "llm_query.calls",
             {
@@ -498,13 +504,12 @@ async def query(
                 "usage": usage.as_dict(),
             },
             append=True,
-            node=code,
         )
     return value
 
 
 def llm_query_tool(flow: Flow, step: Step):
-    default_model = step.agent.config.model
+    default_model = step.config.model
     description = (
         "Make one model completion for extraction, summarization, or Q&A over the "
         "text you pass. The call sees no REPL, history, or tools, so use it for a "
@@ -559,16 +564,17 @@ def send_tool(flow: Flow, step: Step):
     g = step.graph
 
     @tool(
-        "Queue a message for another agent and return that agent immediately. The "
-        "message reaches it at its next turn and reopens it if it finished.",
+        "Message another agent and return that agent immediately. Keyword arguments "
+        "become variables in its REPL. It reads the message at its next turn, which "
+        "reopens it if it finished.",
         is_async=False,
     )
-    def send_agent(target: Any, message: str) -> AgentHandle:
+    def send_agent(target: Any, message: str, **inputs: Any) -> AgentHandle:
         def send() -> tuple[AgentHandle, str]:
             agent = resolve_agent(g, target)
             if agent.id == step.agent.id:
                 raise ValueError("an agent cannot message itself")
-            node = agent_tools.send(flow, step, agent, message)
+            node = agent_tools.send(flow, step, agent, message, **inputs)
             return agent_handle(g, agent), node.id
 
         handle, message_id = _on_flow_loop(flow, send)
@@ -578,8 +584,8 @@ def send_tool(flow: Flow, step: Step):
     #: The message each returned handle's send landed, until its call is saved.
     sent: dict[int, str] = {}
 
-    def key(target: Any, message: Any) -> str:
-        return calls.key(calls.SEND, _agent_id(g, target), message)
+    def key(target: Any, message: Any, **inputs: Any) -> str:
+        return calls.key(calls.SEND, _agent_id(g, target), message, inputs)
 
     def receipt(handle: AgentHandle, *_args: Any, **_kwargs: Any) -> dict[str, str]:
         return {"agent": handle.agent_id, "message": sent.pop(id(handle), "")}
@@ -598,7 +604,7 @@ def repl_tools(flow: Flow, step: Step) -> dict[str, Any]:
 
 
 def build_namespace(flow: Flow, step: Step) -> dict[str, Any]:
-    """Everything a cell's namespace binds: the tools plus ``AGENTS`` and ``Input``."""
+    """Everything the REPL namespace binds: the tools plus ``AGENTS`` and ``Input``."""
     agents = build_agent_directory(step.graph, step.agent)
     return {
         **repl_tools(flow, step),

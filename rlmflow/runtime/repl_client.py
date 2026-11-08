@@ -9,23 +9,13 @@ import logging
 import threading
 import uuid
 from collections.abc import Callable
-from contextlib import nullcontext
 from contextvars import Context
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from rlmflow.graph import calls
-from rlmflow.graph.nodes import (
-    Node,
-    Step,
-    _replaying,
-    current_code,
-    current_step,
-    replaying,
-    running_cell,
-    running_step,
-)
+from rlmflow.graph.nodes import Step, current_step, running_step
 from rlmflow.runtime.repl import (
     AGENTS_BINDING,
     DoneSignal,
@@ -48,7 +38,6 @@ from rlmflow.runtime.repl_server import (
     RunRequest,
     WireModel,
 )
-from rlmflow.runtime.runtime import RLMFLOW_REPLAY
 from rlmflow.utils import encode_host_value
 
 _NO_ANSWER = object()
@@ -58,15 +47,15 @@ logger = logging.getLogger("rlmflow")
 
 def invoke_tool_call(
     fn: Callable[..., object],
-    action: Node | None,
+    step: Step | None,
     args: tuple[object, ...],
     kwargs: dict[str, object],
     *,
     name: str | None = None,
 ) -> object:
-    """Run one host tool call from the cell ``action``, or return what it saved.
+    """Run one host tool call from the node ``step`` is running, or return what it saved.
 
-    Built-in tools and ``@tool(cache=True)`` tools are saved on the cell, keyed by
+    Built-in tools and ``@tool(cache=True)`` tools are saved on the node, keyed by
     the call; a call that matches a saved one returns its result instead of
     running. Other tools always run.
     """
@@ -74,24 +63,25 @@ def invoke_tool_call(
     if name is None:
         name = metadata.name if metadata is not None else getattr(fn, "__name__", "tool")
     keyer = metadata.key if metadata is not None else None
-    if action is None or (keyer is None and not (metadata is not None and metadata.cache)):
+    log = step.calls if step is not None else None
+    if log is None or (keyer is None and not (metadata is not None and metadata.cache)):
         return fn(*args, **kwargs)
     call_key = (
         keyer(*args, **kwargs)
         if keyer is not None
         else calls.key(name, encode_agent_references(list(args)), encode_agent_references(kwargs))
     )
-    entry = calls.claim(action, name, call_key)
+    entry = log.claim(name, call_key)
     if entry is not None:
         restore = metadata.restore if metadata is not None else None
         return (
             restore(deepcopy(entry), *args, **kwargs) if restore else deepcopy(entry.get("value"))
         )
-    if _replaying.get():
+    if step.replaying:
         logger.warning(
-            "replay diverged: agent %s cell %s made a %s call it didn't make before",
-            action.agent_id,
-            action.id,
+            "replay diverged: agent %s node %s made a %s call it didn't make before",
+            step.agent.id,
+            step.node.id,
             name,
         )
     value = fn(*args, **kwargs)
@@ -99,17 +89,15 @@ def invoke_tool_call(
     def save(result: object) -> object:
         receipt = metadata.receipt if metadata is not None else None
         if receipt is not None:
-            calls.record(action, name, call_key, **receipt(result, *args, **kwargs))
+            log.record(name, call_key, **receipt(result, *args, **kwargs))
         else:
-            calls.record(action, name, call_key, value=encode_agent_references(result))
+            log.record(name, call_key, value=encode_agent_references(result))
         return result
 
     if bool(metadata and metadata.is_async) and inspect.isawaitable(value):
-        step = current_step()
 
         async def wait_and_save() -> object:
-            context = running_step(step) if step is not None else nullcontext()
-            with context, running_cell(action):
+            with running_step(step):
                 return save(await value)
 
         return wait_and_save()
@@ -137,7 +125,6 @@ class _RunState:
     tenant: WorkerRepl
     loop: asyncio.AbstractEventLoop
     step: Step | None
-    code: Node | None
     proxied: dict[str, Callable[..., object]]
     answer: Any = _NO_ANSWER
 
@@ -276,7 +263,7 @@ class WorkerSession:
                 fn = state.proxied[message.proxy]
                 value = invoke_tool_call(
                     fn,
-                    state.code,
+                    state.step,
                     tuple(message.args),
                     dict(message.kwargs),
                     name=message.proxy,
@@ -287,9 +274,8 @@ class WorkerSession:
                 return value
 
             def in_step() -> Any:
-                with running_step(state.step), running_cell(state.code):
-                    with replaying(message.restoring):
-                        return invoke()
+                with running_step(state.step):
+                    return invoke()
 
             value = Context().run(in_step)
         except DoneSignal as signal:
@@ -326,12 +312,9 @@ class WorkerSession:
         binding: dict[str, Any] = {
             "run_id": run_id,
             "tenant_id": tenant.tenant_id,
-            "step_id": state.code.id if state.code is not None else run_id,
+            "step_id": state.step.node.id if state.step is not None else run_id,
             "env": dict(tenant.env),
         }
-        if not tenant.args_sent:
-            binding["args"] = dict(tenant.args or {})
-            tenant.args_sent = True
         agents = tenant.namespace.get(AGENTS_BINDING)
         if agents is not None:
             binding["agents"] = agents
@@ -341,7 +324,6 @@ class WorkerSession:
             tenant_id=tenant.tenant_id,
             code=code,
             binding=encode_host_value(binding),
-            restoring=tenant.env.get(RLMFLOW_REPLAY) == "1",
         )
         try:
             response = self.request(request, timeout=self.execution_timeout)
@@ -387,18 +369,13 @@ class WorkerRepl(Repl):
         self.tenant_id = tenant_id or uuid.uuid4().hex
         self.namespace: dict[str, Any] = {}
         self.env: dict[str, Any] = {}
-        #: Arguments to bind in the worker, until its first run sends them.
-        self.args: dict[str, Any] | None = None
-        self.args_sent = False
         self.proxied: dict[str, Callable[..., object]] = {}
         self.closed = False
         self._run_lock = threading.Lock()
         self.session.add_tenant(self)
 
-    def seed(self, tools: dict[str, Callable[..., object]], args: dict[str, Any]) -> None:
+    def seed(self, tools: dict[str, Callable[..., object]]) -> None:
         self.namespace = dict(tools)
-        if self.args is None:
-            self.args = dict(args)
         for name, value in tools.items():
             if name not in {"ENV", "AGENTS", AGENTS_BINDING}:
                 self.inject(name, value)
@@ -469,7 +446,6 @@ class WorkerRepl(Repl):
             tenant=self,
             loop=asyncio.get_running_loop(),
             step=current_step(),
-            code=current_code(),
             proxied=dict(self.proxied),
         )
         try:

@@ -45,7 +45,7 @@ class PiHarness(SessionHarness):
     Options = PiOptions
 
     async def run_turn(self, flow: Flow, step: Step, turn: Turn) -> TurnResult:
-        options, config = self.options(step), step.agent.config
+        options, config = self.options(step), step.config
         session = Session.for_step(step)
         path = self.session_file(step, session)
         argv = [options.command, "-p", await next_prompt(flow, step, session), "--mode", "json"]

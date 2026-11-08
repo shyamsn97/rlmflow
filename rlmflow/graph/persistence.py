@@ -1,4 +1,4 @@
-"""Save a graph as ``graph.json`` (its agents, nodes, edges and edits) plus argument blobs."""
+"""Save a graph as ``graph.json`` (its nodes and edges) plus blobs for large inputs."""
 
 from __future__ import annotations
 
@@ -11,50 +11,55 @@ from typing import Any
 
 from rlmflow.graph.config import RECURSE, transform_argument
 from rlmflow.graph.graph import Graph, GraphError
-from rlmflow.graph.nodes import NODE_TYPES, Agent, Edge, Node, strict_json
+from rlmflow.graph.nodes import DONE, READY, RUNNING, Edge, Node, RootData, strict_json
 
 #: Bumped on any incompatible change; older formats are not read.
-FORMAT_VERSION = 5
-ARG_BLOB_THRESHOLD_BYTES = 64 * 1024
-ARG_BLOB_REF_KEY = "$rlmflow_arg_blob"
+FORMAT_VERSION = 6
+BLOB_THRESHOLD_BYTES = 64 * 1024
+BLOB_REF_KEY = "$rlmflow_blob"
 
 
 def node_record(node: Node) -> dict[str, Any]:
+    what = f"node {node.id!r}"
     record: dict[str, Any] = {
         "id": node.id,
-        "type": node.type,
-        "agent": node.agent_id,
+        "owner": node.owner,
         "seq": node.seq,
+        "version": node.version,
+        "role": node.role,
+        "text": node.text,
+        "input": strict_json(node.input, f"{what} input"),
+        "code": node.code,
+        "state": node.state,
         "created_at": isoformat(node.created_at),
-        "data": strict_json(node.data, f"node {node.id!r} data"),
     }
+    if node.calls:
+        record["calls"] = strict_json(node.calls, f"{what} calls")
+    if node.output:
+        record["output"] = node.output
+    if node.result is not None:
+        record["result"] = strict_json(node.result, f"{what} result")
+    if node.error:
+        record["error"] = True
+    record["data"] = strict_json(node.data, f"{what} data")
     if node.metadata:
-        record["metadata"] = strict_json(node.metadata, f"node {node.id!r} metadata")
+        record["metadata"] = strict_json(node.metadata, f"{what} metadata")
     if node.started_at is not None and node.finished_at is not None:
         record["timing"] = {
             "started_at": isoformat(node.started_at),
             "finished_at": isoformat(node.finished_at),
             "duration_ms": round((node.finished_at - node.started_at) * 1000, 3),
         }
-    return record
-
-
-def agent_record(agent: Agent) -> dict[str, Any]:
-    record: dict[str, Any] = {
-        "id": agent.id,
-        "name": agent.name,
-        "task": agent.task,
-        "args": strict_json(agent.args, f"agent {agent.name!r} args"),
-        "config": agent.config_name,
-        "seq": agent.seq,
-        "created_at": isoformat(agent.created_at),
-        "nodes": [node.id for node in agent.nodes],
-        "inbox": [node.id for node in agent.inbox],
-    }
-    if agent.base is not None:
-        record["base"] = agent.base.id
-    if agent.metadata:
-        record["metadata"] = strict_json(agent.metadata, f"agent {agent.name!r} metadata")
+    root = node.root_data
+    if root is not None:
+        record["root"] = {
+            "name": root.name,
+            "task": root.task,
+            "config": root.config_name,
+            "arg_descriptions": dict(root.arg_descriptions),
+            "history": [item.id for item in root.history],
+            "metadata": strict_json(root.metadata, f"agent {root.name!r} metadata"),
+        }
     return record
 
 
@@ -71,58 +76,71 @@ def edge_record(edge: Edge) -> dict[str, Any]:
 
 def to_records(graph: Graph) -> dict[str, Any]:
     """The graph as one JSON document."""
-    with graph._lock:
-        return {
-            "format": FORMAT_VERSION,
-            "id": graph.id,
-            "agents": [agent_record(agent) for agent in graph.agents()],
-            "nodes": [node_record(node) for node in graph.nodes()],
-            "edges": [edge_record(edge) for edge in graph.edges()],
-            "edits": strict_json(graph.edits, "edits"),
-        }
+    return {
+        "format": FORMAT_VERSION,
+        "id": graph.id,
+        "nodes": [node_record(node) for node in graph.nodes()],
+        "edges": [edge_record(edge) for edge in graph.edges()],
+    }
 
 
 def from_records(document: dict[str, Any]) -> Graph:
-    """Rebuild a graph from ``to_records``."""
+    """Rebuild a graph from ``to_records``; a node that was running is ready to run again."""
     graph = Graph(_text(document.get("id"), "graph id"))
     nodes: dict[str, Node] = {}
     for raw in _list(document, "nodes"):
-        node = Node(_node_type(raw), **_dict(raw.get("data"), "node data"))
+        node = Node(str(raw.get("role") or "user"), str(raw.get("text") or ""))
         node.id = _text(raw.get("id"), "node id")
-        node.agent_id = _text(raw.get("agent"), f"node {node.id} agent")
+        node.owner = _text(raw.get("owner"), f"node {node.id} owner")
         node.seq = int(raw.get("seq", -1))
+        node.version = int(raw.get("version", 0))
+        node.input = _dict(raw.get("input"), "node input")
+        node.code = str(raw.get("code") or "pass")
+        node.calls = list(raw.get("calls") or [])
+        node.output = str(raw.get("output") or "")
+        node.result = raw.get("result")
+        node.error = bool(raw.get("error"))
+        state = raw.get("state", DONE)
+        if state not in (READY, RUNNING, DONE):
+            raise ValueError(f"node {node.id} has unknown state {state!r}")
+        node.state = READY if state == RUNNING else state
+        node.data = _dict(raw.get("data"), "node data")
+        node.data.setdefault("producer", "self" if node.role == "assistant" else "user")
         node.metadata = dict(raw.get("metadata") or {})
         node.created_at = _epoch(raw.get("created_at")) or node.created_at
         timing = raw.get("timing") or {}
         node.started_at = _epoch(timing.get("started_at"))
         node.finished_at = _epoch(timing.get("finished_at"))
-        nodes[node.id] = node
-    for raw in _list(document, "agents"):
-        agent = Agent(
-            str(raw.get("task") or ""),
-            name=_text(raw.get("name"), "agent name"),
-            args=_dict(raw.get("args"), "agent args"),
-            config=raw.get("config"),
-        )
-        agent.id = _text(raw.get("id"), "agent id")
-        agent.seq = int(raw.get("seq", -1))
-        agent.metadata = dict(raw.get("metadata") or {})
-        agent.created_at = _epoch(raw.get("created_at")) or agent.created_at
-        for key, target in (("nodes", agent.nodes), ("inbox", agent.inbox)):
-            for node_id in raw.get(key) or []:
-                node = nodes.get(node_id)
-                if node is None or node.agent_id != agent.id:
-                    raise GraphError(f"agent {agent.id!r} lists unknown node {node_id!r}")
-                target.append(node)
-        if raw.get("base"):
-            agent.base = nodes.get(raw["base"])
-            if agent.base is None:
-                raise GraphError(f"fork {agent.id!r} has unknown base {raw['base']!r}")
-            graph._forks[agent.base.id].append(agent.id)
-        graph._agents[agent.id] = agent
-    placed = {node.id for agent in graph._agents.values() for node in (*agent.nodes, *agent.inbox)}
+        if nodes.setdefault(node.id, node) is not node:
+            raise GraphError(f"node {node.id!r} appears twice")
+        if "root" in raw:
+            root = _dict(raw["root"], "root")
+            node.root_data = RootData(
+                _text(root.get("name"), "agent name"),
+                str(root.get("task") or ""),
+                config_name=root.get("config"),
+                arg_descriptions=_dict(root.get("arg_descriptions"), "argument descriptions"),
+            )
+            node.root_data.metadata = _dict(root.get("metadata"), "agent metadata")
+            node.root_data.history = list(root.get("history") or [])  # ids until resolved
+    placed: set[str] = set()
+    for node in sorted(nodes.values(), key=lambda n: n.seq):
+        if node.root_data is None:
+            continue
+        ids = node.root_data.history
+        if not ids or ids[0] != node.id:
+            raise GraphError(f"agent {node.id!r} history must start with its root")
+        history = []
+        for node_id in ids:
+            item = nodes.get(node_id)
+            if item is None or item.owner != node.id or node_id in placed:
+                raise GraphError(f"agent {node.id!r} lists node {node_id!r} it doesn't own")
+            placed.add(node_id)
+            history.append(item)
+        node.root_data.history = history
+        graph._roots[node.id] = node
     if placed != set(nodes):
-        raise GraphError("every node must be in exactly one agent's history or inbox")
+        raise GraphError("every node must be in exactly one agent's history")
     graph._nodes = {node.id: node for node in sorted(nodes.values(), key=lambda n: n.seq)}
     for raw in _list(document, "edges"):
         edge = Edge(
@@ -134,19 +152,17 @@ def from_records(document: dict[str, Any]) -> Graph:
             int(raw.get("seq", -1)),
         )
         for end in (edge.source, edge.target):
-            if end not in graph:
+            if end not in graph._nodes:
                 raise GraphError(f"edge {edge.id!r} points at missing {end!r}")
         graph._index(edge)
-    graph.edits = list(document.get("edits") or [])
     graph._seq = 1 + max(
-        [-1, *(a.seq for a in graph._agents.values()), *(n.seq for n in nodes.values())]
-        + [e.seq for e in graph._edges.values()]
+        [-1, *(n.seq for n in nodes.values()), *(e.seq for e in graph._edges.values())]
     )
     return graph
 
 
-class _ArgBlobStore:
-    """Content-address large agent arguments once per saved graph."""
+class _BlobStore:
+    """Content-address large input strings once per saved graph."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -156,32 +172,32 @@ class _ArgBlobStore:
             if not isinstance(item, str):
                 return RECURSE
             encoded = item.encode("utf-8")
-            if len(encoded) < ARG_BLOB_THRESHOLD_BYTES:
+            if len(encoded) < BLOB_THRESHOLD_BYTES:
                 return item
             digest = hashlib.sha256(encoded).hexdigest()
             self.path.mkdir(parents=True, exist_ok=True)
             blob_path = self.path / f"{digest}.txt"
             if not blob_path.exists():
                 _write_text(blob_path, item)
-            return {ARG_BLOB_REF_KEY: digest, "encoding": "utf-8", "bytes": len(encoded)}
+            return {BLOB_REF_KEY: digest, "encoding": "utf-8", "bytes": len(encoded)}
 
         return transform_argument(value, encode_string, path="")
 
 
-def _resolve_arg(value: Any, blob_path: Path) -> Any:
+def _resolve_blobs(value: Any, blob_path: Path) -> Any:
     def resolve_blob(_path: str, item: Any) -> Any:
-        if isinstance(item, dict) and set(item) == {ARG_BLOB_REF_KEY, "encoding", "bytes"}:
-            digest = item.get(ARG_BLOB_REF_KEY)
+        if isinstance(item, dict) and set(item) == {BLOB_REF_KEY, "encoding", "bytes"}:
+            digest = item.get(BLOB_REF_KEY)
             if not isinstance(digest, str) or len(digest) != 64:
-                raise ValueError(f"invalid argument blob digest {digest!r}")
+                raise ValueError(f"invalid blob digest {digest!r}")
             path = blob_path / f"{digest}.txt"
             try:
                 text = path.read_text(encoding="utf-8")
             except FileNotFoundError as exc:
-                raise ValueError(f"missing argument blob {digest}") from exc
+                raise ValueError(f"missing blob {digest}") from exc
             encoded = text.encode("utf-8")
             if len(encoded) != item.get("bytes") or hashlib.sha256(encoded).hexdigest() != digest:
-                raise ValueError(f"argument blob {digest} failed integrity validation")
+                raise ValueError(f"blob {digest} failed integrity validation")
             return text
         return RECURSE
 
@@ -189,13 +205,13 @@ def _resolve_arg(value: Any, blob_path: Path) -> Any:
 
 
 def save_graph(graph: Graph, path: str | Path) -> Path:
-    """Atomically write ``graph.json``, moving large arguments into ``blobs/``."""
+    """Atomically write ``graph.json``, moving large input strings into ``blobs/``."""
     run = Path(path)
     run.mkdir(parents=True, exist_ok=True)
     document = to_records(graph)
-    blobs = _ArgBlobStore(run / "blobs")
-    for record in document["agents"]:
-        record["args"] = blobs.encode(record["args"])
+    blobs = _BlobStore(run / "blobs")
+    for record in document["nodes"]:
+        record["input"] = blobs.encode(record["input"])
     _write_text(run / "graph.json", json.dumps(document, indent=2, ensure_ascii=False) + "\n")
     return run
 
@@ -215,19 +231,9 @@ def load_graph(path: str | Path) -> Graph:
             f"{run} was saved in run format {version or 1}, and this rlmflow reads only "
             f"format {FORMAT_VERSION}; rerun it with this version."
         )
-    for record in _list(document, "agents"):
-        record["args"] = {
-            name: _resolve_arg(value, run / "blobs")
-            for name, value in _dict(record.get("args"), "agent args").items()
-        }
+    for record in _list(document, "nodes"):
+        record["input"] = _resolve_blobs(_dict(record.get("input"), "node input"), run / "blobs")
     return from_records(document)
-
-
-def _node_type(raw: dict[str, Any]) -> str:
-    kind = raw.get("type")
-    if kind not in NODE_TYPES:
-        raise ValueError(f"unknown node type {kind!r}")
-    return kind
 
 
 def _list(document: dict[str, Any], key: str) -> list[dict[str, Any]]:
@@ -269,9 +275,8 @@ def _write_text(path: Path, text: str) -> None:
 
 
 __all__ = [
-    "ARG_BLOB_THRESHOLD_BYTES",
+    "BLOB_THRESHOLD_BYTES",
     "FORMAT_VERSION",
-    "agent_record",
     "edge_record",
     "from_records",
     "load_graph",

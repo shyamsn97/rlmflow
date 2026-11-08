@@ -1,9 +1,9 @@
 """What external harnesses share: their prompts, which session a turn runs in, and what a turn meant.
 
 A ``SessionHarness`` runs one session turn per step. During the turn the session
-reaches the agent tools through ``rlmflow``; each ``rlmflow repl`` cell lands its
-own ``code`` node. When the turn ends, ``outcome`` turns it into a ``done`` or
-``idle`` node.
+reaches the agent tools through ``rlmflow``; each ``rlmflow repl`` call is its
+own node. When the turn ends, ``outcome`` appends the node that ends it:
+terminal, or idle until something arrives.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from rlmflow import schema
-from rlmflow.graph.nodes import CODE, DONE, IDLE, MESSAGE, Node, Step
+from rlmflow.graph.nodes import SELF, Node, Step
 from rlmflow.graph.queries import unseen_results
 from rlmflow.harnesses.base import Harness
 from rlmflow.harnesses.prompts import (
@@ -28,6 +28,7 @@ from rlmflow.harnesses.prompts import (
     STATE_PROMPT,
     TOOLS_PROMPT,
     argument_manifest,
+    arguments,
     guidance,
     preview,
 )
@@ -61,15 +62,15 @@ del _rlmflow_describe"""
 
 
 def own_history(step: Step) -> list[Node]:
-    return step.graph.history(step.node) if isinstance(step.node, Node) else []
+    return step.graph.history(step.agent)
 
 
 def turn_end(step: Step) -> Node | None:
-    """The latest node that ended a session turn, if no cell ran after it."""
+    """The node that ended the latest session turn, if no code ran after it."""
     for node in reversed(own_history(step)):
-        if node.type in (IDLE, DONE) and node.data.get("session_id"):
+        if node.data.get("session_id") and "seen" in node.data:
             return node
-        if node.type == CODE:
+        if node.runs_code:
             return None
     return None
 
@@ -91,7 +92,7 @@ class Session:
         """
         last = turn_end(step)
         if last is not None:
-            return cls(last.data["session_id"], resume=True, fork=last.agent_id != step.agent.id)
+            return cls(last.data["session_id"], resume=True, fork=last.owner != step.agent.id)
         return cls(str(uuid.uuid5(SESSION_NAMESPACE, f"{step.agent.id}:{len(own_history(step))}")))
 
 
@@ -124,18 +125,20 @@ def config_list(flow: Flow) -> str:
 
 def first_prompt(step: Step) -> str:
     """The task, and the arguments by name and size; their values are REPL variables."""
+    task = step.agent.root_data.task
     manifest = argument_manifest(step)
-    return f"{step.agent.task}\n\n{manifest}" if manifest else step.agent.task
+    return f"{task}\n\n{manifest}" if manifest else task
 
 
 def pending_messages(step: Step) -> list[str]:
-    """Messages that arrived since the agent's last turn."""
-    texts: list[str] = []
-    for node in reversed(own_history(step)):
-        if node.type != MESSAGE:
-            break
-        texts.append(node.data["text"])
-    return texts[::-1]
+    """What others wrote since the agent's last turn began."""
+    turn = step.graph.last_turn(step.agent)
+    start = turn.data["seen"] if turn is not None else 1
+    return [
+        node.text
+        for node in own_history(step)[start:]
+        if node.producer != SELF and node.text and node.root_data is None
+    ]
 
 
 async def describe_variables(flow: Flow, step: Step) -> str:
@@ -147,14 +150,14 @@ async def describe_variables(flow: Flow, step: Step) -> str:
 
 
 async def resume_prompt(flow: Flow, step: Step) -> str:
-    """A fresh session on an existing REPL: the cells so far and the variables they left."""
-    cells = [n for n in own_history(step) if n.type == CODE and n.data.get("code")]
+    """A fresh session on an existing REPL: the code run so far and the variables they left."""
+    ran = [n for n in own_history(step) if n.runs_code]
     lines = [
-        f"[cell {i}] {preview(c.data['code'], 80)} -> {preview(c.data.get('output') or '(no output)', 100)}"
-        for i, c in enumerate(cells, 1)
+        f"[{i}] {preview(c.code, 80)} -> {preview(c.output or '(no output)', 100)}"
+        for i, c in enumerate(ran, 1)
     ]
     return RESUME_PROMPT.format(
-        cells="\n".join(lines), variables=await describe_variables(flow, step)
+        ran="\n".join(lines), variables=await describe_variables(flow, step)
     )
 
 
@@ -163,12 +166,12 @@ async def next_prompt(flow: Flow, step: Step, session: Session) -> str:
     messages = pending_messages(step)
     if session.resume:
         return "\n\n".join(messages) or "Continue."
-    has_cells = any(n.type == CODE for n in own_history(step))
-    if not has_cells and step.node is step.agent:
+    has_code = any(n.runs_code for n in own_history(step))
+    if not has_code and step.graph.last_turn(step.agent) is None:
         return first_prompt(step)
-    opening = await resume_prompt(flow, step) if has_cells else ""
+    opening = await resume_prompt(flow, step) if has_code else ""
     return "\n\n".join(
-        part for part in (f"Your task: {step.agent.task}", opening, *messages) if part
+        part for part in (f"Your task: {step.agent.root_data.task}", opening, *messages) if part
     )
 
 
@@ -179,17 +182,16 @@ class SessionHarness(Harness):
         """Appended to the session's own system prompt."""
         from rlmflow.tools import format_tool_line, tool_allowed
 
-        names = list(step.agent.resolved_args())
-        arguments = ", ".join(f"`{name}`" for name in ["task", *names])
+        variables = ", ".join(f"`{name}`" for name in ["task", *arguments(step)])
         own_tools = [
             line
             for fn in flow.tools.values()
             if tool_allowed(fn, flow, step.node) and (line := format_tool_line(fn))
         ]
         location = flow.runtime.location
-        output_schema = step.agent.config.output_schema
+        output_schema = step.config.output_schema
         return {
-            "protocol": TOOLS_PROMPT.format(arguments=arguments),
+            "protocol": TOOLS_PROMPT.format(arguments=variables),
             "configs": f"Configs for launch_agent (default `default`): {config_list(flow)}",
             "tools": "Also in the REPL:\n" + "\n".join(own_tools) if own_tools else None,
             "location": LOCATION_PROMPT.format(location=location) if location is not None else None,
@@ -199,33 +201,37 @@ class SessionHarness(Harness):
         }
 
     async def step(self, flow: Flow, step: Step) -> Node:
+        seen = len(own_history(step))
         async with flow.agent_tools.turn(step) as turn:
             result = await self.run_turn(flow, step, turn)
-        return await self.outcome(flow, step, turn, result)
+        return await self.outcome(flow, step, turn, result, seen)
 
     async def run_turn(self, flow: Flow, step: Step, turn: Turn) -> TurnResult:
         raise NotImplementedError
 
-    async def outcome(self, flow: Flow, step: Step, turn: Turn, result: TurnResult) -> Node:
-        """``done`` if the agent submitted or has nothing to wait for, else ``idle`` until its children finish."""
+    async def outcome(
+        self, flow: Flow, step: Step, turn: Turn, result: TurnResult, seen: int
+    ) -> Node:
+        """End the turn: terminal if the agent submitted or has nothing to wait for, else idle."""
         g, agent = step.graph, step.agent
-        data: dict[str, Any] = {"session_id": result.session_id, "text": result.text}
+        node = Node("assistant", result.text, session_id=result.session_id, seen=seen)
         if result.cost_usd is not None:
-            data["cost_usd"] = result.cost_usd
+            node.data["cost_usd"] = result.cost_usd
         if result.usage:
-            data["usage"] = result.usage
+            node.data["usage"] = result.usage
         workspace = await flow.workspaces.snapshot(agent)
         if workspace is not None:
-            data["workspace"] = workspace
+            node.data["workspace"] = workspace
         if turn.submitted:
-            return Node(DONE, result=turn.result, **data)
-        if unseen_results(g, agent) or not all(g.status(c) == "done" for c in g.children(agent)):
-            return Node(IDLE, **data)
-        answer = result.structured if result.structured is not None else result.text
-        output_schema = agent.config.output_schema
-        return Node(
-            DONE, result=schema.check(answer, output_schema) if output_schema else answer, **data
-        )
+            node.result, node.data["terminal"] = turn.result, True
+        elif unseen_results(g, agent) or not all(g.status(c) == "done" for c in g.children(agent)):
+            node.data["idle"] = True
+        else:
+            answer = result.structured if result.structured is not None else result.text
+            output_schema = step.config.output_schema
+            node.result = schema.check(answer, output_schema) if output_schema else answer
+            node.data["terminal"] = True
+        return flow.append(g, agent, node)
 
     async def run_command(
         self, flow: Flow, step: Step, argv: list[str], env: dict[str, str]

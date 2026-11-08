@@ -4,7 +4,7 @@ Headless, the branch runs to the end with its own config (or ``--config``, a
 config name on the project's Flow) and the run is saved. ``--interactive`` starts ``rlmflow serve`` on the branch
 and prints the ``claude`` command that continues it: ``--resume <id>
 --fork-session`` when NODE ended a Claude session turn, otherwise a fresh
-session, which serve briefs on the REPL's cells and variables.
+session, which serve briefs on the REPL's code and variables.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def fork_run(
     fork = graph.fork(at, name=name, config=config)
     out_dir = Path(out) if out is not None else run_dir
     graph.save(out_dir)
-    print(f"forked {owner.name} at {at.type} {at.id} as {fork.name} ({fork.id})")
+    print(f"forked {owner.root_data.name} at {at.id} as {fork.root_data.name} ({fork.id})")
 
     if interactive:
         from rlmflow.agent_tools.cli import ToolError

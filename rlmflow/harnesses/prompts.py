@@ -29,7 +29,7 @@ Only printed output comes back, so print summaries, not whole values.
 In the REPL:
 - launch_agent(task, config=NAME, **args) starts an agent and returns it as an `Agent`.
   `await agent` waits for the result of an agent you launched. An Agent's `.status`,
-  `.done()` and `.result()` are as of when the cell started, so they never change inside a loop.
+  `.done()` and `.result()` are as of when the code started, so they never change inside a loop.
 - agent.send(message) messages any agent, reopening it if it finished. For an agent you
   launched, `await agent.send(...)` also waits for its reply; others reply with a message.
 - AGENTS["name"] is any agent in the run, by name, path or id. AGENTS.self is you,
@@ -39,7 +39,7 @@ In the REPL:
 - submit(value) records your final result. Call it exactly once, when you're finished.
 
 To wait for agents you started, end your turn without submitting. You'll be resumed
-with their results. Don't poll. A cell that awaits long work can hit your tool timeout,
+with their results. Don't poll. Code that awaits long work can hit your tool timeout,
 so launch agents and end the turn instead."""
 
 VERIFY_PROMPT = """\
@@ -55,7 +55,7 @@ before waiting on agents. You may later continue from this REPL without your ear
 conversation."""
 
 RECORD_PROMPT = """\
-Cells you run with `rlmflow repl` are recorded in this run, so it can be replayed and
+Code you run with `rlmflow repl` are recorded in this run, so it can be replayed and
 forked from them; changes you make with your own tools are not."""
 
 LOCATION_PROMPT = """\
@@ -64,9 +64,9 @@ files and programs through `rlmflow repl`, with paths as the REPL sees them."""
 
 RESUME_PROMPT = """\
 You are continuing an earlier session on this task. Its conversation is gone, but its
-REPL is intact. Cells run so far (outputs truncated):
+REPL is intact. Code run so far (outputs truncated):
 
-{cells}
+{ran}
 
 REPL variables: {variables}
 Start with `rlmflow repl 'print(notes)'`."""
@@ -93,13 +93,18 @@ def guidance(step: Step) -> dict[str, str | None]:
     }
 
 
+def arguments(step: Step) -> dict[str, Any]:
+    """The agent's arguments: its first root's inputs, apart from ``task``."""
+    origin = step.graph.history(step.agent)[0]
+    return {name: value for name, value in origin.input.items() if name != "task"}
+
+
 def argument_manifest(step: Step) -> str:
     """Arguments by name and size; the values stay in the REPL."""
-    agent = step.agent
-    values = agent.resolved_args()
+    values = arguments(step)
     if not values:
         return ""
-    descriptions = agent.argument_descriptions()
+    descriptions = step.agent.root_data.arg_descriptions
     lines = []
     for name, value in values.items():
         if isinstance(value, str):
@@ -132,6 +137,7 @@ __all__ = [
     "TOOLS_PROMPT",
     "VERIFY_PROMPT",
     "argument_manifest",
+    "arguments",
     "guidance",
     "preview",
     "skill",

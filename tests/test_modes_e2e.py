@@ -10,10 +10,10 @@ import sys
 from pathlib import Path
 
 import pytest
-from helpers import ScriptedFlow, StubLLM
+from helpers import ScriptedFlow, StubLLM, code_nodes, own
 from helpers import reasoning_repl as block
 
-from rlmflow import CODE, IDLE, AgentConfig, Flow, Graph
+from rlmflow import AgentConfig, Flow, Graph
 from rlmflow.agent_tools import hooks
 from rlmflow.cli.fork import resume_command
 from rlmflow.cli.serve import INTERACTIVE, Serve, until
@@ -80,8 +80,19 @@ def worker_flow() -> Flow:
 
 
 def shapes(g):
-    """Each agent's node types and result, by path."""
-    return {g.path(a): ([n.type for n in a.nodes], g.result(a)) for a in g.agents()}
+    """Each agent's history shape and result, by path."""
+    return {
+        g.path(a): ([(n.role, n.runs_code, _flags(n)) for n in own(a)], g.result(a))
+        for a in g.agents()
+    }
+
+
+def _flags(node):
+    return sorted(flag for flag in ("terminal", "idle", "seen") if flag in node.data)
+
+
+def idle_turn(g, agent):
+    return next(n for n in g.history(agent) if n.data.get("idle"))
 
 
 async def claude(project: Path, *argv: str) -> dict:
@@ -150,10 +161,10 @@ def test_same_conversation_same_graph_in_both_modes(env, tmp_path, monkeypatch):
 
     assert shapes(headless) == shapes(interactive)
     assert headless.result(root) == 5
-    [iroot] = [a for a in interactive.agents() if a.name == "root"]
-    assert iroot.config.harness == INTERACTIVE
-    idle = next(n for n in interactive.history(iroot) if n.type == IDLE)
-    assert idle.data["session_id"] == session_id and idle.data["text"].startswith(
+    [iroot] = [a for a in interactive.agents() if a.root_data.name == "root"]
+    assert iroot.root_data.config.harness == INTERACTIVE
+    idle = idle_turn(interactive, iroot)
+    assert idle.data["session_id"] == session_id and idle.text.startswith(
         "Launched the counters. 8"
     )
     assert interactive.usage([iroot]).input_tokens == 20
@@ -167,10 +178,9 @@ def test_forking_an_interactive_graph_resumes_at_turn_ends_and_restarts_mid_turn
     project = tmp_path / "proj"
     project.mkdir()
     g, session_id = interactive_run(project)
-    [root] = [a for a in g.agents() if a.name == "root"]
-    history = g.history(root)
-    idle = next(n for n in history if n.type == IDLE)
-    first_cell = next(n for n in history if n.type == CODE)
+    [root] = [a for a in g.agents() if a.root_data.name == "root"]
+    idle = idle_turn(g, root)
+    first_code = code_nodes(g, root)[0]
 
     # The fork has no children of its own, so its resumed turn opens on the prompt alone.
     script(FROM_NOTES, SUM, ("Continue the task", SUM[1], SUM[2]))
@@ -188,7 +198,7 @@ def test_forking_an_interactive_graph_resumes_at_turn_ends_and_restarts_mid_turn
     resumed = calls()[-1]
     assert resumed[resumed.index("--resume") + 1] == session_id and "--fork-session" in resumed
 
-    mid_turn = g.fork(first_cell, name="mid-turn")
+    mid_turn = g.fork(first_code, name="mid-turn")
     command = resume_command(g, mid_turn, hooks.PLUGIN_DIR)
     assert "--resume" not in command
     asyncio.run(continue_fork(mid_turn, shlex.split(command)[1:]))
@@ -214,7 +224,7 @@ def test_rlmflow_run_starts_serve_and_a_restarted_serve_continues_the_session(en
     [graph_dir] = list((project / ".rlmflow" / "runs").iterdir())
     g = Graph.load(graph_dir)
     [root] = g.agents()
-    assert root.config.harness == INTERACTIVE and g.result(root) == 1
+    assert root.root_data.config.harness == INTERACTIVE and g.result(root) == 1
 
     hooks.start_serve(project, ["--graph", str(graph_dir)])
     asyncio.run(claude(project, "--resume", session, "what are your notes?"))
@@ -233,8 +243,8 @@ def test_rlmflow_fork_interactive_prints_the_resume_command_and_serves_the_fork(
     project = tmp_path / "proj"
     project.mkdir()
     g, session_id = interactive_run(project)
-    [root] = [a for a in g.agents() if a.name == "root"]
-    idle = next(n for n in g.history(root) if n.type == IDLE)
+    [root] = [a for a in g.agents() if a.root_data.name == "root"]
+    idle = idle_turn(g, root)
 
     done = run_cli(
         "fork",

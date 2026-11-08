@@ -14,7 +14,7 @@ from rlmflow import (
     WorkerRepl,
 )
 from rlmflow.graph import calls
-from rlmflow.graph.nodes import CODE, Node
+from rlmflow.graph.nodes import Node, Step
 from rlmflow.runtime import (
     DEFAULT_PREIMPORTS,
     base_namespace,
@@ -37,7 +37,7 @@ WRITE_A_NOTE = block(
 
 def test_cached_host_tool_calls_are_saved_by_their_arguments():
     g, root = agent_graph("root")
-    action = g.append(root, Node(CODE, code=""))
+    action = g.append(root, Node("assistant"))
     ran: list[tuple[str, object]] = []
 
     @tool("First tool.", cache=True)
@@ -50,28 +50,27 @@ def test_cached_host_tool_calls_are_saved_by_their_arguments():
         ran.append(("opaque", value))
         return object()
 
-    calls.begin(action)
-    assert invoke_tool_call(first, action, ("a",), {}) == {"value": "a"}
-    assert invoke_tool_call(first, action, ("b",), {}) == {"value": "b"}
-    invoke_tool_call(opaque, action, ("x",), {})
-    calls.forget(action)
+    step = Step(g, root, action, calls=calls.CallLog(action))
+    assert invoke_tool_call(first, step, ("a",), {}) == {"value": "a"}
+    assert invoke_tool_call(first, step, ("b",), {}) == {"value": "b"}
+    invoke_tool_call(opaque, step, ("x",), {})
 
-    calls.begin(action)
-    assert invoke_tool_call(first, action, ("b",), {}) == {"value": "b"}
-    assert invoke_tool_call(first, action, ("c",), {}) == {"value": "c"}
-    invoke_tool_call(opaque, action, ("x",), {})
-    unclaimed = calls.finish(action)
+    rerun = Step(g, root, action, calls=calls.CallLog(action))
+    assert invoke_tool_call(first, rerun, ("b",), {}) == {"value": "b"}
+    assert invoke_tool_call(first, rerun, ("c",), {}) == {"value": "c"}
+    invoke_tool_call(opaque, rerun, ("x",), {})
+    unclaimed = rerun.calls.unclaimed()
 
     assert [entry["value"] for entry in unclaimed] == [{"value": "a"}]
-    assert [entry["value"] for entry in action.data["calls"]] == [{"value": "b"}, {"value": "c"}]
+    assert [entry["value"] for entry in action.calls] == [{"value": "b"}, {"value": "c"}]
     assert ran == [("first", "a"), ("first", "b"), ("opaque", "x"), ("first", "c"), ("opaque", "x")]
     with pytest.raises(TypeError, match="must be JSON"):
-        invoke_tool_call(first, action, (object(),), {})
+        invoke_tool_call(first, rerun, (object(),), {})
 
 
 def test_host_tools_without_cache_always_run():
     g, root = agent_graph("root")
-    action = g.append(root, Node(CODE, code=""))
+    action = g.append(root, Node("assistant"))
     ran = []
 
     @tool("Live tool.")
@@ -79,12 +78,11 @@ def test_host_tools_without_cache_always_run():
         ran.append(value)
         return value
 
-    calls.begin(action)
-    invoke_tool_call(live, action, ("a",), {})
-    invoke_tool_call(live, action, ("a",), {})
-    calls.forget(action)
+    step = Step(g, root, action, calls=calls.CallLog(action))
+    invoke_tool_call(live, step, ("a",), {})
+    invoke_tool_call(live, step, ("a",), {})
 
-    assert ran == ["a", "a"] and "calls" not in action.data
+    assert ran == ["a", "a"] and not action.calls
 
 
 class RecordingWorkerSession:
@@ -240,7 +238,7 @@ def test_worker_executes_await_in_comprehensions(tmp_path):
         return value * 2
 
     async def run():
-        repl.seed({"double": double}, {})
+        repl.seed({"double": double})
         return await repl.run(
             "by_key = {str(i): await double(i) for i in range(3)}\n"
             "values = [await double(i) for i in range(3)]"
@@ -260,7 +258,7 @@ def test_empty_iterator_reports_stopiteration_not_coroutine_wrapper():
     repl = runtime.repl_for(bare_agent())
 
     async def run():
-        repl.seed({}, {})
+        repl.seed({})
         return await repl.run("print(next(iter(())))")
 
     try:
@@ -295,7 +293,7 @@ def test_worker_inject_ships_a_live_object_by_value(tmp_path):
     counter = Counter()
 
     async def run():
-        repl.seed({}, {})
+        repl.seed({})
         repl.inject("counter", counter)
         await repl.run("counter.bump(6)\ncount = counter.n")
 
@@ -315,7 +313,7 @@ def test_worker_preimports_core_modules(tmp_path):
     repl = runtime.repl_for(bare_agent())
 
     async def run():
-        repl.seed({}, {})
+        repl.seed({})
         return await repl.run(
             "sizes = json.loads('{\"a\": 1}')\n"
             "digits = re.findall(r'\\d+', 'a1b22')\n"
@@ -342,7 +340,7 @@ def test_preimports_are_configurable_per_runtime(tmp_path):
     repl = runtime.repl_for(bare_agent())
 
     async def run(code):
-        repl.seed({}, {})
+        repl.seed({})
         return await repl.run(code)
 
     try:

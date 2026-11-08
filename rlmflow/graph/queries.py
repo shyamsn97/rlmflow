@@ -1,19 +1,19 @@
-"""Questions about a graph that only read it: family, paths, cells, usage."""
+"""Questions about a graph that only read it: family, paths, usage, unseen results."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
-from rlmflow.graph.nodes import CODE, RETURN, Agent, LLMUsage, Node
+from rlmflow.graph.nodes import RETURN, LLMUsage, Node
 
 if TYPE_CHECKING:
     from rlmflow.graph.graph import Graph
 
 
-def subtree(g: Graph, agent: Agent) -> list[Agent]:
+def subtree(g: Graph, agent: Node) -> list[Node]:
     """``agent`` and every agent it launched, transitively, depth first."""
-    found: list[Agent] = []
+    found: list[Node] = []
     stack = [agent]
     while stack:
         current = stack.pop()
@@ -22,7 +22,7 @@ def subtree(g: Graph, agent: Agent) -> list[Agent]:
     return found
 
 
-def lineage(g: Graph, agent: Agent) -> list[Agent]:
+def lineage(g: Graph, agent: Node) -> list[Node]:
     """Its top-level ancestor first, ending with ``agent``."""
     chain = [agent]
     while (parent := g.parent(chain[-1])) is not None and parent not in chain:
@@ -30,30 +30,29 @@ def lineage(g: Graph, agent: Agent) -> list[Agent]:
     return chain[::-1]
 
 
-def path(g: Graph, agent: Agent) -> str:
+def path(g: Graph, agent: Node) -> str:
     """Agent names from the top, joined with dots: ``root.worker-0``."""
-    return ".".join(item.name for item in lineage(g, agent))
+    return ".".join(item.root_data.name for item in lineage(g, agent))
 
 
-def cells(g: Graph, agent: Agent) -> list[Node]:
-    """Every cell in the agent's history that ran code, in order."""
-    return [node for node in g.history(agent) if node.type == CODE and node.data.get("code")]
-
-
-def unseen_results(g: Graph, agent: Agent) -> list[tuple[Agent, Node]]:
-    """``(child, done)`` for each finished child whose result no cell awaited and no message carried."""
+def unseen_results(g: Graph, agent: Node) -> list[tuple[Node, Node]]:
+    """``(child, final node)`` for each finished child whose result reached no node yet."""
     found = []
     for child in g.children(agent):
         if g.status(child) == "done":
-            done = g.history(child)[-1]
-            if not g.edges(kind=RETURN, source=done.id):
-                found.append((child, done))
+            final = g.last_turn(child)
+            if final is not None and not g.edges(kind=RETURN, source=final.id):
+                found.append((child, final))
     return found
 
 
-def usage(g: Graph, agents: Iterable[Agent] | None = None) -> LLMUsage:
-    """Model usage recorded on ``agents``' nodes, or anywhere in the graph."""
-    nodes = g.nodes() if agents is None else [node for agent in agents for node in agent.nodes]
+def usage(g: Graph, agents: Iterable[Node] | None = None) -> LLMUsage:
+    """Model usage recorded on ``agents``' own nodes, or anywhere in the graph."""
+    nodes = (
+        g.nodes()
+        if agents is None
+        else [node for agent in agents for node in agent.root_data.history]
+    )
     total = LLMUsage()
     for node in nodes:
         if node.data.get("usage"):
@@ -63,4 +62,4 @@ def usage(g: Graph, agents: Iterable[Agent] | None = None) -> LLMUsage:
     return total
 
 
-__all__ = ["cells", "lineage", "path", "subtree", "unseen_results", "usage"]
+__all__ = ["lineage", "path", "subtree", "unseen_results", "usage"]

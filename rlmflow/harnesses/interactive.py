@@ -1,7 +1,7 @@
 """A harness for an agent that a person's own session drives, through ``rlmflow serve``.
 
 The agent's turn opens when Flow steps it and stays open until the session's
-Stop hook closes it with ``/stop``; meanwhile its ``rlmflow repl`` cells land as
+Stop hook closes it with ``/stop``; meanwhile its ``rlmflow repl`` runs land as
 ``code`` nodes like any harness's. ``outcome`` then lands ``done`` or
 ``idle``, so results, forking and replay work as they do for ``claude_code``.
 """

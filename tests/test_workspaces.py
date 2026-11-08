@@ -4,12 +4,12 @@ import asyncio
 import shutil
 
 import pytest
-from helpers import ScriptedFlow, StubLLM, first_user, trailing_user_text
+from helpers import ScriptedFlow, StubLLM, code_nodes, first_user, trailing_user_text
 from helpers import reasoning_repl as block
 
-from rlmflow import CODE, AgentConfig, GitWorktrees, Graph
-from rlmflow.engine.workspaces import git
+from rlmflow import AgentConfig, GitWorktrees, Graph
 from rlmflow.runtime import LocalRuntime
+from rlmflow.workspaces import git
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
@@ -37,7 +37,7 @@ def run(flow, g):
     asyncio.run(go())
 
 
-def test_cells_run_in_the_agents_worktree_and_carry_snapshots(repo):
+def test_code_nodes_run_in_the_agents_worktree_and_carry_snapshots(repo):
     def reply(messages):
         last = trailing_user_text(messages)
         if "first" in last:
@@ -59,8 +59,8 @@ def test_cells_run_in_the_agents_worktree_and_carry_snapshots(repo):
     assert g.result(root) == "base\nfirst\nsecond\n"
     assert (repo / "notes.txt").read_text() == "base\n"  # the checkout itself is untouched
     assert git(repo, "status", "--porcelain") == ""
-    first, second, _ = [n for n in g.history(root) if n.type == CODE]
-    assert str(workspaces.path(root)) in first.data["output"]
+    first, second, _ = code_nodes(g, root)
+    assert str(workspaces.path(root)) in first.output
     assert git(repo, "show", f"{first.data['workspace']}:notes.txt") == "base\nfirst"
     assert git(repo, "show", f"{second.data['workspace']}:notes.txt") == "base\nfirst\nsecond"
 
@@ -121,7 +121,7 @@ def test_a_fork_rebuilds_its_repl_then_restores_the_files_at_the_fork_point(repo
     )
     assert g.result(root) == "original"
 
-    first = next(n for n in g.history(root) if n.type == CODE)
+    first = code_nodes(g, root)[0]
     fork = g.fork(first, name="fork")
     g.send(fork, "resume here")
     workspaces = GitWorktrees(repo)
@@ -130,7 +130,7 @@ def test_a_fork_rebuilds_its_repl_then_restores_the_files_at_the_fork_point(repo
         g,
     )
 
-    # The rebuilt cell appended to notes.txt again; the checkout undid that.
+    # The rebuilt code_node appended to notes.txt again; the checkout undid that.
     assert g.result(fork) == [1, "base\none\n"]
     assert workspaces.path(fork) != workspaces.path(root)
     assert (workspaces.path(root) / "notes.txt").read_text() == "base\none\ntwo\n"

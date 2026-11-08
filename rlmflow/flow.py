@@ -1,43 +1,33 @@
-"""Run agents: step each ready agent with its harness and stream every node as a ``Step``."""
+"""Run agents: give each agent that has something to do a turn, and stream every node as it finishes."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import keyword
+import re
 import textwrap
 import time
-from collections.abc import AsyncIterator, Iterable, Mapping
-from typing import Any
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping
+from typing import Any, Literal, TypeAlias
 
-from rlmflow.engine.scheduler import (
-    Pool,
-    StepResult,
-    StepUntil,
-    TaskQueue,
-    ThreadPool,
-    resolve_boundary,
-)
-from rlmflow.engine.workspaces import LocalWorkspace
 from rlmflow.graph import calls
 from rlmflow.graph.config import AgentConfig
-from rlmflow.graph.graph import CELL_RESULTS, Graph, GraphError
+from rlmflow.graph.edits import GraphError, Invalidation
+from rlmflow.graph.graph import Graph
 from rlmflow.graph.nodes import (
-    CODE,
     DONE,
-    LLM,
-    MESSAGE,
-    PENDING,
-    Agent,
+    READY,
+    RETURN,
+    RUNNING,
+    SELF,
     LLMUsage,
     Node,
     Step,
-    current_code,
-    replaying,
-    running_cell,
     running_step,
 )
-from rlmflow.graph.queries import cells, unseen_results
-from rlmflow.llm import PooledLLMClient, client_for
+from rlmflow.graph.queries import unseen_results
+from rlmflow.llm import client_for, complete
 from rlmflow.runtime import LocalRuntime, Runtime
 from rlmflow.runtime.repl import ReplRun, ReplStatus
 from rlmflow.runtime.runtime import RLMFLOW_REPLAY
@@ -50,31 +40,50 @@ from rlmflow.tools import (
     tool_name,
 )
 from rlmflow.utils import truncate_output
+from rlmflow.workspaces import LocalWorkspace
 
 BUDGET_FINAL_TEXT = """\
 This run has nearly used its token budget, so this is your last turn. Give the best \
 supported final result now and don't start new work."""
 
 DEAD_REPL_NOTE = """\
-[this REPL died while running the cell. It will be rebuilt from the recorded cells \
-before the next one, so variables set by earlier cells come back; anything this cell \
+[this REPL died while running this code. It will be rebuilt from the recorded history \
+before the next run, so variables set earlier come back; anything this code \
 did is gone.]"""
 
-#: Longest result text one agent contributes to a results message.
+#: Longest result text one agent contributes to a result node.
 RESULT_MAX = 20_000
+
+#: Where a streamed run stops: after any node of an agent's own (``"next"``), after a
+#: node that ran code or ended a turn (``"idle"``), at the end (``"done"``), or when
+#: a predicate on the streamed ``Step`` holds.
+StepUntil: TypeAlias = Literal["next", "idle", "done", "finished"] | Callable[[Step], bool]
+
+
+def _boundary(until: StepUntil) -> Callable[[Step], bool] | None:
+    if until in ("done", "finished"):
+        return None
+    if callable(until):
+        return until
+    if until == "next":
+        return lambda step: step.node.producer == SELF
+    if until == "idle":
+        return lambda step: (
+            step.node.producer == SELF and (step.node.runs_code or "seen" in step.node.data)
+        )
+    raise ValueError(f"unknown until boundary: {until!r}")
 
 
 class Flow:
-    """Model clients, the REPL runtime, tools and workspaces. Steps ready agents.
+    """Model clients, the REPL runtime, tools and workspaces. Runs agents' turns.
 
     The Flow decides how every agent runs. ``configs`` are the named kinds of
     agent that ``launch_agent(config=...)`` picks from (``"default"`` is
     ``AgentConfig()`` unless given); a root runs with the run's ``root_config``.
     The graph only names each agent's config and records the JSON of the one
     that ran it. A config's ``model`` is any model name, or a name in
-    ``llm_clients`` for clients a name can't describe.
-    ``workers`` sizes the thread pool blocking model calls run on, or is a
-    ``Pool``.
+    ``llm_clients`` for clients a name can't describe. ``workers`` caps how
+    many model calls run at once.
     """
 
     def __init__(
@@ -85,10 +94,12 @@ class Flow:
         runtime: Runtime | None = None,
         tools: Any = None,
         workspaces: Any = None,
-        workers: int | Pool | None = None,
+        workers: int | None = None,
     ) -> None:
         self.llms: dict[str, Any] = dict(llm_clients or {})
-        self.pool = workers if isinstance(workers, Pool) else ThreadPool(workers)
+        if workers is not None and workers < 1:
+            raise ValueError("workers must be >= 1")
+        self._model_slots = asyncio.Semaphore(workers) if workers else None
         self.runtime = runtime or LocalRuntime()
         self.workspaces = workspaces or LocalWorkspace(self.runtime.working_directory)
         if workspaces is not None:
@@ -103,30 +114,39 @@ class Flow:
             self.add_config(config)
         #: What roots run with; ``run_streaming(root_config=...)`` sets it.
         self.root_config: AgentConfig = self.configs["default"]
-        self.queue: TaskQueue | None = None
+        #: The task running each agent's turn, by agent id.
+        self.tasks: dict[str, asyncio.Task[None]] = {}
+        self._graph: Graph | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
-        #: For each agent whose live REPL is up to date, the last cell it ran.
-        self._live: dict[str, tuple[str, str] | None] = {}
+        self._landed: list[Node] | None = None
+        self._news = asyncio.Event()
+        #: For each agent whose live REPL is up to date: the last node it ran, and its version.
+        self._live: dict[str, tuple[str, int]] = {}
         self._repl_locks: dict[str, asyncio.Lock] = {}
         self._agent_tools: Any = None
 
     # -- models -------------------------------------------------------------
 
-    def llm(self, model: str | None) -> PooledLLMClient:
-        """The client for ``model`` on this Flow's pool; a client's ``request_timeout`` caps each call."""
+    def llm(self, model: str | None) -> Any:
+        """The client for ``model``."""
         if model is None:
             raise ValueError(
                 "no model: set AgentConfig(model=...) on the config this agent runs with"
             )
         if model not in self.llms:
             self.llms[model] = client_for(model)
-        client = self.llms[model]
-        return PooledLLMClient(client, self.pool, timeout=getattr(client, "request_timeout", None))
+        return self.llms[model]
 
     async def complete(
         self, messages: list[dict[str, Any]], model: str | None, **kwargs: Any
     ) -> tuple[str, LLMUsage]:
-        return await self.llm(model).completion(messages, **kwargs)
+        """One model call; a client's ``request_timeout`` caps it."""
+        client = self.llm(model)
+        timeout = getattr(client, "request_timeout", None)
+        if self._model_slots is None:
+            return await complete(client, messages, timeout=timeout, **kwargs)
+        async with self._model_slots:
+            return await complete(client, messages, timeout=timeout, **kwargs)
 
     async def llm_query(self, prompt: str, *, model: str | None = None, schema: Any = None) -> Any:
         """One context-free model call from host code; ``model`` defaults to the ``default`` config's."""
@@ -156,14 +176,11 @@ class Flow:
         """An ``AgentConfig`` as given, a name on this Flow, or ``"default"``."""
         return config if isinstance(config, AgentConfig) else self.config(config or "default")
 
-    def config_for(self, g: Graph, agent: Agent, *, record: bool = True) -> AgentConfig:
+    def config_for(self, g: Graph, agent: Node, *, record: bool = True) -> AgentConfig:
         """Bind and return the config ``agent`` runs with: ``root_config`` for a root, else its named one."""
-        name = agent.config_name
+        name = agent.root_data.config_name
         config = self.root_config if name is None else self.config(name)
-        if record:
-            agent.bind_config(config)
-        else:
-            agent._config = config
+        agent.root_data.bind_config(config, record=record)
         return config
 
     # -- tools --------------------------------------------------------------
@@ -205,7 +222,7 @@ class Flow:
         return self.tools.pop(name, None)
 
     def namespace_for(self, step: Step) -> dict[str, Any]:
-        """Extra bindings for this agent's REPL cells; none by default."""
+        """Extra bindings for this agent's REPL; none by default."""
         return {}
 
     def spawn(
@@ -216,13 +233,11 @@ class Flow:
         config: str = "default",
         name: str | None = None,
         **args: Any,
-    ) -> Agent:
-        """Create an agent launched by the running cell; every harness's launches land here."""
+    ) -> Node:
+        """Create an agent launched by the running node; every harness's launches land here."""
         self.config(config)
         g = step.graph
-        child = g.add_agent(
-            task, parent=current_code() or step.agent, config=config, name=name, **args
-        )
+        child = g.add_agent(task, parent=step.node, config=config, name=name, **args)
         self.config_for(g, child)
         self.workspaces.branch(child, step.agent)
         self.wake()
@@ -237,111 +252,124 @@ class Flow:
             self._agent_tools = AgentToolsServer(self)
         return self._agent_tools
 
-    # -- the REPL -----------------------------------------------------------
+    # -- nodes ----------------------------------------------------------------
 
-    async def _run_cell(self, step: Step, cell: Node, code: str) -> ReplRun:
-        g, agent = step.graph, step.agent
-        calls.begin(cell)
-        with running_step(step), running_cell(cell):
-            repl = self.runtime.repl_for(agent, g)
-            repl.seed(build_namespace(self, step), {"task": agent.task, **agent.resolved_args()})
-            return await self.runtime.execute(agent, code, g)
+    def append(self, g: Graph, agent: Node, node: Node) -> Node:
+        """Add ``node`` to ``agent``'s history; a finished one streams now."""
+        g.append(agent, node)
+        if node.state == DONE:
+            self._land(node)
+        return node
 
-    def _repl_current(self, g: Graph, agent: Agent) -> bool:
-        """Whether the agent's live REPL has run exactly its recorded cells."""
-        return (
-            agent.id in self._live
-            and self._live[agent.id] == _last_cell(g, agent)
-            and self.runtime.get(agent) is not None
-        )
+    async def run_node(self, g: Graph, agent: Node, node: Node) -> ReplRun | None:
+        """Run a node of ``agent``'s history in its REPL: bind its inputs, then run its code.
 
-    async def prepare_repl(self, g: Graph, agent: Agent) -> None:
-        """Make the agent's live REPL match its recorded cells, rebuilding it if needed.
-
-        A rebuild reruns every recorded cell in order. Launches, awaits and other
-        host tool calls return their saved results, so nothing runs twice.
+        The REPL first catches up on the nodes before it. A node that is edited
+        or removed while it runs is left as the edit made it, and ``None`` is
+        returned. Saved calls a rerun didn't make again are undone.
         """
-        if self._repl_current(g, agent):
-            return
-        lock = self._repl_locks.setdefault(agent.id, asyncio.Lock())
-        async with lock:
-            if self._repl_current(g, agent):
-                return
+        version = node.version
+        rerun = bool(node.calls)
+        log = calls.CallLog(node)
+        node.state, node.started_at = RUNNING, time.time()
+        try:
+            async with self._repl_lock(agent):
+                await self._catch_up(g, agent, g.history(node)[:-1])
+                self._live.pop(agent.id, None)
+                run = await self._execute(Step(g, agent, node, calls=log))
+        except asyncio.CancelledError:
+            if node.state == RUNNING:
+                node.state = READY
+            raise
+        except BaseException as exc:
+            node.output, node.error = f"{type(exc).__name__}: {exc}", True
+            node.state, node.finished_at = DONE, time.time()
+            raise
+        if node.id not in g or node.version != version:
             self.runtime.close_repl(agent)
-            self.config_for(g, agent, record=g.status(agent) != "done")
-            repl = self.runtime.repl_for(agent, g)
-            history = g.history(agent)
-            for cell in recorded_cells(g, agent):
-                index = history.index(cell)
-                step = Step(g, agent, history[index - 1] if index else agent)
+            return None
+        if rerun and run.status is not ReplStatus.DEAD:
+            self.undo_calls(g, log.unclaimed())
+        config = agent.root_data.config
+        node.output = truncate_output(run.output, config.max_output_length)
+        node.error = run.failed
+        if run.status is ReplStatus.DEAD:
+            node.output = f"{node.output}\n{DEAD_REPL_NOTE}" if node.output else DEAD_REPL_NOTE
+            node.data["dead"] = True
+        if run.submitted:
+            node.result = run.answer
+            node.data["terminal"] = True
+        if node.runs_code:
+            workspace = await self.workspaces.snapshot(agent)
+            if workspace is not None:
+                node.data["workspace"] = workspace
+        node.state, node.finished_at = DONE, time.time()
+        if run.status is not ReplStatus.DEAD:
+            self._live[agent.id] = (node.id, node.version)
+        self._land(node)
+        return run
+
+    def _repl_lock(self, agent: Node) -> asyncio.Lock:
+        return self._repl_locks.setdefault(agent.id, asyncio.Lock())
+
+    async def _execute(self, step: Step) -> ReplRun:
+        """Bind the step's node's inputs and run its code in the agent's REPL."""
+        g, agent, node = step.graph, step.agent, step.node
+        repl = self.runtime.repl_for(agent, g)
+        clashes = sorted(node.input.keys() & (RESERVED_TOOLS | self.tools.keys()))
+        if clashes:
+            raise ValueError(f"inputs collide with REPL tools: {', '.join(clashes)}")
+        with running_step(step):
+            for name, value in node.input.items():
+                repl.inject(name, value)
+            if not node.runs_code:
+                return ReplRun()
+            repl.seed(build_namespace(self, step))
+            return await self.runtime.execute(agent, node.code, g)
+
+    async def _catch_up(self, g: Graph, agent: Node, history: list[Node]) -> None:
+        """Bring the agent's REPL up to the end of ``history``, rebuilding it if needed.
+
+        Nodes that ran before run again with their saved calls, so nothing runs
+        twice; nodes attached since the REPL last ran just bind their inputs.
+        """
+        live = self._live.get(agent.id)
+        start = None
+        if live is not None and self.runtime.get(agent) is not None:
+            start = next(
+                (i + 1 for i in range(len(history) - 1, -1, -1) if _marker(history[i]) == live),
+                None,
+            )
+        rebuilding = start is None
+        if rebuilding:
+            self.runtime.close_repl(agent)
+            self._live.pop(agent.id, None)
+            start = 0
+        repl = self.runtime.repl_for(agent, g)
+        last = None
+        for earlier in history[start:]:
+            if earlier.state != DONE or earlier.data.get("dead"):
+                continue
+            replaying = earlier.runs_code and earlier.started_at is not None
+            if replaying:
                 repl.update_env({RLMFLOW_REPLAY: "1"})
-                try:
-                    with replaying():
-                        await self._run_cell(step, cell, cell.data["code"])
-                finally:
-                    calls.forget(cell)
+            step = Step(g, agent, earlier, replaying=replaying, calls=calls.CallLog(earlier))
+            try:
+                await self._execute(step)
+            finally:
+                if replaying:
                     repl.update_env({RLMFLOW_REPLAY: "0"})
-            # Files last: rerun cells may have written to them.
+            last = earlier
+        if rebuilding:
+            # Files last: rerun nodes may have written to them.
             snapshot = next(
                 (n.data["workspace"] for n in reversed(history) if n.data.get("workspace")),
                 None,
             )
             if snapshot is not None:
                 await self.workspaces.checkout(agent, snapshot)
-            self._live[agent.id] = _last_cell(g, agent)
-
-    async def execute(
-        self, step: Step, code: str, cell: Node | None = None
-    ) -> tuple[Node, ReplRun]:
-        """Run one cell in ``step.agent``'s REPL and return its ``code`` node.
-
-        The cell lands, marked pending, before its code runs, so whatever it does
-        while running hangs off a node in the graph; it is finished in place. A
-        cell that is stopped stays pending and runs again. ``cell`` re-runs a cell
-        already in the graph; its saved calls return what they returned before
-        (or what ``Graph.replace`` put there).
-        """
-        g, agent = step.graph, step.agent
-        await self.prepare_repl(g, agent)
-        rerun = cell is not None
-        if cell is None:
-            cell = Node(CODE, code=code, **{PENDING: True})
-            cell.started_at = time.time()
-            g.append(agent, cell)
-        else:
-            for key in CELL_RESULTS:
-                cell.data.pop(key, None)
-            cell.started_at = time.time()
-        self._live.pop(agent.id, None)
-        try:
-            run = await self._run_cell(step, cell, code)
-        except asyncio.CancelledError:
-            calls.forget(cell)
-            raise
-        except BaseException as exc:
-            calls.forget(cell)
-            cell.data.pop(PENDING, None)
-            cell.finished_at = time.time()
-            g.update(cell, output=f"{type(exc).__name__}: {exc}", error=True)
-            raise
-        if rerun and run.status is not ReplStatus.DEAD:
-            self.undo_calls(g, calls.finish(cell))
-        else:
-            calls.forget(cell)
-        output = truncate_output(run.output, agent.config.max_output_length)
-        finished: dict[str, Any] = {"output": output, "error": run.failed}
-        if run.status is ReplStatus.DEAD:
-            finished["output"] = f"{output}\n{DEAD_REPL_NOTE}" if output else DEAD_REPL_NOTE
-            finished["dead"] = True
-        workspace = await self.workspaces.snapshot(agent)
-        if workspace is not None:
-            finished["workspace"] = workspace
-        cell.data.pop(PENDING, None)
-        cell.finished_at = time.time()
-        g.update(cell, **finished)
-        if run.status is not ReplStatus.DEAD:
-            self._live[agent.id] = _last_cell(g, agent)
-        return cell, run
+        if last is not None:
+            self._live[agent.id] = _marker(last)
 
     def undo_calls(self, g: Graph, entries: list[dict[str, Any]]) -> None:
         """Undo saved calls a rerun didn't make again: remove the agents, take back the messages."""
@@ -354,109 +382,162 @@ class Flow:
                     g.remove(g.agent(target))
                 else:
                     g.delete(g.node(target))
-            except GraphError:
+            except (GraphError, KeyError):
                 continue
 
-    async def rerun(self, g: Graph, agent: Agent, cell: Node) -> Node:
-        """Run a pending cell again in place; a submit adds its ``done``."""
-        history = g.history(agent)
-        index = history.index(cell)
-        step = Step(g, agent, history[index - 1] if index else agent)
-        _, run = await self.execute(step, cell.data["code"], cell)
-        return Node(DONE, result=run.answer) if run.submitted else cell
+    async def prepare_repl(self, g: Graph, agent: Node) -> None:
+        """Bring the agent's live REPL up to the end of its history."""
+        async with self._repl_lock(agent):
+            await self._catch_up(g, agent, g.history(agent))
 
-    async def replay(self, g: Graph, agent: Agent | None = None) -> None:
+    async def replay(self, g: Graph, agent: Node | None = None) -> None:
         """Rebuild REPLs from the graph: one agent's, or every unfinished agent's."""
         for target in [agent] if agent is not None else g.agents():
             if agent is not None or g.status(target) != "done":
+                self.config_for(g, target, record=False)
                 self._live.pop(target.id, None)
                 await self.prepare_repl(g, target)
 
-    # -- steps ----------------------------------------------------------------
+    # -- turns ----------------------------------------------------------------
 
-    def wake(self) -> None:
-        if self.queue is not None:
-            self.queue.wake()
+    async def step(self, g: Graph, agent: Node) -> Node:
+        """Take one turn for ``agent`` outside a run; returns its last node."""
+        self.config_for(g, agent)
+        self.deliver_results(g, agent)
+        await self._turn(g, agent)
+        return g.tail(agent)
 
-    async def step(self, g: Graph, agent: Agent) -> Node | None:
-        """Take one step for ``agent`` outside a run."""
-        g.deliver(agent)
-        step = Step.latest(g, agent)
-        with running_step(step):
-            return (await self.run_step(step)).created
-
-    async def run_step(self, step: Step) -> StepResult:
-        """One step: call the agent's harness (or re-run an invalidated cell) and land its node."""
-        g, agent = step.graph, step.agent
+    async def _turn(self, g: Graph, agent: Node) -> None:
+        """One turn: run the node an edit left ready, or call the agent's harness."""
+        seen = len(g.history(agent))
         started = time.time()
-        error: BaseException | None = None
-        landed: Node | None
         try:
             config = self.config_for(g, agent)
-            if isinstance(step.node, Node) and step.node.pending:
-                landed = await self.rerun(g, agent, step.node)
+            ready = next((n for n in agent.root_data.history if n.state != DONE), None)
+            if ready is not None:
+                ready.data.setdefault("seen", len(g.history(ready)) - 1)
+                await self.run_node(g, agent, ready)
             else:
-                landed = await config.load_harness()(self, step)
-                if not isinstance(landed, Node):
-                    raise TypeError(
-                        f"harness {config.harness} returned {type(landed).__name__}, not a Node"
-                    )
-            # Cells land as they start; anything else the step returns lands now.
-            if landed.id not in g:
-                landed.started_at, landed.finished_at = started, time.time()
-                g.append(agent, landed)
+                await config.load_harness()(self, Step.latest(g, agent))
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - a failed step finishes the agent
-            error = exc
+        except Exception as exc:
             text = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
             scope = "run" if g.parent(agent) is None else "child"
-            landed = Node(DONE, result=f"[{scope} failed: {text}]", error=text)
-            landed.started_at, landed.finished_at = started, time.time()
-            g.append(agent, landed)
-        return StepResult(step=step, created=landed, error=error)
+            failed = Node(
+                "assistant",
+                result=f"[{scope} failed: {text}]",
+                output=text,
+                error=True,
+                seen=seen,
+                terminal=True,
+            )
+            failed.started_at, failed.finished_at = started, time.time()
+            if agent.id in g:
+                self.append(g, agent, failed)
+            if scope == "run":
+                raise
 
-    def budget_exhausted(self, g: Graph, agent: Agent) -> bool:
+    def budget_exhausted(self, g: Graph, agent: Node) -> bool:
         """Whether the agent's run has spent its ``max_budget`` tokens."""
-        limit = agent.config.max_budget
+        limit = agent.root_data.config.max_budget
         if limit is None:
             return False
         return g.usage(g.subtree(g.lineage(agent)[0])).total >= limit
 
-    def budget_nearly_spent(self, g: Graph, agent: Agent) -> bool:
+    def budget_nearly_spent(self, g: Graph, agent: Node) -> bool:
         """Whether one more average model call would exhaust the run's token budget."""
-        limit = agent.config.max_budget
+        limit = agent.root_data.config.max_budget
         if limit is None:
             return False
         run = g.subtree(g.lineage(agent)[0])
-        turns = sum(1 for a in run for node in a.nodes if node.type == LLM)
+        turns = sum(1 for a in run for node in a.root_data.history if node.data.get("usage"))
         spent = g.usage(run).total
         return spent >= limit or (turns > 0 and spent + spent / turns >= limit)
 
     # -- results ----------------------------------------------------------------
 
-    def deliver_results(self, g: Graph, agent: Agent) -> Node | None:
-        """Message ``agent`` the results of its finished children that no cell awaited.
+    def deliver_results(self, g: Graph, agent: Node) -> Node | None:
+        """Attach the results of ``agent``'s finished children that nothing read yet.
 
-        Only between turns: never while it steps, mid-action, or after it finished.
+        One user node binds each result as a variable named after its child.
+        Only between turns, never to an agent that finished, and not while an
+        edit has left a node to rerun, whose ``await`` takes the results itself.
         """
-        history = g.history(agent)
-        last = history[-1] if history else None
-        if agent.id in g.busy or last is None or last.type in (LLM, DONE) or last.pending:
+        if agent.id in self.tasks or g.status(agent) == "done":
+            return None
+        if any(node.state != DONE for node in agent.root_data.history):
             return None
         finished = unseen_results(g, agent)
         if not finished:
             return None
-        limit = min(RESULT_MAX, agent.config.max_output_length)
-        text = render_results(
-            [(g.path(c), c.config_name or "root", g.result(c)) for c, _ in finished], limit
+        limit = min(RESULT_MAX, agent.root_data.config.max_output_length)
+        inputs: dict[str, Any] = {}
+        items = []
+        for child, final in finished:
+            name = result_name(child.root_data.name, inputs.keys() | self.tools.keys())
+            inputs[name] = _json_safe(final.result)
+            items.append((g.path(child), child.root_data.config_name or "root", final.result))
+        node = Node(
+            "user",
+            render_results(items, limit) + "\nSet: " + ", ".join(f"`{name}`" for name in inputs),
+            input=inputs,
+            producer="rlmflow",
         )
-        message = g.send(agent, text, sender="rlmflow")
-        for _child, done in finished:
-            g.link_return(done, message)
-        return message
+        self.append(g, agent, node)
+        for _child, final in finished:
+            g.link(RETURN, final, node)
+        return node
 
     # -- running --------------------------------------------------------------
+
+    def _land(self, node: Node) -> None:
+        if self._landed is not None:
+            self._landed.append(node)
+        self.wake()
+
+    def wake(self) -> None:
+        """Wake whatever waits for the graph to change; safe from any thread."""
+        loop = self._loop
+        if loop is not None:
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is not loop:
+                loop.call_soon_threadsafe(self.wake)
+                return
+        news, self._news = self._news, asyncio.Event()
+        news.set()
+
+    async def wait_for(self, predicate: Callable[[], bool]) -> None:
+        """Wait until ``predicate()`` holds; it is checked whenever the graph changes."""
+        while True:
+            news = self._news
+            if predicate():
+                return
+            await news.wait()
+
+    async def edit(
+        self, g: Graph, op: str, target: Node, *args: Any, **kwargs: Any
+    ) -> Invalidation:
+        """Apply ``g.<op>(target, ...)`` to a graph this Flow may be running.
+
+        The agents the edit touches stop first, so no turn writes over it.
+        """
+        if op not in ("edit", "delete", "remove", "replace"):
+            raise ValueError(f"unknown edit {op!r}")
+        preview = getattr(g, op)(target, *args, dry_run=True, **kwargs)
+        await self._cancel([*preview.rewound, *preview.removed])
+        invalidation = getattr(g, op)(target, *args, **kwargs)
+        self.wake()
+        return invalidation
+
+    async def _cancel(self, agent_ids: Iterable[str]) -> None:
+        tasks = [self.tasks.pop(i) for i in dict.fromkeys(agent_ids) if i in self.tasks]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def run_streaming(
         self,
@@ -465,92 +546,77 @@ class Flow:
         until: StepUntil = "done",
         root_config: AgentConfig | str | None = None,
     ) -> AsyncIterator[Step]:
-        """Drive every ready agent and yield a ``Step`` for each node as it lands.
+        """Run every agent that has something to do, and yield a ``Step`` for each node as it finishes.
 
         Roots run with ``root_config`` (an ``AgentConfig``, a config name, or
         ``"default"``); every other agent with the config it names.
         """
-        if self.queue is not None:
+        if self._graph is not None:
             raise RuntimeError("this Flow is already driving a run")
         self.root_config = self.resolve_config(root_config)
         for agent in g.agents():
+            name = agent.root_data.config_name
             if g.status(agent) != "done":
                 self.config_for(g, agent)
-            elif agent.config_name is None or agent.config_name in self.configs:
+            elif name is None or name in self.configs:
                 self.config_for(g, agent, record=False)
-        boundary = resolve_boundary(until)
-        queue = TaskQueue()
-        self.queue = queue
-        self._loop = asyncio.get_running_loop()
-        landed: list[Node] = []
-
-        def written(kind: str, item: Any) -> None:
-            # A cell streams once, when it finishes.
-            if kind == "node" and not item.pending:
-                landed.append(item)
-            queue.wake()
-
-        unsubscribe = g.subscribe(written)
+        stop_at = _boundary(until)
+        self._graph, self._loop, self._landed = g, asyncio.get_running_loop(), []
+        self._news = asyncio.Event()
         toolkit_tools: list[str] = []
         try:
             toolkit_tools = await self._open_toolkits()
-            for agent in g.agents():
-                self.deliver_results(g, agent)
-            self._schedule(g)
-            while queue:
-                result = await queue.next()
-                if result is not None:
-                    g.busy.discard(result.agent.id)
-                    self.deliver_results(g, result.agent)
-                    parent = g.parent(result.agent) if result.agent.id in g else None
-                    if parent is not None:
-                        self.deliver_results(g, parent)
-                stop = False
-                while landed:
-                    node = landed.pop(0)
-                    if node.id in g:
-                        step = Step(g, g.owner(node), node)
-                        yield step
-                        stop = stop or (boundary is not None and boundary(step))
-                if stop:
-                    return
-                await queue.notify()
-                if (
-                    result is not None
-                    and result.error is not None
-                    and g.parent(result.agent) is None
-                ):
-                    raise result.error
+            while True:
+                news = self._news
+                self._reap(g)
                 self._schedule(g)
+                if self._landed:
+                    stop = False
+                    while self._landed:
+                        node = self._landed.pop(0)
+                        if node.id in g:
+                            step = Step(g, g.owner(node), node)
+                            yield step
+                            stop = stop or (stop_at is not None and stop_at(step))
+                    if stop:
+                        return
+                    # The caller may have written to the graph between steps.
+                    continue
+                if not self.tasks:
+                    return
+                await news.wait()
         finally:
-            unsubscribe()
-            interrupted = list(queue.running)
-            await queue.cancel()
-            g.busy.difference_update(interrupted)
-            for agent_id in interrupted:
-                self._live.pop(agent_id, None)
+            await self._cancel(list(self.tasks))
             for agent in g.agents():
                 self.deliver_results(g, agent)
             await self._close_toolkits(toolkit_tools)
-            if self.queue is queue:
-                self.queue = None
-                self._loop = None
+            self._graph = self._loop = self._landed = None
+
+    def _reap(self, g: Graph) -> None:
+        """Forget finished turns; a top-level agent's failure ends the run."""
+        for agent_id, task in list(self.tasks.items()):
+            if not task.done():
+                continue
+            del self.tasks[agent_id]
+            error = None if task.cancelled() else task.exception()
+            if error is not None:
+                raise error
 
     def _schedule(self, g: Graph) -> None:
-        """Start one step for every ready agent that has none in flight."""
-        queue = self.queue
+        """Start a turn for every agent that has something to do and no turn in flight."""
         for agent in g.agents():
-            if agent.id in g.busy or agent in queue or g.status(agent) != "running":
+            if agent.id in self.tasks:
+                continue
+            self.deliver_results(g, agent)
+            if g.status(agent) != "running":
                 continue
             self.config_for(g, agent)
-            history = g.history(agent)
-            last = history[-1] if history else None
-            if (last is None or last.type != LLM) and self.budget_nearly_spent(g, agent):
-                if not _final_sent(g, agent):
-                    g.send(agent, BUDGET_FINAL_TEXT, sender="rlmflow", final=True)
-            g.deliver(agent)
-            g.busy.add(agent.id)
-            queue.submit(Step.latest(g, agent), self.run_step)
+            if self.budget_nearly_spent(g, agent) and not _final_sent(g, agent):
+                final = Node("user", BUDGET_FINAL_TEXT, producer="rlmflow", final=True)
+                self.append(g, agent, final)
+            task = asyncio.ensure_future(self._turn(g, agent))
+            task.add_done_callback(lambda _task: self.wake())
+            self.tasks[agent.id] = task
 
     async def arun(
         self, target: Graph | str, *, root_config: AgentConfig | str | None = None, **args: Any
@@ -573,9 +639,7 @@ class Flow:
         return asyncio.run(self.arun(target, root_config=root_config, **args))
 
     async def aclose(self) -> None:
-        if self.queue is not None:
-            await self.queue.cancel()
-            self.queue = None
+        await self._cancel(list(self.tasks))
         if self._agent_tools is not None:
             self._agent_tools.close()
             self._agent_tools = None
@@ -586,27 +650,35 @@ class Flow:
         try:
             await asyncio.gather(*closing)
         finally:
-            self.pool.close()
             self.runtime.close()
             self._live.clear()
 
 
-def recorded_cells(g: Graph, agent: Agent) -> list[Node]:
-    """The cells a REPL rebuild re-runs: every finished one, except ones that killed the REPL."""
-    return [node for node in cells(g, agent) if not node.data.get("dead") and not node.pending]
+def _marker(node: Node) -> tuple[str, int]:
+    return node.id, node.version
 
 
-def _last_cell(g: Graph, agent: Agent) -> tuple[str, str] | None:
-    """Which cell an up-to-date REPL ran last, and its code (an edit may change it)."""
-    ran = recorded_cells(g, agent)
-    return (ran[-1].id, ran[-1].data["code"]) if ran else None
+def _final_sent(g: Graph, agent: Node) -> bool:
+    return any(node.data.get("final") for node in g.history(agent))
 
 
-def _final_sent(g: Graph, agent: Agent) -> bool:
-    return any(
-        node.type == MESSAGE and node.data.get("final")
-        for node in [*g.history(agent), *agent.inbox]
-    )
+def _json_safe(value: Any) -> Any:
+    try:
+        return json.loads(json.dumps(value, allow_nan=False))
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def result_name(agent_name: str, taken: Iterable[str] = ()) -> str:
+    """The variable a result node binds a child's result to: its name as an identifier."""
+    name = re.sub(r"\W", "_", agent_name)
+    if not name or name[0].isdigit() or keyword.iskeyword(name) or name in RESERVED_TOOLS:
+        name = f"_{name}"
+    taken = set(taken)
+    candidate, index = name, 1
+    while candidate in taken:
+        candidate, index = f"{name}_{index}", index + 1
+    return candidate
 
 
 def result_marker(path: str) -> str:
@@ -653,6 +725,6 @@ __all__ = [
     "BUDGET_FINAL_TEXT",
     "Flow",
     "StepUntil",
-    "recorded_cells",
     "render_results",
+    "result_name",
 ]

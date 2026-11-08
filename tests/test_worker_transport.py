@@ -56,8 +56,8 @@ class FakeConnection:
 def test_concurrent_worker_outputs_route_by_execution(tmp_path):
     first = make_repl(tmp_path)
     second = make_repl(tmp_path, session=first.session)
-    first.seed({}, {})
-    second.seed({}, {})
+    first.seed({})
+    second.seed({})
 
     async def run():
         return await asyncio.gather(
@@ -85,8 +85,8 @@ def test_concurrent_host_rpc_routes_to_each_tenant(tmp_path):
 
     first = make_repl(tmp_path)
     second = make_repl(tmp_path, session=first.session)
-    first.seed({"record": record}, {})
-    second.seed({"record": record}, {})
+    first.seed({"record": record})
+    second.seed({"record": record})
 
     async def run():
         return await asyncio.gather(
@@ -113,7 +113,7 @@ def test_gather_overlaps_async_host_tools_in_one_tenant(tmp_path):
         return value
 
     repl = make_repl(tmp_path)
-    repl.seed({"rendezvous": rendezvous}, {})
+    repl.seed({"rendezvous": rendezvous})
 
     async def run():
         return await repl.run(
@@ -133,7 +133,7 @@ def test_gather_overlaps_async_host_tools_in_one_tenant(tmp_path):
 
 def test_worker_exception_does_not_poison_next_execution(tmp_path):
     repl = make_repl(tmp_path)
-    repl.seed({}, {})
+    repl.seed({})
 
     async def run():
         return await repl.run("raise ValueError('boom')"), await repl.run("print('alive')")
@@ -150,7 +150,7 @@ def test_worker_exception_does_not_poison_next_execution(tmp_path):
 
 def test_raw_fd_output_cannot_corrupt_protocol(tmp_path):
     repl = make_repl(tmp_path)
-    repl.seed({}, {})
+    repl.seed({})
 
     async def run():
         first = await repl.run("import os\nos.write(1, b'raw-output\\n')")
@@ -168,7 +168,7 @@ def test_raw_fd_output_cannot_corrupt_protocol(tmp_path):
 
 def test_subprocess_output_cannot_corrupt_protocol(tmp_path):
     repl = make_repl(tmp_path)
-    repl.seed({}, {})
+    repl.seed({})
     code = (
         "import subprocess, sys\n"
         "subprocess.run([sys.executable, '-c', \"print('child-output')\"], check=True)"
@@ -193,7 +193,7 @@ def test_subprocess_output_cannot_corrupt_protocol(tmp_path):
 )
 def test_native_stdout_preserves_worker_and_state(tmp_path, code):
     repl = make_repl(tmp_path)
-    repl.seed({}, {})
+    repl.seed({})
     try:
         asyncio.run(repl.run("kept = 'state'"))
         assert asyncio.run(repl.run(code)).status is ReplStatus.OK
@@ -204,7 +204,7 @@ def test_native_stdout_preserves_worker_and_state(tmp_path, code):
 
 def test_captured_subprocess_output_is_returned_normally(tmp_path):
     repl = make_repl(tmp_path)
-    repl.seed({}, {})
+    repl.seed({})
     code = (
         "import subprocess, sys\n"
         "out = subprocess.run([sys.executable, '-c', \"print('captured')\"], "
@@ -219,7 +219,7 @@ def test_captured_subprocess_output_is_returned_normally(tmp_path):
 
 def test_native_stderr_flood_does_not_block_worker(tmp_path):
     repl = make_repl(tmp_path)
-    repl.seed({}, {})
+    repl.seed({})
     try:
         result = asyncio.run(repl.run("import os\nos.write(2, b'x' * 300_000)\nprint('survived')"))
         assert result.output == "survived"
@@ -229,7 +229,7 @@ def test_native_stderr_flood_does_not_block_worker(tmp_path):
 
 def test_user_stdin_cannot_consume_protocol_frames(tmp_path):
     repl = make_repl(tmp_path)
-    repl.seed({}, {})
+    repl.seed({})
     try:
         result = asyncio.run(repl.run("import sys\nprint(repr(sys.stdin.read()))"))
         assert result.status is ReplStatus.OK
@@ -342,7 +342,7 @@ def test_configured_execution_timeout_becomes_dead_outcome(tmp_path):
 def test_cancelling_shared_execution_kills_worker_group(tmp_path):
     first = make_repl(tmp_path)
     second = make_repl(tmp_path, session=first.session)
-    second.seed({}, {})
+    second.seed({})
 
     async def cancel():
         started = asyncio.Event()
@@ -352,7 +352,7 @@ def test_cancelling_shared_execution_kills_worker_group(tmp_path):
             started.set()
             await asyncio.Event().wait()
 
-        first.seed({"wait_forever": wait_forever}, {})
+        first.seed({"wait_forever": wait_forever})
         task = asyncio.create_task(first.run("await wait_forever()"))
         await asyncio.wait_for(started.wait(), timeout=5)
         task.cancel()
@@ -373,7 +373,7 @@ def test_worker_uses_few_host_descriptors(tmp_path):
     before = len(os.listdir("/dev/fd"))
     repl = make_repl(tmp_path)
     try:
-        repl.seed({}, {})
+        repl.seed({})
         asyncio.run(repl.run("x = 1"))
         assert len(os.listdir("/dev/fd")) - before < 10
     finally:

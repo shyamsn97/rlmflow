@@ -1,30 +1,22 @@
-"""Our harness: a model plus a persistent Python REPL, one node per call.
+"""Our harness: a model plus a persistent Python REPL, one node per model call.
 
-Each model call lands ``llm``; stepping that runs its one ``repl`` cell. The
-system prompt is ``prompt_sections()`` with ``config.prompt`` on top; the messages
-are the agent's history.
+Each model call is an assistant node: the reply is its text, and its one
+``repl`` block is its code, which runs in place. The system prompt is
+``prompt_sections()`` with ``config.prompt`` on top; the messages are the
+agent's history.
 """
 
 from __future__ import annotations
 
 import base64
 import mimetypes
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rlmflow import schema
 from rlmflow.graph.config import DEFAULT_MAX_ITERS
-from rlmflow.graph.nodes import (
-    CODE,
-    DONE,
-    IDLE,
-    IMAGES_KEY,
-    LLM,
-    MESSAGE,
-    Agent,
-    Node,
-    Step,
-)
+from rlmflow.graph.nodes import IMAGES_KEY, Node, Step
 from rlmflow.harnesses.base import Harness
 from rlmflow.harnesses.prompts import argument_manifest, guidance
 from rlmflow.utils import find_repl_blocks, has_repl_fence
@@ -82,44 +74,47 @@ def append_text(content: str | list[dict[str, Any]], text: str) -> str | list[di
     return [*content, {"type": "text", "text": text}]
 
 
-def node_messages(node: Node) -> list[dict[str, Any]]:
-    """One history node as chat messages."""
-    match node.type:
-        case "message":
-            return [{"role": "user", "content": node.data["text"]}]
-        case "llm":
-            return [{"role": "assistant", "content": node.data["text"]}]
-        case "code" if "output" in node.data:
-            output = node.data["output"] or "(no output)"
-            images = node.data.get(IMAGES_KEY)
-            return [{"role": "user", "content": with_images(output, images) if images else output}]
-        case "idle" if node.data.get("text"):
-            return [{"role": "assistant", "content": node.data["text"]}]
-    return []
+def node_messages(node: Node, *, first: bool = False) -> list[dict[str, Any]]:
+    """One history node as chat messages: its text, then what running it printed."""
+    messages: list[dict[str, Any]] = []
+    text = node.text
+    if node.root_data is not None and not first:
+        text = ""
+    if node.role == "user":
+        if text:
+            messages.append({"role": "user", "content": text})
+    elif text or "model" in node.data:
+        messages.append({"role": "assistant", "content": text})
+    elif node.runs_code:
+        messages.append({"role": "assistant", "content": f"```repl\n{node.code}\n```"})
+    if node.runs_code or node.output:
+        output = node.output or "(no output)"
+        images = node.data.get(IMAGES_KEY)
+        messages.append(
+            {"role": "user", "content": with_images(output, images) if images else output}
+        )
+    return messages
 
 
 def history(step: Step) -> list[Node]:
     """The nodes the agent has seen, up to ``step.node``."""
-    return step.graph.history(step.node) if isinstance(step.node, Node) else []
+    return step.graph.history(step.node)
 
 
-def origin(step: Step) -> Agent:
-    """The agent whose task opens this history: a fork's furthest base agent."""
-    agent = step.agent
-    while agent.base is not None:
-        agent = step.graph.owner(agent.base)
-    return agent
-
-
-def llm_turns(step: Step) -> int:
-    return sum(node.type == LLM for node in history(step))
+def turns(step: Step) -> int:
+    """How many turns the agent has taken."""
+    return sum("seen" in node.data for node in history(step))
 
 
 def history_messages(step: Step) -> list[dict[str, Any]]:
-    """The task, then the agent's history as chat messages; the last ``keep_n_messages`` when set."""
-    g, agent, config = step.graph, step.agent, step.agent.config
-    messages = [{"role": "user", "content": origin(step).task}]
-    messages += [message for node in history(step) for message in node_messages(node)]
+    """The agent's history as chat messages; the last ``keep_n_messages`` when set."""
+    g, agent, config = step.graph, step.agent, step.config
+    nodes = history(step)
+    messages = [
+        message
+        for index, node in enumerate(nodes)
+        for message in node_messages(node, first=index == 0)
+    ]
     keep = config.keep_n_messages
     if keep is not None and len(messages) > keep:
         messages = [{"role": "user", "content": TRUNCATION_TEXT}, *messages[-keep:]] if keep else []
@@ -131,14 +126,14 @@ def history_messages(step: Step) -> list[dict[str, Any]]:
                 [
                     "Background agents:",
                     *(
-                        f"- `{child.name}` ({g.path(child)}): "
+                        f"- `{child.root_data.name}` ({g.path(child)}): "
                         + ("result ready" if g.status(child) == "done" else g.status(child))
                         for child in children
                     ),
                 ]
             )
         )
-    if llm_turns(step) == (config.max_iters or DEFAULT_MAX_ITERS) - 1 or final_turn(step):
+    if turns(step) == (config.max_iters or DEFAULT_MAX_ITERS) - 1 or final_turn(step):
         notes.append(FINAL_TURN_TEXT)
     if notes:
         note = "\n\n".join(notes)
@@ -150,25 +145,25 @@ def history_messages(step: Step) -> list[dict[str, Any]]:
 
 
 def final_turn(step: Step) -> bool:
-    """Whether the latest message from rlmflow announced the final turn."""
+    """Whether rlmflow announced the final turn since the agent's last one."""
     for node in reversed(history(step)):
-        if node.type == LLM:
+        if "seen" in node.data:
             return False
-        if node.type == MESSAGE and node.data.get("final"):
+        if node.data.get("final"):
             return True
     return False
 
 
 def final_turn_spent(step: Step) -> bool:
     """The agent already had its final turn and didn't finish."""
-    seen_reply = False
+    took_turn = False
     for node in reversed(history(step)):
-        if node.type == LLM:
-            seen_reply = True
-        elif node.type == MESSAGE and node.data.get("final"):
-            return seen_reply
-        elif node.type in (DONE, IDLE):
+        if node.data.get("final"):
+            return took_turn
+        if node.data.get("terminal") or node.data.get("idle"):
             return False
+        if "seen" in node.data:
+            took_turn = True
     return False
 
 
@@ -188,26 +183,24 @@ def protocol_error(reply: str) -> str:
     return "the reply is empty"
 
 
-def malformed(reason: str) -> Node:
-    """A ``code`` node that ran nothing, so the model sees the problem and retries."""
-    text = (
+def malformed(reason: str) -> str:
+    """What the model is told when its reply ran nothing."""
+    return (
         f"{reason}. Nothing ran. To act, reply with exactly one non-empty ```repl block. "
         "To finish, call submit(value) in that block, or reply in plain text with no "
         "```repl block."
     )
-    return Node(CODE, code="", output=text, error=True)
 
 
 class ReplHarness(Harness):
-    """The REPL harness: a model call lands ``llm``; stepping that runs its cell."""
+    """The REPL harness: each model call is one assistant node, whose ``repl`` block it runs."""
 
     name = "repl"
-    handles = (*Harness.handles, LLM)
 
     def prompt_sections(self, flow: Flow, step: Step) -> dict[str, str | None]:
         from rlmflow.tools import format_tool_docs, repl_tools
 
-        output_schema = step.agent.config.output_schema
+        output_schema = step.config.output_schema
         return {
             "protocol": PROTOCOL_TEXT,
             "tools": format_tool_docs(repl_tools(flow, step)),
@@ -222,40 +215,44 @@ class ReplHarness(Harness):
         return [{"role": "system", "content": self.prompt(flow, step)}, *history_messages(step)]
 
     async def step(self, flow: Flow, step: Step) -> Node:
-        if step.node.type == LLM:
-            return await self.run_reply(flow, step)
-        return await self.call_model(flow, step)
-
-    async def call_model(self, flow: Flow, step: Step) -> Node:
-        config = step.agent.config
+        g, agent, config = step.graph, step.agent, step.config
+        seen = len(history(step))
         if final_turn_spent(step):
-            return Node(DONE, result=MAX_BUDGET_EXCEEDED)
-        if llm_turns(step) >= (config.max_iters or DEFAULT_MAX_ITERS):
-            return Node(DONE, result=MAX_ITERS_EXCEEDED)
+            return flow.append(g, agent, final_node(MAX_BUDGET_EXCEEDED, seen))
+        if turns(step) >= (config.max_iters or DEFAULT_MAX_ITERS):
+            return flow.append(g, agent, final_node(MAX_ITERS_EXCEEDED, seen))
+        started = time.time()
         text, usage = await flow.complete(self.messages(flow, step), config.model)
-        return Node(LLM, text=text, usage=usage.as_dict(), model=config.model)
-
-    async def run_reply(self, flow: Flow, step: Step) -> Node:
-        """Run the reply's one ``repl`` block, or take a reply without one as the answer."""
-        text = step.node.data["text"]
+        node = Node("assistant", text, usage=usage.as_dict(), model=config.model, seen=seen)
+        node.started_at = started
         if text.strip() and not has_repl_fence(text):
-            return self.text_answer(step, text.strip())
+            self.text_answer(step, node, text.strip())
+            node.finished_at = time.time()
+            return flow.append(g, agent, node)
         blocks = find_repl_blocks(text)
         if len(blocks) != 1 or not blocks[0]:
-            return malformed(protocol_error(text))
-        cell, run = await flow.execute(step, blocks[0])
-        return Node(DONE, result=run.answer) if run.submitted else cell
+            node.output, node.error = malformed(protocol_error(text)), True
+            node.finished_at = time.time()
+            return flow.append(g, agent, node)
+        node.code = blocks[0]
+        flow.append(g, agent, node)
+        await flow.run_node(g, agent, node)
+        return node
 
-    def text_answer(self, step: Step, text: str) -> Node:
-        output_schema = step.agent.config.output_schema
-        if output_schema is None:
-            return Node(DONE, result=text)
+    def text_answer(self, step: Step, node: Node, text: str) -> None:
+        """A reply with no ``repl`` block is the answer, if it fits the output schema."""
+        output_schema = step.config.output_schema
         try:
-            return Node(DONE, result=schema.check(text, output_schema))
+            node.result = text if output_schema is None else schema.check(text, output_schema)
         except (schema.SchemaError, TypeError) as exc:
-            return Node(
-                CODE, code="", output=f"Your reply is not a valid final answer.\n{exc}", error=True
-            )
+            node.output, node.error = f"Your reply is not a valid final answer.\n{exc}", True
+            return
+        node.data["terminal"] = True
+
+
+def final_node(result: str, seen: int) -> Node:
+    """A turn that ends the agent without calling the model."""
+    return Node("assistant", result=result, seen=seen, terminal=True)
 
 
 __all__ = [
@@ -269,7 +266,8 @@ __all__ = [
     "final_turn",
     "final_turn_spent",
     "history",
+    "final_node",
     "history_messages",
-    "llm_turns",
     "node_messages",
+    "turns",
 ]

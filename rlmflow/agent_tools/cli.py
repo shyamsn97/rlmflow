@@ -17,7 +17,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-#: How long ``rlmflow repl`` waits for a cell by default, in seconds.
+#: How long ``rlmflow repl`` waits for the code by default, in seconds.
 REPL_TIMEOUT = 600.0
 
 SERVE_FILE = Path(".rlmflow") / "serve.json"
@@ -93,7 +93,7 @@ def parser() -> argparse.ArgumentParser:
     repl.add_argument("code", nargs="?", help="the code; read from stdin when omitted")
     repl.add_argument("-f", "--file", help="read the code from this file")
     repl.add_argument(
-        "--timeout", type=float, default=REPL_TIMEOUT, help="seconds to wait for the cell"
+        "--timeout", type=float, default=REPL_TIMEOUT, help="seconds to wait for the code"
     )
     return root
 

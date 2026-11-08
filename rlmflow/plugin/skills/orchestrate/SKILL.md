@@ -26,7 +26,7 @@ that graph. Pick the smallest one that fits; most tasks need no agents at all.
 | `submit(value)` | Your final result. Once. |
 
 **Waiting.** In a Python REPL turn, `await` blocks until the result is in. In a
-Claude Code or pi session, launch in one cell, then end your turn without
+Claude Code or pi session, launch in one `rlmflow repl` call, then end your turn without
 submitting; you're resumed with the results of the agents you launched. Don't
 poll in either.
 
@@ -35,8 +35,8 @@ Anyone else (a peer, your parent) answers with a message at your next turn: send
 then finish the block or end the turn.
 
 **Snapshots.** `AGENTS` and an `Agent`'s status, result and relatives are as of
-when your cell started, so an agent you launch shows up in `AGENTS` from your
-next cell. `await` is live.
+when your code started, so an agent you launch shows up in `AGENTS` the next
+time you run code. `await` is live.
 
 **Depth.** An agent can launch others only if its config's `max_depth` allows
 it. The configs and their models are listed in your prompt; use a cheaper one
@@ -181,16 +181,16 @@ graph and call `flow.run(g)` again.
 g = Graph()
 fe = g.add_agent("Build the UI. Your teammate is backend.", name="frontend")  # peers
 be = g.add_agent("Build the API. Your teammate is frontend.", name="backend")
-g.add_edge("peer", fe, be)  # your own edge kinds; the engine ignores them
+g.link("peer", fe, be)  # your own edge kinds; the engine ignores them
 flow.run(g)
 
 g.send(fe, "Use the v2 endpoint instead.")  # steer an agent
-cell = next(n for n in g.history(be) if n.type == "code")
-g.send(g.fork(cell, name="retry"), "Try another approach.")  # branch from a cell
+step = next(n for n in g.history(be) if n.runs_code)
+g.send(g.fork(step, name="retry"), "Try another approach.")  # branch from any node
 flow.run(g)
 
-g.edit(g.history(be)[-1], result="...")  # change a result; whatever used it re-runs
-g.replace(cell, 0, "cached answer")  # bind the cell's first saved call; the cell re-runs
+g.edit(g.last_turn(be), result="...")  # change a result; whatever used it re-runs
+g.replace(step, 0, "cached answer")  # bind the node's first saved call; the node re-runs
 g.remove(fe, dry_run=True)  # what removing an agent would take with it
 flow.run(g)
 ```

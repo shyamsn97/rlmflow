@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from rlmflow import CODE, Graph
+from rlmflow import Graph
 from rlmflow.agent_tools.hooks import PLUGIN_DIR
 from rlmflow.cli.serve import INTERACTIVE
 from rlmflow.graph import calls
@@ -129,7 +129,7 @@ def test_claude_harness_roots_find_the_needles():
     assert "Correct:        True" in out
     g = Graph.load(RUNS / "mode2-filesystem")
     [root] = [a for a in g.agents() if g.parent(a) is None]
-    assert g.children(root) and root.config.harness == HARNESSES["claude_code"]
+    assert g.children(root) and root.root_data.root_data.config.harness == HARNESSES["claude_code"]
 
 
 def test_fork_halfway_through_a_claude_harness_run():
@@ -155,15 +155,13 @@ def test_your_claude_session_as_the_root_finds_the_needle_and_forks(tmp_path):
     graph_dir = saved_run(project, "mode4-filesystem")
     g = Graph.load(graph_dir)
     [root] = g.agents()[:1]
-    assert root.config.harness == INTERACTIVE and root.name == "root"
+    assert root.root_data.config.harness == INTERACTIVE and root.root_data.name == "root"
     assert g.children(root), "the root should have launched workers"
     assert answer in str(g.result(root))
-    turn_ends = [
-        n for n in g.history(root) if n.type in ("waiting", "done") and n.data.get("session_id")
-    ]
+    turn_ends = [n for n in g.history(root) if "seen" in n.data and n.data.get("session_id")]
     assert {n.data["session_id"] for n in turn_ends} == {result["session_id"]}
 
-    launching = next(n for n in g.history(root) if n.type == CODE and calls.launched(n))
+    launching = next(n for n in g.history(root) if n.runs_code and calls.launched(n))
     forked = subprocess.run(
         [
             sys.executable,
@@ -187,7 +185,7 @@ def test_your_claude_session_as_the_root_finds_the_needle_and_forks(tmp_path):
     )
     assert forked.returncode == 0, forked.stdout[-3000:] + forked.stderr[-3000:]
     g = Graph.load(graph_dir)
-    [fork] = [a for a in g.agents() if a.name == "fork"]
+    [fork] = [a for a in g.agents() if a.root_data.name == "fork"]
     assert answer in str(g.result(fork))
     assert g.children(fork) == [], "the fork should reuse the workers, not relaunch"
     shutil.rmtree(RUNS / "mode4-fork-halfway", ignore_errors=True)
@@ -204,5 +202,7 @@ def test_claude_code_children_of_a_repl_root():
     )
     assert "Result:" in out
     g = Graph.load(RUNS / "delegation")
-    claude_children = [a for a in g.agents() if a.config.harness == HARNESSES["claude_code"]]
-    assert len(claude_children) == 2 and all(g.terminal(a) for a in claude_children)
+    claude_children = [
+        a for a in g.agents() if a.root_data.config.harness == HARNESSES["claude_code"]
+    ]
+    assert len(claude_children) == 2 and all(g.status(a) == "done" for a in claude_children)

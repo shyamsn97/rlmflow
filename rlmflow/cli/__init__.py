@@ -14,7 +14,7 @@ Run an agent, or read one you already ran::
 
 Inside an agent's session (the harness sets ``RLMFLOW_URL/_AGENT/_TOKEN``)::
 
-    rlmflow repl 'print(len(haystack))'           a cell in the agent's REPL; every agent
+    rlmflow repl 'print(len(haystack))'           code in the agent's REPL; every agent
                                                   tool (launch_agent, submit, ...) is in there
 
 Your own Claude Code session as the root agent (see ``rlmflow plugin path``)::

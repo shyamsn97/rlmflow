@@ -2,8 +2,8 @@
 
 The plugin's hooks call ``/prompt`` when you send a message and ``/stop`` when
 Claude finishes replying. A prompt creates the root (``harness="interactive"``)
-or becomes a user message to it; Flow steps it, which opens the root's turn,
-and your session's ``rlmflow repl`` cells land in that turn through the agent
+or is attached to it as a user node; Flow steps it, which opens the root's turn,
+and your session's ``rlmflow repl`` runs land in that turn through the agent
 token in ``.rlmflow/serve.json``. ``/stop`` ends the turn. If the root is left
 idle on agents it started, ``/stop`` holds until their results open its next
 turn and returns them, so the Stop hook can hand them to Claude.
@@ -31,7 +31,7 @@ from rlmflow.agent_tools.hooks import RUN_COMMAND, STOP_WAIT
 from rlmflow.agent_tools.server import Turn
 from rlmflow.graph.config import harness_path
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import CODE, DONE, IDLE, MESSAGE, Agent, Node, Step
+from rlmflow.graph.nodes import SELF, Node, Step
 from rlmflow.harnesses.interactive import read_transcript
 from rlmflow.harnesses.sessions import (
     Session,
@@ -66,7 +66,7 @@ class Serve:
         *,
         graph_dir: str | Path,
         project: str | Path,
-        root: Agent | None = None,
+        root: Node | None = None,
         root_config: AgentConfig | None = None,
         session_id: str | None = None,
     ) -> None:
@@ -196,21 +196,17 @@ class Serve:
         }
 
     async def _context(self, session_id: Any, turn: Turn) -> str:
-        """What the session hasn't seen: the tools prompt, old cells if it can't resume, and agents' results."""
+        """What the session hasn't seen: the tools prompt, earlier code if it can't resume, and agents' results."""
         parts = []
         if session_id not in self._briefed:
             self._briefed.add(session_id)
-            parts.append(turn.step.agent.config.load_harness().prompt(self.flow, turn.step))
-            has_cells = any(node.type == CODE for node in self.graph.history(turn.step.agent))
-            if has_cells and not Session.for_step(turn.step).resume:
+            parts.append(turn.step.config.load_harness().prompt(self.flow, turn.step))
+            has_code = any(node.runs_code for node in self.graph.history(turn.step.agent))
+            if has_code and not Session.for_step(turn.step).resume:
                 parts.append(await resume_prompt(self.flow, turn.step))
         if turn.token not in self._shown:
             self._shown.add(turn.token)
-            parts += [
-                node.data["text"]
-                for node in pending(turn.step)
-                if node.data.get("sender") != "user"
-            ]
+            parts += [node.text for node in pending(turn.step) if node.producer != "user"]
         return "\n\n".join(parts)
 
     async def stop(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -232,8 +228,9 @@ class Serve:
         landed = await until(lambda: self._turn_end_since(mark), LAND_TIMEOUT)
         if landed is None:
             raise RuntimeError(f"the root's turn did not land: {self.error or 'timed out'}")
-        reply: dict[str, Any] = {"bound": True, "landed": landed.type}
-        if landed.type == IDLE:
+        ended = "idle" if landed.data.get("idle") else "done"
+        reply: dict[str, Any] = {"bound": True, "landed": ended}
+        if ended == "idle":
             timeout = float(body.get("timeout", STOP_WAIT))
             following = await until(lambda: self._next_turn(turn), timeout)
             if following is not None:
@@ -248,10 +245,10 @@ class Serve:
         return {"bound": True, "stopping": True}
 
     def _turn_end_since(self, mark: int) -> Node | None:
-        for node in reversed(self.root.nodes):
+        for node in reversed(self.root.root_data.history):
             if node.seq < mark:
                 return None
-            if node.type in (IDLE, DONE):
+            if "seen" in node.data and node.data.get("session_id"):
                 return node
         return None
 
@@ -271,14 +268,14 @@ async def until(probe: Callable[[], T | None], timeout: float, interval: float =
 
 
 def pending(step: Step) -> list[Node]:
-    """The messages at the end of the step's history, which the turn opened on."""
-    found: list[Node] = []
-    history = step.graph.history(step.node) if isinstance(step.node, Node) else []
-    for node in reversed(history):
-        if node.type != MESSAGE:
-            break
-        found.append(node)
-    return found[::-1]
+    """What others wrote since the agent's last turn began, which this turn opened on."""
+    turn = step.graph.last_turn(step.agent)
+    start = turn.data["seen"] if turn is not None else 1
+    return [
+        node
+        for node in step.graph.history(step.agent)[start:]
+        if node.producer != SELF and node.text and node.root_data is None
+    ]
 
 
 def interactive_config(base: AgentConfig | None = None) -> AgentConfig:
@@ -289,24 +286,25 @@ def interactive_config(base: AgentConfig | None = None) -> AgentConfig:
     )
 
 
-def ran_interactively(agent: Agent) -> bool:
+def ran_interactively(agent: Node) -> bool:
     """An ``interactive`` fork, or a root a serve ran with the interactive harness."""
-    if agent.config_name == INTERACTIVE_CONFIG:
+    data = agent.root_data
+    if data.config_name == INTERACTIVE_CONFIG:
         return True
-    recorded = agent.metadata.get("config") or {}
-    return agent.config_name is None and recorded.get("harness") == INTERACTIVE
+    recorded = data.metadata.get("config") or {}
+    return data.config_name is None and recorded.get("harness") == INTERACTIVE
 
 
-def interactive_root(graph: Graph) -> Agent | None:
+def interactive_root(graph: Graph) -> Node | None:
     """The latest agent in ``graph`` your session drives."""
     found = [agent for agent in graph.agents() if ran_interactively(agent)]
     return found[-1] if found else None
 
 
-def last_session(graph: Graph, agent: Agent) -> str | None:
+def last_session(graph: Graph, agent: Node) -> str | None:
     """The session that ended ``agent``'s latest turn; a fork has none of its own."""
-    for node in reversed(agent.nodes):
-        if node.type in (IDLE, DONE) and node.data.get("session_id"):
+    for node in reversed(agent.root_data.history):
+        if "seen" in node.data and node.data.get("session_id"):
             return node.data["session_id"]
     return None
 

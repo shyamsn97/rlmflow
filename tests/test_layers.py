@@ -14,7 +14,7 @@ LAYERS = {
     "rlmflow.llm": 2,
     "rlmflow.runtime": 2,
     "rlmflow.integrations": 2,
-    "rlmflow.engine": 3,
+    "rlmflow.workspaces": 3,
     "rlmflow.agent_tools": 3,
     "rlmflow.tools": 4,
     "rlmflow.harnesses": 4,

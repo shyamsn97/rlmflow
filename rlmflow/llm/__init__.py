@@ -1,4 +1,4 @@
-"""Chat clients: the protocol, chunks, retries, pooling, and ``client_for``."""
+"""Chat clients: the protocol, chunks, retries, ``complete`` and ``client_for``."""
 
 from __future__ import annotations
 
@@ -7,14 +7,11 @@ import asyncio
 import inspect
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from rlmflow.graph.nodes import LLMUsage
-
-if TYPE_CHECKING:
-    from rlmflow.engine.scheduler import Pool
 
 # Transient HTTP / streaming faults from the OpenAI / Anthropic client
 # stack. Matched by class name so this module doesn't have to import
@@ -59,25 +56,6 @@ retry_transient = retry(
 )
 
 
-def _accepts_kwarg(fn: Any, name: str) -> bool:
-    try:
-        params = inspect.signature(fn).parameters.values()
-    except (TypeError, ValueError):
-        return True
-    return any(
-        param.kind is param.VAR_KEYWORD
-        or (
-            param.name == name
-            and param.kind
-            in (
-                param.POSITIONAL_OR_KEYWORD,
-                param.KEYWORD_ONLY,
-            )
-        )
-        for param in params
-    )
-
-
 def _usage_from_client(client: Any) -> LLMUsage:
     usage = getattr(client, "last_usage", None)
     if usage is None:
@@ -114,21 +92,23 @@ async def join_chunks(stream: object) -> tuple[str, LLMUsage]:
     """Concatenate stream items into ``(text, last usage)``."""
     if inspect.iscoroutine(stream):
         stream = await stream
+    if not hasattr(stream, "__aiter__"):
+        return join_items(stream)  # type: ignore[arg-type]
     parts: list[str] = []
     usage = LLMUsage()
-    if hasattr(stream, "__aiter__"):
-        async for item in stream:  # type: ignore[union-attr]
-            chunk = as_chunk(item)
-            parts.append(chunk.text)
-            if chunk.usage is not None:
-                usage = chunk.usage
-    else:
-        for item in stream:  # type: ignore[union-attr]
-            chunk = as_chunk(item)
-            parts.append(chunk.text)
-            if chunk.usage is not None:
-                usage = chunk.usage
+    async for item in stream:  # type: ignore[union-attr]
+        chunk = as_chunk(item)
+        parts.append(chunk.text)
+        if chunk.usage is not None:
+            usage = chunk.usage
     return "".join(parts), usage
+
+
+def join_items(items: Iterator[object]) -> tuple[str, LLMUsage]:
+    """``join_chunks`` for a blocking stream."""
+    chunks = [as_chunk(item) for item in items]
+    usage = next((c.usage for c in reversed(chunks) if c.usage is not None), LLMUsage())
+    return "".join(chunk.text for chunk in chunks), usage
 
 
 async def stream_with_retry(factory) -> AsyncIterator[LLMChunk]:
@@ -191,106 +171,43 @@ class LLMClient(metaclass=abc.ABCMeta):
         """Release any async transport owned by this client."""
 
 
-class PooledLLMClient:
-    """Stream-first LLM primitive backed by a compute pool."""
+async def complete(
+    client: Any, messages: list[dict[str, Any]], *, timeout: float | None = None, **kwargs: Any
+) -> tuple[str, LLMUsage]:
+    """One model call: ``(text, usage)``, through the client's ``completion``, ``stream`` or ``chat``.
 
-    def __init__(
-        self,
-        client: Any,
-        pool: Pool,
-        *,
-        timeout: float | None = None,
-        request_kwargs: dict[str, Any] | None = None,
-    ) -> None:
-        self.client = client
-        self.pool = pool
-        self.timeout = timeout
-        self.request_kwargs = dict(request_kwargs or {})
+    A blocking client runs on a thread. ``timeout`` bounds the call, and is
+    handed to clients whose method takes one.
+    """
+    fn = getattr(client, "completion", None) or getattr(client, "stream", None) or client.chat
+    if timeout is not None and "timeout" not in kwargs and _accepts_kwarg(fn, "timeout"):
+        kwargs["timeout"] = timeout
+    name = getattr(fn, "__name__", "")
 
-    def _request_kwargs(
-        self,
-        target: Any,
-        kwargs: dict[str, Any],
-    ) -> dict[str, Any]:
-        request_kwargs = {
-            **self.request_kwargs,
-            **kwargs,
-        }
-        if (
-            self.timeout is not None
-            and "timeout" not in request_kwargs
-            and _accepts_kwarg(target, "timeout")
-        ):
-            request_kwargs["timeout"] = self.timeout
-        return request_kwargs
+    def finish(value: Any) -> tuple[str, LLMUsage]:
+        return (value, _usage_from_client(client)) if name == "chat" else value
 
-    async def stream(
-        self,
-        messages: list[dict[str, str]],
-        **kwargs: Any,
-    ) -> AsyncIterator[LLMChunk]:
-        stream_fn = getattr(self.client, "stream", None)
-        if stream_fn is None:
-            request_kwargs = self._request_kwargs(self.client.chat, kwargs)
-            call = self.pool.call(
-                self.client.chat,
-                messages,
-                **request_kwargs,
-            )
-            reply = (
-                await call if self.timeout is None else await asyncio.wait_for(call, self.timeout)
-            )
-            yield LLMChunk(
-                text=reply,
-                usage=_usage_from_client(self.client),
-            )
-            return
+    async def call() -> tuple[str, LLMUsage]:
+        if inspect.isasyncgenfunction(fn) or (name == "stream" and inspect.iscoroutinefunction(fn)):
+            return await join_chunks(fn(messages, **kwargs))
+        if inspect.iscoroutinefunction(fn):
+            return finish(await fn(messages, **kwargs))
 
-        request_kwargs = self._request_kwargs(stream_fn, kwargs)
+        def blocking() -> tuple[str, LLMUsage]:
+            value = fn(messages, **kwargs)
+            return join_items(value) if name == "stream" else finish(value)
 
-        async def iterate() -> AsyncIterator[LLMChunk]:
-            async for item in self.pool.stream(
-                stream_fn,
-                messages,
-                **request_kwargs,
-            ):
-                yield as_chunk(item)
+        return await asyncio.to_thread(blocking)
 
-        stream = iterate()
-        try:
-            if self.timeout is None:
-                async for chunk in stream:
-                    yield chunk
-            else:
-                async with asyncio.timeout(self.timeout):
-                    async for chunk in stream:
-                        yield chunk
-        finally:
-            await stream.aclose()
+    return await (call() if timeout is None else asyncio.wait_for(call(), timeout))
 
-    async def completion(
-        self,
-        messages: list[dict[str, str]],
-        **kwargs: Any,
-    ) -> tuple[str, LLMUsage]:
-        return await join_chunks(self.stream(messages, **kwargs))
 
-    async def chat(
-        self,
-        messages: list[dict[str, str]],
-        **kwargs: Any,
-    ) -> str:
-        reply, _usage = await self.completion(
-            messages,
-            **kwargs,
-        )
-        return reply
-
-    async def __call__(
-        self,
-        messages: list[dict[str, str]],
-    ) -> tuple[str, LLMUsage]:
-        return await self.completion(messages)
+def _accepts_kwarg(fn: Any, name: str) -> bool:
+    try:
+        parameters = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(p.name == name or p.kind is p.VAR_KEYWORD for p in parameters)
 
 
 def client_for(model: str, *, reasoning_effort: str | None = None, **kwargs: Any) -> LLMClient:
@@ -313,9 +230,9 @@ def client_for(model: str, *, reasoning_effort: str | None = None, **kwargs: Any
 __all__ = [
     "LLMChunk",
     "LLMClient",
-    "PooledLLMClient",
     "as_chunk",
     "client_for",
+    "complete",
     "is_retryable",
     "join_chunks",
     "retry_transient",

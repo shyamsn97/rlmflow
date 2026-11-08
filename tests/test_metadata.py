@@ -1,17 +1,23 @@
 import math
 
 import pytest
-from helpers import ScriptedFlow, StubLLM, agent_graph, counting_replies, repl, run_result
+from helpers import (
+    ScriptedFlow,
+    StubLLM,
+    agent_graph,
+    counting_replies,
+    ran,
+    repl,
+    run_result,
+    turns,
+)
 
 from rlmflow import (
-    CODE,
-    LLM,
     AgentConfig,
     Graph,
     LLMClient,
     LLMUsage,
     LocalRuntime,
-    Node,
     persistence,
     record_metadata,
 )
@@ -22,28 +28,27 @@ from rlmflow.tools import tool
 def test_node_metadata_is_strict_durable_and_forkable(tmp_path):
     g, root = agent_graph("metadata")
     record_metadata("experiment", {"run": "abc", "seed": 7}, node=root)
-    cell = Node(CODE, code="", output="ok")
-    record_metadata("metrics", {"score": 1.0}, node=cell)
-    g.append(root, cell)
+    code_node = ran(output="ok")
+    record_metadata("metrics", {"score": 1.0}, node=code_node)
+    g.append(root, code_node)
 
     g.save(tmp_path / "graph")
     loaded = Graph.load(tmp_path / "graph")
     loaded_root = loaded.agent(root.id)
-    forked = loaded.fork(loaded.history(loaded_root)[-1])
-    record = persistence.agent_record(root)
+    forked = loaded.fork(loaded.tail(loaded_root))
 
-    assert loaded_root.metadata["experiment"] == {"run": "abc", "seed": 7}
-    assert loaded_root.metadata == root.metadata
-    assert loaded.history(loaded_root)[-1].metadata == {"metrics": {"score": 1.0}}
-    assert loaded.history(forked)[-1].metadata == {"metrics": {"score": 1.0}}
-    assert record["metadata"] == root.metadata
-    assert persistence.node_record(cell)["metadata"] == {"metrics": {"score": 1.0}}
+    assert loaded_root.metadata == root.metadata == {"experiment": {"run": "abc", "seed": 7}}
+    assert loaded_root.root_data.metadata == root.root_data.metadata
+    assert loaded.tail(loaded_root).metadata == {"metrics": {"score": 1.0}}
+    assert loaded.history(forked)[-2].metadata == {"metrics": {"score": 1.0}}
+    assert persistence.node_record(root)["metadata"] == root.metadata
+    assert persistence.node_record(code_node)["metadata"] == {"metrics": {"score": 1.0}}
 
     with pytest.raises(TypeError, match="strict JSON"):
         record_metadata("bad", {"nan": math.nan}, node=root)
 
 
-def test_custom_proxy_tool_can_annotate_its_cell():
+def test_custom_proxy_tool_can_annotate_its_code():
     @tool("Tag this execution.", cache=True)
     async def tag(value: str) -> str:
         record_metadata("custom.tags", {"value": value}, append=True)
@@ -58,10 +63,10 @@ def test_custom_proxy_tool_can_annotate_its_cell():
     root = g.add_agent("tag it")
 
     assert run_result(flow, g, root) == "done"
-    cell = g.history(root)[-2]
-    assert cell.data["code"].startswith("print(await tag")
-    assert cell.metadata["custom.tags"] == [{"value": "alpha"}]
-    assert cell.data["calls"] == [
+    [code_node] = turns(g, root)
+    assert code_node.code.startswith("print(await tag")
+    assert code_node.metadata["custom.tags"] == [{"value": "alpha"}]
+    assert code_node.calls == [
         {"tool": "tag", "key": calls.key("tag", ["alpha"], {}), "value": "ALPHA"}
     ]
 
@@ -78,7 +83,7 @@ class QueryLLM(LLMClient):
         return repl("first = await llm_query('ask me')\nsubmit(first)")
 
 
-def test_llm_query_calls_are_recorded_on_the_cell():
+def test_llm_query_calls_are_recorded_on_the_code():
     llm = QueryLLM()
     flow = ScriptedFlow(llm, runtime=LocalRuntime(repl_timeout=5), configs=[AgentConfig(model="m")])
     g = Graph()
@@ -86,10 +91,10 @@ def test_llm_query_calls_are_recorded_on_the_cell():
 
     assert run_result(flow, g, root) == "an answer"
     assert llm.calls == 2
-    cell = g.history(root)[-2]
-    [call] = cell.metadata["llm_query.calls"]
+    [code_node] = turns(g, root)
+    [call] = code_node.metadata["llm_query.calls"]
     assert call["model"] == "m" and call["usage"]["input_tokens"] == 3
-    assert cell.data["calls"] == [
+    assert code_node.calls == [
         {
             "tool": "llm_query",
             "key": calls.key("llm_query", "ask me", "m", None, None, None),
@@ -98,7 +103,7 @@ def test_llm_query_calls_are_recorded_on_the_cell():
     ]
 
 
-def test_llm_node_records_usage_model_and_timing():
+def test_a_model_call_records_usage_model_and_timing_on_its_node():
     flow = ScriptedFlow(
         StubLLM(counting_replies(repl("submit('ok')"))),
         runtime=LocalRuntime(repl_timeout=5),
@@ -108,9 +113,8 @@ def test_llm_node_records_usage_model_and_timing():
     root = g.add_agent("answer")
 
     flow.run(g)
-    assert [node.type for node in g.history(root)] == [LLM, CODE, "done"]
-    llm_node = next(node for node in g.history(root) if node.type == LLM)
-
-    assert llm_node.data["usage"]["input_tokens"] >= 0
-    assert llm_node.data["model"] == "m"
-    assert llm_node.finished_at >= llm_node.started_at
+    [reply] = g.history(root)[1:]
+    assert (reply.role, reply.code, reply.data["terminal"]) == ("assistant", "submit('ok')", True)
+    assert reply.data["usage"]["input_tokens"] >= 0
+    assert reply.data["model"] == "m"
+    assert reply.finished_at >= reply.started_at

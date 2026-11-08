@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import DONE, IDLE, Agent, Edge, Node, Step
+from rlmflow.graph.nodes import Edge, Node, Step
 from rlmflow.view.text import _status, render_forest, render_tree
 
 if TYPE_CHECKING:
@@ -64,7 +64,7 @@ class ConsumerGroup(StreamConsumer):
 
 
 class GraphCheckpointer(StreamConsumer):
-    """Periodically save one streamed run and always flush its final revision."""
+    """Periodically save one streamed run, and save it once more on ``close``."""
 
     def __init__(
         self,
@@ -83,7 +83,6 @@ class GraphCheckpointer(StreamConsumer):
         self.last_flush_at = time.monotonic()
         self.latest: Graph | None = None
         self.dirty_nodes = 0
-        self.saved_revision = -1
 
     def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
         if self.latest is not None and graph is not self.latest:
@@ -91,7 +90,7 @@ class GraphCheckpointer(StreamConsumer):
         self.latest = graph
         self.dirty_nodes += 1
         node = item.node if isinstance(item, Step) else item
-        if (isinstance(node, Node) and node.type == DONE) or self._due():
+        if (isinstance(node, Node) and node.data.get("terminal")) or self._due():
             self.flush()
 
     def _due(self) -> bool:
@@ -105,11 +104,7 @@ class GraphCheckpointer(StreamConsumer):
         graph = self.latest
         if graph is None:
             return
-        revision = graph.revision
-        if revision == self.saved_revision:
-            return
         graph.save(self.path)
-        self.saved_revision = revision
         self.dirty_nodes = 0
         self.last_flush_at = time.monotonic()
 
@@ -306,14 +301,16 @@ class LiveGraphTree(StreamConsumer):
         from rich.text import Text
         from rich.tree import Tree
 
-        def render_label(agent: Agent):
+        def render_label(agent: Node):
             text = _status(graph, agent)
             status = graph.status(agent)
             if status == "done":
-                if graph.history(agent)[-1].data.get("error"):
+                if graph.last_turn(agent).error:
                     return Text.assemble(("✗ ", "red"), (text, "red"))
                 return Text.assemble(("✓ ", "green"), (text, "green"))
-            if status == IDLE or not all(graph.status(c) == "done" for c in graph.children(agent)):
+            if status == "idle" or not all(
+                graph.status(c) == "done" for c in graph.children(agent)
+            ):
                 return Text.assemble(("◌ ", "magenta"), (text, "magenta"))
             if self.spinners:
                 return Spinner("dots", text=Text(text, style="cyan"))
@@ -321,7 +318,7 @@ class LiveGraphTree(StreamConsumer):
 
         tree = Tree(Text(label or graph.id, style="bold"), guide_style="dim")
 
-        def populate(branch, agent: Agent) -> None:
+        def populate(branch, agent: Node) -> None:
             for child in graph.children(agent):
                 child_branch = branch.add(render_label(child), guide_style="dim")
                 populate(child_branch, child)

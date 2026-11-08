@@ -13,7 +13,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from rlmflow.graph.nodes import Agent
+from rlmflow.graph.nodes import Node
 from rlmflow.runtime.repl import Repl, ReplRun, ReplStatus
 from rlmflow.runtime.repl_server import (
     ProxyCall,
@@ -172,7 +172,7 @@ class PopenConnection:
                     stream.close()
 
 
-def _key(agent: Agent | str) -> str:
+def _key(agent: Node | str) -> str:
     return agent if isinstance(agent, str) else agent.id
 
 
@@ -196,9 +196,9 @@ class Runtime:
         self.preimports = preimports
         self.repls: dict[str, Repl] = {}
         #: Each agent's directory, when a ``Flow`` has workspaces; else ``working_directory``.
-        self.directory_for: Callable[[Agent], Path] | None = None
+        self.directory_for: Callable[[Node], Path] | None = None
 
-    def directory(self, agent: Agent) -> Path | None:
+    def directory(self, agent: Node) -> Path | None:
         return (
             self.directory_for(agent) if self.directory_for is not None else self.working_directory
         )
@@ -224,7 +224,7 @@ class Runtime:
         """A fresh, unstarted connection to one worker process started in ``directory``."""
         raise NotImplementedError
 
-    def open(self, agent: Agent) -> Repl:
+    def open(self, agent: Node) -> Repl:
         from rlmflow.runtime.repl_client import WorkerRepl, WorkerSession
 
         session = WorkerSession(
@@ -234,10 +234,10 @@ class Runtime:
         )
         return WorkerRepl(session, tenant_id=agent.id)
 
-    def get(self, agent: Agent | str) -> Repl | None:
+    def get(self, agent: Node | str) -> Repl | None:
         return self.repls.get(_key(agent))
 
-    def repl_for(self, agent: Agent, graph: Graph | None = None) -> Repl:
+    def repl_for(self, agent: Node, graph: Graph | None = None) -> Repl:
         """The agent's live REPL, opened on first use; ``graph`` places it in the run."""
         repl = self.repls.get(agent.id)
         if repl is None:
@@ -246,7 +246,7 @@ class Runtime:
             repl.update_env(agent_env(agent, graph))
         return repl
 
-    async def execute(self, agent: Agent, code: str, graph: Graph | None = None) -> ReplRun:
+    async def execute(self, agent: Node, code: str, graph: Graph | None = None) -> ReplRun:
         """Run code in this agent's REPL; a REPL that dies is an outcome, not a raise.
 
         Only a remote REPL can fail here — a local one captures whatever the code
@@ -264,7 +264,7 @@ class Runtime:
             text = f"REPL execution failed: {type(exc).__name__}: {exc}"
             return ReplRun(output=text, status=ReplStatus.DEAD, error=exc)
 
-    def close_repl(self, agent: Agent | str) -> None:
+    def close_repl(self, agent: Node | str) -> None:
         repl = self.repls.pop(_key(agent), None)
         if repl is not None:
             with suppress(Exception):
@@ -277,13 +277,13 @@ class Runtime:
     def close(self) -> None:
         self.close_repls()
 
-    def get_var(self, agent: Agent, name: str) -> Any:
+    def get_var(self, agent: Node, name: str) -> Any:
         return self.repl_for(agent).get_var(name)
 
-    def get_env_var(self, agent: Agent, name: str) -> Any:
+    def get_env_var(self, agent: Node, name: str) -> Any:
         return self.repl_for(agent).get_env_var(name)
 
-    def describe_namespace(self, agent: Agent) -> str:
+    def describe_namespace(self, agent: Node) -> str:
         """User variables in the agent's live REPL: names, types and sizes."""
         repl = self.get(agent)
         if repl is None:
@@ -300,11 +300,11 @@ class Runtime:
             repl.remove_tool(name)
 
 
-def agent_env(agent: Agent, graph: Graph | None = None) -> dict[str, str]:
+def agent_env(agent: Node, graph: Graph | None = None) -> dict[str, str]:
     """The ``ENV`` metadata describing where ``agent`` sits in its run."""
 
     if graph is None:
-        path, depth, parent = agent.name, 0, None
+        path, depth, parent = agent.root_data.name, 0, None
     else:
         path, depth = graph.path(agent), len(graph.lineage(agent)) - 1
         launcher = graph.parent(agent)
@@ -313,7 +313,7 @@ def agent_env(agent: Agent, graph: Graph | None = None) -> dict[str, str]:
         agent_id=path,
         depth=depth,
         parent_agent_id=parent,
-        max_depth=agent.config.max_depth,
+        max_depth=agent.root_data.config.max_depth,
     )
 
 

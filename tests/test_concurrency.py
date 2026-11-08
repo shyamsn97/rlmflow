@@ -5,7 +5,7 @@ import pytest
 from helpers import ScriptedFlow, agent_graph, first_user, run_result
 from helpers import repl as block
 
-from rlmflow import SequentialPool, SubprocessRuntime
+from rlmflow import SubprocessRuntime
 
 
 def fanout(*names):
@@ -121,7 +121,7 @@ def test_host_spawned_children_with_queued_messages_step_once_each():
     assert calls == 2
 
 
-def test_sequential_pool_does_not_hold_its_slot_while_parent_awaits_children():
+def test_one_worker_is_not_held_while_parent_awaits_children():
     class LLM:
         def chat(self, messages):
             query = first_user(messages)
@@ -130,7 +130,7 @@ def test_sequential_pool_does_not_hold_its_slot_while_parent_awaits_children():
             return block(f"submit({query!r})")
 
     g, root = agent_graph("parent")
-    assert run_result(ScriptedFlow(LLM(), workers=SequentialPool()), g, root) == "a,b"
+    assert run_result(ScriptedFlow(LLM(), workers=1), g, root) == "a,b"
 
 
 def test_a_failing_child_does_not_cancel_its_sibling():
@@ -186,4 +186,4 @@ def test_cancelling_a_run_cancels_the_children_it_launched():
 
     llm, flow = asyncio.run(main())
     assert llm.cancelled == {"a", "b"}
-    assert flow.queue is None
+    assert flow.tasks == {}

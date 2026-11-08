@@ -93,7 +93,7 @@ class ClaudeCodeHarness(SessionHarness):
     ) -> Any:
         from claude_agent_sdk import ClaudeAgentOptions
 
-        config = step.agent.config
+        config = step.config
         prompt = self.prompt(flow, step)
         fields: dict[str, Any] = {
             "system_prompt": {"type": "preset", "preset": "claude_code", "append": prompt},

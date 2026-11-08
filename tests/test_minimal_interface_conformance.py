@@ -1,4 +1,4 @@
-from helpers import ScriptedFlow, StubLLM, TestRuntime, first_user, run_result
+from helpers import ScriptedFlow, StubLLM, TestRuntime, code_nodes, first_user, run_result
 
 from rlmflow import RETURN, AgentConfig, Graph
 from rlmflow.graph.calls import launched
@@ -61,19 +61,23 @@ def test_minimal_interface_end_to_end_reruns_without_work(tmp_path):
 
     assert run_result(flow, g, root, root_config=AgentConfig(max_iters=8)) == "done"
     children = g.subtree(root)[1:]
-    assert [child.config.name for child in children] == ["value", "ok", "sum"]
+    assert [child.root_data.config.name for child in children] == ["value", "ok", "sum"]
     left, right, joined = children
     assert g.result(left) == {"value": 1}
     assert g.result(right) == {"ok": True}
     assert g.result(joined) == {"sum": 2}
-    assert joined.args == {"primary": {"value": 1}, "audit": {"ok": True}}
-    rejected = [n for n in g.history(right) if n.type == "code" and n.data.get("error")]
+    assert joined.input == {
+        "task": "join typed children",
+        "primary": {"value": 1},
+        "audit": {"ok": True},
+    }
+    rejected = [n for n in code_nodes(g, right) if n.error]
     assert len(rejected) == 1
-    cell = next(n for n in g.history(root) if n.type == "code")
-    assert {e.source for e in g.edges(kind=RETURN, target=cell.id)} == {
+    code_node = code_nodes(g, root)[0]
+    assert {e.source for e in g.edges(kind=RETURN, target=code_node.id)} == {
         g.history(child)[-1].id for child in children
     }
-    assert launched(cell) == [
+    assert launched(code_node) == [
         left.id,
         right.id,
         joined.id,
@@ -93,6 +97,6 @@ def test_minimal_interface_end_to_end_reruns_without_work(tmp_path):
     assert loaded.result(loaded.agent(root.id)) == "done"
     assert len(calls) == call_count
 
-    forked = g.fork(cell)
-    assert g.history(forked)[-1] is cell
+    forked = g.fork(code_node)
+    assert g.history(forked)[-2:] == [code_node, forked]
     assert not g.status(forked) == "done"

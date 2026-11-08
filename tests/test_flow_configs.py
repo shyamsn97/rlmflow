@@ -6,7 +6,6 @@ from helpers import reasoning_repl as block
 
 from rlmflow import AgentConfig, Flow, Graph
 from rlmflow.cli import resolve_options
-from rlmflow.graph.nodes import record_metadata
 
 
 def system_message(call_messages):
@@ -30,7 +29,7 @@ def test_resuming_runs_the_root_with_this_runs_config_not_the_recorded_one(tmp_p
     ScriptedFlow(llm, runtime=TestRuntime()).run(
         g, root_config=AgentConfig(prompt={"rules": "FIRST RULES"})
     )
-    assert root.metadata["config"]["prompt"]["rules"] == "FIRST RULES"
+    assert root.root_data.metadata["config"]["prompt"]["rules"] == "FIRST RULES"
     g.save(tmp_path)
 
     loaded = Graph.load(tmp_path)
@@ -42,7 +41,7 @@ def test_resuming_runs_the_root_with_this_runs_config_not_the_recorded_one(tmp_p
 
     assert "SECOND RULES" in system_message(llm.calls[-1])
     assert "FIRST RULES" not in system_message(llm.calls[-1])
-    assert again.metadata["config"]["prompt"]["rules"] == "SECOND RULES"
+    assert again.root_data.metadata["config"]["prompt"]["rules"] == "SECOND RULES"
     assert loaded.result(again) == "two"
 
 
@@ -55,14 +54,12 @@ def test_a_registered_config_wins_over_what_the_graph_recorded():
     )
     g = Graph()
     worker = g.add_agent("work", config="worker")
-    record_metadata(
-        "config", AgentConfig(name="worker", prompt={"rules": "STALE"}).to_dict(), node=worker
-    )
+    worker.root_data.bind_config(AgentConfig(name="worker", prompt={"rules": "STALE"}))
 
     flow.run(g)
 
     assert "CURRENT" in system_message(llm.calls[0])
-    assert worker.config.prompt["rules"] == "CURRENT"
+    assert worker.root_data.config.prompt["rules"] == "CURRENT"
 
 
 def test_an_unknown_config_name_raises():
@@ -87,8 +84,8 @@ def test_launch_agent_without_a_config_uses_default_not_the_roots():
     flow.run(g, root_config=AgentConfig(prompt={"rules": "ROOT ONLY"}, max_depth=1))
 
     [child] = g.children(root)
-    assert child.config_name == "default"
-    assert child.config == flow.configs["default"]
+    assert child.root_data.config_name == "default"
+    assert child.root_data.config == flow.configs["default"]
     assert "ROOT ONLY" in system_message(llm.calls[0])
     assert "ROOT ONLY" not in system_message(llm.calls[1])
     assert g.result(root) == "child"

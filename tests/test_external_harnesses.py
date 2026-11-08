@@ -6,21 +6,10 @@ import sys
 from pathlib import Path
 
 import pytest
-from helpers import ScriptedFlow, StubLLM
+from helpers import ScriptedFlow, StubLLM, code_nodes
 from helpers import reasoning_repl as block
 
-from rlmflow import (
-    CODE,
-    DONE,
-    FILE_TOOLS,
-    IDLE,
-    MESSAGE,
-    AgentConfig,
-    Flow,
-    Graph,
-    LocalRuntime,
-    tool,
-)
+from rlmflow import FILE_TOOLS, AgentConfig, Flow, Graph, LocalRuntime, Node, tool
 from rlmflow.graph import calls
 from rlmflow.graph.nodes import Step
 from rlmflow.harnesses.claude_code import ClaudeCodeHarness, ClaudeCodeOptions
@@ -75,7 +64,7 @@ def run(flow, g, root_config=None):
 WORKER = block("submit(chunk.count('x'))")
 
 
-def test_a_claude_lead_delegates_from_cells_waits_and_resumes_its_session(claude):
+def test_a_claude_lead_delegates_from_code_nodes_waits_and_resumes_its_session(claude):
     claude.script(
         (
             "Count the x's",
@@ -97,16 +86,16 @@ def test_a_claude_lead_delegates_from_cells_waits_and_resumes_its_session(claude
     run(ScriptedFlow(StubLLM(lambda messages: WORKER), configs=[worker]), g, claude.config())
 
     assert g.result(root) == 5
-    types = [n.type for n in g.history(root)]
-    assert types == [CODE, CODE, IDLE, MESSAGE, CODE, DONE]
-    idle = g.history(root)[2]
+    _, *code_before, idle, results, last_code, done = g.history(root)
+    assert [c.runs_code for c in code_before] == [True, True]
+    assert idle.data["idle"] and results.role == "user" and last_code.runs_code
+    assert done.data["terminal"] and done.data["seen"] == 5
     first, second = claude.calls()
     assert idle.data["session_id"] == flag(first, "--session-id")
-    assert idle.data["text"].startswith("Launched the counters; ending my turn. 8 |")
+    assert idle.text.startswith("Launched the counters; ending my turn. 8 |")
     assert flag(second, "--resume") == idle.data["session_id"] and "--fork-session" not in second
-    results = g.history(root)[3]
     assert {e.source for e in g.edges(kind="return", target=results.id)} == {
-        c.nodes[-1].id for c in g.children(root)
+        g.tail(c).id for c in g.children(root)
     }
     assert "Agents you started have finished" in flag(second, "-p")
 
@@ -117,8 +106,8 @@ def test_a_claude_lead_delegates_from_cells_waits_and_resumes_its_session(claude
     assert "`worker` (Counts x's in one chunk.)" in system and "keep a `notes` string" in system
     assert flag(first, "--allowedTools").split(",")[0] == "Bash(rlmflow:*)"
     assert g.usage().input_tokens >= 20  # both turns' usage counts toward budgets
-    [cell] = [n for n in g.history(root) if n.type == CODE and calls.launched(n)]
-    assert len(calls.launched(cell)) == 2
+    [code_node] = [n for n in code_nodes(g, root) if calls.launched(n)]
+    assert len(calls.launched(code_node)) == 2
 
 
 def test_forking_a_claude_agent_resumes_at_turn_ends_and_restarts_mid_turn(claude):
@@ -142,11 +131,11 @@ def test_forking_a_claude_agent_resumes_at_turn_ends_and_restarts_mid_turn(claud
     assert g.result(root) == 1
 
     history = g.history(root)
-    idle = next(n for n in history if n.type == IDLE)
-    first_cell = next(n for n in history if n.type == CODE)
+    idle = next(n for n in history if n.data.get("idle"))
+    first_code = code_nodes(g, root)[0]
     at_turn_end = g.fork(idle, name="at-turn-end")
     g.send(at_turn_end, "Continue")
-    mid_turn = g.fork(first_cell, name="mid-turn")
+    mid_turn = g.fork(first_code, name="mid-turn")
     calls_before = len(claude.calls())
     run(ScriptedFlow(StubLLM(lambda messages: WORKER), configs=configs), g, claude.config())
 
@@ -156,10 +145,10 @@ def test_forking_a_claude_agent_resumes_at_turn_ends_and_restarts_mid_turn(claud
     assert flag(resumed, "--resume") == idle.data["session_id"] and "--fork-session" in resumed
     prompt = flag(fresh, "-p")
     assert "--session-id" in fresh and prompt.startswith("Your task: Plan")
-    assert "[cell 1] notes = 'plan: count'" in prompt
+    assert "[1] notes = 'plan: count'" in prompt
     assert "notes (str, 11 chars)" in prompt
     # Neither fork launched the worker again.
-    assert len([a for a in g.agents() if a.config_name == "worker"]) == 1
+    assert len([a for a in g.agents() if a.root_data.config_name == "worker"]) == 1
 
 
 def test_a_message_reopens_a_finished_claude_agent_in_the_same_session(claude):
@@ -247,7 +236,7 @@ def define(word: str) -> str:
 def test_the_session_prompt_lists_the_flows_tools_and_where_the_repl_runs():
     g = Graph()
     agent = g.add_agent("t")
-    agent.bind_config(AgentConfig())
+    agent.root_data.bind_config(AgentConfig())
     step = Step(g, agent, agent)
 
     local = PiHarness().prompt(Flow(tools=[FILE_TOOLS, define]), step)
@@ -263,7 +252,7 @@ def test_the_session_prompt_lists_the_flows_tools_and_where_the_repl_runs():
 def test_config_prompt_replaces_drops_and_adds_sections():
     g = Graph()
     agent = g.add_agent("t")
-    agent.bind_config(
+    agent.root_data.bind_config(
         AgentConfig(prompt={"state": "KEEP NOTES.", "record": None, "style": "BE TERSE."})
     )
     prompt = PiHarness().prompt(Flow(), Step(g, agent, agent))
@@ -278,7 +267,7 @@ def test_every_harness_gets_the_same_guidance():
 
     g = Graph()
     agent = g.add_agent("t")
-    agent.bind_config(AgentConfig())
+    agent.root_data.bind_config(AgentConfig())
     step = Step(g, agent, agent)
     shared = guidance(step)
     assert shared["orchestration"]
@@ -293,14 +282,12 @@ def test_a_session_starts_fresh_resumes_or_forks():
     start = Session.for_step(Step(g, agent, agent))
     assert start.resume is False and start == Session.for_step(Step(g, agent, agent))
 
-    from rlmflow import Node
-
-    end = g.append(agent, Node(IDLE, session_id="s1"))
+    end = g.append(agent, Node("assistant", session_id="s1", seen=1, idle=True))
     assert Session.for_step(Step(g, agent, end)) == Session("s1", resume=True, fork=False)
     fork = g.fork(end)
     assert Session.for_step(Step(g, fork, end)).fork is True
-    cell = g.append(agent, Node(CODE, code="x = 1", output=""))
-    assert Session.for_step(Step(g, agent, cell)).resume is False
+    code_node = g.append(agent, Node("assistant", code="x = 1"))
+    assert Session.for_step(Step(g, agent, code_node)).resume is False
 
 
 def test_pi_reads_the_final_assistant_text_and_usage():
@@ -337,7 +324,9 @@ def test_pi_reads_the_final_assistant_text_and_usage():
 def test_pi_session_files_resume_in_place_and_fork_by_copy(tmp_path):
     g = Graph()
     agent = g.add_agent("t")
-    agent.bind_config(AgentConfig(harness="pi", harness_options={"session_dir": str(tmp_path)}))
+    agent.root_data.bind_config(
+        AgentConfig(harness="pi", harness_options={"session_dir": str(tmp_path)})
+    )
     step, pi = Step(g, agent, agent), PiHarness()
     fresh = pi.session_file(step, Session("abc"))
     assert fresh == tmp_path / "abc.jsonl"

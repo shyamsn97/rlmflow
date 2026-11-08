@@ -3,7 +3,7 @@
 A harness opens a turn for the agent it is stepping and starts its session with
 ``turn.env``. Each request carries the turn's token, so it acts as that agent at
 its latest node; the token stops working when the turn ends. ``/repl`` runs a
-cell and lands it as a ``code`` node, which streams like any other step.
+call as a new node at the end of the agent's history.
 
 ``rlmflow serve`` also hands out an agent token (``attach``), which lasts across
 turns and acts for whichever turn of that agent is open, and a host token for
@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from rlmflow.agent_tools import tools
-from rlmflow.graph.nodes import Agent, Step
+from rlmflow.graph.nodes import Node, Step
 
 if TYPE_CHECKING:
     from rlmflow.flow import Flow
@@ -70,7 +70,7 @@ class Turn:
         return self.step.graph
 
     @property
-    def agent(self) -> Agent:
+    def agent(self) -> Node:
         return self.step.agent
 
 
@@ -92,7 +92,6 @@ class AgentToolsServer:
         self._turns: dict[str, Turn] = {}
         self._agent_tokens: dict[str, str] = {}
         self._open: dict[str, Turn] = {}
-        self._cell_locks: dict[str, asyncio.Lock] = {}
         self.host: Host | None = None
         self.host_token: str | None = None
 
@@ -135,11 +134,11 @@ class AgentToolsServer:
             if not turn.ended.done():
                 turn.ended.cancel()
 
-    def open_turn(self, agent: Agent | str) -> Turn | None:
+    def open_turn(self, agent: Node | str) -> Turn | None:
         """The turn ``agent`` has open, if any."""
         return self._open.get(agent if isinstance(agent, str) else agent.id)
 
-    def attach(self, agent: Agent) -> str:
+    def attach(self, agent: Node) -> str:
         """A token that acts for whichever turn of ``agent`` is open."""
         token = secrets.token_urlsafe(24)
         self._agent_tokens[token] = agent.id
@@ -169,9 +168,7 @@ class AgentToolsServer:
         code = body.get("code")
         if not isinstance(code, str) or not code.strip():
             raise RequestError(400, "repl needs non-empty code")
-        lock = self._cell_locks.setdefault(turn.agent.id, asyncio.Lock())
-        async with lock:
-            ran = await tools.repl(self.flow, self._step(turn), code)
+        ran = await tools.repl(self.flow, self._step(turn), code)
         if ran["submitted"]:
             turn.submitted, turn.result = True, ran["result"]
         return ran

@@ -26,8 +26,8 @@ class DoneSignal(BaseException):
         self.answer = answer
 
 
-class _CellStopIteration(Exception):
-    """StopIteration from cell code, lifted out of the async runner (PEP 479)."""
+class _CodeStopIteration(Exception):
+    """StopIteration from the code, lifted out of the async runner (PEP 479)."""
 
 
 class ReplStatus(StrEnum):
@@ -62,8 +62,8 @@ class Repl(ABC):
     env: dict[str, Any]
 
     @abstractmethod
-    def seed(self, tools: dict[str, Callable[..., object]], args: dict[str, Any]) -> None:
-        """Bind ``tools`` before a run; ``args`` only on the first seed, so cells can reassign them."""
+    def seed(self, tools: dict[str, Callable[..., object]]) -> None:
+        """Bind ``tools`` before a run."""
 
     @abstractmethod
     def inject(self, name: str, fn: Any) -> None: ...
@@ -204,7 +204,7 @@ class CurrentObject:
 
 
 class _ContextStream:
-    """Route Python writes to the active run without replacing stdout per cell."""
+    """Route Python writes to the active run without replacing stdout per run."""
 
     def __init__(self, real: Any) -> None:
         self.real = real
@@ -221,7 +221,7 @@ class _ContextStream:
 
 
 class LocalRepl:
-    """Worker-side cell executor with context-bound agent metadata."""
+    """Worker-side code executor with context-bound agent metadata."""
 
     def __init__(
         self,
@@ -232,8 +232,6 @@ class LocalRepl:
         self.namespace = namespace if namespace is not None else base_namespace()
         self._base: frozenset[str] = frozenset(self.namespace)
         self.env: dict[str, Any] = {}
-        self.args: dict[str, Any] = {}
-        self._seeded = False
         self.working_directory = (
             Path(working_directory).resolve() if working_directory is not None else None
         )
@@ -245,18 +243,8 @@ class LocalRepl:
         if not isinstance(sys.stderr, _ContextStream):
             sys.stderr = _ContextStream(sys.stderr)
 
-    def seed(self, tools: dict[str, Callable[..., object]], args: dict[str, Any]) -> None:
-        if self._seeded:
-            self.namespace.update(tools)
-            return
-        collisions = sorted(args.keys() & (set(self.namespace) | tools.keys()))
-        if collisions:
-            joined = ", ".join(collisions)
-            raise ValueError(f"agent arguments collide with REPL bindings: {joined}")
+    def seed(self, tools: dict[str, Callable[..., object]]) -> None:
         self.namespace.update(tools)
-        self.namespace.update(args)
-        self.args = dict(args)
-        self._seeded = True
 
     def inject(self, name: str, value: Any) -> None:
         self.namespace[name] = value
@@ -276,8 +264,7 @@ class LocalRepl:
         pass
 
     async def run(self, code: str, *, binding: dict[str, Any] | None = None) -> ReplRun:
-        current = binding or {"args": self.args, "env": self.env}
-        current.setdefault("args", self.args)
+        current = binding or {"env": self.env}
         current.setdefault("env", self.env)
         buffer = io.StringIO()
         binding_token = _BINDING.set(current)
@@ -292,7 +279,7 @@ class LocalRepl:
             )
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise
-        except _CellStopIteration:
+        except _CodeStopIteration:
             buffer.write("StopIteration")
             return ReplRun(output=buffer.getvalue().strip(), status=ReplStatus.ERROR)
         except BaseException as exc:  # noqa: BLE001 - agent exceptions are results
@@ -315,11 +302,11 @@ class LocalRepl:
             if inspect.isawaitable(result):
                 await result
         except StopIteration:
-            raise _CellStopIteration from None
+            raise _CodeStopIteration from None
         except RuntimeError as exc:
             if str(exc) != "coroutine raised StopIteration":
                 raise
-            raise _CellStopIteration from None
+            raise _CodeStopIteration from None
 
 
 class NotYourAgent(RuntimeError):
@@ -329,7 +316,7 @@ class NotYourAgent(RuntimeError):
 #: Key of the data-only agent reference that stands in for a handle in values crossing the wire.
 AGENT_REF_KEY = "$rlmflow_agent"
 AGENTS_BINDING = "__rlmflow_agents__"
-#: Namespace keys of ``await agent`` and ``agent.send``; cell code can't name them, and
+#: Namespace keys of ``await agent`` and ``agent.send``; the code can't name them, and
 #: they are the names their calls are saved under. The worker can't import
 #: ``rlmflow.graph``, so these must equal ``rlmflow.graph.calls.AWAIT`` and ``SEND``.
 AGENT_WAIT_TOOL = "await"

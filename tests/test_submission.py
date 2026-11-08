@@ -1,17 +1,26 @@
-from helpers import ScriptedFlow, StubLLM, agent_graph, counting_replies, repl, run_result
+from helpers import (
+    ScriptedFlow,
+    StubLLM,
+    agent_graph,
+    code_nodes,
+    counting_replies,
+    repl,
+    run_result,
+    turns,
+)
 
-from rlmflow import CODE, DONE, AgentConfig, LocalRuntime
+from rlmflow import AgentConfig, LocalRuntime
 
 
-def test_immediate_submission_adds_no_model_turn():
+def test_immediate_submission_is_one_turn():
     llm = StubLLM(counting_replies(repl("submit('answer')")))
     flow = ScriptedFlow(llm, runtime=LocalRuntime(repl_timeout=5))
     g, root = agent_graph("Answer.")
 
     assert run_result(flow, g, root) == "answer"
-    history = g.history(root)
-    assert [node.type for node in history] == ["llm", "code", "done"]
-    assert history[-2].data["code"] == "submit('answer')"
+    [turn] = turns(g, root)
+    assert g.history(root) == [root, turn]
+    assert turn.code == "submit('answer')" and turn.data["terminal"]
 
 
 def test_stdout_submission_is_accepted_without_an_extra_turn():
@@ -20,8 +29,8 @@ def test_stdout_submission_is_accepted_without_an_extra_turn():
     g, root = agent_graph("Count the records.")
 
     assert run_result(flow, g, root) == "Answer: 4"
-    assert sum(node.type == "llm" for node in g.history(root)) == 1
-    assert g.history(root)[-2].data["output"] == "count=4"
+    [turn] = turns(g, root)
+    assert turn.output == "count=4"
 
 
 def test_finish_alias_is_gone():
@@ -29,8 +38,8 @@ def test_finish_alias_is_gone():
     g, root = agent_graph("Answer.")
 
     assert run_result(flow, g, root) == "ok"
-    first = next(node for node in g.history(root) if node.type == CODE)
-    assert "NameError" in first.data["output"] and first.data["error"] is True
+    first = code_nodes(g, root)[0]
+    assert "NameError" in first.output and first.error is True
 
 
 def test_output_schema_failure_is_a_code_error_and_the_agent_retries():
@@ -41,9 +50,9 @@ def test_output_schema_failure_is_a_code_error_and_the_agent_retries():
     g, root = agent_graph("Return an object.")
 
     assert run_result(flow, g, root, root_config=AgentConfig(output_schema=schema)) == {"ok": True}
-    rejected = next(node for node in g.history(root) if node.type == CODE)
-    assert rejected.data["error"] is True and "ok" in rejected.data["output"]
-    assert g.history(root)[-1].type == DONE
+    rejected = code_nodes(g, root)[0]
+    assert rejected.error is True and "ok" in rejected.output
+    assert g.tail(root).data["terminal"]
 
 
 def test_output_schema_accepts_a_json_text_reply():
@@ -59,4 +68,5 @@ def test_plain_text_reply_is_the_final_answer():
     g, root = agent_graph("Answer.")
 
     assert run_result(flow, g, root) == "The answer is 4."
-    assert [node.type for node in g.history(root)] == ["llm", "done"]
+    [turn] = turns(g, root)
+    assert turn.text == "The answer is 4." and not turn.runs_code
