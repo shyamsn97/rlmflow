@@ -44,7 +44,7 @@ def main() -> None:
         llm_clients={"scripted": ScriptedLLM()}, configs=[AgentConfig(model="scripted")], workers=3
     )
     g = Graph()
-    root = g.add_agent("Queue two children, then collect them on a later turn.")
+    root = g.start("Queue two children, then collect them on a later turn.")
     try:
         flow.run(g, root_config=AgentConfig(model="scripted", max_iters=3))
         result = g.result(root)

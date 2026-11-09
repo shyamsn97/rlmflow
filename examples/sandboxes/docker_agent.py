@@ -69,7 +69,7 @@ def main() -> None:
         runtime=runtime,
     )
     g = Graph()
-    root = g.add_agent(PLATFORMER_QUERY)
+    root = g.start(PLATFORMER_QUERY)
     out_dir = Path(args.out_dir)
     try:
         asyncio.run(print_run(flow, g, out_dir))

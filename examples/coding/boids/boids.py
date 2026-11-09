@@ -120,7 +120,7 @@ def main() -> None:
     g = Graph()
     for name in PEERS:
         others = ", ".join(peer for peer in PEERS if peer != name)
-        g.add_agent(TEAM.format(name=name, peers=others, spec=SPEC), name=name)
+        g.start(TEAM.format(name=name, peers=others, spec=SPEC), name=name)
 
     started = time.perf_counter()
     try:

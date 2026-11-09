@@ -91,7 +91,7 @@ def main() -> None:
     )
 
     g = Graph()
-    root = g.add_agent(query, trip_brief=TRIP_BRIEF)
+    root = g.start(query, trip_brief=TRIP_BRIEF)
     config = AgentConfig(
         model=args.model,
         max_depth=args.max_depth,

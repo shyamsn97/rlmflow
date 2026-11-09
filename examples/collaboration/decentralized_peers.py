@@ -67,7 +67,7 @@ def build_graph() -> Graph:
     g = Graph()
     for name, value in VALUES.items():
         role = COLLECTOR if name == "alice" else RESPONDER.format(name=name)
-        g.add_agent(PEERS.format(name=name) + role, name=name, value=value)
+        g.start(PEERS.format(name=name) + role, name=name, value=value)
     return g
 
 

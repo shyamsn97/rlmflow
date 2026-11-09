@@ -138,7 +138,7 @@ def test_same_conversation_same_graph_in_both_modes(env, tmp_path, monkeypatch):
     harness_project = tmp_path / "harness"
     harness_project.mkdir()
     headless = Graph()
-    root = headless.add_agent("Count the x's")
+    root = headless.start("Count the x's")
 
     async def as_harness():
         flow = worker_flow()

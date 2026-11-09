@@ -30,7 +30,7 @@ def print_history(g: Graph, agent: Node) -> None:
 def main() -> None:
     flow = Flow(llm_clients={"scripted": ScriptedLLM()})
     g = Graph()
-    root = g.add_agent("write hello.py")
+    root = g.start("write hello.py")
     flow.run(g, root_config=AgentConfig(model="scripted"))
     flow.runtime.close()
 

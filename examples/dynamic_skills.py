@@ -193,7 +193,7 @@ def main() -> None:
     )
 
     g = Graph()
-    root = g.add_agent(QUERY)
+    root = g.start(QUERY)
     if args.print_prompt:
         print("\n--- Skills section BEFORE run (empty) ---\n")
         print(library.render())

@@ -20,7 +20,7 @@ format 5 are not migrated: loading one raises, so rerun it.
 | `g.history(agent)` was `[]` for a fresh root | It starts with the root node |
 | `g.nodes("code", agent=a)` | `[n for n in g.history(a) if n.runs_code]`; `g.nodes()` includes roots |
 
-`g.add_agent(task, **args)`, `g.agents()`, `g.roots()`, `g.children(a)`,
+`g.start(task, **args)`, `g.agents()`, `g.roots()`, `g.children(a)`,
 `g.parent(a)`, `g.status(a)`, `g.result(a)` and `g.path(a)` keep their names and
 take or return root nodes.
 
@@ -106,7 +106,7 @@ runs from earlier versions don't load; rerun them.
 | `llm_output` | `llm` (`rlmflow.LLM`) |
 | `waiting` | `idle`, only for session agents waiting for messages |
 | `from` / `next` edges | `spawn`, `return`, `message`; an agent's order is its `nodes` list, and a fork is `agent.base` |
-| `g.attach(parent, *agents)` | `g.add_agent(task, parent=agent)` |
+| `g.attach(parent, *agents)` | `g.start(task, parent=agent)` |
 | `g.depends_on`, `inputs={...}` | Await the producer and pass its result |
 | `reports_to` edges | Message the agent, or add your own edge kind with `g.add_edge` |
 | `g.as_of(seq)` | `rlmflow.view.timeline.snapshot(g, count)` |
@@ -115,7 +115,7 @@ runs from earlier versions don't load; rerun them.
 
 ```python
 g = Graph()
-root = g.add_agent("Audit this repository.")
+root = g.start("Audit this repository.")
 flow.run(g)
 
 g.history(root)  # [llm, code, ..., done], no agent_start

@@ -10,10 +10,10 @@ from rlmflow.view.timeline import timeline
 
 def test_an_agents_chain_is_one_column_with_launches_and_forks_to_its_right():
     g = Graph()
-    root = g.add_agent("solve")
+    root = g.start("solve")
     reply = g.append(root, Node("assistant", "plan", seen=1, model="m"))
     turn = g.append(root, ran("x = 1"))
-    kids = [g.add_agent(f"part {i}", parent=turn) for i in range(3)]
+    kids = [g.start(f"part {i}", parent=turn) for i in range(3)]
     for kid in kids:
         finish(g, kid, 1)
     fork = g.fork(reply, name="alt")
@@ -31,8 +31,8 @@ def test_an_agents_chain_is_one_column_with_launches_and_forks_to_its_right():
 
 def test_a_launch_from_the_agent_itself_keeps_the_chain_under_the_agent():
     g = Graph()
-    root = g.add_agent("lead")
-    kids = [g.add_agent(f"part {i}", parent=root) for i in range(4)]
+    root = g.start("lead")
+    kids = [g.start(f"part {i}", parent=root) for i in range(4)]
     turn = g.append(root, ran("launch"))
     done = finish(g, root, "ok")
 
@@ -44,10 +44,10 @@ def test_a_launch_from_the_agent_itself_keeps_the_chain_under_the_agent():
 
 def test_results_and_messages_coming_back_are_drawn_from_their_source():
     g = Graph()
-    root = g.add_agent("lead")
+    root = g.start("lead")
     root.root_data.bind_config(AgentConfig())
     launch = g.append(root, ran("launch"))
-    kids = [g.add_agent(f"part {i}", parent=launch) for i in range(2)]
+    kids = [g.start(f"part {i}", parent=launch) for i in range(2)]
     for kid in kids:
         kid.root_data.bind_config(AgentConfig())
     note_turn = g.append(kids[1], ran("send"))

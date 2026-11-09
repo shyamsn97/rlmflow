@@ -56,7 +56,7 @@ def main() -> None:
         )
         config = AgentConfig(harness="claude_code")
         g = Graph()
-        root = g.add_agent(
+        root = g.start(
             f"There are {args.num_files} text files in haystack/. Exactly one line "
             "in one file matches `The magic number is <number>`. Find and return "
             "the number. Split the files into batches and give each batch to a "

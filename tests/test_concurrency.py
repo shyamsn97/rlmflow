@@ -81,8 +81,8 @@ def test_a_finished_child_keeps_its_repl():
 
 def test_host_spawned_subtrees_get_a_thread_each():
     g, root = agent_graph("parent")
-    a = g.add_agent("a", parent=root, name="a")
-    b = g.add_agent("b", parent=root, name="b")
+    a = g.start("a", parent=root, name="a")
+    b = g.start("b", parent=root, name="b")
 
     assert (
         run_result(ScriptedFlow(BarrierLLM(2, parent=JOIN_CHILDREN), workers=2), g, root) == "c,c"
@@ -104,8 +104,8 @@ def test_host_spawned_children_with_queued_messages_step_once_each():
             return block("submit('ok')")
 
     g, root = agent_graph("parent")
-    first = g.add_agent("first", parent=root, name="first")
-    second = g.add_agent("second", parent=root, name="second")
+    first = g.start("first", parent=root, name="first")
+    second = g.start("second", parent=root, name="second")
     g.send(first, "recover first")
     g.send(second, "recover second")
     flow = ScriptedFlow(LLM())

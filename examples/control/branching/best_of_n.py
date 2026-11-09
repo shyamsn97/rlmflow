@@ -1,6 +1,6 @@
 """Best-of-N with independent Flow branches.
 
-Each branch is a fresh ``g.add_agent(...)`` run saved to its own ``graph.json``,
+Each branch is a fresh ``g.start(...)`` run saved to its own ``graph.json``,
 demonstrating that a branch is just its own graph.
 
 Usage:
@@ -74,7 +74,7 @@ def run_branch(root: Path, idx: int) -> tuple[str, int, dict[str, str], int]:
     config = AgentConfig(model="mock", max_iters=10)
     flow = Flow(llm_clients={"mock": llm}, configs=[config])
     g = Graph()
-    agent = g.add_agent(QUERY)
+    agent = g.start(QUERY)
     flow.run(g, root_config=config)
     # Each branch persists to its own directory (graph.json).
     g.save(root / f"branch_{idx}")

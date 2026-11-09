@@ -69,7 +69,7 @@ def observation_injection() -> None:
 
     flow = Flow(llm_clients={"demo": DemoLLM()})
     g = Graph()
-    agent = g.add_agent("Wait for a controller note, then submit.")
+    agent = g.start("Wait for a controller note, then submit.")
     agent.root_data.bind_config(CONFIG)
     assert_kinds(g, agent, ["agent"])
 
@@ -105,7 +105,7 @@ def controller_stop_instruction() -> None:
 
     flow = Flow(llm_clients={"demo": DemoLLM()})
     g = Graph()
-    agent = g.add_agent("This run will be stopped by the controller.")
+    agent = g.start("This run will be stopped by the controller.")
     run_dir = example_run_dir("controller-injection") / "controller-stop-instruction"
 
     async def run_with_controller_stop() -> None:

@@ -179,8 +179,8 @@ graph and call `flow.run(g)` again.
 
 ```python
 g = Graph()
-fe = g.add_agent("Build the UI. Your teammate is backend.", name="frontend")  # peers
-be = g.add_agent("Build the API. Your teammate is frontend.", name="backend")
+fe = g.start("Build the UI. Your teammate is backend.", name="frontend")  # peers
+be = g.start("Build the API. Your teammate is frontend.", name="backend")
 g.link("peer", fe, be)  # your own edge kinds; the engine ignores them
 flow.run(g)
 

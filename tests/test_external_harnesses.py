@@ -81,7 +81,7 @@ def test_a_claude_lead_delegates_from_code_nodes_waits_and_resumes_its_session(c
         ),
     )
     g = Graph()
-    root = g.add_agent("Count the x's", doc="xxaaxbxx")
+    root = g.start("Count the x's", doc="xxaaxbxx")
     worker = AgentConfig(name="worker", description="Counts x's in one chunk.")
     run(ScriptedFlow(StubLLM(lambda messages: WORKER), configs=[worker]), g, claude.config())
 
@@ -125,7 +125,7 @@ def test_forking_a_claude_agent_resumes_at_turn_ends_and_restarts_mid_turn(claud
         ),
     )
     g = Graph()
-    root = g.add_agent("Plan")
+    root = g.start("Plan")
     configs = [AgentConfig(name="worker")]
     run(ScriptedFlow(StubLLM(lambda messages: WORKER), configs=configs), g, claude.config())
     assert g.result(root) == 1
@@ -157,7 +157,7 @@ def test_a_message_reopens_a_finished_claude_agent_in_the_same_session(claude):
         ("first", ["rlmflow repl \"submit('first')\""], "ok"),
     )
     g = Graph()
-    root = g.add_agent("first")
+    root = g.start("first")
     run(Flow(), g, claude.config())
     assert g.result(root) == "first"
 
@@ -179,8 +179,8 @@ def test_claude_output_schema_and_plain_text_results(claude):
         ]
     )
     g = Graph()
-    structured = g.add_agent("structured", config="structured")
-    plain = g.add_agent("plain", config="plain")
+    structured = g.start("structured", config="structured")
+    plain = g.start("plain", config="plain")
     run(flow, g)
 
     assert g.result(structured) == {"n": 3}
@@ -217,7 +217,7 @@ def test_claude_allowed_tools_add_rlmflow_to_the_users_own():
 def test_unknown_harness_options_are_an_error(claude):
     claude.script(("t", [], "ok"))
     g = Graph()
-    g.add_agent("t")
+    g.start("t")
     with pytest.raises(ValueError, match="invalid claude_code harness_options"):
         run(Flow(), g, claude.config(harness_options={"tools": "loose"}))
 
@@ -235,7 +235,7 @@ def define(word: str) -> str:
 
 def test_the_session_prompt_lists_the_flows_tools_and_where_the_repl_runs():
     g = Graph()
-    agent = g.add_agent("t")
+    agent = g.start("t")
     agent.root_data.bind_config(AgentConfig())
     step = Step(g, agent, agent)
 
@@ -251,7 +251,7 @@ def test_the_session_prompt_lists_the_flows_tools_and_where_the_repl_runs():
 
 def test_config_prompt_replaces_drops_and_adds_sections():
     g = Graph()
-    agent = g.add_agent("t")
+    agent = g.start("t")
     agent.root_data.bind_config(
         AgentConfig(prompt={"state": "KEEP NOTES.", "record": None, "style": "BE TERSE."})
     )
@@ -266,7 +266,7 @@ def test_every_harness_gets_the_same_guidance():
     from rlmflow.harnesses.repl import ReplHarness
 
     g = Graph()
-    agent = g.add_agent("t")
+    agent = g.start("t")
     agent.root_data.bind_config(AgentConfig())
     step = Step(g, agent, agent)
     shared = guidance(step)
@@ -278,7 +278,7 @@ def test_every_harness_gets_the_same_guidance():
 
 def test_a_session_starts_fresh_resumes_or_forks():
     g = Graph()
-    agent = g.add_agent("t")
+    agent = g.start("t")
     start = Session.for_step(Step(g, agent, agent))
     assert start.resume is False and start == Session.for_step(Step(g, agent, agent))
 
@@ -323,7 +323,7 @@ def test_pi_reads_the_final_assistant_text_and_usage():
 
 def test_pi_session_files_resume_in_place_and_fork_by_copy(tmp_path):
     g = Graph()
-    agent = g.add_agent("t")
+    agent = g.start("t")
     agent.root_data.bind_config(
         AgentConfig(harness="pi", harness_options={"session_dir": str(tmp_path)})
     )
@@ -356,7 +356,7 @@ def test_pi_args_are_appended_to_its_command_line(tmp_path):
         "args": ["--thinking", "high"],
     }
     g = Graph()
-    root = g.add_agent("t")
+    root = g.start("t")
     run(Flow(), g, AgentConfig(harness="pi", harness_options=options))
 
     assert g.result(root) == "done"

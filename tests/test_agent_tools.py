@@ -28,9 +28,7 @@ class Scripted:
 
 
 def agent(flow, g, task, name, **config):
-    record = g.add_agent(
-        task, name=name, config=flow.add_config(AgentConfig(name=name, **config)).name
-    )
+    record = g.start(task, name=name, config=flow.add_config(AgentConfig(name=name, **config)).name)
     record.root_data.bind_config(flow.config(name))
     return record
 
@@ -51,7 +49,7 @@ def test_a_sibling_messages_a_finished_peer_and_reopens_it():
         ]
     )
     g = Graph()
-    root = g.add_agent("parent")
+    root = g.start("parent")
 
     ScriptedFlow(llm).run(g)
 
@@ -80,7 +78,7 @@ def test_awaiting_send_to_a_descendant_returns_its_reply():
         ]
     )
     g = Graph()
-    a = g.add_agent("be a")
+    a = g.start("be a")
 
     ScriptedFlow(llm).run(g)
 
@@ -113,7 +111,7 @@ def test_a_rebuilt_repl_gives_each_await_the_result_it_first_returned():
         ]
     )
     g = Graph()
-    a = g.add_agent("be a")
+    a = g.start("be a")
     ScriptedFlow(llm).run(g)
     code_node = code_nodes(g, a)[0]
     assert code_node.output.strip() == "got ready pong"
@@ -160,7 +158,7 @@ def test_an_agent_reads_another_through_agents():
         ]
     )
     g = Graph()
-    root = g.add_agent("parent")
+    root = g.start("parent")
     ScriptedFlow(llm).run(g)
     assert g.result(root) == [
         ["root", "kid"],
@@ -185,7 +183,7 @@ def test_awaiting_an_agent_that_is_not_a_descendant_raises_not_your_agent():
         ]
     )
     g = Graph()
-    root = g.add_agent("parent task")
+    root = g.start("parent task")
 
     ScriptedFlow(llm).run(g)
 
@@ -204,7 +202,7 @@ def test_a_fresh_flow_rebuilds_the_repl_from_recorded_code_nodes(tmp_path):
         ]
     )
     g = Graph()
-    worker = g.add_agent("once", config="worker")
+    worker = g.start("once", config="worker")
     configs = [AgentConfig(name="worker")]
     ScriptedFlow(llm, configs=configs).run(g)
     assert g.result(worker) == "first"
@@ -263,7 +261,7 @@ def test_unknown_agents_are_a_key_error():
     )
     flow = ScriptedFlow(llm)
     g = Graph()
-    root = g.add_agent("go")
+    root = g.start("go")
 
     flow.run(g)
 
@@ -278,7 +276,7 @@ def test_launch_agent_takes_a_config_name_from_the_flow():
         ]
     )
     g = Graph()
-    root = g.add_agent("go")
+    root = g.start("go")
 
     ScriptedFlow(llm, configs=[AgentConfig(name="cheap", description="for small jobs")]).run(g)
 

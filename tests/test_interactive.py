@@ -293,7 +293,7 @@ def test_serve_json_is_found_above_the_cwd_and_the_environment_wins(project, mon
 def test_an_agent_token_acts_only_for_its_own_agent(project):
     async def main():
         g = Graph()
-        a, b = g.add_agent("a"), g.add_agent("b")
+        a, b = g.start("a"), g.start("b")
         for agent in (a, b):
             agent.root_data.bind_config(AgentConfig(harness=INTERACTIVE))
         flow = ScriptedFlow(StubLLM(lambda messages: WORKER))
@@ -373,7 +373,7 @@ class EndedTurn:
 
 def test_a_session_turn_ends_idle_while_children_run_or_results_are_unseen():
     g = Graph()
-    root = g.add_agent("lead")
+    root = g.start("lead")
     root.root_data.bind_config(AgentConfig(harness=INTERACTIVE))
     flow = ScriptedFlow(StubLLM(lambda messages: WORKER))
 
@@ -385,7 +385,7 @@ def test_a_session_turn_ends_idle_while_children_run_or_results_are_unseen():
     done = outcome()
     assert done.data["terminal"] and done.result == "my reply" and g.tail(root) is done
     code_node = g.append(root, ran("h = launch_agent('count')"))
-    child = g.add_agent("count", parent=code_node)
+    child = g.start("count", parent=code_node)
     assert outcome().data["idle"]
     finish(g, child, 2)
     unseen = outcome()

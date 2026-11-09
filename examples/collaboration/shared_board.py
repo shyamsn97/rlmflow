@@ -138,7 +138,7 @@ def main() -> None:
 
     g = Graph()
     for i in range(args.workers):
-        g.add_agent(WORKER, name=f"worker_{i}")
+        g.start(WORKER, name=f"worker_{i}")
 
     flow = Flow(workers=args.workers, tools=board.tools())
     asyncio.run(run(flow, g, args.out_dir, AgentConfig(model=args.model, max_iters=args.max_iters)))

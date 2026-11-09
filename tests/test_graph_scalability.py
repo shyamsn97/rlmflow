@@ -33,7 +33,7 @@ def test_deep_agent_chains_are_iterative():
     g, root = agent_graph("deep")
     agent = root
     for _ in range(2_000):
-        agent = g.add_agent("deeper", parent=agent)
+        agent = g.start("deeper", parent=agent)
 
     assert (len(g.lineage(agent)) - 1) == 2_000
     assert len(g.subtree(root)) == 2_001
@@ -69,7 +69,7 @@ def test_reads_count_usage_agents_and_errors():
     g, root = agent_graph("indexed")
     g.append(root, Node("assistant", "answer", usage={"input_tokens": 7, "output_tokens": 3}))
     code_node = g.append(root, ran("delegate"))
-    child = g.add_agent("child", parent=code_node, name="child")
+    child = g.start("child", parent=code_node, name="child")
     error = g.append(child, ran("1/0", "ZeroDivisionError", error=True))
 
     assert g.usage() == LLMUsage(input_tokens=7, output_tokens=3)
@@ -142,7 +142,7 @@ def test_large_inputs_are_content_addressed_once(tmp_path):
     large = "payment,row\n" + ("merchant,100.00\n" * 8_000)
     g, root = agent_graph("root", args={"data": large})
     code_node = g.append(root, ran("delegate"))
-    child = g.add_agent("child", parent=code_node, name="child", data=large)
+    child = g.start("child", parent=code_node, name="child", data=large)
 
     run = g.save(tmp_path / "run")
     graph_text = (run / "graph.json").read_text(encoding="utf-8")
@@ -165,7 +165,15 @@ def test_removed_apis_have_no_compatibility_aliases():
         assert not hasattr(Node, name), name
     for name in ("attach", "merge", "as_of", "items", "depends_on", "inputs", "tree", "terminal"):
         assert not hasattr(Graph, name), name
-    for name in ("add_edge", "remove_edge", "link_return", "deliver", "busy", "subscribe"):
+    for name in (
+        "add_agent",
+        "add_edge",
+        "remove_edge",
+        "link_return",
+        "deliver",
+        "busy",
+        "subscribe",
+    ):
         assert not hasattr(Graph, name), name
     for name in ("Agent", "CODE", "LLM", "MESSAGE", "IDLE", "PooledLLMClient"):
         assert not hasattr(rlmflow, name), name

@@ -27,7 +27,7 @@ def agent_graph(task: str = "", *, args: dict | None = None) -> tuple[Graph, Nod
     ``flow.run`` for anything else.
     """
     g = Graph()
-    root = g.add_agent(task, **(args or {}))
+    root = g.start(task, **(args or {}))
     root.root_data.bind_config(AgentConfig())
     return g, root
 

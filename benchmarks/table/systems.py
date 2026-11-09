@@ -157,7 +157,7 @@ def rlmflow(task: str, workdir: Path, limits: Limits, model: str) -> Outcome:
     os.environ["RLMFLOW_BENCH_MODEL"] = model
     flow = repl_workers(workdir, max_budget=tokens_for(limits.budget_usd, model))
     g = Graph()
-    root = g.add_agent(task)
+    root = g.start(task)
     run_dir = workdir / ".rlmflow" / "runs" / "repl"
     checkpointer = GraphCheckpointer(str(run_dir))
     error = None

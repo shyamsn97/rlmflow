@@ -150,7 +150,7 @@ def main() -> None:
     flow = Flow(configs=configs, runtime=runtime)
 
     g = Graph()
-    root = g.add_agent(
+    root = g.start(
         SUMMARIZE_QUERY.format(config="fast" if args.fast_model else "default"),
         document=document,
     )

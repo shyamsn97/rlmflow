@@ -139,7 +139,7 @@ def main() -> None:
 
     banner("1. Step-by-step execution")
     g = Graph()
-    root = g.add_agent("Create hello.py and goodbye.py. Delegate each file.")
+    root = g.start("Create hello.py and goodbye.py. Delegate each file.")
     asyncio.run(run(flow, g, workdir / "run"))
     print(f"\n{GREEN}Result:{RESET} {g.result(root)}")
 
@@ -170,7 +170,7 @@ def main() -> None:
     banner("6. Gym-style loop")
     flow3 = file_flow(workdir, AgentConfig(model="demo", max_depth=0, max_iters=args.max_iters))
     g3 = Graph()
-    root3 = g3.add_agent("Write a haiku about recursion to haiku.txt")
+    root3 = g3.start("Write a haiku about recursion to haiku.txt")
     rewards = asyncio.run(gym_loop(flow3, g3, root3, workdir / "gym-run"))
     print(f"{GREEN}Result:{RESET} {g3.result(root3)}")
     print(f"Total reward: {sum(rewards):.1f}")

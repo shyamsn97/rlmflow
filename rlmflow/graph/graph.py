@@ -229,7 +229,7 @@ class Graph:
         item.seq = self._seq
         self._seq += 1
 
-    def add_agent(
+    def start(
         self,
         task: str = "",
         *,
@@ -238,7 +238,7 @@ class Graph:
         parent: Node | None = None,
         **args: Any,
     ) -> Node:
-        """Add an agent and return its root node. Nothing runs here.
+        """Start an agent on ``task``: add its root node and return it. It runs when a Flow runs the graph.
 
         Keyword arguments are the root's inputs, so they become REPL variables
         along with ``task``; wrap one in ``Input(value, description=...)`` to

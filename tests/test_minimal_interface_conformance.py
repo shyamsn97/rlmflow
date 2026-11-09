@@ -52,7 +52,7 @@ def test_minimal_interface_end_to_end_reruns_without_work(tmp_path):
         )
 
     g = Graph()
-    root = g.add_agent("conformance root")
+    root = g.start("conformance root")
     configs = [
         AgentConfig(name=name, output_schema=schema, max_iters=4)
         for name, schema in (("value", SCHEMA), ("ok", OK_SCHEMA), ("sum", SUM_SCHEMA))

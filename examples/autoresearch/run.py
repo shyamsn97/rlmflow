@@ -724,7 +724,7 @@ launch the next one.
 {planner_note}"""
     graph_dir = args.out / "graph"
     g = Graph()
-    root = g.add_agent(
+    root = g.start(
         query,
         task_instructions=(example_dir / "program.md").read_text(),
     )

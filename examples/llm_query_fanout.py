@@ -78,7 +78,7 @@ def main() -> None:
     flow = Flow(llm_clients={"guided": llm}, workers=3)
 
     g = Graph()
-    root = g.add_agent(
+    root = g.start(
         "Classify the reviews. Fan out `llm_query(prompt)` with "
         "`await asyncio.gather(...)`, then call submit(...) with one line per review.",
     )

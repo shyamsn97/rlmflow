@@ -453,7 +453,7 @@ async def run_shepherd(
     # One graph holds the whole run: the worker, the shepherd, its previews, and
     # the recovery branches it adopts.
     g = Graph()
-    worker = g.add_agent(WORKER_QUERY, config="worker")
+    worker = g.start(WORKER_QUERY, config="worker")
 
     # The terminal view is the same shape as the other examples': one live agent
     # tree, redrawn in place, whether or not a Gradio dashboard is also running.
@@ -560,7 +560,7 @@ async def run_shepherd(
             plans,
             expected_plans=n_branches,
         )
-        shepherd = g.add_agent(
+        shepherd = g.start(
             META_QUERY.format(n=n_branches),
             config="shepherd",
             jam=json.dumps(tools["jam"]),

@@ -96,7 +96,7 @@ from rlmflow.view.text import kind
 
 async def main():
     g = Graph()
-    root = g.add_agent("Build a text adventure game in Python, with combat and inventory.")
+    root = g.start("Build a text adventure game in Python, with combat and inventory.")
     async for step in flow.run_streaming(g):
         print(g.path(step.agent), kind(step.node))  # every node as it finishes
     print(g.result(root))
@@ -352,7 +352,7 @@ g.edit(g.last_turn(child), result="42")
 flow.run(g)  # the parent's code reruns with 42
 ```
 
-Host code can also `g.send(agent, text, **inputs)`, `g.fork(node)`, `g.add_agent(...)`, `g.link("peer", a, b)`, `g.save(path)` and `Graph.load(path)`. See [Usage](docs/usage.md#change-a-run) and the [graph tour](examples/graph/).
+Host code can also `g.send(agent, text, **inputs)`, `g.fork(node)`, `g.start(...)`, `g.link("peer", a, b)`, `g.save(path)` and `Graph.load(path)`. See [Usage](docs/usage.md#change-a-run) and the [graph tour](examples/graph/).
 
 ## Tools
 

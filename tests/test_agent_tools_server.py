@@ -61,7 +61,7 @@ def shape(node):
 
 def test_repl_code_nodes_land_code_nodes_and_keep_state():
     g = Graph()
-    root = g.add_agent("count", doc="one two three")
+    root = g.start("count", doc="one two three")
     config = shell_config(
         [
             "rlmflow repl 'n = len(doc)'",
@@ -95,7 +95,7 @@ def test_repl_code_nodes_land_code_nodes_and_keep_state():
 
 def test_ending_a_turn_with_running_children_waits_then_resumes():
     g = Graph()
-    root = g.add_agent("delegate")
+    root = g.start("delegate")
     config = shell_config(
         [
             "rlmflow repl \"h = launch_agent('add', config='worker', x=2)\"",
@@ -157,8 +157,8 @@ def delegating_reply(messages):
 def test_server_code_nodes_write_the_same_edges_as_in_process_code_nodes():
     def run(root_config):
         g = Graph()
-        root = g.add_agent("delegate", name="lead")
-        g.add_agent("listen", name="peer", config="listener")
+        root = g.start("delegate", name="lead")
+        g.start("listen", name="peer", config="listener")
         flow = ScriptedFlow(
             StubLLM(delegating_reply),
             configs=[AgentConfig(name="worker"), AgentConfig(name="listener")],
@@ -192,7 +192,7 @@ def test_server_code_nodes_write_the_same_edges_as_in_process_code_nodes():
 
 def test_a_token_stops_working_when_its_turn_ends():
     g = Graph()
-    root = g.add_agent("x")
+    root = g.start("x")
     root.root_data.bind_config(AgentConfig())
     flow = Flow()
     seen = {}
@@ -215,7 +215,7 @@ def test_a_token_stops_working_when_its_turn_ends():
 
 def test_concurrent_code_nodes_from_one_agent_run_one_at_a_time():
     g = Graph()
-    root = g.add_agent("race")
+    root = g.start("race")
     root.root_data.bind_config(shell_config([]))
     flow = Flow()
 

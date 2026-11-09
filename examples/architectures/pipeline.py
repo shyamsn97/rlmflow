@@ -55,7 +55,7 @@ def main() -> None:
         ]
     )
     g = Graph()
-    root = g.add_agent(TASK, name="pipeline")
+    root = g.start(TASK, name="pipeline")
     out_dir = example_run_dir("architectures") / "pipeline"
     try:
         asyncio.run(print_run(flow, g, out_dir, width=20))

@@ -43,7 +43,7 @@ def main() -> None:
     config = AgentConfig(model="scripted", max_depth=1)
     flow = Flow(llm_clients={"scripted": ScriptedLLM()}, configs=[config])
     g = Graph()
-    root = g.add_agent("draft a release plan", name="root")
+    root = g.start("draft a release plan", name="root")
     flow.run(g, root_config=config)
     audit = g.children(root)[0]
     print("first run:", g.result(root))

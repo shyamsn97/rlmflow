@@ -85,7 +85,7 @@ async def demo_next_idle_and_resume() -> None:
 
     flow = Flow(llm_clients={"scripted": ScriptedLLM(reply)})
     g = Graph()
-    root = g.add_agent("work until I inject a stop instruction")
+    root = g.start("work until I inject a stop instruction")
     config = AgentConfig(model="scripted", max_iters=8)
 
     events = await collect(flow, g, until=after_appends(3), root_config=config)
@@ -111,7 +111,7 @@ async def demo_idle_heals_errors() -> None:
         llm_clients={"scripted": ScriptedLLM(replies)}, configs=[AgentConfig(model="scripted")]
     )
     g = Graph()
-    root = g.add_agent("recover from a bad response")
+    root = g.start("recover from a bad response")
 
     events = await collect(flow, g, until="idle")
     print_nodes("until='idle': an empty block is reported back as an error", events, g, root)
@@ -135,7 +135,7 @@ async def demo_callable_boundary_with_child() -> None:
         llm_clients={"scripted": ScriptedLLM(reply)}, configs=[AgentConfig(model="scripted")]
     )
     g = Graph()
-    root = g.add_agent("parent")
+    root = g.start("parent")
 
     def child_done(step: Step) -> bool:
         return step.agent.id != root.id and step.node.data.get("terminal", False)

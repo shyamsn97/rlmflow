@@ -54,9 +54,7 @@ flow = Flow(
 )
 
 g = Graph()
-root = g.add_agent(
-    "There are 100 text files in haystack/ ... give each batch to a `searcher` agent."
-)
+root = g.start("There are 100 text files in haystack/ ... give each batch to a `searcher` agent.")
 flow.run(
     g,
     root_config=AgentConfig(

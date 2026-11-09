@@ -53,7 +53,7 @@ def test_an_agent_is_its_root_node_and_owns_an_ordered_history():
 def test_a_child_agent_branches_off_the_node_that_launched_it():
     g, root = agent_graph("parent")
     turn = g.append(root, ran("launch"))
-    child = g.add_agent("child", parent=turn, name="worker")
+    child = g.start("child", parent=turn, name="worker")
 
     assert g.parent(child) is root
     assert g.lineage(child) == [root, child]
@@ -68,7 +68,7 @@ def test_a_child_agent_branches_off_the_node_that_launched_it():
 def test_fork_after_a_launch_shares_its_children_instead_of_copying_them():
     g, root = agent_graph("parent")
     turn = g.append(root, ran("launch"))
-    child = g.add_agent("child", parent=turn, name="child")
+    child = g.start("child", parent=turn, name="child")
     calls.record(turn, calls.LAUNCH, "k", agent=child.id)
     finish(g, child, "done")
     later = g.append(root, ran("print(1)", "1"))

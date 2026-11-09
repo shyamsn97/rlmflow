@@ -53,7 +53,7 @@ def test_code_nodes_run_in_the_agents_worktree_and_carry_snapshots(repo):
         StubLLM(reply), runtime=LocalRuntime(repl_timeout=10), workspaces=workspaces
     )
     g = Graph()
-    root = g.add_agent("edit")
+    root = g.start("edit")
     run(flow, g)
 
     assert g.result(root) == "base\nfirst\nsecond\n"
@@ -84,7 +84,7 @@ def test_children_start_from_the_parents_files_in_their_own_worktrees(repo):
         )
 
     g = Graph()
-    root = g.add_agent("lead")
+    root = g.start("lead")
     flow = ScriptedFlow(
         StubLLM(reply),
         configs=[AgentConfig(name="worker")],
@@ -112,7 +112,7 @@ def test_a_fork_rebuilds_its_repl_then_restores_the_files_at_the_fork_point(repo
         return block("count = 1\nopen('notes.txt', 'a').write('one\\n')\nprint('one')")
 
     g = Graph()
-    root = g.add_agent("edit")
+    root = g.start("edit")
     run(
         ScriptedFlow(
             StubLLM(reply), runtime=LocalRuntime(repl_timeout=10), workspaces=GitWorktrees(repo)

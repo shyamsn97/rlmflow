@@ -237,7 +237,7 @@ class Flow:
         """Create an agent launched by the running node; every harness's launches land here."""
         self.config(config)
         g = step.graph
-        child = g.add_agent(task, parent=step.node, config=config, name=name, **args)
+        child = g.start(task, parent=step.node, config=config, name=name, **args)
         self.config_for(g, child)
         self.workspaces.branch(child, step.agent)
         self.wake()
@@ -624,7 +624,7 @@ class Flow:
         """Run to the end. A graph returns itself; a task string returns its result."""
         if isinstance(target, str):
             g = Graph()
-            agent = g.add_agent(target, **args)
+            agent = g.start(target, **args)
         elif args:
             raise TypeError("agent arguments can only be passed with a task string")
         else:

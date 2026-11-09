@@ -25,7 +25,7 @@ To keep the run, build the graph yourself:
 from rlmflow import AgentConfig, Graph
 
 g = Graph()
-root = g.add_agent("Count the x's in doc.", doc="xxaaxbxx")
+root = g.start("Count the x's in doc.", doc="xxaaxbxx")
 flow.run(g, root_config=AgentConfig(max_iters=10))  # returns the graph
 g.result(root)  # 5
 g.save("runs/count")
@@ -69,7 +69,7 @@ flow = Flow(configs=[searcher])  # or flow.add_config(searcher)
 flow.run("Find the magic number in haystack/.", root_config=AgentConfig(model="gpt-5", max_depth=1))
 ```
 
-Roots (agents made with `g.add_agent` and no `config=`) run with the run's `root_config`: an `AgentConfig`, a config name, or `None` for the Flow's `"default"`. Everything else names a Flow config. `launch_agent(...)` without `config=` uses `"default"`, not its parent's. To put a top-level agent on a named config, use `g.add_agent(task, config="searcher")`. An unknown name is a `KeyError` when the Flow reaches the agent.
+Roots (agents made with `g.start` and no `config=`) run with the run's `root_config`: an `AgentConfig`, a config name, or `None` for the Flow's `"default"`. Everything else names a Flow config. `launch_agent(...)` without `config=` uses `"default"`, not its parent's. To put a top-level agent on a named config, use `g.start(task, config="searcher")`. An unknown name is a `KeyError` when the Flow reaches the agent.
 
 ## Models
 
@@ -177,7 +177,7 @@ Nodes, agents and edges: [The graph](node_model.md).
 
 ```python
 g.send(root, "Also report the file name.", ext=".py")  # a message; ext becomes a variable
-helper = g.add_agent("Collect the sources.", parent=root)  # a child, from host code
+helper = g.start("Collect the sources.", parent=root)  # a child, from host code
 retry = g.fork(
     some_node, name="retry", config="cheap"
 )  # branch from any node, optionally on another config

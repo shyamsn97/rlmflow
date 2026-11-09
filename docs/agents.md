@@ -70,7 +70,9 @@ writer = launch_agent("Write a four-line poem about a lighthouse.", name="writer
 poem = await writer
 poem = await writer.send("Tighten line two.")
 
-AGENTS["backend"].send("I need GET /items to return ids.", fields=["id"])  # a peer; it replies by message
+AGENTS["backend"].send(
+    "I need GET /items to return ids.", fields=["id"]
+)  # a peer; it replies by message
 ```
 
 To pass one agent's result to another, await it and pass the value: `launch_agent("Review `code`.", code=await coder)`. Passing the agent itself is an error.

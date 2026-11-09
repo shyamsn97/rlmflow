@@ -44,7 +44,7 @@ def grow(g: Graph, agent: Node, *, depth: int, branch: int) -> None:
     code = "print(await asyncio.gather(*kids))"
     launch = turn(g, agent, f"plan at {path}", code=code, output=f"fanout from {path}", usage=usage)
     for index in range(branch):
-        child = g.add_agent(f"subtask of {path}", parent=launch, name=f"c{index}")
+        child = g.start(f"subtask of {path}", parent=launch, name=f"c{index}")
         grow(g, child, depth=depth - 1, branch=branch)
     turn(g, agent, result=f"merged:{path}", terminal=True)
 
@@ -244,7 +244,7 @@ def main() -> None:
     args = parser.parse_args()
 
     g = Graph()
-    root = g.add_agent("deep tree root")
+    root = g.start("deep tree root")
     grow(g, root, depth=args.depth, branch=args.branch)
 
     print(f"agents={len(g.agents())}  nodes={len(g.nodes())}")

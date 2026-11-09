@@ -30,7 +30,7 @@ def main() -> None:
         ("candidate", "audit the release candidate", "canary failed"),
         ("rollback", "audit the rollback path", "rollback is safe"),
     ):
-        audit = g.add_agent(task, name=name)
+        audit = g.start(task, name=name)
         # Code with ``finished_at`` set already ran; without it, the flow would run it.
         ran = Node("assistant", code="run_audit()", output=verdict, seen=1)
         ran.finished_at = time.time()
@@ -40,14 +40,14 @@ def main() -> None:
         print(f"{name}: {g.status(audit)}, {g.result(audit)!r}")
 
     # Pass their results on to a new agent as arguments, and launch a child for it
-    # from host code: add_agent(parent=...) is the host-side launch_agent. The
+    # from host code: start(parent=...) is the host-side launch_agent. The
     # child's result reaches the parent as a message at its next turn.
-    root = g.add_agent(
+    root = g.start(
         "decide the release from `audits`",
         name="root",
         audits={name: g.result(agent) for name, agent in audits.items()},
     )
-    recheck = g.add_agent("re-check the rollback path", parent=root, name="recheck")
+    recheck = g.start("re-check the rollback path", parent=root, name="recheck")
     print(
         "spawn edge:",
         [

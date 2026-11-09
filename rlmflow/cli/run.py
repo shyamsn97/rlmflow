@@ -202,7 +202,7 @@ def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> 
     consumers.init(flow)
     if graph is None:
         graph = Graph()
-        agent = graph.add_agent(query or "")
+        agent = graph.start(query or "")
     else:
         agent = _first_agent(graph)
         if query:

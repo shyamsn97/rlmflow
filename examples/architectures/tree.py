@@ -34,7 +34,7 @@ def main() -> None:
 
     flow = Flow(configs=[AgentConfig(model=args.model, max_depth=2)])
     g = Graph()
-    root = g.add_agent(TASK)
+    root = g.start(TASK)
     out_dir = example_run_dir("architectures") / "tree"
     try:
         asyncio.run(print_run(flow, g, out_dir, width=28))

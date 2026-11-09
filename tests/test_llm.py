@@ -342,7 +342,7 @@ def test_flow_consumes_a_clients_stream():
 
     llm = StreamLLM()
     g = Graph()
-    root = g.add_agent("go")
+    root = g.start("go")
     flow = ScriptedFlow(llm)
     flow.run(g)
     assert g.result(root) == "ok"

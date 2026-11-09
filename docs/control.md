@@ -12,7 +12,7 @@ from rlmflow import AgentConfig, Flow, Graph
 from rlmflow.view.text import kind
 
 g = Graph()
-root = g.add_agent("Audit this repository.")
+root = g.start("Audit this repository.")
 
 flow = Flow(configs=[AgentConfig(model="gpt-5", max_depth=2)])  # "default"
 
@@ -52,7 +52,7 @@ exceed the threshold.
 
 ```python
 g = Graph()
-root = g.add_agent("Audit this repository.", tree=listing)
+root = g.start("Audit this repository.", tree=listing)
 flow.run(
     g,
     root_config=AgentConfig(
@@ -96,7 +96,7 @@ base URL), under the name configs use:
 `Flow(llm_clients={"fast": client_for("gpt-5-mini", reasoning_effort="low")})`
 and `AgentConfig(model="fast")`. `flow.add_config(config)` adds one later; an
 unknown name is a `KeyError` when the Flow reaches that agent.
-`g.add_agent(task, config="worker")` puts a top-level agent on a named config.
+`g.start(task, config="worker")` puts a top-level agent on a named config.
 
 ### Harnesses
 

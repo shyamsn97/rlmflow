@@ -138,7 +138,7 @@ def main() -> None:
         runtime=runtime,
     )
     g = Graph()
-    root = g.add_agent(PLATFORMER_QUERY)
+    root = g.start(PLATFORMER_QUERY)
     log("running platformer task; first run may build/start Modal sandbox")
     try:
         asyncio.run(print_run(flow, g, Path(args.out_dir) / "graph"))

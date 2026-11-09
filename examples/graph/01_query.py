@@ -18,7 +18,7 @@ def turn(g: Graph, agent: Node, text: str = "", **fields) -> Node:
 def build_graph() -> tuple[Graph, Node]:
     """Hand-build the graph a delegating run would have recorded."""
     g = Graph()
-    root = g.add_agent("ship a tiny package", name="root")
+    root = g.start("ship a tiny package", name="root")
     code = (
         "write = launch_agent('write module')\n"
         "test = launch_agent('run pytest')\n"
@@ -34,10 +34,10 @@ def build_graph() -> tuple[Graph, Node]:
         usage=LLMUsage(input_tokens=120, output_tokens=40).as_dict(),
     )
 
-    writer = g.add_agent("write module", parent=launch, name="write")
+    writer = g.start("write module", parent=launch, name="write")
     wrote = turn(g, writer, result="wrote pkg/__init__.py", terminal=True)
 
-    tester = g.add_agent("run pytest", parent=launch, name="test")
+    tester = g.start("run pytest", parent=launch, name="test")
     turn(g, tester, code="import pkg", output="ModuleNotFoundError: pkg", error=True)
     passed = turn(g, tester, result="3 passed", terminal=True)
 

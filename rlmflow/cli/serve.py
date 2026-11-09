@@ -175,7 +175,7 @@ class Serve:
             return {"bound": False}
         if self.root is None:
             task = text.removeprefix(RUN_COMMAND).strip() if text.startswith(RUN_COMMAND) else text
-            self.root = self.graph.add_agent(task, name="root")
+            self.root = self.graph.start(task, name="root")
             self.agent_token = self.flow.agent_tools.attach(self.root)
         elif self.flow.agent_tools.open_turn(self.root) is None:
             self.graph.send(self.root, text, sender="user")

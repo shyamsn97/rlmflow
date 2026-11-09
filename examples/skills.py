@@ -153,7 +153,7 @@ def main() -> None:
             "predicted values, and the L2 residual norm."
         )
         g = Graph()
-        root = g.add_agent(query)
+        root = g.start(query)
         config = AgentConfig(
             harness=SkillsHarness,
             model=args.model,

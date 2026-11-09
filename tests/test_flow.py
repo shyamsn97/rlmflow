@@ -266,7 +266,7 @@ def test_graph_spawn_stores_a_config_name_without_a_flow(tmp_path):
         label: str
 
     g = Graph()
-    agent = g.add_agent("classify", config="classifier", text="hi")
+    agent = g.start("classify", config="classifier", text="hi")
 
     assert agent.input == {"task": "classify", "text": "hi"}
     assert agent.root_data.name == "classifier"
@@ -278,7 +278,7 @@ def test_graph_spawn_stores_a_config_name_without_a_flow(tmp_path):
     config = flow.add_config(AgentConfig(name="classifier", output_schema=Label))
     assert config.output_schema["properties"]["label"]["type"] == "string"
     graph = Graph()
-    graph.add_agent("classify", config="classifier", text="hi")
+    graph.start("classify", config="classifier", text="hi")
     flow.run(graph)
     [classified] = graph.agents()
     assert classified.root_data.config is config
@@ -288,7 +288,7 @@ def test_graph_spawn_stores_a_config_name_without_a_flow(tmp_path):
 def test_graph_edited_without_a_flow_runs_on_a_fresh_flow(tmp_path):
     """Spawn, append history, and fork with ops alone; a new Flow builds every REPL."""
     g = Graph()
-    a = g.add_agent("count", name="a")
+    a = g.start("count", name="a")
     turn = g.append(a, ran("n = 41"))
     b = g.fork(turn, name="b")
     g.send(a, "finish a")
@@ -314,7 +314,7 @@ def test_graph_edited_without_a_flow_runs_on_a_fresh_flow(tmp_path):
 def test_replay_rebuilds_a_fork_that_never_stepped():
     flow = ScriptedFlow(ScriptedLLM([]))
     g = Graph()
-    a = g.add_agent("count", name="a")
+    a = g.start("count", name="a")
     turn = g.append(a, ran("n = 41"))
     fork = g.fork(turn, name="fork")
 
@@ -328,13 +328,13 @@ def test_agent_added_mid_stream_is_scheduled():
     llm = ScriptedLLM([("first", block("submit('one')")), ("second", block("submit('two')"))])
     flow = ScriptedFlow(llm)
     g = Graph()
-    first = g.add_agent("first")
+    first = g.start("first")
     added = []
 
     async def drive():
         async for _step in flow.run_streaming(g):
             if not added:
-                added.append(g.add_agent("second"))
+                added.append(g.start("second"))
 
     asyncio.run(drive())
 
@@ -480,8 +480,8 @@ def test_awaiting_an_agent_you_did_not_launch_raises_in_the_turn():
         ]
     )
     g = Graph()
-    peer = g.add_agent("peer task", name="peer")
-    curious = g.add_agent("curious", name="curious")
+    peer = g.start("peer task", name="peer")
+    curious = g.start("curious", name="curious")
 
     flow = ScriptedFlow(llm)
     flow.run(g)
@@ -507,8 +507,8 @@ def test_a_worker_repl_raises_host_errors_as_their_own_types():
         ]
     )
     g = Graph()
-    g.add_agent("peer task", name="peer")
-    curious = g.add_agent("curious", name="curious")
+    g.start("peer task", name="peer")
+    curious = g.start("curious", name="curious")
 
     ScriptedFlow(llm, runtime=LocalRuntime(repl_timeout=10)).run(g)
 
@@ -1072,7 +1072,7 @@ JOIN_CHILDREN = block("print([await c for c in AGENTS.children])")
 
 def test_host_spawned_child_runs_and_returns_to_its_parent(tmp_path):
     g, root = agent_graph("parent")
-    branch = g.add_agent("child", parent=root, name="branch0")
+    branch = g.start("child", parent=root, name="branch0")
     [spawn] = g.edges(kind=SPAWN, target=branch.id)
     assert spawn.source == root.id
     assert branch.root_data.config_name == "default"
@@ -1100,9 +1100,9 @@ def test_host_spawned_child_runs_and_returns_to_its_parent(tmp_path):
 
 def test_stopping_on_a_childs_done_still_delivers_its_result():
     g = Graph()
-    root = g.add_agent("parent")
+    root = g.start("parent")
     g.append(root, Node("assistant", seen=1, idle=True))
-    child = g.add_agent("child", parent=root, name="child")
+    child = g.start("child", parent=root, name="child")
     flow = ScriptedFlow(ScriptedLLM([("child", block("submit('finished')"))]))
 
     async def drive() -> None:
@@ -1132,7 +1132,7 @@ def test_host_adds_prepared_children_between_streams():
 
     def prepared(task, name, code):
         """A child with a recorded turn, as a controller would prepare it."""
-        agent = g.add_agent(task, parent=root, name=name)
+        agent = g.start(task, parent=root, name=name)
         g.append(agent, ran(code, task))
         return agent
 
@@ -1373,7 +1373,7 @@ def test_background_child_outlives_root_and_stream_drains_it():
 
     flow = ScriptedFlow(BackgroundLLM(), workers=2)
     g = Graph()
-    root = g.add_agent("launch without joining")
+    root = g.start("launch without joining")
 
     async def run():
         observed = []
@@ -1483,7 +1483,7 @@ def test_agents_result_matches_a_collected_child():
     )
     flow = ScriptedFlow(llm)
     g = Graph()
-    root = g.add_agent("inspect waited")
+    root = g.start("inspect waited")
 
     assert run_result(flow, g, root) == "child answer"
 
@@ -1679,7 +1679,7 @@ def test_child_config_model_routes_children():
     )
 
     g = Graph()
-    root = g.add_agent("delegate")
+    root = g.start("delegate")
 
     assert run_result(flow, g, root) == "parent saw cheap result"
     assert g.children(root)[0].root_data.config.model == "fast"

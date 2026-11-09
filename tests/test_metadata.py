@@ -60,7 +60,7 @@ def test_custom_proxy_tool_can_annotate_its_code():
         tools=[tag],
     )
     g = Graph()
-    root = g.add_agent("tag it")
+    root = g.start("tag it")
 
     assert run_result(flow, g, root) == "done"
     [code_node] = turns(g, root)
@@ -87,7 +87,7 @@ def test_llm_query_calls_are_recorded_on_the_code():
     llm = QueryLLM()
     flow = ScriptedFlow(llm, runtime=LocalRuntime(repl_timeout=5), configs=[AgentConfig(model="m")])
     g = Graph()
-    root = g.add_agent("use llm_query")
+    root = g.start("use llm_query")
 
     assert run_result(flow, g, root) == "an answer"
     assert llm.calls == 2
@@ -110,7 +110,7 @@ def test_a_model_call_records_usage_model_and_timing_on_its_node():
         configs=[AgentConfig(model="m")],
     )
     g = Graph()
-    root = g.add_agent("answer")
+    root = g.start("answer")
 
     flow.run(g)
     [reply] = g.history(root)[1:]

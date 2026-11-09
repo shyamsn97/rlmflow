@@ -22,7 +22,7 @@ from rlmflow.view.timeline import replay, snapshot, steps, timeline
 
 def launch(g: Graph, code_node: Node, task: str, index: int = 0, **kwargs) -> Node:
     """``launch_agent(task)`` inside ``code_node``: the child and the code_node's saved launch."""
-    child = g.add_agent(task, parent=code_node, **kwargs)
+    child = g.start(task, parent=code_node, **kwargs)
     calls.record(code_node, calls.LAUNCH, f"launch-{index}", agent=child.id)
     return child
 
@@ -156,7 +156,7 @@ def test_return_changed_takes_back_a_delivered_result_and_redelivers_it():
 
 def test_write_dropped_takes_the_message_back():
     g, root = agent_graph("root")
-    peer = g.add_agent("peer", name="peer")
+    peer = g.start("peer", name="peer")
     before = g.append(peer, ran("b = 0"))
     code_node = g.append(root, ran("send"))
     message = g.send(peer, "read me", by=code_node)
@@ -172,7 +172,7 @@ def test_write_dropped_takes_the_message_back():
 
 def test_write_changed_keeps_the_message_until_the_rerun_matches_calls():
     g, root = agent_graph("root")
-    peer = g.add_agent("peer", name="peer")
+    peer = g.start("peer", name="peer")
     code_node = g.append(root, ran("send"))
     message = g.send(peer, "read me", by=code_node)
 
@@ -346,7 +346,7 @@ def test_delete_drops_the_node_and_everything_after_it():
 def test_deleting_a_sent_message_takes_it_back():
     g, root = agent_graph("root")
     reply = g.append(root, Node("assistant", "hi"))
-    sender = g.add_agent("sender", name="sender")
+    sender = g.start("sender", name="sender")
     code_node = g.append(sender, ran("send"))
     message = g.send(root, "hi", by=code_node)
 
@@ -362,10 +362,10 @@ def test_deleting_a_code_removes_its_children_and_takes_back_its_messages():
     plan = g.append(root, Node("assistant", "plan"))
     code_node = g.append(root, ran("launch and send"))
     worker = launch(g, code_node, "work", name="worker")
-    nested = g.add_agent("nested", parent=worker, name="nested")
-    queued_peer = g.add_agent("queued", name="queued")
+    nested = g.start("nested", parent=worker, name="nested")
+    queued_peer = g.start("queued", name="queued")
     queued = g.send(queued_peer, "for later", by=code_node)
-    read_peer = g.add_agent("read", name="read")
+    read_peer = g.start("read", name="read")
     before = g.append(read_peer, ran("b0"))
     read = g.send(read_peer, "read me", by=code_node)
     after = g.append(read_peer, Node("assistant", "replying"))
@@ -393,8 +393,8 @@ def test_deleting_a_root_removes_its_agent():
 def test_remove_takes_out_the_subtree_and_what_it_caused():
     d = delegation()
     g = d.g
-    nested = g.add_agent("nested", parent=d.worker, name="nested")
-    peer = g.add_agent("peer", name="peer")
+    nested = g.start("nested", parent=d.worker, name="nested")
+    peer = g.start("peer", name="peer")
     note = g.send(peer, "from the worker", by=d.think)
 
     inv = g.remove(d.worker)
@@ -414,7 +414,7 @@ def test_remove_an_agent_removes_forks_based_on_its_nodes():
     fork = g.fork(plan, name="branch")
     g.append(fork, Node("assistant", "own"))
     restart = g.fork(root, name="restart")
-    peer = g.add_agent("peer", name="peer")
+    peer = g.start("peer", name="peer")
 
     inv = g.remove(root)
 
@@ -465,7 +465,7 @@ def test_replace_an_await_with_a_value_keeps_the_old_result_from_being_delivered
 def test_replace_an_await_with_another_agent():
     d = delegation()
     g = d.g
-    other = g.add_agent("other", name="other")
+    other = g.start("other", name="other")
 
     inv = g.replace(d.code_node, call(d.code_node, calls.AWAIT), agent=other)
 
@@ -480,7 +480,7 @@ def test_replace_an_await_with_another_agent():
 def test_replace_a_launch_with_another_agent_removes_the_old_child():
     d = delegation()
     g = d.g
-    other = g.add_agent("prepared", name="prepared")
+    other = g.start("prepared", name="prepared")
     finish(g, other, 9)
 
     inv = g.replace(d.code_node, call(d.code_node, calls.LAUNCH), agent=other)
@@ -497,7 +497,7 @@ def test_replace_a_launch_with_another_agent_removes_the_old_child():
 def test_replace_leaves_no_saved_call_pointing_at_a_removed_agent():
     d = delegation()
     g = d.g
-    other = g.add_agent("prepared", name="prepared")
+    other = g.start("prepared", name="prepared")
     finish(g, other, 9)
 
     g.replace(d.code_node, call(d.code_node, calls.LAUNCH), agent=other)
@@ -545,7 +545,7 @@ EDITS = {
 
 def delegation_with_other() -> SimpleNamespace:
     d = delegation()
-    d.other = d.g.add_agent("other", name="other")
+    d.other = d.g.start("other", name="other")
     finish(d.g, d.other, 9)
     return d
 
@@ -592,7 +592,7 @@ def test_a_code_cut_off_mid_run_keeps_what_it_launched_through_save_and_load(tmp
     g.append(root, Node("assistant", "plan"))
     code_node = g.append(root, Node("assistant", code="launch and send", state=READY))
     child = launch(g, code_node, "child", name="child")
-    peer = g.add_agent("peer", name="peer")
+    peer = g.start("peer", name="peer")
     g.send(peer, "for later", by=code_node)
 
     loaded = Graph.load(g.save(tmp_path / "run"))
@@ -728,7 +728,7 @@ def test_snapshot_cuts_the_graph_at_a_step():
 
 def test_replay_works_on_agents_no_flow_has_stepped():
     g = Graph()
-    root = g.add_agent("root")
+    root = g.start("root")
     g.append(root, Node("assistant", "plan"))
 
     assert [step.kind for step in steps(g)] == ["agent", "reply"]

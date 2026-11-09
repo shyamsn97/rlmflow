@@ -48,7 +48,7 @@ def main() -> None:
         tools=[MCPTools(sys.executable, str(server))],
     )
     g = Graph()
-    root = g.add_agent(args.query)
+    root = g.start(args.query)
     out_dir = Path(args.out_dir)
     asyncio.run(print_run(flow, g, out_dir))
 

@@ -64,7 +64,7 @@ async def run_example(args: argparse.Namespace) -> tuple[Graph, Node]:
     config = AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)
     flow = Flow(configs=[config], workers=args.max_concurrency)
     g = Graph()
-    root = g.add_agent(QUERY)
+    root = g.start(QUERY)
     observed: list[str] = []
     out_dir = Path(args.out_dir)
 

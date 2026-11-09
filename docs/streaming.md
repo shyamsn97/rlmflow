@@ -9,7 +9,7 @@ from rlmflow import AgentConfig, Flow, Graph
 from rlmflow.view.text import kind
 
 g = Graph()
-root = g.add_agent("Audit this repository.")
+root = g.start("Audit this repository.")
 
 flow = Flow(configs=[AgentConfig(model="gpt-5-mini")])
 async for step in flow.run_streaming(g):
