@@ -82,6 +82,9 @@ dev = [
     "pytest-timeout>=2.0",
     "ruff>=0.4",
     "rich>=13.0",
+    # Tests that drive the claude_code harness and the `rlmflow serve` e2e runs import these.
+    "openai>=3.0",
+    "claude-agent-sdk>=0.2",
 ]
 
 [project.urls]
