@@ -2,13 +2,13 @@
 
 Real runs of the flagship examples, Nov 2 2026, on this machine. Run outputs (graphs, logs, traces) are in `examples/_runs/results/` and `examples/_runs/release-check/` (git-ignored); the figures below are copied into `docs/static/results/`.
 
-| Example | Shows | Harnesses | Result |
-| --- | --- | --- | --- |
-| Shepherd (Sokoban) | Rewind, fork, parallel recovery | REPL, gpt-5 + gpt-5-mini | Worker jammed. 3 of 8 forked branches solved; picked one in 9 pushes |
-| Needle | Recursive fan-out; harnesses mixed per agent | REPL and Claude Code, root × workers | 4 of 4 combinations correct |
-| Autoresearch | Planner plus long-running GPU jobs | REPL planner; REPL or Claude Code implementers | val_bpb 1.155 → 0.920 (REPL), → 0.866 (Claude Code) |
-| Peers | Agents messaging each other with `send_agent` | REPL, gpt-5-mini | Correct total (6); both peers acknowledged it |
-| Boids | Peers with no manager split the work and agree on interfaces by message | REPL (gpt-5) or Claude Code | Claude Code: a working app with 21 messages in the graph. gpt-5: 1 of 3 worked, then 3 of 3 flocked on a rerun (one renders all grey) |
+| Example            | Shows                                                                   | Harnesses                                      | Result                                                                                                                                |
+| ------------------ | ----------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Shepherd (Sokoban) | Rewind, fork, parallel recovery                                         | REPL, gpt-5 + gpt-5-mini                       | Worker jammed. 3 of 8 forked branches solved; picked one in 9 pushes                                                                  |
+| Needle             | Recursive fan-out; harnesses mixed per agent                            | REPL and Claude Code, root × workers           | 4 of 4 combinations correct                                                                                                           |
+| Autoresearch       | Planner plus long-running GPU jobs                                      | REPL planner; REPL or Claude Code implementers | val_bpb 1.155 → 0.920 (REPL), → 0.866 (Claude Code)                                                                                   |
+| Peers              | Agents messaging each other with `send_agent`                           | REPL, gpt-5-mini                               | Correct total (6); both peers acknowledged it                                                                                         |
+| Boids              | Peers with no manager split the work and agree on interfaces by message | REPL (gpt-5) or Claude Code                    | Claude Code: a working app with 21 messages in the graph. gpt-5: 1 of 3 worked, then 3 of 3 flocked on a rerun (one renders all grey) |
 
 ## Shepherd: rewind and fork
 
@@ -22,12 +22,12 @@ A worker plays Sokoban and jams a box against a wall after 8 pushes. The shepher
 
 ![Shepherd graph](static/results/shepherd-graph.png)
 
-| Branch | Pushes undone | Outcome | Turns |
-| --- | ---: | --- | ---: |
-| branch1 (picked) | 8 (fresh board) | solved, 9 pushes | 11 |
-| branch0 | 7 | solved | 22 |
-| branch2 | 6 | solved | 24 |
-| branch3–7 | 1–5 | stuck | 10–29 |
+| Branch           |   Pushes undone | Outcome          | Turns |
+| ---------------- | --------------: | ---------------- | ----: |
+| branch1 (picked) | 8 (fresh board) | solved, 9 pushes |    11 |
+| branch0          |               7 | solved           |    22 |
+| branch2          |               6 | solved           |    24 |
+| branch3–7        |             1–5 | stuck            | 10–29 |
 
 The rewind depth is what decided the outcome. Every branch that undid 6 or more pushes solved the puzzle; every branch that kept 3 or more of the jammed pushes stayed stuck. A single retry from the jam point would have failed. The run took about 8 minutes, 293 nodes and 288k input / 101k output tokens.
 
@@ -44,12 +44,12 @@ env -u ANTHROPIC_API_KEY python examples/needle/filesystem.py --all --no-viz \
 
 100 files with one needle. The root splits the files into batches, launches a `searcher` agent per batch, and submits the number they find; the REPL root chose 10 batches and the Claude Code root 4. `--all` runs every combination of root harness and worker harness. One run of each (November 2026):
 
-| Root | Workers | Correct | Agents | Seconds | Input tokens | Output tokens |
-| --- | --- | --- | ---: | ---: | ---: | ---: |
-| REPL (gpt-5-mini) | REPL (gpt-5-nano) | yes | 11 | 77 | 42k | 34k |
-| REPL | Claude Code | yes | 11 | 41 | 661k | 8k |
-| Claude Code | REPL | yes | 5 | 33 | 170k | 13k |
-| Claude Code | Claude Code | yes | 5 | 21 | 400k | 3k |
+| Root              | Workers           | Correct | Agents | Seconds | Input tokens | Output tokens |
+| ----------------- | ----------------- | ------- | -----: | ------: | -----------: | ------------: |
+| REPL (gpt-5-mini) | REPL (gpt-5-nano) | yes     |     11 |      77 |          42k |           34k |
+| REPL              | Claude Code       | yes     |     11 |      41 |         661k |            8k |
+| Claude Code       | REPL              | yes     |      5 |      33 |         170k |           13k |
+| Claude Code       | Claude Code       | yes     |      5 |      21 |         400k |            3k |
 
 Claude Code root, Claude Code searchers:
 
@@ -111,16 +111,16 @@ Their tools are generic: the file tools, their own REPL (Python, so they can run
 
 In the Claude Code run above, all three peers proposed a split at once. They converged on peer1's, which peer1 wrote into `INTERFACE.md`, then adapted to each other's constructor signatures. Each reported its timings and per-species speeds (151, 113, 75 and 126 px/s). The 21 messages are the dashed lines in the graph. The peers added extras nobody asked for: mouse attract and repel, pause, trail and glow toggles, and a legend.
 
-| Run | Messages | App | Minutes | Input / output tokens |
-| --- | ---: | --- | ---: | --- |
-| gpt-5, run 1 | 24 | works: four species move, triangles oversized | 10.4 | 301k / 62k |
-| gpt-5, run 2 | 7 | broken: all boids collapse into one blob | 5.4 | 146k / 54k |
-| gpt-5, run 3 | 27 | broken: boids collapse into blobs at the corners | 12.9 | 492k / 78k |
-| Claude Code, before the harness fix | 0 in the graph | works, but peer3 never took part | 2.8 | 1.0M / 20k |
-| Claude Code, after the harness fix (above) | 21 | works: flocking, legend, 60 fps | 3.5 | 2.3M / 43k |
-| gpt-5 with screenshots, run 1 | 46 | works: four species flocking, 60 fps | 10.5 | 562k / 75k |
-| gpt-5 with screenshots, run 2 | 13 | works: four species flocking, 60 fps | 6.7 | 145k / 43k |
-| gpt-5 with screenshots, run 3 | 10 | flocks, but every boid renders grey | 4.4 | 54k / 40k |
+| Run                                        |       Messages | App                                              | Minutes | Input / output tokens |
+| ------------------------------------------ | -------------: | ------------------------------------------------ | ------: | --------------------- |
+| gpt-5, run 1                               |             24 | works: four species move, triangles oversized    |    10.4 | 301k / 62k            |
+| gpt-5, run 2                               |              7 | broken: all boids collapse into one blob         |     5.4 | 146k / 54k            |
+| gpt-5, run 3                               |             27 | broken: boids collapse into blobs at the corners |    12.9 | 492k / 78k            |
+| Claude Code, before the harness fix        | 0 in the graph | works, but peer3 never took part                 |     2.8 | 1.0M / 20k            |
+| Claude Code, after the harness fix (above) |             21 | works: flocking, legend, 60 fps                  |     3.5 | 2.3M / 43k            |
+| gpt-5 with screenshots, run 1              |             46 | works: four species flocking, 60 fps             |    10.5 | 562k / 75k            |
+| gpt-5 with screenshots, run 2              |             13 | works: four species flocking, 60 fps             |     6.7 | 145k / 43k            |
+| gpt-5 with screenshots, run 3              |             10 | flocks, but every boid renders grey              |     4.4 | 54k / 40k             |
 
 All five loaded with no console errors, so load-only validation can't tell the good runs from the broken ones. These verdicts come from watching the recordings. Mid-run frames from the first four:
 

@@ -12,17 +12,17 @@ Limits come from its config: `max_iters` model turns, `max_depth` levels of agen
 
 ## What's in the REPL
 
-| Name                                                               | What it does                                                                      |
-| ------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| `launch_agent(task, config=NAME, name=None, **args)`               | Start an agent; returns a handle at once. `**args` become its variables.          |
-| `await agent`, `await asyncio.gather(*agents)`                     | Wait for the results of agents you launched (or they launched).                   |
-| `agent.send(message, **inputs)`                                    | Message any agent, reopening it if it finished; `**inputs` become its variables. For one you launched, `await` it for the reply. |
-| `agent.status`, `agent.done()`, `agent.result()`                   | Check an agent without waiting.                                                   |
-| `agent.parent`, `agent.children`, `agent.path`                     | Where it sits in the run; the same names as `agent.parent()` and so on.          |
-| `llm_query(prompt, model=..., schema=...)`                         | One model call with no conversation; with `schema`, a validated JSON value. Awaitable. |
-| `submit(value)`                                                    | Finish with a string or JSON value.                                               |
-| `AGENTS`                                                           | Every agent in the run: `AGENTS["name"]` (name, path or id), `AGENTS.self`, `AGENTS.children`, `AGENTS.print_graph()`. |
-| `Input(value, description=...)`                                    | Describe an argument's structure in the child's prompt.                           |
+| Name                                                 | What it does                                                                                                                     |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `launch_agent(task, config=NAME, name=None, **args)` | Start an agent; returns a handle at once. `**args` become its variables.                                                         |
+| `await agent`, `await asyncio.gather(*agents)`       | Wait for the results of agents you launched (or they launched).                                                                  |
+| `agent.send(message, **inputs)`                      | Message any agent, reopening it if it finished; `**inputs` become its variables. For one you launched, `await` it for the reply. |
+| `agent.status`, `agent.done()`, `agent.result()`     | Check an agent without waiting.                                                                                                  |
+| `agent.parent`, `agent.children`, `agent.path`       | Where it sits in the run; the same names as `agent.parent()` and so on.                                                          |
+| `llm_query(prompt, model=..., schema=...)`           | One model call with no conversation; with `schema`, a validated JSON value. Awaitable.                                           |
+| `submit(value)`                                      | Finish with a string or JSON value.                                                                                              |
+| `AGENTS`                                             | Every agent in the run: `AGENTS["name"]` (name, path or id), `AGENTS.self`, `AGENTS.children`, `AGENTS.print_graph()`.           |
+| `Input(value, description=...)`                      | Describe an argument's structure in the child's prompt.                                                                          |
 
 Tools passed to the Flow (`FILE_TOOLS`, your `@tool` functions) and values from `flow.inject` are also there, and listed in the prompt.
 
@@ -79,7 +79,7 @@ To pass one agent's result to another, await it and pass the value: `launch_agen
 
 ## Shared state
 
-There is no built-in store. Agents share state through messages, through files in a shared working directory, or through host tools you write: a tool runs in your process, so a dict behind a lock is a store every agent sees. The [orchestrate skill](../rlmflow/plugin/skills/orchestrate/SKILL.md) has a task board built that way.
+There is no built-in store. Agents share state through messages, through files in a shared working directory, or through host tools you write: a tool runs in your process, so a dict behind a lock is a store every agent sees. The [orchestrate skill](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/plugin/skills/orchestrate/SKILL.md) has a task board built that way.
 
 ## Claude Code and pi sessions
 

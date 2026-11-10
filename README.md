@@ -67,13 +67,13 @@ Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` for the models you use. Claude Code 
 
 A harness is what drives an agent: it takes the agent's next turn and lands the result in the graph. Every agent has one, picked by its config, and one run can mix them. A Claude Code root can launch REPL workers, and a REPL root can launch Claude Code workers.
 
-| Harness | What drives the agent | How to start it | Needs |
-| --- | --- | --- | --- |
-| `repl` (default) | rlmflow calls the model, and the model writes ```` ```repl ```` blocks that run in the agent's Python REPL | `AgentConfig(model="gpt-5")` | an OpenAI or Anthropic key |
-| `claude_code` | A headless Claude Code session per agent, with your Claude Code settings, tools and `CLAUDE.md` | `AgentConfig(harness="claude_code")` | `rlmflow[claude]`, signed in to `claude` |
-| `pi` | A headless [pi](https://github.com/badlogic/pi-mono) session per agent | `AgentConfig(harness="pi")` | `pi` installed |
-| Your Claude Code session | You, in your own terminal: your session becomes the root agent | `/rlmflow:run TASK` in Claude Code | the `claude` CLI |
-| Your own | Anything that can take a turn: Codex, another CLI, a human, a script | `AgentConfig(harness=MyHarness)` | a `Harness` subclass |
+| Harness                  | What drives the agent                                                                                      | How to start it                      | Needs                                    |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------------------ | ---------------------------------------- |
+| `repl` (default)         | rlmflow calls the model, and the model writes ```` ```repl ```` blocks that run in the agent's Python REPL | `AgentConfig(model="gpt-5")`         | an OpenAI or Anthropic key               |
+| `claude_code`            | A headless Claude Code session per agent, with your Claude Code settings, tools and `CLAUDE.md`            | `AgentConfig(harness="claude_code")` | `rlmflow[claude]`, signed in to `claude` |
+| `pi`                     | A headless [pi](https://github.com/badlogic/pi-mono) session per agent                                     | `AgentConfig(harness="pi")`          | `pi` installed                           |
+| Your Claude Code session | You, in your own terminal: your session becomes the root agent                                             | `/rlmflow:run TASK` in Claude Code   | the `claude` CLI                         |
+| Your own                 | Anything that can take a turn: Codex, another CLI, a human, a script                                       | `AgentConfig(harness=MyHarness)`     | a `Harness` subclass                     |
 
 Every harness reaches the same agent tools (`launch_agent`, `AGENTS`, `agent.send`, `submit`) in the same per-agent REPL, so every launch, message and result lands in one graph, whatever drove it.
 
@@ -102,8 +102,9 @@ The plugin starts `rlmflow serve` for the project, and your session becomes the 
    EOF
    ```
 
-2. It said "I've launched 4 agents, each searching 25 files. I'll wait for their results." and ended its turn. The plugin's Stop hook held the session until a worker finished and handed its result back: "Worker 1 searched files 0025–0049 and found nothing ... I'll keep waiting." That happened three times; the third result had the match.
-3. It checked the match with its own `grep`, then submitted in the REPL, `submit({"number": 2536600, "file": "haystack/file_0060.txt", "line": 67})`, and replied with the answer. The last worker, still running, finished in the background.
+1. It said "I've launched 4 agents, each searching 25 files. I'll wait for their results." and ended its turn. The plugin's Stop hook held the session until a worker finished and handed its result back: "Worker 1 searched files 0025–0049 and found nothing ... I'll keep waiting." That happened three times; the third result had the match.
+
+1. It checked the match with its own `grep`, then submitted in the REPL, `submit({"number": 2536600, "file": "haystack/file_0060.txt", "line": 67})`, and replied with the answer. The last worker, still running, finished in the background.
 
 <p align="center">
   <img src="docs/static/results/plugin-needle.gif" alt="The plugin run: the root launches four workers, goes idle three times as their results come back, and submits" width="600" />
@@ -234,14 +235,14 @@ See [Usage](docs/usage.md) for configs, models, prompts, runtimes, stopping, and
 
 The agent writes ordinary Python. These are the calls that build the graph:
 
-| Call | What it does |
-| --- | --- |
-| `launch_agent(task, config="worker", **args)` | Start an agent with a fresh context; `**args` become its variables. Returns a handle at once. |
-| `await agent`, `await asyncio.gather(*agents)` | Wait for the results of agents you launched. |
-| `agent.send(message, **inputs)` | Message an agent, reopening it if it finished; `**inputs` become its variables. For an agent you launched, `await` it for the reply. |
-| `AGENTS["name"]` | Any agent in the run, by name, path or id, with its status, result, parent and children. |
-| `llm_query(prompt, schema=...)` | One model call with no conversation. |
-| `submit(value)` | Finish with a result. |
+| Call                                           | What it does                                                                                                                         |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `launch_agent(task, config="worker", **args)`  | Start an agent with a fresh context; `**args` become its variables. Returns a handle at once.                                        |
+| `await agent`, `await asyncio.gather(*agents)` | Wait for the results of agents you launched.                                                                                         |
+| `agent.send(message, **inputs)`                | Message an agent, reopening it if it finished; `**inputs` become its variables. For an agent you launched, `await` it for the reply. |
+| `AGENTS["name"]`                               | Any agent in the run, by name, path or id, with its status, result, parent and children.                                             |
+| `llm_query(prompt, schema=...)`                | One model call with no conversation.                                                                                                 |
+| `submit(value)`                                | Finish with a result.                                                                                                                |
 
 ```python
 chunks = [haystack[i : i + 100_000] for i in range(0, len(haystack), 100_000)]
@@ -274,12 +275,12 @@ Settings come from flags, then `RLMFLOW_*` variables, then `./rlmflow.toml`, the
 
 Real runs of the examples below, Nov 2–4 2026. [Example results](docs/example_results.md) has the per-run tables, figures and caveats.
 
-| Example | What it shows | Result |
-| --- | --- | --- |
-| [Shepherd](#shepherd-rewind-and-fork-a-failed-run) | Rewind and fork a failed run | A worker jams a Sokoban puzzle after 8 pushes; 3 of 8 forked branches solve it. Every branch that rewound 6 or more pushes solved; every branch that kept 3 or more of the jammed pushes stayed stuck. |
-| [Needle](#needle-fan-out-on-any-harness) | Fan-out, with harnesses mixed per agent | 4 of 4 root × worker combinations of the REPL harness and Claude Code find the needle, with the same graph shape. |
-| [Autoresearch](#autoresearch-a-planner-running-gpu-trials) | A planner running long GPU trials | Validation bits per byte 1.155 → 0.920 with REPL implementers, → 0.866 with Claude Code implementers, in 8 trials each. |
-| [Boids](#boids-peers-build-an-app-with-no-manager) | Peers with no manager build an app by messaging | Claude Code peers: a working app, 21 messages in the graph. gpt-5 peers: 4 of 6 runs flock; 3 of 6 meet the whole spec. |
+| Example                                                    | What it shows                                   | Result                                                                                                                                                                                                 |
+| ---------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [Shepherd](#shepherd-rewind-and-fork-a-failed-run)         | Rewind and fork a failed run                    | A worker jams a Sokoban puzzle after 8 pushes; 3 of 8 forked branches solve it. Every branch that rewound 6 or more pushes solved; every branch that kept 3 or more of the jammed pushes stayed stuck. |
+| [Needle](#needle-fan-out-on-any-harness)                   | Fan-out, with harnesses mixed per agent         | 4 of 4 root × worker combinations of the REPL harness and Claude Code find the needle, with the same graph shape.                                                                                      |
+| [Autoresearch](#autoresearch-a-planner-running-gpu-trials) | A planner running long GPU trials               | Validation bits per byte 1.155 → 0.920 with REPL implementers, → 0.866 with Claude Code implementers, in 8 trials each.                                                                                |
+| [Boids](#boids-peers-build-an-app-with-no-manager)         | Peers with no manager build an app by messaging | Claude Code peers: a working app, 21 messages in the graph. gpt-5 peers: 4 of 6 runs flock; 3 of 6 meet the whole spec.                                                                                |
 
 ## Examples
 

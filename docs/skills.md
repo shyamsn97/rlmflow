@@ -2,7 +2,7 @@
 
 ## The bundled skill
 
-rlmflow ships one skill, [`orchestrate`](../rlmflow/plugin/skills/orchestrate/SKILL.md), which the Claude Code plugin loads. It covers the ways to split work across agents (subagents, fan-out, recursive trees, pipelines, review loops, peers, a DeLM-style task board on the shared store), with code and when each pays off, and the same shapes built from host code. Every agent that can launch others gets it as the `orchestration` prompt section, on every harness. Drop it with `prompt={"orchestration": None}`.
+rlmflow ships one skill, [`orchestrate`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/plugin/skills/orchestrate/SKILL.md), which the Claude Code plugin loads. It covers the ways to split work across agents (subagents, fan-out, recursive trees, pipelines, review loops, peers, a DeLM-style task board on the shared store), with code and when each pays off, and the same shapes built from host code. Every agent that can launch others gets it as the `orchestration` prompt section, on every harness. Drop it with `prompt={"orchestration": None}`.
 
 ## Your own skills
 
