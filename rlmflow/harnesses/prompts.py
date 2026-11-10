@@ -95,7 +95,7 @@ def guidance(step: Step) -> dict[str, str | None]:
 
 def arguments(step: Step) -> dict[str, Any]:
     """The agent's arguments: its first root's inputs, apart from ``task``."""
-    origin = step.graph.history(step.agent)[0]
+    origin = step.agent.nodes()[0]
     return {name: value for name, value in origin.input.items() if name != "task"}
 
 
@@ -104,7 +104,7 @@ def argument_manifest(step: Step) -> str:
     values = arguments(step)
     if not values:
         return ""
-    descriptions = step.agent.root_data.arg_descriptions
+    descriptions = step.agent.arg_descriptions
     lines = []
     for name, value in values.items():
         if isinstance(value, str):

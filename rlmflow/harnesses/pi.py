@@ -26,6 +26,7 @@ from rlmflow.harnesses.sessions import (
     json_payload,
     next_prompt,
 )
+from rlmflow.runtime.runtime import repl_key
 
 if TYPE_CHECKING:
     from rlmflow.agent_tools.server import Turn
@@ -70,7 +71,7 @@ class PiHarness(SessionHarness):
         directory.mkdir(parents=True, exist_ok=True)
         if not session.resume:
             return directory / f"{session.id}.jsonl"
-        copy = directory / f"{uuid.uuid5(SESSION_NAMESPACE, f'{step.agent.id}:fork')}.jsonl"
+        copy = directory / f"{uuid.uuid5(SESSION_NAMESPACE, f'{repl_key(step.agent)}:fork')}.jsonl"
         shutil.copyfile(session.id, copy)
         return copy
 

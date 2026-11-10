@@ -1,12 +1,13 @@
 """Fork a Claude Code root halfway through the filesystem needle.
 
 The root runs until a node's code has launched its search workers. The run stops
-there and the root is forked at that node. The fork starts a fresh Claude Code
-session on the rebuilt REPL, so it has to pick the work up from ``notes`` and
-the worker handles already in its REPL instead of launching the search again.
+there and the graph is forked at that node: the copy drops the workers and sets
+the node to run again. Running the copy reruns that code in a rebuilt REPL,
+which launches its own workers, then a fresh Claude Code session picks the work
+up from the REPL. The original keeps its workers.
 
-Usage:
-    python examples/needle/fork_halfway.py
+``test_live_modes.py`` runs it; by hand:
+    python tests/live/fork_halfway.py
 """
 
 from __future__ import annotations
@@ -14,9 +15,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import random
+import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples" / "needle"))
 from filesystem import NEEDLE_FILE_TOOLS, generate_haystack
 
 from rlmflow import AgentConfig, Flow, Graph, Node, SubprocessRuntime
@@ -32,7 +35,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
         "--out-dir",
-        default=str(Path(__file__).resolve().parents[1] / "_runs" / "needle-fork-halfway"),
+        default=str(Path(__file__).resolve().parent / "_runs" / "mode2-fork-halfway"),
     )
     args = parser.parse_args()
 
@@ -64,47 +67,47 @@ def main() -> None:
         )
 
         def launched(step) -> bool:
-            return step.agent.id == root.id and step.node.runs_code and bool(g.children(root))
+            return step.agent.id == root.id and step.node.runs_code and bool(root.children())
 
         async def drive() -> None:
             checkpointer = GraphCheckpointer(args.out_dir)
             try:
                 async for step in flow.run_streaming(g, until=launched, root_config=config):
                     checkpointer.handle(step, g)
-                    print(f"{g.path(step.agent):<20} {kind(step.node)}")
-                launch = g.tail(root)
-                workers = g.children(root)
+                    print(f"{step.agent.path():<20} {kind(step.node)}")
+                checkpointer.close()
+                launch = root.nodes()[-1]
+                workers = root.children()
                 print(f"\n--- forking at {launch.id} after {len(workers)} workers launched ---\n")
-                fork = g.fork(launch, name="fork")
-                superseded = Node(
-                    "assistant",
-                    result="[superseded by fork]",
-                    seen=len(g.history(root)),
-                    terminal=True,
-                )
-                g.append(root, superseded)
-                async for step in flow.run_streaming(g, root_config=config):
-                    checkpointer.handle(step, g)
-                    print(f"{g.path(step.agent):<20} {kind(step.node)}")
+                branch = g.fork(launch)
+                checkpointer = GraphCheckpointer(f"{args.out_dir}-fork")
+                async for step in flow.run_streaming(branch, root_config=config):
+                    checkpointer.handle(step, branch)
+                    print(f"{step.agent.path():<20} {kind(step.node)}")
             finally:
                 checkpointer.close()
                 await flow.aclose()
-            report(g, fork, workers, answer)
+            report(g, branch, root, workers, answer)
 
         asyncio.run(drive())
 
 
-def report(g: Graph, fork: Node, workers: list[Node], answer: str) -> None:
-    code = [node.code for node in g.nodes(agent=fork) if node.runs_code]
-    relaunched = g.children(fork)
-    result = g.result(fork)
+def report(g: Graph, branch: Graph, root: Node, workers: list[Node], answer: str) -> None:
+    copy = branch.agent(root.id)
+    code = [node.code for node in copy.nodes() if node.runs_code]
+    relaunched = copy.children()
+    result = copy.final_result()
+    kept = [worker.id in branch for worker in workers]
     print(f"\n{'=' * 40}")
     print(f"fork code runs:   {len(code)}")
-    print(f"read notes:       {any('notes' in text for text in code)}")
-    print(f"workers reused:   {len(workers)}, new launches: {len(relaunched)}")
+    print(f"original workers: {len(workers)} (in the copy: {sum(kept)})")
+    print(f"copy's launches:  {len(relaunched)}")
+    print(f"original intact:  {root.children() == workers}")
     print(f"result:           {result}")
     print(f"actual answer:    {answer}")
     print(f"correct:          {answer in str(result)}")
+    if answer not in str(result) or any(kept) or root.children() != workers:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

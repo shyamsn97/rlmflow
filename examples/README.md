@@ -27,126 +27,38 @@ uv run --locked --python 3.12 --extra openai --extra image \
 
 OOLONG is in [`benchmarks/`](../benchmarks/README.md), which compares Claude Code, Claude Code with rlmflow, and rlmflow's own harness on the same tasks.
 
-## Scripts
+## Everything else
 
-| Script                                                                       | What it shows                                                      |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| [`showcase.py`](showcase.py)                                                 | End-to-end `Flow` run, persistence, and gym-style stepping         |
-| [`llm_query_fanout.py`](llm_query_fanout.py)                                 | Concurrent `llm_query` calls with `asyncio.gather`                 |
-| [`skills.py`](skills.py)                                                     | On-disk skills + dynamic prompt section                            |
-| [`structured_output.py`](structured_output.py)                               | Root + child `output_schema` validation                            |
-| [`summarizer.py`](summarizer.py)                                             | Recursive map-reduce summarization                                 |
-| [`providers/claude_code_delegation.py`](providers/claude_code_delegation.py) | Claude Code children through a named `claude_code` config          |
-| [`collaboration/shared_board.py`](collaboration/shared_board.py)             | Shared task board: workers claim and post tasks through host tools  |
+| Example | What it shows | Needs a key |
+| --- | --- | --- |
+| [`needle/`](needle/) | Fan-out: the million-line in-memory needle, and the file needle on any harness (`filesystem.py --all`) | yes |
+| [`architectures/`](architectures/) | One small run per graph shape (tree, pipeline, review loop), plus where every shape in the README grid comes from | yes |
+| [`autoresearch/`](autoresearch/) | A planner running TinyStories training trials on Modal GPUs | yes |
+| [`collaboration/`](collaboration/) | Peers with no manager: messaging (`decentralized_peers.py`) and a shared task board (`shared_board.py`) | yes |
+| [`showcase.py`](showcase.py) | One end-to-end tour: stepping a run, saving and loading it, replaying it, gym-style rewards | no |
+| [`graph/`](graph/) | The graph API on its own: query, navigate, edit, save and load, replay, fork, launch from host code, stop and resume a run, a deep tree | no |
+| [`skills.py`](skills.py) | Skills as files in a live prompt section, and an `add_skill` tool the agent extends itself with (`--scripted` runs offline) | optional |
+| [`structured_output.py`](structured_output.py) | `output_schema` on the root and its children | yes |
+| [`providers/mcp_weather.py`](providers/mcp_weather.py) | Every tool on an MCP server, as REPL tools | yes |
+| [`sandboxes/platformer.py`](sandboxes/platformer.py) | Every agent's code in a Docker container or a Modal sandbox (`--runtime docker\|modal`) | yes |
+| [`notebooks/coding_agent.ipynb`](notebooks/coding_agent.ipynb) | The coding agent as a notebook, step by step | yes |
 
-```bash
-python examples/showcase.py
-python examples/skills.py --model gpt-4o-mini
-python examples/summarizer.py --sections 10
-python examples/collaboration/shared_board.py \
-  --model gpt-5-mini --task "API" --task "Tests"
-python examples/providers/claude_code_delegation.py
-```
+[`shepherd/README.md`](shepherd/README.md) has the canonical run and artifact commands. [`docs/shepherd.md`](../docs/shepherd.md) is the worked-run walkthrough: the jam, the plans the meta-agent wrote against it, what each recovery branch did, and forking a Claude Code worker. After a Shepherd run, `make showcase-shepherd-assets` redraws its figures and animations.
 
-## Tasks
+Run `--help` on any script for its flags. Most take `--model`, `--max-iters`, `--out-dir`, and `--docker-image IMAGE` to run agent code in a container (`docker build -t rlmflow:local .` builds one with `rlmflow` installed).
 
-| Folder                                       | What it shows                                                                                                                                       |
-| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`architectures/`](architectures/)           | One small run per graph shape (tree, pipeline, review loop), plus an index of where every shape in the README grid comes from                       |
-| [`needle/`](needle/)                         | Needle-in-haystack (in-memory + filesystem variants; [`harnesses/`](needle/harnesses/) runs it on every harness)                                    |
-| [`coding/`](coding/)                         | Interactive file-editing agent plus the flagship model-designed Boids browser build                                                                 |
-| [`autoresearch/`](autoresearch/)             | TinyStories autoresearch loop with Modal GPU trials                                                                                                 |
-| [`shepherd/`](shepherd/)                     | Live meta-agent recovers a jammed Sokoban worker by forking its graph and replaying recovery branches in parallel, with board panels + a node trace |
-
-[`shepherd/README.md`](shepherd/README.md) has the canonical run and artifact commands. [`docs/shepherd.md`](../docs/shepherd.md) is the worked-run walkthrough: the jam, the plans the meta-agent wrote against it, what each recovery branch did, and how a profile user-prompt modifier adds the live board to the current worker turn.
-
-After a Shepherd run, `make showcase-shepherd-assets` redraws the agent summary and every-node graph as SVG, animates the jam → rewind → recovery transition, and publishes all branch trace GIFs to the documentation paths.
-
-## Tours & integrations
-
-| Folder                     | What it shows                                                   |
-| -------------------------- | --------------------------------------------------------------- |
-| [`graph/`](graph/)         | Offline graph API (inspect, append, fork, edit, launch, save)   |
-| [`control/`](control/)     | Delegation, branching, controller edits                         |
-| [`sandboxes/`](sandboxes/) | Docker and Modal remote execution                               |
-| [`providers/`](providers/) | DSPy, MCP, Tinker adapters                                      |
-
-The nonblocking delegation example is deterministic and needs no API key:
-
-```bash
-python examples/control/delegation/nonblocking.py
-```
-
-______________________________________________________________________
-
-Most compute examples (`summarizer.py`, `needle/haystack.py`, `showcase.py`, `coding/agent.py`) share the same flags. Run `--help` on any script for defaults.
-
-| Flag                   | Default                 | Meaning                                                                                                                                                                                           |
-| ---------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--model MODEL`        | varies                  | Main LLM. Prefix decides client (`claude*` → Anthropic, else OpenAI).                                                                                                                             |
-| `--fast-model MODEL`   | varies                  | Optional cheap secondary model registered as `fast` for delegates.                                                                                                                                |
-| `--docker-image IMAGE` | unset                   | If set, run agent code inside this Docker image via a `DockerRuntime`. Must have `rlmflow` installed. Leaving this unset uses `LocalRuntime`, which runs code in a worker subprocess on the host. |
-| `--max-depth N`        | `1`                     | Max delegation depth. FILE_TOOLS writes bind on agents that cannot spawn, so `1` lets children write.                                                                                             |
-| `--max-iters N`        | `15`                    | Max LLM turns per agent.                                                                                                                                                                          |
-| `--out-dir PATH`       | `_runs/<example-name>/` | Save the final run here. Defaults use flat example names under [`_runs/`](_runs/).                                                                                                                |
-
-## Running under Docker
-
-Build the image once:
-
-```bash
-docker build -t rlmflow:local .
-```
-
-Then pass `--docker-image rlmflow:local` to any example that supports it:
-
-```bash
-python examples/summarizer.py                 --docker-image rlmflow:local
-python examples/needle/haystack.py            --docker-image rlmflow:local
-python examples/needle/filesystem.py          --docker-image rlmflow:local
-python examples/coding/agent.py --workdir ./proj --docker-image rlmflow:local
-```
-
-Examples that use file tools pass them to the flow (`Flow(tools=[FILE_TOOLS])`) and set `working_directory` on the runtime, so relative paths resolve into that directory the same way in local and Docker modes.
-
-Each agent reads its `RLMFLOW_*` metadata from its own per-REPL `ENV` mapping (e.g. `ENV["RLMFLOW_AGENT_ID"]`), so that metadata is isolated per agent in every runtime. `LocalRuntime` already runs each agent in a worker subprocess; use `SubprocessRuntime` when you also need a selected Python executable, and `DockerRuntime` or a cloud sandbox when you need container-level isolation.
-
-A finished run is saved automatically under `_runs/`:
-
-```bash
-python examples/summarizer.py        # saves to examples/_runs/summarizer/
-```
-
-The saved directory holds `graph.json`, the graph's nodes and edges (plus `blobs/` for large inputs). Read it back as the same graph the run held in memory:
+A finished run is saved under [`_runs/`](_runs/). The directory holds `graph.json`, the graph's nodes and edges (plus `blobs/` for large inputs). Read it back as the same graph the run held in memory:
 
 ```python
 from rlmflow import Graph
 from rlmflow.view.text import kind
 
-g = Graph.load("examples/_runs/summarizer")
+g = Graph.load("examples/_runs/showcase")
 for node in g.nodes():
-    print(g.path(g.owner(node)), kind(node))
+    print(node.agent.path(), kind(node))
 ```
 
-## Docker And Modal
-
-Remote sandbox examples live under [`sandboxes/`](sandboxes/). They run a small platformer-building task, so set `OPENAI_API_KEY` plus any provider credentials:
-
-```bash
-python examples/sandboxes/docker_agent.py --docker-image rlmflow:local
-python examples/sandboxes/modal_agent.py --model gpt-5
-```
-
-The Docker runtime needs only the core package and the host `docker` CLI. Install `rlmflow[modal]` for Modal.
-
-For fully locked-down local runs, pass a `DockerRuntime`:
-
-```python
-from rlmflow import AgentConfig, DockerRuntime, Flow
-
-runtime = DockerRuntime("rlmflow:local", working_directory="./proj")
-flow = Flow(configs=[AgentConfig(model="gpt-4o")], runtime=runtime)
-```
+Each agent reads its `RLMFLOW_*` metadata from its own per-REPL `ENV` mapping (e.g. `ENV["RLMFLOW_AGENT_ID"]`), so that metadata is isolated per agent in every runtime. `LocalRuntime` runs each agent in a worker subprocess; use `SubprocessRuntime` when you also need a selected Python executable, and `DockerRuntime` or `ModalRuntime` when you need container-level isolation.
 
 ## Smoke runner
 

@@ -1,28 +1,76 @@
 # Upgrading to nodes, edges and a REPL
 
-The core is rebuilt on one record, `Node`, plus edges; an agent is its root
-node. See [The graph](docs/node_model.md) for the reference and
+The core is rebuilt on one record, `Node`, plus edges; an agent is an `Agent`,
+its first node. See [The graph](docs/node_model.md) for the reference and
 [Internals](docs/internals.md) for how a run works. Saved runs in
 format 5 are not migrated: loading one raises, so rerun it.
 
-## Agents are root nodes
+## Agents are nodes; no history list
+
+`RootData` is gone. An agent is an `Agent`, a dataclass subclass of the `Node`
+dataclass (both exported from `rlmflow`), and what was `root.root_data.X` is
+`agent.X`: `agent.name`, `agent.task`, `agent.config_name`,
+`agent.arg_descriptions`, `agent.repl_id`, `agent.config` and
+`agent.bind_config(...)`. The agent's own metadata is merged into the node's
+`agent.metadata`, and the config record that was `metadata["config"]` is the
+field `agent.config_record` (for viewers; never read back to run).
+
+No list of an agent's nodes is stored. Every node has `owner` (its agent's id)
+and `seq`, and `node.graph` is set when the graph adds it. Questions about one
+agent moved from the graph to the agent or node:
 
 | Before | Now |
 | --- | --- |
-| `Agent` record | The root `Node`; its identity is `root.root_data` (`RootData`) |
-| `agent.name`, `agent.task`, `agent.config_name` | `root.root_data.name`, `.task`, `.config_name` |
-| `agent.nodes` | `root.root_data.history[1:]` (the history starts with the root) |
-| `agent.args`, `agent.resolved_args()` | `root.input`, which is `{"task": ..., **args}` |
-| `agent.argument_descriptions()` | `root.root_data.arg_descriptions` |
-| `agent.bind_config(config)`, `agent.metadata` | `root.root_data.bind_config(config)`, `root.root_data.metadata` |
-| `node.agent_id` | `node.owner` (the root's id); `g.owner(node)` for the root |
-| `agent.base` | A `fork` edge from the base node to the fork's root; `g.base(fork)` |
-| `g.history(agent)` was `[]` for a fresh root | It starts with the root node |
-| `g.nodes("code", agent=a)` | `[n for n in g.history(a) if n.runs_code]`; `g.nodes()` includes roots |
+| `g.history(agent)`, `g.nodes(agent=a)`, `root.root_data.history` | `agent.nodes()` (the agent first) |
+| `g.history(node)` | `node.transcript()`: its agent's nodes up to and including `node` |
+| `g.tail(agent)` | `agent.nodes()[-1]` |
+| `g.owner(node)` | `node.agent` |
+| `g.status(agent)` | `agent.status()` |
+| `g.result(agent)` | `agent.final_result()` (`node.result` is what a node's code returned) |
+| `g.children(agent)`, `g.parent(agent)` | `agent.children()`, `agent.parent()` |
+| `g.subtree(agent)`, `g.lineage(agent)`, `g.path(agent)` | `agent.subtree()`, `agent.lineage()`, `agent.path()` |
+| `g.last_turn(agent)` | `agent.last_turn()` |
 
-`g.start(task, **args)`, `g.agents()`, `g.roots()`, `g.children(a)`,
-`g.parent(a)`, `g.status(a)`, `g.result(a)` and `g.path(a)` keep their names and
-take or return root nodes.
+The graph keeps what spans the run: `g.agent(id)`, `g.node(id)`, `g.agents()`,
+`g.roots()`, `g.nodes()` (every node; no `agent=`), `g.edges(...)`,
+`g.usage(agents)`, writes (`g.start`, `g.append`, `g.send`, `g.link`,
+`g.unlink`), edits (`g.edit`, `g.delete`, `g.remove`, `g.replace`), `g.fork`,
+`g.copy`, `g.save` and `Graph.load`.
+
+`Node` takes engine flags in `data=`: `Node("assistant", "hi", data={"seen": 3,
+"idle": True})`, not `Node("assistant", "hi", seen=3, idle=True)`. `producer`
+is a field, `node.producer`, not `node.data["producer"]`.
+
+`graph.json` is format 7: `{"format": 7, "id", "metadata", "nodes", "edges"}`.
+Each node record has `owner`, `seq` and `producer`; an agent's record has an
+`"agent"` object (`name`, `task`, `config`, `arg_descriptions`, `repl`, and
+`config_record` if set) and no list of nodes. Format 6 runs still load: their
+`history` lists are ignored, and an agent's old metadata and its `config`
+record are carried over.
+
+In harnesses, `rlmflow.harnesses.repl.history(step)` is removed (use
+`step.node.transcript()`), `history_messages(step)` is now
+`transcript_messages(step)`, and `rlmflow.harnesses.sessions.own_history` is
+removed (use `step.agent.nodes()`).
+
+## Agent records
+
+| Before | Now |
+| --- | --- |
+| `Agent` record | An `Agent` node: the agent's first node |
+| `agent.name`, `agent.task`, `agent.config_name` | The same fields on the `Agent` node |
+| `agent.nodes` | `agent.nodes()[1:]` (`agent.nodes()` starts with the agent) |
+| `agent.args`, `agent.resolved_args()` | `agent.input`, which is `{"task": ..., **args}` |
+| `agent.argument_descriptions()` | `agent.arg_descriptions` |
+| `agent.bind_config(config)`, `agent.metadata` | `agent.bind_config(config)`, `agent.metadata` (the node's own) |
+| `node.agent_id` | `node.owner` (its agent's id); `node.agent` for the agent |
+| `agent.base` | Gone: `g.fork(node)` returns a copy of the graph cut after `node` (see below) |
+| `agent.nodes()` was `[]` for a fresh root | It starts with the agent itself |
+| `g.nodes("code", agent=a)` | `[n for n in a.nodes() if n.runs_code]`; `g.nodes()` includes agents |
+
+`g.start(task, **args)`, `g.agents()` and `g.roots()` keep their names and
+return `Agent` nodes; `a.children()`, `a.parent()`, `a.status()`,
+`a.final_result()` and `a.path()` are methods on the agent.
 
 ## Node types become role, code and flags
 
@@ -39,13 +87,13 @@ take or return root nodes.
 
 `rlmflow.view.text.kind(node)` gives a display name (`agent`, `message`, `done`,
 `idle`, `model`, `code`, `reply`) for code that printed `node.type`. The node
-that ended a turn has `"seen" in node.data`; `g.last_turn(agent)` finds it.
+that ended a turn has `"seen" in node.data`; `agent.last_turn()` finds it.
 
 ```python
 async for step in flow.run_streaming(g):
-    print(g.path(step.agent), kind(step.node))  # was step.node.type
+    print(step.agent.path(), kind(step.node))  # was step.node.type
 
-node = next(n for n in g.history(root) if n.runs_code)  # was n.type == "code"
+node = next(n for n in root.nodes() if n.runs_code)  # was n.type == "code"
 node.calls  # was node.data["calls"]
 g.replace(node, 0, "cached")
 ```
@@ -62,7 +110,7 @@ g.replace(node, 0, "cached")
 ## Messages are nodes
 
 `g.inbox`, `agent.inbox` and `g.deliver` are gone. `g.send(agent, text, by=None,
-sender=None, **inputs)` appends a user node to the agent's history at once;
+sender=None, **inputs)` adds a user node to the agent at once;
 its inputs become variables in the agent's REPL, and the agent reads it at its
 next turn. Agent code passes values the same way:
 `AGENTS["reviewer"].send("See these lines.", lines=[40, 41])`. Unawaited
@@ -83,15 +131,15 @@ from `rlmflow.workspaces` (or `rlmflow`).
 | Before | Now |
 | --- | --- |
 | `current_code()` | `current_step().node` |
-| `repl.seed(tools, args)` | `repl.seed(tools)`; arguments are the root's `input`, bound once when the root runs |
+| `repl.seed(tools, args)` | `repl.seed(tools)`; arguments are the agent's `input`, bound once when its first node runs |
 | Saved calls matched by position per tool | Keyed by tool and arguments; `CallLog(node)` per run, on `step.calls` |
 | Every host tool's result saved | Only `@tool(cache=True)` host tools are saved |
 | `g.busy`, `g.revision`, `g.subscribe`, `g.edits` | Gone; edit a running graph with `await flow.edit(g, op, node, ...)` |
 
 ## Saved runs
 
-`graph.json` is format 6: `nodes` (each root lists its history by id) and
-`edges`. Format 5 is not migrated.
+`graph.json` is format 7: `nodes` (each with its `owner` and `seq`) and
+`edges`. Format 6 still loads; format 5 is not migrated.
 
 # Upgrading to core v2
 
@@ -118,11 +166,11 @@ g = Graph()
 root = g.start("Audit this repository.")
 flow.run(g)
 
-g.history(root)  # [llm, code, ..., done], no agent_start
-node = next(n for n in g.history(root) if n.type == "code")
+root.nodes()  # [llm, code, ..., done], no agent_start
+node = next(n for n in root.nodes() if n.type == "code")
 node.data["calls"]  # what each tool call in the node's code returned
 g.replace(node, 0, "cached")  # the node re-runs with this value
-g.edit(g.history(g.children(root)[0])[-1], result="42", dry_run=True)
+g.edit(root.children()[0].nodes()[-1], result="42", dry_run=True)
 ```
 
 ## Agent code
@@ -151,11 +199,31 @@ Version 0.7 is a clean break. It removes the old transition registry, async laun
 `rlmflow.graph.reads` and `rlmflow.graph.ops` are gone; call the same functions on the graph, without passing it:
 
 ```python
-g.result(agent)  # was reads.result(g, agent)
-g.history(agent)  # was reads.history(g, agent)
+agent.final_result()  # was reads.result(g, agent)
+agent.status()  # was reads.status(g, agent)
 g.send(agent, "text")  # was ops.send(g, agent, "text")
-g.fork(node, name="b")  # was ops.fork(g, node, name="b")
+branch = g.fork(node)  # was ops.fork(g, node, name="b"); see below
 ```
+
+## Forks are copies
+
+`g.fork(node)` no longer adds an agent to `g`. It returns a new `Graph`: a copy
+with the same ids, cut right after `node`; agents that didn't depend on what
+was cut are copied as they are. Agents launched at or after `node` aren't copied; if `node` launched agents or
+sent messages it runs again. The `fork` edge, `rlmflow.FORK`, `g.base()` and
+`g.launched()` are gone, and `agent.nodes()` is the agent's own nodes.
+
+| Before | Now |
+| --- | --- |
+| `fork = g.fork(node, name="retry")` | `branch = g.fork(node)`; the agent is `branch.agent(node.owner)` |
+| `g.fork(node, config="cheap")` | `branch.agent(node.owner).config_name = "cheap"` |
+| `g.fork(node, parent=by)` | Gone: a copy is its own graph |
+| `g.send(fork, text)`, `flow.run(g)` | `branch.send(agent, text)`, `flow.run(branch)` |
+| `rlmflow fork RUN NODE --name n` | `rlmflow fork RUN NODE`; the copy is saved beside RUN (or `--out`) |
+
+Each agent has `agent.repl_id`, which names its REPL, workspace and
+session. `g.fork(node, repl="same")` keeps them; the default gives the copy new
+ones. Saved runs with `fork` edges don't load.
 
 ## Child launch
 
@@ -195,7 +263,7 @@ With an explicit `output_schema`, a JSON value or JSON-encoded string is parsed 
 
 When a schema is supplied, pass a JSON Schema object with explicit `properties`, `required`, and `additionalProperties`. Without a schema, child and root results retain JSON-compatible Python values as described above.
 
-`AgentConfig.child_output_schema` is the default schema for launched children. The coding CLI (`rlmflow run` / `rlmflow tui`) and `examples/coding/agent.py` set it to `CODING_HANDOFF_SCHEMA`, so those children `submit` `{done, diff_summary, concerns, followups}` while the root stays untyped. Launch `schema=` overrides it.
+`AgentConfig.child_output_schema` is the default schema for launched children. The coding CLI (`rlmflow run` / `rlmflow tui`) sets it to `CODING_HANDOFF_SCHEMA`, so those children `submit` `{done, diff_summary, concerns, followups}` while the root stays untyped. Launch `schema=` overrides it.
 
 ## Multiple roots
 

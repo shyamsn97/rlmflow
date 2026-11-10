@@ -21,7 +21,7 @@ class Harness:
 
     Subclasses set ``name`` and implement ``step``, which appends the turn's
     nodes with ``flow.append`` (running code with ``flow.run_node``); the node
-    that ends the turn carries ``seen``, how much of the history it read. A
+    that ends the turn carries ``seen``, how many of its agent's nodes it read. A
     config names a harness by short name or by import path; a class is
     instantiated when it's loaded, and a plain ``async (flow, step)`` function
     works as a harness too.

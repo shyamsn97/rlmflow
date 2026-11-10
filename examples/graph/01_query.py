@@ -8,9 +8,20 @@ from rlmflow import RETURN, Graph, LLMUsage, Node
 from rlmflow.view.text import kind
 
 
-def turn(g: Graph, agent: Node, text: str = "", **fields) -> Node:
+def turn(
+    g: Graph,
+    agent: Node,
+    text: str = "",
+    *,
+    code: str = "pass",
+    output: str = "",
+    result=None,
+    error: bool = False,
+    **data,
+) -> Node:
     """Append one finished model turn to ``agent``: the reply, and the code it ran."""
-    node = Node("assistant", text, seen=len(g.history(agent)), **fields)
+    data = {"seen": len(agent.nodes()), **data}
+    node = Node("assistant", text, code=code, output=output, result=result, error=error, data=data)
     node.finished_at = time.time()
     return g.append(agent, node)
 
@@ -58,15 +69,15 @@ def main() -> None:
     g, root = build_graph()
 
     banner("agents / nodes / edges")
-    print("agents:", [g.path(agent) for agent in g.agents()])
+    print("agents:", [agent.path() for agent in g.agents()])
     print("node kinds:", [kind(node) for node in g.nodes()])
-    print("edges:", [(edge.kind, g.path(g.agent(edge.target))) for edge in g.edges(kind="spawn")])
-    print("errors:", [(g.path(g.owner(node)), node.output) for node in g.nodes() if node.error])
+    print("edges:", [(edge.kind, g.agent(edge.target).path()) for edge in g.edges(kind="spawn")])
+    print("errors:", [(node.agent.path(), node.output) for node in g.nodes() if node.error])
 
     banner("tail / status / result / tokens")
-    print("root tail:", kind(g.tail(root)))
-    print("statuses:", {agent.root_data.name: g.status(agent) for agent in g.agents()})
-    print("result:", g.result(root))
+    print("root tail:", kind(root.nodes()[-1]))
+    print("statuses:", {agent.name: agent.status() for agent in g.agents()})
+    print("result:", root.final_result())
     print("tokens:", g.usage())
 
 

@@ -1,13 +1,19 @@
 # The graph
 
-A run is a `Graph`: agents, the nodes in each agent's history, and edges between
+A run is a `Graph`: agents, the nodes each agent owns, and edges between
 them. Everything the engine does is a write to it, everything it decides comes
 from reading it, and you can edit it between runs.
 
 ## Nodes
 
-There is one record, `Node`. A node is one chat message: text the model reads,
-inputs that become REPL variables, and code the REPL runs.
+There is one record, `Node`, a dataclass. A node is one chat message: text the
+model reads, inputs that become REPL variables, and code the REPL runs.
+
+```python
+Node(role, text, *, input=, code=, output=, result=, error=, state=, calls=,
+     data=, metadata=, producer=, ...)
+Node("assistant", "hi", data={"seen": 3, "idle": True})
+```
 
 | Field | Meaning |
 | --- | --- |
@@ -18,16 +24,18 @@ inputs that become REPL variables, and code the REPL runs.
 | `calls` | What its tool calls returned, so running it again repeats nothing. |
 | `output`, `result`, `error` | What running it printed, what it submitted, and whether it failed. |
 | `state` | `"ready"`, `"running"` or `"done"`. |
-| `data` | Flags the engine reads: `producer`, `seen`, `terminal`, `idle`, `usage`, `model`, ... |
-| `owner` | The id of the root whose history holds it. |
-| `id`, `seq`, `version`, `metadata` | Stable id, creation order, edit count, annotations. |
+| `data` | Flags the engine reads: `seen`, `terminal`, `idle`, `usage`, `model`, ... |
+| `producer` | Who wrote it: `"self"` for the agent, else the sender (`"user"`, an agent id, ...). |
+| `owner` | The id of the agent it belongs to. |
+| `id`, `seq`, `version`, `metadata` | Stable id, creation order, edit count, application JSON. |
+| `graph` | The graph it was added to; set by the graph. |
 
 Running a node is always the same two steps: bind each `input` entry as a
-variable, then run `code`. What a history holds:
+variable, then run `code`. What an agent's nodes are:
 
 | Node | role | text | input | code |
 | --- | --- | --- | --- | --- |
-| Root | user | the task | `task` and the arguments | `pass` |
+| Agent | user | the task | `task` and the arguments | `pass` |
 | Model turn | assistant | the model's reply | | its `repl` block |
 | Session code | assistant | | | the code sent through `rlmflow repl` |
 | Session turn end | assistant | the session's last message | | `pass` |
@@ -38,12 +46,12 @@ variable, then run `code`. What a history holds:
 Only an agent's own turns and the host carry code; a ```` ```repl ```` block
 inside a message is never run.
 
-The node that ends a turn carries `seen` (how many history entries its prompt
-had). It also carries `terminal` and `result` when the agent finished, either by
+The node that ends a turn carries `seen` (how many of the agent's nodes its
+prompt had). It also carries `terminal` and `result` when the agent finished, either by
 `submit(value)` in its code or by a reply with no `repl` block, or `idle` when a
 session ended its turn waiting. A failed turn is a terminal node with
 `[run failed: ...]` or `[child failed: ...]` as its result.
-`data["producer"]` is `"self"` on an agent's own nodes, and the sender
+`node.producer` is `"self"` on an agent's own nodes, and the sender
 otherwise. `rlmflow.view.text.kind(node)` names a node for display: `agent`,
 `message`, `done`, `idle`, `model`, `code` or `reply`.
 
@@ -53,43 +61,47 @@ save, load and fork.
 
 ## Agents
 
-An agent is its root node. `root.root_data` holds what only an agent has:
+An agent is an `Agent`, a `Node` subclass: its first node, plus fields only an
+agent has:
 
 | Field | Meaning |
 | --- | --- |
-| `name` | Unique among its siblings. `g.path(root)` is `root.worker-0`. |
-| `task` | What it was asked; `root.input` is `{"task": ..., **args}`. |
+| `name` | Unique among its siblings. `agent.path()` is `root.worker-0`. |
+| `task` | What it was asked; `agent.input` is `{"task": ..., **args}`. |
 | `arg_descriptions` | From `Input(value, description=...)` arguments. |
-| `config_name` | The `AgentConfig` it runs with (`None` for a root, which uses the run's `root_config`). |
-| `history` | Its own nodes, the root first. |
-| `metadata` | Annotations; `metadata["config"]` records the config that ran it. |
+| `config_name` | The `AgentConfig` it runs with (`None` for a top-level agent, which uses the run's `root_config`). |
+| `repl_id` | The REPL, workspace and session it runs in: its own id, unless a fork gave it a new one. |
+| `config` | The config a Flow bound to it (`agent.bind_config(...)`). |
+| `config_record` | JSON of the config it last ran with, for viewers; never read back to run. |
 
-`g.history(root)` is a fork's base history followed by its own; for an agent
-that isn't a fork it is `root.root_data.history`. `Step.latest(g, root)` is the
-agent at the last node of that history.
+`agent.metadata` is the node's own application JSON. Every node has `owner`
+(its agent's id) and `seq`; the graph keeps an unsaved index from them, so
+there is no stored list of an agent's nodes. `agent.nodes()` returns them, the
+agent first, and `node.transcript()` returns its agent's nodes up to and
+including `node`: what the agent had seen there. `Step.latest(g, agent)` is the
+agent at its last node.
 
 ## Edges
 
 | Kind | From | To | Meaning |
 | --- | --- | --- | --- |
 | `spawn` | The node that launched it. | The child's root. | Who launched whom. |
-| `fork` | The node a fork continues from. | The fork's root. | Where a branch starts. |
 | `return` | A child's terminal node. | The node that awaited it, or the results node. | Where a result went. |
 | `write` | The node that sent a message. | The message node. | Who said what to whom. |
 
-These four are written by the engine. Any other kind is yours:
+These three are written by the engine. Any other kind is yours:
 `g.link("peer", a, b, note="...")` and `g.unlink(edge)`. The engine never reads
 them; views draw them, and `AGENTS.edges(kind=...)` shows them to agents.
 
 Reading the graph:
 
 ```python
-g.agents(), g.roots(), g.agent(id), g.node(id), g.owner(node)
-g.nodes(), g.nodes(agent=a), g.edges(kind="return", target=node.id)
-g.parent(a), g.children(a), g.lineage(a), g.path(a), g.subtree(a), g.base(fork)
-g.tail(a), g.last_turn(a)
-g.status(a)  # "done", "idle" or "running"
-g.result(a)  # the last turn's result once done, else None
+g.agents(), g.roots(), g.agent(id), g.node(id), node.agent
+g.nodes(), a.nodes(), g.edges(kind="return", target=node.id)
+a.parent(), a.children(), a.lineage(), a.path(), a.subtree()
+a.nodes()[-1], a.last_turn()
+a.status()  # "done", "idle" or "running"
+a.final_result()  # the last turn's result once done, else None
 g.usage(), g.usage().cost_usd
 ```
 
@@ -123,7 +135,7 @@ changed, and returns an `Invalidation`:
 
 | Field | Meaning |
 | --- | --- |
-| `rewound` | Agents whose history was cut back. |
+| `rewound` | Agents whose nodes were cut back. |
 | `removed` | Agents removed with their subtrees. |
 | `dropped` | Nodes removed. |
 | `rerun` | Nodes set ready, to run again in place. |
@@ -140,8 +152,8 @@ g.edit(node, text="...", dry_run=True)  # report, change nothing
 What follows from an edit is a constant table, `rlmflow.RULES`, keyed by edge
 kind:
 
-- Dropping a node removes the agents it launched (`spawn`) and forks from it
-  (`fork`), and takes back the messages it sent (`write`).
+- Dropping a node removes the agents it launched (`spawn`) and takes back the
+  messages it sent (`write`).
 - Every edit cuts the nodes after the edited one. Changing a node's `code` or
   `input` also reruns it. Its saved calls stay: the rerun reuses the ones it
   makes the same way, and launches or messages it no longer makes are undone.
@@ -154,19 +166,35 @@ kind:
 While a Flow is running the graph, edit through it: `await flow.edit(g, "edit",
 node, text=...)` stops the affected agents first, then applies the edit.
 
+## Forking
+
+`g.fork(node)` leaves `g` alone and returns a new graph: a copy with the same
+ids, cut right after `node` by the same rules; every agent that didn't depend
+on what was cut is copied as it is. If `node`'s code
+launched agents or sent messages, those are dropped and `node` runs again.
+`branch.metadata["forked_from"]` records the graph and node it came from.
+`repl="copy"` (the default) gives every agent in the copy a new `repl_id`, so
+its REPL is rebuilt and its session forked; `repl="same"` keeps them. See
+[Control](control.md#fork).
+
 ## Persistence
 
 `g.save(path)` writes `path/graph.json`:
 
 ```json
-{"format": 6, "id": "...", "nodes": [...], "edges": [...]}
+{"format": 7, "id": "...", "metadata": {...}, "nodes": [...], "edges": [...]}
 ```
 
-Each root lists its history by id; large input strings go to `path/blobs/` by
-content hash. `Graph.load(path)` rebuilds the same graph with the same ids. A
-node saved while it ran loads ready and runs again; agents it already launched
-are reused through its saved calls rather than launched twice. Older formats
-are not read.
+Each node record has its `owner`, `seq` and `producer`. An agent's record also
+has an `"agent"` object: `name`, `task`, `config` (its config name),
+`arg_descriptions`, `repl`, and `config_record` when it has one. Large input
+strings go to `path/blobs/` by content hash. `Graph.load(path)` rebuilds the
+same graph with the same ids. A node saved while it ran loads ready and runs
+again; agents it already launched are reused through its saved calls rather
+than launched twice. Format 6 runs still load: their `history` lists are
+ignored, an agent's old root metadata is merged into its `metadata`, and the
+`config` record in it becomes `config_record`. Older formats are not read, nor are runs saved with `fork` edges from
+before forks were copies.
 
 ## Streaming
 

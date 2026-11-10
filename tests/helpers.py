@@ -28,14 +28,14 @@ def agent_graph(task: str = "", *, args: dict | None = None) -> tuple[Graph, Nod
     """
     g = Graph()
     root = g.start(task, **(args or {}))
-    root.root_data.bind_config(AgentConfig())
+    root.bind_config(AgentConfig())
     return g, root
 
 
 def run_result(flow, g: Graph, agent: Node, **kwargs):
     """Run the graph to quiescence and return ``agent``'s result."""
     flow.run(g, **kwargs)
-    return g.result(agent)
+    return agent.final_result()
 
 
 def stepping(g: Graph, agent: Node, node=None):
@@ -43,32 +43,32 @@ def stepping(g: Graph, agent: Node, node=None):
     return running_step(Step(g, agent, node) if node is not None else Step.latest(g, agent))
 
 
-def ran(code: str = "pass", output: str = "", **data) -> Node:
-    """An assistant node whose code already ran."""
-    node = Node("assistant", code=code, output=output, **data)
+def ran(code: str = "pass", output: str = "", *, result=None, error=False, **data) -> Node:
+    """An assistant node whose code already ran; keywords besides ``result`` and ``error`` are data."""
+    node = Node("assistant", code=code, output=output, result=result, error=error, data=data)
     node.finished_at = time.time()
     return node
 
 
 def finish(g: Graph, agent: Node, result=None, **data) -> Node:
     """Append the turn that ends ``agent`` with ``result``."""
-    node = Node("assistant", result=result, seen=len(g.history(agent)), terminal=True, **data)
-    return g.append(agent, node)
+    data = {"seen": len(agent.nodes()), "terminal": True, **data}
+    return g.append(agent, Node("assistant", result=result, data=data))
 
 
 def own(agent: Node) -> list[Node]:
     """The agent's own nodes after its root."""
-    return agent.root_data.history[1:]
+    return agent.nodes()[1:]
 
 
 def code_nodes(g: Graph, agent: Node) -> list[Node]:
-    """The nodes in the agent's history that ran code."""
-    return [node for node in g.history(agent) if node.runs_code]
+    """The agent's nodes that ran code."""
+    return [node for node in agent.nodes() if node.runs_code]
 
 
 def turns(g: Graph, agent: Node) -> list[Node]:
     """The nodes that ended the agent's turns."""
-    return [node for node in g.history(agent) if "seen" in node.data]
+    return [node for node in agent.nodes() if "seen" in node.data]
 
 
 def repl(code: str, *, preamble: str | None = None) -> str:

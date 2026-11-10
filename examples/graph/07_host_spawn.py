@@ -32,12 +32,12 @@ def main() -> None:
     ):
         audit = g.start(task, name=name)
         # Code with ``finished_at`` set already ran; without it, the flow would run it.
-        ran = Node("assistant", code="run_audit()", output=verdict, seen=1)
+        ran = Node("assistant", code="run_audit()", output=verdict, data={"seen": 1})
         ran.finished_at = time.time()
         g.append(audit, ran)
-        g.append(audit, Node("assistant", result=verdict, seen=2, terminal=True))
+        g.append(audit, Node("assistant", result=verdict, data={"seen": 2, "terminal": True}))
         audits[name] = audit
-        print(f"{name}: {g.status(audit)}, {g.result(audit)!r}")
+        print(f"{name}: {audit.status()}, {audit.final_result()!r}")
 
     # Pass their results on to a new agent as arguments, and launch a child for it
     # from host code: start(parent=...) is the host-side launch_agent. The
@@ -45,13 +45,13 @@ def main() -> None:
     root = g.start(
         "decide the release from `audits`",
         name="root",
-        audits={name: g.result(agent) for name, agent in audits.items()},
+        audits={name: agent.final_result() for name, agent in audits.items()},
     )
     recheck = g.start("re-check the rollback path", parent=root, name="recheck")
     print(
         "spawn edge:",
         [
-            (e.kind, g.owner(g.node(e.source)).root_data.name, g.agent(e.target).root_data.name)
+            (e.kind, g.node(e.source).agent.name, g.agent(e.target).name)
             for e in g.edges(kind="spawn")
         ],
     )
@@ -63,9 +63,9 @@ def main() -> None:
 
     print()
     print(render_tree(g))
-    print("recheck:", g.result(recheck))
-    print("root:", g.result(root))
-    assert g.result(root) == "release blocked; canary failed"
+    print("recheck:", recheck.final_result())
+    print("root:", root.final_result())
+    assert root.final_result() == "release blocked; canary failed"
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ Each shape in the top-level README's grid is a real run. Three are small scripts
 
 | Shape | Example | Run it |
 | --- | --- | --- |
-| Fan-out | [`needle/harnesses/`](../needle/harnesses/) | `python examples/needle/harnesses/run.py --all` |
+| Fan-out | [`needle/filesystem.py`](../needle/filesystem.py) | `python examples/needle/filesystem.py --all` |
 | Recursive tree | [`tree.py`](tree.py) | `python examples/architectures/tree.py` |
 | Pipeline | [`pipeline.py`](pipeline.py) | `python examples/architectures/pipeline.py` |
 | Peers | [`coding/boids/`](../coding/boids/) | `python examples/coding/boids/boids.py --harness claude_code` |

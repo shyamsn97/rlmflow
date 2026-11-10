@@ -4,7 +4,7 @@ There is no root agent. Three peers are top-level agents in one graph, each
 holding a private number. Peers can't await each other: ``alice`` asks bob and
 carol for their numbers with ``AGENTS[name].send(...)`` and ends her turn; their
 replies arrive as messages and reopen her. Once she has both, she sends them the
-total. Every message is a node in the receiver's history with a ``write`` edge
+total. Every message is a node of the receiver's with a ``write`` edge
 from the node whose code sent it, so the saved graph records who told whom what.
 
     python examples/collaboration/decentralized_peers.py --model gpt-5-mini
@@ -57,7 +57,7 @@ async def run(flow: Flow, g: Graph, out_dir: str, config: AgentConfig) -> None:
     try:
         async for step in flow.run_streaming(g, root_config=config):
             checkpointer.handle(step, g)
-            print(f"{step.agent.root_data.name:<6}  {kind(step.node)}")
+            print(f"{step.agent.name:<6}  {kind(step.node)}")
     finally:
         checkpointer.close()
         flow.runtime.close_repls()
@@ -75,8 +75,8 @@ def print_messages(g: Graph) -> None:
     """Each message a peer sent: a ``write`` edge from the node that sent it."""
     for edge in g.edges(kind=WRITE):
         message = g.node(edge.target)
-        sender = g.owner(g.node(edge.source)).root_data.name
-        print(f"  {sender} -> {g.owner(message).root_data.name}: {message.text}")
+        sender = g.node(edge.source).agent.name
+        print(f"  {sender} -> {message.agent.name}: {message.text}")
 
 
 def main() -> None:
@@ -98,7 +98,7 @@ def main() -> None:
     )
 
     print("\nresults:")
-    results = {peer.root_data.name: g.result(peer) for peer in g.agents()}
+    results = {peer.name: peer.final_result() for peer in g.agents()}
     for name, result in results.items():
         print(f"  {name}: {result!r}")
 

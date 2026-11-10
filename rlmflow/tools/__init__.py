@@ -309,7 +309,7 @@ print(await asyncio.gather(first, second))
 
 def _on_flow_loop(flow: Flow, fn: Callable[[], Any]) -> Any:
     """Run a graph write on the Flow's event loop thread."""
-    owner = flow._loop
+    owner = flow.loop
     try:
         current = asyncio.get_running_loop()
     except RuntimeError:
@@ -426,20 +426,20 @@ def await_tool(flow: Flow, step: Step):
 
     async def result_of(agent_id: str, *, check: bool) -> Any:
         target = resolve_agent(g, agent_id)
-        if check and step.agent not in g.lineage(target)[:-1]:
-            name = target.root_data.name
+        if check and step.agent not in target.lineage()[:-1]:
+            name = target.name
             raise NotYourAgent(
                 f"you can only await agents you launched; {name!r} is not one. "
                 f"Message it with AGENTS[{name!r}].send(...) and end your turn "
                 "to read its reply."
             )
-        if g.status(target) != "done":
-            if flow._graph is None:
+        if target.status() != "done":
+            if not flow.running:
                 raise RuntimeError("awaiting an agent requires a running Flow")
-            await flow.wait_for(lambda: target.id not in g or g.status(target) == "done")
+            await flow.wait_for(lambda: target.id not in g or target.status() == "done")
             if target.id not in g:
-                raise RuntimeError(f"agent {target.root_data.name!r} was removed")
-        return returned(g.last_turn(target))
+                raise RuntimeError(f"agent {target.name!r} was removed")
+        return returned(target.last_turn())
 
     def restore(entry: dict[str, Any], agent_id: str) -> Any:
         if "value" in entry:
@@ -451,7 +451,7 @@ def await_tool(flow: Flow, step: Step):
 
     def receipt(_result: Any, agent_id: str) -> dict[str, str]:
         target = resolve_agent(g, agent_id)
-        return {"agent": target.id, "done": g.last_turn(target).id}
+        return {"agent": target.id, "done": target.last_turn().id}
 
     @tool("Wait for an agent you launched and return its result.")
     async def wait_agent(agent_id: str) -> Any:
@@ -512,7 +512,7 @@ def llm_query_tool(flow: Flow, step: Step):
     default_model = step.config.model
     description = (
         "Make one model completion for extraction, summarization, or Q&A over the "
-        "text you pass. The call sees no REPL, history, or tools, so use it for a "
+        "text you pass. The call sees no REPL, conversation, or tools, so use it for a "
         "one-shot transform, not multi-step owned work." + _model_help(flow, default_model)
     )
 

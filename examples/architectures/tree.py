@@ -40,7 +40,7 @@ def main() -> None:
         asyncio.run(print_run(flow, g, out_dir, width=28))
     finally:
         flow.runtime.close_repls()
-    print(f"\n{g.result(root)}\n\nsaved {out_dir}")
+    print(f"\n{root.final_result()}\n\nsaved {out_dir}")
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ class Scripted:
 
 def agent(flow, g, task, name, **config):
     record = g.start(task, name=name, config=flow.add_config(AgentConfig(name=name, **config)).name)
-    record.root_data.bind_config(flow.config(name))
+    record.bind_config(flow.config(name))
     return record
 
 
@@ -53,17 +53,17 @@ def test_a_sibling_messages_a_finished_peer_and_reopens_it():
 
     ScriptedFlow(llm).run(g)
 
-    assert g.result(root) == "sent"
-    a, b = (next(c for c in g.children(root) if c.root_data.name == name) for name in "ab")
-    assert g.parent(a) is g.parent(b) is root
-    assert g.result(a) == "sent" and g.result(b) == "b heard"
+    assert root.final_result() == "sent"
+    a, b = (next(c for c in root.children() if c.name == name) for name in "ab")
+    assert a.parent() is b.parent() is root
+    assert a.final_result() == "sent" and b.final_result() == "b heard"
     first, message, second = own(b)
     assert first.data["terminal"] and first.result == "b idle"
     assert message.role == "user" and message.text == "From root.a: hello from a"
     assert message.producer == a.id and second.data["terminal"]
     [edge] = g.edges(kind=WRITE, target=message.id)
     sending_code = g.node(edge.source)
-    assert g.owner(sending_code) is a and "AGENTS['b'].send" in sending_code.code
+    assert sending_code.agent is a and "AGENTS['b'].send" in sending_code.code
 
 
 def test_awaiting_send_to_a_descendant_returns_its_reply():
@@ -82,8 +82,8 @@ def test_awaiting_send_to_a_descendant_returns_its_reply():
 
     ScriptedFlow(llm).run(g)
 
-    assert g.result(a) == "pong"
-    [b] = g.children(a)
+    assert a.final_result() == "pong"
+    [b] = a.children()
     ready, message, pong = own(b)
     assert ready.result == "ready" and message.role == "user" and pong.result == "pong"
     [code_node] = code_nodes(g, a)
@@ -115,14 +115,14 @@ def test_a_rebuilt_repl_gives_each_await_the_result_it_first_returned():
     ScriptedFlow(llm).run(g)
     code_node = code_nodes(g, a)[0]
     assert code_node.output.strip() == "got ready pong"
-    [b] = g.children(a)
+    [b] = a.children()
     assert {e.source for e in g.edges(kind=RETURN, target=code_node.id)} == {
         n.id for n in turns(g, b)
     }
 
     g.send(a, "again")
     ScriptedFlow(llm).run(g)
-    assert g.result(a) == "ready"
+    assert a.final_result() == "ready"
 
 
 def test_send_refuses_to_message_itself():
@@ -138,7 +138,7 @@ def test_send_refuses_to_message_itself():
 
     flow.run(g)
 
-    assert g.result(a) == "refused"
+    assert a.final_result() == "refused"
 
 
 def test_an_agent_reads_another_through_agents():
@@ -160,7 +160,7 @@ def test_an_agent_reads_another_through_agents():
     g = Graph()
     root = g.start("parent")
     ScriptedFlow(llm).run(g)
-    assert g.result(root) == [
+    assert root.final_result() == [
         ["root", "kid"],
         ["kid"],
         "done",
@@ -187,8 +187,8 @@ def test_awaiting_an_agent_that_is_not_a_descendant_raises_not_your_agent():
 
     ScriptedFlow(llm).run(g)
 
-    assert g.result(root) == "refused"
-    (child,) = g.children(root)
+    assert root.final_result() == "refused"
+    (child,) = root.children()
     failed = code_nodes(g, child)[0]
     assert failed.error and "NotYourAgent" in failed.output
 
@@ -205,13 +205,13 @@ def test_a_fresh_flow_rebuilds_the_repl_from_recorded_code_nodes(tmp_path):
     worker = g.start("once", config="worker")
     configs = [AgentConfig(name="worker")]
     ScriptedFlow(llm, configs=configs).run(g)
-    assert g.result(worker) == "first"
+    assert worker.final_result() == "first"
 
     g.save(tmp_path / "run")
     loaded = Graph.load(tmp_path / "run")
     loaded.send(loaded.agent(worker.id), "again")
     ScriptedFlow(llm, configs=configs).run(loaded)
-    assert loaded.result(loaded.agent(worker.id)) == 42
+    assert loaded.agent(worker.id).final_result() == 42
 
 
 def test_rebuilt_agent_tools_write_nothing():
@@ -230,7 +230,7 @@ def test_rebuilt_agent_tools_write_nothing():
     a = agent(flow, g, "be a", "a")
     agent(flow, g, "be b", "b")
     flow.run(g)
-    assert g.result(a) == "kid"
+    assert a.final_result() == "kid"
     agents_before, edges_before = len(g.agents()), len(g.edges())
 
     g.send(a, "one more")
@@ -240,7 +240,7 @@ def test_rebuilt_agent_tools_write_nothing():
         configs=list(flow.configs.values()),
     ).run(g)
 
-    assert g.result(a) == 1
+    assert a.final_result() == 1
     assert len(g.agents()) == agents_before
     assert len(g.edges()) == edges_before
     assert sum(node.text.endswith(": hello") for node in g.nodes()) == 1
@@ -249,7 +249,7 @@ def test_rebuilt_agent_tools_write_nothing():
         ("assistant", "print(h.name)"),
         ("assistant", "submit(1)"),
     ]
-    assert all(g.owner(n) is a for n in new) and new[-1].data["terminal"]
+    assert all(n.agent is a for n in new) and new[-1].data["terminal"]
 
 
 def test_unknown_agents_are_a_key_error():
@@ -265,7 +265,7 @@ def test_unknown_agents_are_a_key_error():
 
     flow.run(g)
 
-    assert g.result(root) == "refused"
+    assert root.final_result() == "refused"
 
 
 def test_launch_agent_takes_a_config_name_from_the_flow():
@@ -280,9 +280,9 @@ def test_launch_agent_takes_a_config_name_from_the_flow():
 
     ScriptedFlow(llm, configs=[AgentConfig(name="cheap", description="for small jobs")]).run(g)
 
-    assert g.result(root) == "small"
-    [child] = g.children(root)
-    assert (child.root_data.name, child.root_data.config.name) == ("cheap-0", "cheap")
+    assert root.final_result() == "small"
+    [child] = root.children()
+    assert (child.name, child.config.name) == ("cheap-0", "cheap")
 
 
 # -- the agent_tools functions, called directly ----------------------------------
@@ -306,7 +306,7 @@ def test_spawn_checks_depth_task_length_and_config_names():
     with pytest.raises(TypeError, match="config name"):
         agent_tools.spawn(flow, stepping_at(g, root), "ok", config=AgentConfig())
     child = agent_tools.spawn(flow, stepping_at(g, root), "ok")
-    assert g.parent(child) is root
+    assert child.parent() is root
 
 
 def test_done_checks_the_output_schema():

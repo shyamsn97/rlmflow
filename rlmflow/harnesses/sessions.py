@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from rlmflow import schema
-from rlmflow.graph.nodes import SELF, Node, Step
+from rlmflow.graph.nodes import SELF, Agent, Node, Step
 from rlmflow.graph.queries import unseen_results
 from rlmflow.harnesses.base import Harness
 from rlmflow.harnesses.prompts import (
@@ -32,6 +32,7 @@ from rlmflow.harnesses.prompts import (
     guidance,
     preview,
 )
+from rlmflow.runtime.runtime import repl_key
 
 if TYPE_CHECKING:
     from rlmflow.agent_tools.server import Turn
@@ -61,13 +62,9 @@ _rlmflow_describe({hidden!r})
 del _rlmflow_describe"""
 
 
-def own_history(step: Step) -> list[Node]:
-    return step.graph.history(step.agent)
-
-
 def turn_end(step: Step) -> Node | None:
     """The node that ended the latest session turn, if no code ran after it."""
-    for node in reversed(own_history(step)):
+    for node in reversed(step.agent.nodes()):
         if node.data.get("session_id") and "seen" in node.data:
             return node
         if node.runs_code:
@@ -86,14 +83,17 @@ class Session:
     @classmethod
     def for_step(cls, step: Step) -> Session:
         """A turn resumes the session that ended the previous turn, forking it when
-        that turn belongs to another agent (this agent is a fork). Otherwise it starts
-        a fresh session whose id is derived from the agent and its place in history,
-        so a retried turn reuses the id.
+        that turn ran under another ``repl_id`` (a fork gave this agent a new one).
+        Otherwise it starts a fresh session whose id is derived from the ``repl_id``
+        and how many nodes the agent has, so a retried turn reuses the id.
         """
+        repl = repl_key(step.agent)
         last = turn_end(step)
         if last is not None:
-            return cls(last.data["session_id"], resume=True, fork=last.owner != step.agent.id)
-        return cls(str(uuid.uuid5(SESSION_NAMESPACE, f"{step.agent.id}:{len(own_history(step))}")))
+            return cls(
+                last.data["session_id"], resume=True, fork=last.data.get("repl", last.owner) != repl
+            )
+        return cls(str(uuid.uuid5(SESSION_NAMESPACE, f"{repl}:{len(step.agent.nodes())}")))
 
 
 @dataclass(frozen=True)
@@ -125,19 +125,19 @@ def config_list(flow: Flow) -> str:
 
 def first_prompt(step: Step) -> str:
     """The task, and the arguments by name and size; their values are REPL variables."""
-    task = step.agent.root_data.task
+    task = step.agent.task
     manifest = argument_manifest(step)
     return f"{task}\n\n{manifest}" if manifest else task
 
 
 def pending_messages(step: Step) -> list[str]:
     """What others wrote since the agent's last turn began."""
-    turn = step.graph.last_turn(step.agent)
+    turn = step.agent.last_turn()
     start = turn.data["seen"] if turn is not None else 1
     return [
         node.text
-        for node in own_history(step)[start:]
-        if node.producer != SELF and node.text and node.root_data is None
+        for node in step.agent.nodes()[start:]
+        if node.producer != SELF and node.text and not isinstance(node, Agent)
     ]
 
 
@@ -151,7 +151,7 @@ async def describe_variables(flow: Flow, step: Step) -> str:
 
 async def resume_prompt(flow: Flow, step: Step) -> str:
     """A fresh session on an existing REPL: the code run so far and the variables they left."""
-    ran = [n for n in own_history(step) if n.runs_code]
+    ran = [n for n in step.agent.nodes() if n.runs_code]
     lines = [
         f"[{i}] {preview(c.code, 80)} -> {preview(c.output or '(no output)', 100)}"
         for i, c in enumerate(ran, 1)
@@ -166,12 +166,12 @@ async def next_prompt(flow: Flow, step: Step, session: Session) -> str:
     messages = pending_messages(step)
     if session.resume:
         return "\n\n".join(messages) or "Continue."
-    has_code = any(n.runs_code for n in own_history(step))
-    if not has_code and step.graph.last_turn(step.agent) is None:
+    has_code = any(n.runs_code for n in step.agent.nodes())
+    if not has_code and step.agent.last_turn() is None:
         return first_prompt(step)
     opening = await resume_prompt(flow, step) if has_code else ""
     return "\n\n".join(
-        part for part in (f"Your task: {step.agent.root_data.task}", opening, *messages) if part
+        part for part in (f"Your task: {step.agent.task}", opening, *messages) if part
     )
 
 
@@ -201,7 +201,7 @@ class SessionHarness(Harness):
         }
 
     async def step(self, flow: Flow, step: Step) -> Node:
-        seen = len(own_history(step))
+        seen = len(step.agent.nodes())
         async with flow.agent_tools.turn(step) as turn:
             result = await self.run_turn(flow, step, turn)
         return await self.outcome(flow, step, turn, result, seen)
@@ -214,7 +214,11 @@ class SessionHarness(Harness):
     ) -> Node:
         """End the turn: terminal if the agent submitted or has nothing to wait for, else idle."""
         g, agent = step.graph, step.agent
-        node = Node("assistant", result.text, session_id=result.session_id, seen=seen)
+        node = Node(
+            "assistant",
+            result.text,
+            data={"session_id": result.session_id, "repl": repl_key(agent), "seen": seen},
+        )
         if result.cost_usd is not None:
             node.data["cost_usd"] = result.cost_usd
         if result.usage:
@@ -224,7 +228,7 @@ class SessionHarness(Harness):
             node.data["workspace"] = workspace
         if turn.submitted:
             node.result, node.data["terminal"] = turn.result, True
-        elif unseen_results(g, agent) or not all(g.status(c) == "done" for c in g.children(agent)):
+        elif unseen_results(g, agent) or not all(c.status() == "done" for c in agent.children()):
             node.data["idle"] = True
         else:
             answer = result.structured if result.structured is not None else result.text

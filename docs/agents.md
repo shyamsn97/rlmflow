@@ -18,8 +18,8 @@ Limits come from its config: `max_iters` model turns, `max_depth` levels of agen
 | `await agent`, `await asyncio.gather(*agents)`                     | Wait for the results of agents you launched (or they launched).                   |
 | `agent.send(message, **inputs)`                                    | Message any agent, reopening it if it finished; `**inputs` become its variables. For one you launched, `await` it for the reply. |
 | `agent.status`, `agent.done()`, `agent.result()`                   | Check an agent without waiting.                                                   |
-| `agent.parent`, `agent.children`, `agent.path`                     | Where it sits in the run; the same names as `g.parent(agent)` and so on.          |
-| `llm_query(prompt, model=..., schema=...)`                         | One model call with no history; with `schema`, a validated JSON value. Awaitable. |
+| `agent.parent`, `agent.children`, `agent.path`                     | Where it sits in the run; the same names as `agent.parent()` and so on.          |
+| `llm_query(prompt, model=..., schema=...)`                         | One model call with no conversation; with `schema`, a validated JSON value. Awaitable. |
 | `submit(value)`                                                    | Finish with a string or JSON value.                                               |
 | `AGENTS`                                                           | Every agent in the run: `AGENTS["name"]` (name, path or id), `AGENTS.self`, `AGENTS.children`, `AGENTS.print_graph()`. |
 | `Input(value, description=...)`                                    | Describe an argument's structure in the child's prompt.                           |
@@ -63,7 +63,7 @@ facts = await llm_query(
 
 ## Messages
 
-Agents message each other with `agent.send(message, **inputs)`, and host code with `g.send(agent, text, **inputs)`. A message is a node appended to the agent's history: the agent reads its text at its next turn, and its inputs become variables in its REPL. A `write` edge records which node sent it. A finished agent that gets a message runs again with the same REPL, so for an agent you launched `await agent.send(...)` returns its next result: its reply. A review loop and a team of peers are both built on this:
+Agents message each other with `agent.send(message, **inputs)`, and host code with `g.send(agent, text, **inputs)`. A message is a node added to the agent: the agent reads its text at its next turn, and its inputs become variables in its REPL. A `write` edge records which node sent it. A finished agent that gets a message runs again with the same REPL, so for an agent you launched `await agent.send(...)` returns its next result: its reply. A review loop and a team of peers are both built on this:
 
 ```python
 writer = launch_agent("Write a four-line poem about a lighthouse.", name="writer")
@@ -104,10 +104,10 @@ After `/rlmflow:run TASK`, your session is the root agent:
 1. The plugin starts `rlmflow serve` for the project and creates the root agent with your task. The serve builds the project's Flow (the coding one, or `flow = "module:factory"` in `rlmflow.toml`) and registers an `interactive` config for your session on it.
 1. Your session is given the same instructions as a harness session and works through `rlmflow repl`.
 1. When it ends a turn while its workers run, the plugin's Stop hook waits for their results (up to about nine minutes) and hands them back to the session, which carries on.
-1. Your later messages are messages to the root. Exiting the session stops the serve and saves the run.
+1. Your later messages are messages to the root. Exiting the session stops the serve and saves the run. If the root already submitted, agents still running in the background finish first, and the serve saves the run when they're done. If it hadn't, they stop with the session and stay unfinished in the saved run.
 
 ## Forks
 
-A fork is a new agent that shares another agent's history up to one node. Its REPL is rebuilt by running that history again; launches and `llm_query` calls in it return their recorded results, so finished workers aren't run again and the fork holds the same agents.
+A fork is a copy of the run cut after one node (`g.fork(node)`, or `rlmflow fork RUN NODE`); the original is left alone. An agent in the copy gets its REPL rebuilt by running its nodes again; launches and `llm_query` calls in it return their recorded results, so finished workers aren't run again and the copy holds copies of them. Workers launched at or after the fork node aren't copied.
 
-A Claude Code fork at the end of a session turn resumes that conversation as a new branch. A fork mid-turn starts a fresh session, briefed on the code run so far and the variables in its rebuilt REPL, and starts by reading `notes`.
+A Claude Code agent forked at the end of a session turn resumes that conversation as a new branch (`--fork-session`). Forked mid-turn, it starts a fresh session, briefed on the code run so far and the variables in its rebuilt REPL, and starts by reading `notes`.

@@ -15,14 +15,13 @@ from rlmflow.graph.config import (
 from rlmflow.graph.edits import RULES, GraphError, Invalidation
 from rlmflow.graph.graph import Graph
 from rlmflow.graph.nodes import (
-    FORK,
     RETURN,
     SPAWN,
     WRITE,
+    Agent,
     Edge,
     LLMUsage,
     Node,
-    RootData,
     Step,
     attach_image,
     current_step,
@@ -116,7 +115,6 @@ def __getattr__(name: str) -> Any:
 __all__ = [
     "DEFAULT_MAX_QUERY_CHARS",
     "DEFAULT_QUERY",
-    "FORK",
     "RETURN",
     "RULES",
     "SPAWN",
@@ -131,9 +129,9 @@ __all__ = [
     "LLMChunk",
     "LLMClient",
     "LLMUsage",
+    "Agent",
     "Node",
     "OpenAIClient",
-    "RootData",
     "SchemaError",
     "Step",
     "at_leaf",

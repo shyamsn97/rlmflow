@@ -72,7 +72,7 @@ def main():
         "--harness",
         default="repl",
         choices=["repl", "claude_code", "pi"],
-        help="What runs the root agent; workers always use the REPL harness (see harnesses/run.py).",
+        help="What runs the root agent; workers always use the REPL harness (filesystem.py mixes both).",
     )
     parser.add_argument("--no-viz", action="store_true", help="Disable the live agent tree")
     parser.add_argument(
@@ -135,7 +135,7 @@ def main():
     asyncio.run(drive())
 
     print(f"\n{'=' * 40}")
-    result = g.result(root)
+    result = root.final_result()
     print(f"Result:         {result}")
     print(f"Actual answer:  {answer}")
     print(f"Correct:        {answer in str(result)}")

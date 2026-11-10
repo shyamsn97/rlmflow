@@ -53,7 +53,7 @@ def main() -> None:
     asyncio.run(print_run(flow, g, out_dir))
 
     print(f"\n{'=' * 60}\nWEATHER PACKING RECOMMENDATION\n{'=' * 60}")
-    print(g.result(root))
+    print(root.final_result())
     print(f"\nRun saved to {out_dir}")
     flow.runtime.close_repls()
 

@@ -6,7 +6,7 @@ description: Ways to split work across agents in an rlmflow run — subagents, f
 # Orchestrating agents in rlmflow
 
 Every agent you launch is an agent in the run's graph, with its own REPL,
-history and result, joined to you by an edge. The patterns below are shapes of
+nodes and result, joined to you by an edge. The patterns below are shapes of
 that graph. Pick the smallest one that fits; most tasks need no agents at all.
 
 ## The tools
@@ -117,7 +117,7 @@ defects = await launch_agent(
 
 ### Review loop: send a finished agent back to work
 
-`.send` reopens a finished agent with its REPL and history intact, so it
+`.send` reopens a finished agent with its REPL and nodes intact, so it
 revises instead of starting over.
 
 ```python
@@ -185,11 +185,12 @@ g.link("peer", fe, be)  # your own edge kinds; the engine ignores them
 flow.run(g)
 
 g.send(fe, "Use the v2 endpoint instead.")  # steer an agent
-step = next(n for n in g.history(be) if n.runs_code)
-g.send(g.fork(step, name="retry"), "Try another approach.")  # branch from any node
-flow.run(g)
+step = next(n for n in be.nodes() if n.runs_code)
+branch = g.fork(step)  # a copy of the run cut after step; g is untouched
+branch.send(branch.agent(be.id), "Try another approach.")
+flow.run(branch)
 
-g.edit(g.last_turn(be), result="...")  # change a result; whatever used it re-runs
+g.edit(be.last_turn(), result="...")  # change a result; whatever used it re-runs
 g.replace(step, 0, "cached answer")  # bind the node's first saved call; the node re-runs
 g.remove(fe, dry_run=True)  # what removing an agent would take with it
 flow.run(g)

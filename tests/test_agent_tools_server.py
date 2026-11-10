@@ -10,7 +10,7 @@ from helpers import repl as block
 
 from rlmflow import WRITE, AgentConfig, Flow, Graph
 from rlmflow.graph import calls
-from rlmflow.graph.nodes import Step
+from rlmflow.graph.nodes import Agent, Step
 from rlmflow.harnesses.sessions import SessionHarness, TurnResult
 
 
@@ -47,8 +47,8 @@ def shell_config(*turns, **config):
 
 
 def shape(node):
-    """What a history entry is: the root, a code_node, a turn end, or a node from someone else."""
-    if node.root_data is not None:
+    """What a node is: the root, a code_node, a turn end, or a node from someone else."""
+    if isinstance(node, Agent):
         return "root"
     if node.runs_code:
         return "code_node"
@@ -78,7 +78,7 @@ def test_repl_code_nodes_land_code_nodes_and_keep_state():
     streamed = asyncio.run(run())
     asyncio.run(flow.aclose())
 
-    assert g.result(root) == 26
+    assert root.final_result() == 26
     ran = code_nodes(g, root)
     assert [c.code for c in ran] == [
         "n = len(doc)",
@@ -89,8 +89,9 @@ def test_repl_code_nodes_land_code_nodes_and_keep_state():
     assert ran[1].output.strip() == "13 3"
     assert ran[2].error and "ZeroDivisionError" in ran[2].output
     assert streamed == ["code_node", "code_node", "code_node", "code_node", "done"]
-    assert ran[3].data["terminal"] and g.tail(root).data["terminal"]
-    assert g.history(root)[-1].data["exits"] == [0, 0, 1, 0]
+    assert ran[3].result == 26 and root.nodes()[-1].data["terminal"]
+    assert [n for n in root.nodes() if n.data.get("terminal")] == [root.nodes()[-1]]
+    assert root.nodes()[-1].data["exits"] == [0, 0, 1, 0]
 
 
 def test_ending_a_turn_with_running_children_waits_then_resumes():
@@ -110,11 +111,11 @@ def test_ending_a_turn_with_running_children_waits_then_resumes():
     asyncio.run(flow.arun(g, root_config=config))
     asyncio.run(flow.aclose())
 
-    assert g.result(root) == {"total": 5}
-    [child] = g.children(root)
-    assert child.root_data.config.name == "worker" and g.result(child) == 5
-    history = g.history(root)
-    assert [shape(n) for n in history] == [
+    assert root.final_result() == {"total": 5}
+    [child] = root.children()
+    assert child.config.name == "worker" and child.final_result() == 5
+    nodes = root.nodes()
+    assert [shape(n) for n in nodes] == [
         "root",
         "code_node",
         "code_node",
@@ -124,11 +125,11 @@ def test_ending_a_turn_with_running_children_waits_then_resumes():
         "code_node",
         "done",
     ]
-    assert calls.launched(history[1]) == [child.id]
-    assert "worker" in history[2].output
-    assert history[5].output.strip() == "5"
-    [delivered] = g.edges(kind="return", target=history[4].id)
-    assert delivered.source == g.tail(child).id
+    assert calls.launched(nodes[1]) == [child.id]
+    assert "worker" in nodes[2].output
+    assert nodes[5].output.strip() == "5"
+    [delivered] = g.edges(kind="return", target=nodes[4].id)
+    assert delivered.source == child.nodes()[-1].id
 
 
 DELEGATE = "h = launch_agent('add', config='worker', x=2)\nAGENTS['peer'].send('hi')\nprint('ok')"
@@ -139,7 +140,7 @@ def edge_shapes(g):
 
     def end(item_id):
         node = g.node(item_id)
-        return g.owner(node).root_data.name, shape(node)
+        return node.agent.name, shape(node)
 
     return sorted((e.kind, end(e.source), end(e.target)) for e in g.edges())
 
@@ -178,13 +179,13 @@ def test_server_code_nodes_write_the_same_edges_as_in_process_code_nodes():
             },
         )
     )
-    assert native.result(native_root) == 5
-    assert served.result(served_root) == 5
+    assert native_root.final_result() == 5
+    assert served_root.final_result() == 5
     assert edge_shapes(served) == edge_shapes(native)
     for g, root in ((native, native_root), (served, served_root)):
-        [child] = g.children(root)
+        [child] = root.children()
         [spawn] = g.edges(kind="spawn", target=child.id)
-        assert g.owner(g.node(spawn.source)) is root
+        assert g.node(spawn.source).agent is root
         [message] = g.edges(kind=WRITE)
         assert g.node(message.source) is g.node(spawn.source)
         assert g.node(message.target).text == "From lead: hi"
@@ -193,7 +194,7 @@ def test_server_code_nodes_write_the_same_edges_as_in_process_code_nodes():
 def test_a_token_stops_working_when_its_turn_ends():
     g = Graph()
     root = g.start("x")
-    root.root_data.bind_config(AgentConfig())
+    root.bind_config(AgentConfig())
     flow = Flow()
     seen = {}
 
@@ -216,7 +217,7 @@ def test_a_token_stops_working_when_its_turn_ends():
 def test_concurrent_code_nodes_from_one_agent_run_one_at_a_time():
     g = Graph()
     root = g.start("race")
-    root.root_data.bind_config(shell_config([]))
+    root.bind_config(shell_config([]))
     flow = Flow()
 
     async def run():

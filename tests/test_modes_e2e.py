@@ -80,9 +80,9 @@ def worker_flow() -> Flow:
 
 
 def shapes(g):
-    """Each agent's history shape and result, by path."""
+    """Each agent's node shapes and result, by path."""
     return {
-        g.path(a): ([(n.role, n.runs_code, _flags(n)) for n in own(a)], g.result(a))
+        a.path(): ([(n.role, n.runs_code, _flags(n)) for n in own(a)], a.final_result())
         for a in g.agents()
     }
 
@@ -92,7 +92,7 @@ def _flags(node):
 
 
 def idle_turn(g, agent):
-    return next(n for n in g.history(agent) if n.data.get("idle"))
+    return next(n for n in agent.nodes() if n.data.get("idle"))
 
 
 async def claude(project: Path, *argv: str) -> dict:
@@ -160,9 +160,9 @@ def test_same_conversation_same_graph_in_both_modes(env, tmp_path, monkeypatch):
     interactive, session_id = interactive_run(plugin_project)
 
     assert shapes(headless) == shapes(interactive)
-    assert headless.result(root) == 5
-    [iroot] = [a for a in interactive.agents() if a.root_data.name == "root"]
-    assert iroot.root_data.config.harness == INTERACTIVE
+    assert root.final_result() == 5
+    [iroot] = [a for a in interactive.agents() if a.name == "root"]
+    assert iroot.config.harness == INTERACTIVE
     idle = idle_turn(interactive, iroot)
     assert idle.data["session_id"] == session_id and idle.text.startswith(
         "Launched the counters. 8"
@@ -178,32 +178,33 @@ def test_forking_an_interactive_graph_resumes_at_turn_ends_and_restarts_mid_turn
     project = tmp_path / "proj"
     project.mkdir()
     g, session_id = interactive_run(project)
-    [root] = [a for a in g.agents() if a.root_data.name == "root"]
+    [root] = [a for a in g.agents() if a.name == "root"]
     idle = idle_turn(g, root)
     first_code = code_nodes(g, root)[0]
 
-    # The fork has no children of its own, so its resumed turn opens on the prompt alone.
+    # The copy's children already delivered their results, so its resumed turn opens on the prompt alone.
     script(FROM_NOTES, SUM, ("Continue the task", SUM[1], SUM[2]))
-    at_turn_end = g.fork(idle, name="at-turn-end")
-    command = resume_command(g, at_turn_end, hooks.PLUGIN_DIR)
+    at_turn_end = g.fork(idle)
+    command = resume_command(at_turn_end, at_turn_end.agent(root.id), hooks.PLUGIN_DIR)
     assert f"--resume {session_id} --fork-session" in command
 
-    async def continue_fork(fork, argv):
-        serve, task = await serve_in_process(project, g, root=fork)
+    async def continue_fork(branch, argv):
+        serve, task = await serve_in_process(project, branch, root=branch.agent(root.id))
         await claude(project, *argv)
         await asyncio.wait_for(task, 10)
 
     asyncio.run(continue_fork(at_turn_end, shlex.split(command)[1:]))
-    assert g.result(at_turn_end) == 5
+    assert at_turn_end.agent(root.id).final_result() == 5
     resumed = calls()[-1]
     assert resumed[resumed.index("--resume") + 1] == session_id and "--fork-session" in resumed
 
-    mid_turn = g.fork(first_code, name="mid-turn")
-    command = resume_command(g, mid_turn, hooks.PLUGIN_DIR)
+    mid_turn = g.fork(first_code)
+    command = resume_command(mid_turn, mid_turn.agent(root.id), hooks.PLUGIN_DIR)
     assert "--resume" not in command
     asyncio.run(continue_fork(mid_turn, shlex.split(command)[1:]))
-    assert g.result(mid_turn) == "split doc in two!"
-    assert g.children(mid_turn) == []
+    assert mid_turn.agent(root.id).final_result() == "split doc in two!"
+    assert mid_turn.agent(root.id).children() == []
+    assert len(root.children()) == 2
 
 
 def run_cli(*argv: str, cwd: Path) -> subprocess.CompletedProcess:
@@ -224,13 +225,13 @@ def test_rlmflow_run_starts_serve_and_a_restarted_serve_continues_the_session(en
     [graph_dir] = list((project / ".rlmflow" / "runs").iterdir())
     g = Graph.load(graph_dir)
     [root] = g.agents()
-    assert root.root_data.config.harness == INTERACTIVE and g.result(root) == 1
+    assert root.config.harness == INTERACTIVE and root.final_result() == 1
 
     hooks.start_serve(project, ["--graph", str(graph_dir)])
     asyncio.run(claude(project, "--resume", session, "what are your notes?"))
     assert until_gone(project / ".rlmflow" / "serve.json")
     g = Graph.load(graph_dir)
-    assert g.result(g.agent(root.id)) == "kept"
+    assert g.agent(root.id).final_result() == "kept"
 
 
 def until_gone(path: Path, timeout: float = 15) -> bool:
@@ -243,7 +244,7 @@ def test_rlmflow_fork_interactive_prints_the_resume_command_and_serves_the_fork(
     project = tmp_path / "proj"
     project.mkdir()
     g, session_id = interactive_run(project)
-    [root] = [a for a in g.agents() if a.root_data.name == "root"]
+    [root] = [a for a in g.agents() if a.name == "root"]
     idle = idle_turn(g, root)
 
     done = run_cli(
@@ -251,8 +252,6 @@ def test_rlmflow_fork_interactive_prints_the_resume_command_and_serves_the_fork(
         str(project / "run"),
         idle.id,
         "--interactive",
-        "--name",
-        "again",
         "--project",
         str(project),
         cwd=project,
@@ -264,9 +263,11 @@ def test_rlmflow_fork_interactive_prints_the_resume_command_and_serves_the_fork(
     )
     serve_file = project / ".rlmflow" / "serve.json"
     info = json.loads(serve_file.read_text())
-    assert info["session_id"] is None
-    saved = Graph.load(project / "run")
-    assert saved.path(saved.agent(info["root"])) == "again"
+    assert info["session_id"] is None and info["root"] == root.id
+    [out] = [line.split(" into ")[1] for line in done.stdout.splitlines() if " into " in line]
+    saved = Graph.load(out)
+    assert saved.metadata["forked_from"] == {"graph": g.id, "node": idle.id}
+    assert len(Graph.load(project / "run")) == len(g)
 
     hooks.run("end", {"cwd": str(project)})
     assert until_gone(serve_file)

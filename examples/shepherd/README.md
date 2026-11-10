@@ -1,6 +1,6 @@
 # Shepherd recovery
 
-Shepherd is the flagship demonstration of why `rlmflow` keeps agent execution as a durable graph. The example first records a reproducible failed worker trace by scripting eight myopic Sokoban pushes. GPT-5 then inspects earlier graph states and proposes eight rewind/instruction pairs. The host forks the worker at those nodes, runs the GPT-5-mini recoveries as child agents, and selects the highest-scoring result.
+Shepherd is the flagship demonstration of why `rlmflow` keeps agent execution as a durable graph. The example first records a reproducible failed worker trace by scripting eight myopic Sokoban pushes. GPT-5 then inspects earlier graph states and proposes eight rewind/instruction pairs. The host forks the run at those nodes, injects each plan into its copy, runs the GPT-5-mini recoveries in parallel, and selects the highest-scoring result.
 
 This is a live model recovery run, not a canned result or replay-only simulation. The deliberate jam is fixed so attempts start from the same failure. Shepherd planning and recovery play come from the configured model APIs; the Sokoban environment is local and deterministic so retained actions can be replayed exactly.
 
@@ -42,7 +42,9 @@ uv run --locked --python 3.12 --extra openai --extra image --extra viewer \
 
 The run writes:
 
-- `graph/`: the whole run as one graph: the jammed worker, the shepherd, its previews, and the recovery branches it adopted;
+- `graph/`: the worker's run, ending in its jam;
+- `shepherd/`: the shepherd's own graph, its planning turns and the pick;
+- `branches/branchN/`: each recovery branch, a fork of the run cut at its rewind point, with the worker's copy and its plan;
 - `traces/worker.{json,gif}`: the deliberate jam;
 - `traces/branch0..branch7.{json,gif}`: each recovery trajectory.
 

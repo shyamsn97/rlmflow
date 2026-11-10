@@ -291,26 +291,22 @@ class RlmflowCLI:
         node: str,
         config: str | None = None,
         interactive: bool = False,
-        name: str | None = None,
         project: str = ".",
         out: str | None = None,
     ) -> None:
-        """Branch a saved run at NODE, then run the branch or continue it yourself.
+        """Copy a saved run cut after NODE, then run the copy or continue it yourself.
 
         Args:
           run: The run directory.
-          node: The node id (or unique prefix) to branch after.
-          config: Run the branch with this config (a name on the project's Flow) instead of the original's.
-          interactive: Continue the branch in your own Claude Code session.
-          name: The branch's agent name.
+          node: The node id (or unique prefix) to cut after.
+          config: Run NODE's agent with this config (a name on the project's Flow) instead of its own.
+          interactive: Continue the copy in your own Claude Code session.
           project: With --interactive, the working directory to serve.
-          out: Where to save the result; default: RUN itself.
+          out: Where to save the copy; default: a new directory beside RUN.
         """
         from rlmflow.cli.fork import fork_run
 
-        fork_run(
-            run, node, config=config, interactive=interactive, name=name, project=project, out=out
-        )
+        fork_run(run, node, config=config, interactive=interactive, project=project, out=out)
 
 
 def main(argv: list[str] | None = None) -> int:

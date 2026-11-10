@@ -11,6 +11,7 @@ import random
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -96,8 +97,17 @@ def plugin_session(project: Path, prompt: str, *extra: str) -> dict:
     return json.loads(done.stdout)
 
 
-def saved_run(project: Path, name: str) -> Path:
+def saved_run(project: Path, name: str, timeout: float = 600) -> Path:
+    """The session's saved run, once every agent in it is done.
+
+    Workers the root left running keep going after the session ends, so the
+    serve that owns the run is still saving until they finish.
+    """
     [graph_dir] = list((project / ".rlmflow" / "runs").iterdir())
+    deadline = time.monotonic() + timeout
+    while any(agent.status() != "done" for agent in Graph.load(graph_dir).agents()):
+        assert time.monotonic() < deadline, f"agents in {graph_dir} still running"
+        time.sleep(1)
     target = RUNS / name
     shutil.rmtree(target, ignore_errors=True)
     shutil.copytree(graph_dir, target)
@@ -116,9 +126,9 @@ def test_claude_harness_roots_find_the_needles():
         str(RUNS / "mode2-haystack"),
     )
     assert "Correct:        True" in out
-    out = example(
+    example(
         "needle/filesystem.py",
-        "--harness",
+        "--root",
         "claude_code",
         "--num-files",
         "100",
@@ -126,21 +136,21 @@ def test_claude_harness_roots_find_the_needles():
         "--out-dir",
         str(RUNS / "mode2-filesystem"),
     )
-    assert "Correct:        True" in out
-    g = Graph.load(RUNS / "mode2-filesystem")
-    [root] = [a for a in g.agents() if g.parent(a) is None]
-    assert g.children(root) and root.root_data.root_data.config.harness == HARNESSES["claude_code"]
+    g = Graph.load(RUNS / "mode2-filesystem" / "claude_code-repl")
+    [root] = [a for a in g.agents() if a.parent() is None]
+    assert root.children() and root.config.harness == HARNESSES["claude_code"]
 
 
 def test_fork_halfway_through_a_claude_harness_run():
     out = example(
-        "needle/fork_halfway.py",
+        "../tests/live/fork_halfway.py",
         "--num-files",
         "100",
         "--out-dir",
         str(RUNS / "mode2-fork-halfway"),
     )
-    assert "correct:          True" in out and "new launches: 0" in out
+    assert "correct:          True" in out and "original intact:  True" in out
+    assert "(in the copy: 0)" in out, "forking at the launch drops the original workers"
 
 
 def test_your_claude_session_as_the_root_finds_the_needle_and_forks(tmp_path):
@@ -155,13 +165,16 @@ def test_your_claude_session_as_the_root_finds_the_needle_and_forks(tmp_path):
     graph_dir = saved_run(project, "mode4-filesystem")
     g = Graph.load(graph_dir)
     [root] = g.agents()[:1]
-    assert root.root_data.config.harness == INTERACTIVE and root.root_data.name == "root"
-    assert g.children(root), "the root should have launched workers"
-    assert answer in str(g.result(root))
-    turn_ends = [n for n in g.history(root) if "seen" in n.data and n.data.get("session_id")]
+    assert root.config.harness == INTERACTIVE and root.name == "root"
+    assert root.children(), "the root should have launched workers"
+    assert answer in str(root.final_result())
+    turn_ends = [n for n in root.nodes() if "seen" in n.data and n.data.get("session_id")]
     assert {n.data["session_id"] for n in turn_ends} == {result["session_id"]}
 
-    launching = next(n for n in g.history(root) if n.runs_code and calls.launched(n))
+    nodes = root.nodes()
+    launching = next(n for n in nodes if n.runs_code and calls.launched(n))
+    after_launch = nodes[nodes.index(launching) + 1]
+    fork_dir = tmp_path / "fork"
     forked = subprocess.run(
         [
             sys.executable,
@@ -169,11 +182,11 @@ def test_your_claude_session_as_the_root_finds_the_needle_and_forks(tmp_path):
             "rlmflow",
             "fork",
             str(graph_dir),
-            launching.id,
+            after_launch.id,
             "--config",
             "claude",
-            "--name",
-            "fork",
+            "--out",
+            str(fork_dir),
             "--project",
             str(project),
         ],
@@ -184,25 +197,28 @@ def test_your_claude_session_as_the_root_finds_the_needle_and_forks(tmp_path):
         timeout=1500,
     )
     assert forked.returncode == 0, forked.stdout[-3000:] + forked.stderr[-3000:]
-    g = Graph.load(graph_dir)
-    [fork] = [a for a in g.agents() if a.root_data.name == "fork"]
-    assert answer in str(g.result(fork))
-    assert g.children(fork) == [], "the fork should reuse the workers, not relaunch"
+    branch = Graph.load(fork_dir)
+    copy = branch.agent(root.id)
+    assert copy.config_name == "claude" and answer in str(copy.final_result())
+    assert [c.id for c in copy.children()] == [c.id for c in root.children()], (
+        "the fork should reuse the workers, not relaunch"
+    )
+    assert len(Graph.load(graph_dir)) == len(g), "the original run is left as it was"
     shutil.rmtree(RUNS / "mode4-fork-halfway", ignore_errors=True)
-    shutil.copytree(graph_dir, RUNS / "mode4-fork-halfway")
+    shutil.copytree(fork_dir, RUNS / "mode4-fork-halfway")
 
 
 def test_claude_code_children_of_a_repl_root():
-    out = example(
-        "providers/claude_code_delegation.py",
-        "--workdir",
-        str(RUNS / "delegation-workspace"),
+    example(
+        "needle/filesystem.py",
+        "--workers",
+        "claude_code",
+        "--num-files",
+        "60",
+        "--no-viz",
         "--out-dir",
         str(RUNS / "delegation"),
     )
-    assert "Result:" in out
-    g = Graph.load(RUNS / "delegation")
-    claude_children = [
-        a for a in g.agents() if a.root_data.config.harness == HARNESSES["claude_code"]
-    ]
-    assert len(claude_children) == 2 and all(g.status(a) == "done" for a in claude_children)
+    g = Graph.load(RUNS / "delegation" / "repl-claude_code")
+    claude_children = [a for a in g.agents() if a.config.harness == HARNESSES["claude_code"]]
+    assert claude_children and all(a.status() == "done" for a in claude_children)

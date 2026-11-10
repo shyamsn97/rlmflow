@@ -97,7 +97,7 @@ def banner(msg: str) -> None:
 async def run(flow: Flow, g: Graph, out_dir: Path) -> None:
     """Stream the run, checkpointing periodically and printing every node as it lands."""
     async for step in checkpoint_stream(flow.run_streaming(g), g, out_dir):
-        print(f"{g.path(step.agent)}  {kind(step.node)}")
+        print(f"{step.agent.path()}  {kind(step.node)}")
 
 
 async def gym_loop(flow: Flow, g: Graph, root: Node, out_dir: Path) -> list[float]:
@@ -105,13 +105,13 @@ async def gym_loop(flow: Flow, g: Graph, root: Node, out_dir: Path) -> list[floa
     step = 0
     checkpoint = GraphCheckpointer(out_dir)
     try:
-        while not g.status(root) == "done":
+        while not root.status() == "done":
             async for item in flow.run_streaming(g, until="next"):
                 checkpoint.handle(item, g)
             step += 1
-            reward = 1.0 if g.status(root) == "done" else 0.0
+            reward = 1.0 if root.status() == "done" else 0.0
             rewards.append(reward)
-            print(f"step {step}: node={kind(g.tail(root))} reward={reward}")
+            print(f"step {step}: node={kind(root.nodes()[-1])} reward={reward}")
     finally:
         checkpoint.close()
     return rewards
@@ -141,7 +141,7 @@ def main() -> None:
     g = Graph()
     root = g.start("Create hello.py and goodbye.py. Delegate each file.")
     asyncio.run(run(flow, g, workdir / "run"))
-    print(f"\n{GREEN}Result:{RESET} {g.result(root)}")
+    print(f"\n{GREEN}Result:{RESET} {root.final_result()}")
 
     banner("2. Persistence — g.save() / Graph.load()")
     path = g.save(workdir / "run")
@@ -153,11 +153,11 @@ def main() -> None:
 
     banner("3. Latest state per agent")
     for agent in loaded.agents():
-        print(f"  {loaded.path(agent)}: {loaded.status(agent)} at {kind(loaded.tail(agent))}")
+        print(f"  {agent.path()}: {agent.status()} at {kind(agent.nodes()[-1])}")
 
     banner("4. Time travel — the graph after each step is an earlier graph")
     for idx, past in enumerate(replay(g)):
-        latest = kind(past.tail(past.agent(root.id)))
+        latest = kind(past.agent(root.id).nodes()[-1])
         print(f"{CYAN}step {idx}{RESET}: root [{latest}]  agents={len(past.agents())}")
 
     banner("5. Graph summary")
@@ -165,14 +165,14 @@ def main() -> None:
     print(f"Agents:  {len(g.agents())}")
     print(f"Nodes:   {len(g.nodes())}")
     print(f"Tokens:  {usage.total:,} ({usage.input_tokens:,} in / {usage.output_tokens:,} out)")
-    print(f"Final:   {kind(g.tail(root))}")
+    print(f"Final:   {kind(root.nodes()[-1])}")
 
     banner("6. Gym-style loop")
     flow3 = file_flow(workdir, AgentConfig(model="demo", max_depth=0, max_iters=args.max_iters))
     g3 = Graph()
     root3 = g3.start("Write a haiku about recursion to haiku.txt")
     rewards = asyncio.run(gym_loop(flow3, g3, root3, workdir / "gym-run"))
-    print(f"{GREEN}Result:{RESET} {g3.result(root3)}")
+    print(f"{GREEN}Result:{RESET} {root3.final_result()}")
     print(f"Total reward: {sum(rewards):.1f}")
     gym_path = g3.save(workdir / "gym-run")
     print(f"Gym run saved to {gym_path}")

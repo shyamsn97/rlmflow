@@ -23,8 +23,8 @@ class ScriptedLLM:
         return REPLIES[min(turns, len(REPLIES) - 1)]
 
 
-def print_history(g: Graph, agent: Node) -> None:
-    print("  " + " -> ".join(kind(node) for node in g.history(agent)))
+def print_nodes(agent: Node) -> None:
+    print("  " + " -> ".join(kind(node) for node in agent.nodes()))
 
 
 def main() -> None:
@@ -38,8 +38,8 @@ def main() -> None:
     # each one (with the edges between what's kept) is a real earlier graph.
     for step, snapshot in enumerate(replay(g)):
         agent = snapshot.agent(root.id)
-        print(f"\nstep {step}: {snapshot.status(agent)}, result={snapshot.result(agent)!r}")
-        print_history(snapshot, agent)
+        print(f"\nstep {step}: {agent.status()}, result={agent.final_result()!r}")
+        print_nodes(agent)
 
 
 if __name__ == "__main__":

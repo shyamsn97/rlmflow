@@ -1,7 +1,11 @@
-"""Offline examples for ``Flow.run_streaming(..., until=...)``.
+"""Stopping a run and picking it up again: ``Flow.run_streaming(..., until=...)``.
+
+A run stops after a set number of nodes, after a node that ran code, or when a
+predicate on a step holds; a message sent in between lands at the next turn,
+and streaming again resumes where it stopped.
 
 Run:
-    python examples/control/streaming_until.py
+    python examples/graph/08_streaming.py
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ from typing import Any
 from rlmflow import AgentConfig, Flow, Graph, Node, Step
 from rlmflow.view.text import kind
 
-RUN_DIR = Path(__file__).resolve().parents[1] / "_runs" / "streaming-until"
+RUN_DIR = Path(__file__).resolve().parents[1] / "_runs" / "graph-streaming"
 
 
 class ScriptedLLM:
@@ -45,7 +49,7 @@ def first_user(messages: list[dict[str, Any]]) -> str:
 async def collect(flow: Flow, g: Graph, **kwargs: Any) -> list[str]:
     """A label for each node the run lands, in order, taken as it lands."""
     return [
-        f"{g.path(step.agent)}: {kind(step.node)}" async for step in flow.run_streaming(g, **kwargs)
+        f"{step.agent.path()}: {kind(step.node)}" async for step in flow.run_streaming(g, **kwargs)
     ]
 
 
@@ -62,10 +66,10 @@ def after_appends(count: int):
 
 
 def print_tree(g: Graph, agent: Node, depth: int = 0) -> None:
-    """Each agent's history on one line, with its children indented below."""
-    history = " -> ".join(kind(node) for node in g.history(agent))
-    print(f"{'  ' * depth}[{g.path(agent)}] {history}")
-    for child in g.children(agent):
+    """Each agent's nodes on one line, with its children indented below."""
+    line = " -> ".join(kind(node) for node in agent.nodes())
+    print(f"{'  ' * depth}[{agent.path()}] {line}")
+    for child in agent.children():
         print_tree(g, child, depth + 1)
 
 
@@ -115,7 +119,7 @@ async def demo_idle_heals_errors() -> None:
 
     events = await collect(flow, g, until="idle")
     print_nodes("until='idle': an empty block is reported back as an error", events, g, root)
-    assert g.tail(root).error
+    assert root.nodes()[-1].error
     g.save(RUN_DIR / "idle-heals-errors")
 
 
@@ -144,13 +148,13 @@ async def demo_callable_boundary_with_child() -> None:
     # The halt cuts the root's node off mid-await. It is left ready to run again,
     # and the child it launched stays, finished.
     print_nodes("until=<callable>: observe the child's done", events, g, root)
-    [child] = g.children(root)
-    assert g.status(child) == "done"
+    [child] = root.children()
+    assert child.status() == "done"
 
     events = await collect(flow, g, until="done")
     print_nodes("resume: the node re-runs in place and gets the same child back", events, g, root)
-    assert g.children(root) == [child]
-    assert g.result(root) == "parent saw child done"
+    assert root.children() == [child]
+    assert root.final_result() == "parent saw child done"
     g.save(RUN_DIR / "callable-boundary-with-child")
 
 

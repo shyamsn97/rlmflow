@@ -20,7 +20,7 @@ import cloudpickle
 
 from rlmflow import AgentConfig, Flow, Graph, Node, Step, current_step
 from rlmflow.consumers import LiveGraphTree
-from rlmflow.harnesses.repl import ReplHarness, final_node, history, turns
+from rlmflow.harnesses.repl import ReplHarness, final_node, turns
 from rlmflow.llm import client_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -40,6 +40,7 @@ from view import (  # noqa: E402
     PanelViewer,
     export_run_traces,
     grid_of_blocks,
+    lane_key,
     panel_status,
     trace_line,
 )
@@ -174,7 +175,7 @@ list of {n} dicts shaped like
 
 A plan is two decisions and nothing else. `rewind` says how much of the jam the
 branch inherits: shallow keeps finished work but leaves the bad plan in the
-worker's visible history, which it tends to imitate; deep frees the board but
+worker's visible transcript, which it tends to imitate; deep frees the board but
 costs pushes to rebuild. `order` names which box takes which goal and in what
 sequence — the worker works out the routes itself, so do not give it moves.
 
@@ -277,7 +278,7 @@ def board_prompt(flow: Flow, step: Step, *, simple: bool = False) -> str | None:
             "board is current. " + action
         )
 
-    order = step.agent.root_data.metadata.get("shepherd_order")
+    order = step.agent.metadata.get("shepherd_order")
     guidance = (
         f"\n\n{scoreboard(state, step)}"
         f"\n\nStanding order: lock {order}. Each box goes to the goal named for "
@@ -297,16 +298,6 @@ class WorkerHarness(ReplHarness):
 
     def prompt_sections(self, flow: Flow, step: Step) -> dict[str, str | None]:
         return {}
-
-
-class ShepherdHarness(ReplHarness):
-    """The REPL loop, until the shepherd goes idle: after that a turn keeps waiting on its branches."""
-
-    async def step(self, flow: Flow, step: Step) -> Node:
-        seen = history(step)
-        if any(node.data.get("idle") for node in seen):
-            return flow.append(step.graph, step.agent, Node("assistant", seen=len(seen), idle=True))
-        return await super().step(flow, step)
 
 
 class ShepherdFlow(Flow):
@@ -380,6 +371,14 @@ def board(flow: Flow, agent: Node) -> str:
     return flow.runtime.get_env_var(agent, "board") or ""
 
 
+async def stream_branch(branch, run_dir: Path) -> AsyncIterator[tuple[Step, Graph]]:
+    """Run one branch's graph on its own Flow, checkpointing it, and yield each step."""
+    async for item in checkpoint_stream(
+        branch.flow.run_streaming(branch.g), branch.g, run_dir / "branches" / branch.name
+    ):
+        yield item, branch.g
+
+
 def branch_heading(branch) -> str:
     state = "SOLVED" if branch.solved else f"dist {branch.dist}"
     return f"{branch.name} [push {branch.pushes} · {state}]"
@@ -420,40 +419,46 @@ async def run_shepherd(
     construct = SIMPLE_CONSTRUCT if simple_moves else CONSTRUCT
     jam_code = SIMPLE_JAM_CODE if simple_moves else JAM_CODE
 
-    flow = ShepherdFlow(
-        llm_clients={
-            "shepherd": client_for(model, reasoning_effort=effort),
-            "worker": client_for(worker_model, reasoning_effort=worker_effort),
-        },
-        configs=[
-            AgentConfig(
-                name="worker",
-                harness=WorkerHarness,
-                model="worker",
-                prompt={"rules": SIMPLE_WORKER_SYSTEM if simple_moves else WORKER_SYSTEM},
-                max_depth=0,
-                max_iters=max_iters,
-            ),
-            AgentConfig(
-                name="shepherd",
-                harness=ShepherdHarness,
-                model="shepherd",
-                max_depth=max_depth,
-                max_iters=max_iters,
-            ),
-        ],
-        simple_moves=simple_moves,
-    )
+    def make_flow() -> ShepherdFlow:
+        """A Flow for the main run or for one branch; each branch runs on its own."""
+        made = ShepherdFlow(
+            llm_clients={
+                "shepherd": client_for(model, reasoning_effort=effort),
+                "worker": client_for(worker_model, reasoning_effort=worker_effort),
+            },
+            configs=[
+                AgentConfig(
+                    name="worker",
+                    harness=WorkerHarness,
+                    model="worker",
+                    prompt={"rules": SIMPLE_WORKER_SYSTEM if simple_moves else WORKER_SYSTEM},
+                    max_depth=0,
+                    max_iters=max_iters,
+                ),
+                AgentConfig(
+                    name="shepherd",
+                    model="shepherd",
+                    max_depth=max_depth,
+                    max_iters=max_iters,
+                ),
+            ],
+            simple_moves=simple_moves,
+        )
+        made.inject("Sokoban", Sokoban)
+        return made
+
     # Each REPL runs in a worker process that has no examples directory on its
     # path, so ``sokoban`` is not importable there and pickling the class by
     # reference would arrive as a missing import. Sending the module by value
     # ships the code itself; the worker publishes host-readable trace data in ENV.
     cloudpickle.register_pickle_by_value(sokoban)
-    flow.inject("Sokoban", Sokoban)
-    # One graph holds the whole run: the worker, the shepherd, its previews, and
-    # the recovery branches it adopts.
-    g = Graph()
+    flow = make_flow()
+    # ``g`` is the worker's run and nothing else; the shepherd works on it from its
+    # own graph, ``meta``. Each recovery branch is a fork of ``g`` cut at its rewind
+    # point, run on its own Flow.
+    g, meta = Graph(), Graph()
     worker = g.start(WORKER_QUERY, config="worker")
+    flows: dict[str, Flow] = {g.id: flow, meta.id: flow}
 
     # The terminal view is the same shape as the other examples': one live agent
     # tree, redrawn in place, whether or not a Gradio dashboard is also running.
@@ -470,10 +475,10 @@ async def run_shepherd(
     panels = PanelViewer(
         title="" if tree is not None else "shepherd — rewind ▸ parallel recovery",
         cols=min(n_branches, 4),
-        status_of=lambda agent: panel_status(flow, g, agent),
-        board_of=lambda agent: board(flow, agent),
+        status_of=lambda graph, agent: panel_status(flows[graph.id], graph, agent),
+        board_of=lambda graph, agent: board(flows[graph.id], agent),
         frames_of=(
-            (lambda agent: flow.runtime.get_env_var(agent, "frames"))
+            (lambda graph, agent: flows[graph.id].runtime.get_env_var(agent, "frames"))
             if dashboard is not None
             else None
         ),
@@ -485,17 +490,17 @@ async def run_shepherd(
     if tree is not None:
         tree.track(g, label="run")
 
-    def announce(agent: Node, name: str) -> None:
+    def announce(graph: Graph, agent: Node, name: str) -> None:
         """Name a lane."""
-        labels[agent.id] = name
-        panels.label(agent, name)
+        labels[lane_key(graph, agent)] = name
+        panels.label(graph, agent, name)
 
-    def show(step: Step) -> None:
+    def show(step: Step, graph: Graph = g) -> None:
         # Panels first: the tree paints straight after, and its footer reads them.
-        panels.handle(step, g)
+        panels.handle(step, graph)
         if tree is not None:
-            tree.handle(step, g)
-        line = trace_line(g, step.node, labels) if tree is None or dashboard is not None else ""
+            tree.handle(step, graph)
+        line = trace_line(graph, step.node, labels) if tree is None or dashboard is not None else ""
         if not line:
             return
         if dashboard is not None:
@@ -510,9 +515,9 @@ async def run_shepherd(
             tree.close()
         panels.close()
 
-    run_dir = root / "graph"
+    run_dir, meta_dir = root / "graph", root / "shepherd"
     try:
-        announce(worker, "worker")
+        announce(g, worker, "worker")
         if dashboard is not None:
             dashboard.set_status("worker playing the bad plan…")
         async for item in checkpoint_stream(
@@ -535,11 +540,9 @@ async def run_shepherd(
                 dashboard.finish("done — worker solved unaided")
             return
 
-        # The jammed worker is finished here, so later runs of the graph drive the
-        # shepherd and its branches but never the worker itself. Its REPL stays
-        # open: previews and branches replay from its history, and its trace is
-        # exported at the end.
-        jammed = g.append(worker, final_node("[jammed]", len(g.history(worker))))
+        # The jammed worker is finished here. Its REPL stays open for its trace,
+        # which is exported at the end; forks cut before this node.
+        jammed = g.append(worker, final_node("[jammed]", len(worker.nodes())))
         show(Step(g, worker, jammed))
 
         plans: list[Plan] = []
@@ -560,22 +563,26 @@ async def run_shepherd(
             plans,
             expected_plans=n_branches,
         )
-        shepherd = g.start(
+        shepherd = meta.start(
             META_QUERY.format(n=n_branches),
             config="shepherd",
             jam=json.dumps(tools["jam"]),
             max_rewind=str(tools["max_rewind"]),
         )
         flow.bindings[shepherd.id] = {"preview": tools["preview"], "branch": tools["branch"]}
-        announce(shepherd, "shepherd")
+        if tree is not None:
+            tree.track(meta, label="shepherd")
+        announce(meta, shepherd, "shepherd")
         if dashboard is not None:
             dashboard.set_status("shepherd planning recovery branches…")
 
         def planned(step: Step) -> bool:
             return (bool(plans) and step.agent.id == shepherd.id) or expired()
 
-        async for item in checkpoint_stream(flow.run_streaming(g, until=planned), g, run_dir):
-            show(item)
+        async for item in checkpoint_stream(
+            flow.run_streaming(meta, until=planned), meta, meta_dir
+        ):
+            show(item, meta)
         if not plans:
             close_view()
             ran_out = " before the time budget" if expired() else ""
@@ -585,43 +592,38 @@ async def run_shepherd(
                 dashboard.finish(f"done — {message}")
             return
 
-        # Every branch is a fork of the worker launched by the turn that recorded the
-        # plans, so the shepherd adopts them as its children and the search is one tree.
-        planning = g.history(shepherd)[-1]
-        branches = [
-            await prepare_branch(
-                flow,
+        # Each plan becomes a fork of the run at its rewind point, with the orders
+        # injected as a message to the worker's copy, and its own Flow.
+        branches = []
+        for index, plan in enumerate(plans):
+            branch_flow = make_flow()
+            branch = await prepare_branch(
+                branch_flow,
                 g,
                 worker,
                 plan,
                 index,
                 branch_pushes,
                 slack=12 if simple_moves else 4,
-                by=planning,
             )
-            for index, plan in enumerate(plans)
-        ]
-        for branch in branches:
-            announce(branch.agent, branch.name)
+            flows[branch.g.id] = branch_flow
+            branches.append(branch)
+            announce(branch.g, branch.agent, branch.name)
+            if tree is not None:
+                tree.track(branch.g, label=branch.name)
         if dashboard is not None:
             dashboard.set_proposals(
                 [(branch.rewind, ", then ".join(branch.order)) for branch in branches]
             )
             dashboard.set_status("running recovery branches in parallel…")
 
-        # The shepherd ends its turn waiting on its branches, so it takes no model
-        # turn while they play; their results reach it as messages as they finish.
-        waiting = Node("assistant", seen=len(g.history(shepherd)), idle=True)
-        show(Step(g, shepherd, g.append(shepherd, waiting)))
+        async def play(branch) -> None:
+            async for item, graph in stream_branch(branch, root):
+                show(item, graph)
+                if expired():
+                    break
 
-        def collected(step: Step) -> bool:
-            return all(g.status(branch.agent) == "done" for branch in branches) or expired()
-
-        async for item in checkpoint_stream(flow.run_streaming(g, until=collected), g, run_dir):
-            show(item)
-        # The run stops as the last branch lands, before its result is posted, so post
-        # what is still owed, then finish with the pick.
-        flow.deliver_results(g, shepherd)
+        await asyncio.gather(*(play(branch) for branch in branches))
 
         best = max(branches, key=lambda branch: branch.score)
         cut_short = " · stopped at the time budget" if expired() else ""
@@ -629,8 +631,11 @@ async def run_shepherd(
             f"Picked {best.name}: solved={best.solved}, score={best.score}, "
             f"pushes={best.pushes}{cut_short}"
         )
-        g.append(shepherd, final_node(summary, len(g.history(shepherd))))
+        meta.append(shepherd, final_node(summary, len(shepherd.nodes())))
+        meta.save(meta_dir)
         g.save(run_dir)
+        for branch in branches:
+            branch.g.save(root / "branches" / branch.name)
 
         final_panels = [(branch_heading(branch), branch.board()) for branch in branches]
         # The live view repaints in place, so it has to stop before the report is
@@ -641,7 +646,7 @@ async def run_shepherd(
             root,
             [("worker", flow.runtime.get_env_var(worker, "step_frames"))]
             + [
-                (branch.name, flow.runtime.get_env_var(branch.agent, "step_frames"))
+                (branch.name, branch.flow.runtime.get_env_var(branch.agent, "step_frames"))
                 for branch in branches
             ],
         )
@@ -654,7 +659,7 @@ async def run_shepherd(
             dashboard.finish(f"done — solved={best.solved}, {best.pushes} pushes")
     finally:
         close_view()
-        await flow.aclose()
+        await asyncio.gather(*(each.aclose() for each in flows.values()))
 
 
 def main() -> None:

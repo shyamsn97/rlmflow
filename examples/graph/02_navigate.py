@@ -1,4 +1,4 @@
-"""Navigating a graph: each agent's history, its children, and their results."""
+"""Navigating a graph: each agent's nodes, its children, and their results."""
 
 from __future__ import annotations
 
@@ -21,12 +21,12 @@ def build_graph():
 
 
 def print_tree(g: Graph, agent: Node, depth: int = 0) -> None:
-    """One indented line per node of ``agent``'s history, then each child below it."""
+    """One indented line per node of ``agent``, then each child below it."""
     pad = "  " * depth
-    print(f"{pad}{g.path(agent)} [{g.status(agent)}]")
-    for node in g.history(agent):
+    print(f"{pad}{agent.path()} [{agent.status()}]")
+    for node in agent.nodes():
         print(f"{pad}  {kind(node)}")
-    for child in g.children(agent):
+    for child in agent.children():
         print_tree(g, child, depth + 1)
 
 
@@ -34,11 +34,11 @@ def main() -> None:
     g, root = build_graph()
 
     print_tree(g, root)
-    print("\nagents:", [g.path(agent) for agent in g.subtree(root)])
-    print("children:", [g.path(child) for child in g.children(root)])
-    for child in g.children(root):
-        print(f"{g.path(child)} result:", g.result(child))
-    print("len(root history):", len(g.history(root)))
+    print("\nagents:", [agent.path() for agent in root.subtree()])
+    print("children:", [child.path() for child in root.children()])
+    for child in root.children():
+        print(f"{child.path()} result:", child.final_result())
+    print("len(root.nodes()):", len(root.nodes()))
 
 
 if __name__ == "__main__":

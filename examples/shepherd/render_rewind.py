@@ -32,7 +32,14 @@ if str(Path(__file__).parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).parent))
 
 import sprites  # noqa: E402
-from render_graph import RUN_DIR, board_rows, load_run, picked_summary, rewind_depth  # noqa: E402
+from render_graph import (  # noqa: E402
+    RUN_DIR,
+    board_rows,
+    load_branches,
+    load_run,
+    picked_summary,
+    rewind_depth,
+)
 
 JAM_COLOR = (217, 59, 48)
 REWIND_COLOR = (245, 165, 36)
@@ -141,7 +148,7 @@ def build_strip(
             "rewind",
         )
 
-    # A branch replays the history it inherited before making its own first move, and
+    # A branch replays the nodes it inherited before making its own first move, and
     # the rewind just walked back through exactly those pushes, so drop them rather
     # than animate the jam twice.
     bounds = push_boundaries(recovery)
@@ -216,15 +223,14 @@ def main() -> None:
             f"no saved shepherd graph under {run_dir}. Run: python examples/shepherd/shepherd.py"
         )
 
-    g, _worker, shepherd = load_run(run_dir)
-    summary = picked_summary(g, shepherd)
+    _, worker, meta, shepherd = load_run(run_dir)
+    summary = picked_summary(meta, shepherd)
     found = re.search(r"Picked (\S+?):", summary)
     name = args.branch or (found.group(1) if found else "")
-    branches = g.children(shepherd)
-    agent = next((a for a in branches if a.root_data.name == name), None)
-    if agent is None:
-        names = ", ".join(a.root_data.name for a in branches)
-        raise SystemExit(f"no branch {name!r} in that run. Available: {names}")
+    saved = {label: (graph, agent) for label, graph, agent in load_branches(run_dir, worker)}
+    if name not in saved:
+        raise SystemExit(f"no branch {name!r} in that run. Available: {', '.join(saved)}")
+    branch, agent = saved[name]
 
     jam = load_frames(run_dir / "traces" / "worker.json")
     recovery = load_frames(run_dir / "traces" / f"{name}.json")
@@ -237,8 +243,8 @@ def main() -> None:
         jam=jam,
         recovery=recovery,
         branch_name=name,
-        rewind=rewind_depth(g, agent) or len(jam),
-        outcome=str(g.result(agent) or "unfinished"),
+        rewind=rewind_depth(branch, agent) or len(jam),
+        outcome=str(agent.final_result() or "unfinished"),
         step_ms=args.step_ms,
         pause_ms=args.pause_ms,
     )

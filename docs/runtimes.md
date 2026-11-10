@@ -60,7 +60,7 @@ A timeout terminates the entire worker because Python cannot safely kill an arbi
 
 ## Restore behavior
 
-Saved graphs remain the durable state; a worker's namespace is not saved. When a Flow is about to run code for an agent whose REPL it doesn't hold (a loaded run, a fork, an edit that cut its history), it opens a fresh worker and runs the agent's history again, with saved tool calls returning their results. `await flow.replay(g)` does this up front for every unfinished agent, and `await flow.replay(g, agent)` for one.
+Saved graphs remain the durable state; a worker's namespace is not saved. When a Flow is about to run code for an agent whose REPL it doesn't hold (a loaded run, a fork, an edit that cut its nodes), it opens a fresh worker and runs the agent's nodes again, with saved tool calls returning their results. `await flow.replay(g)` does this up front for every unfinished agent, and `await flow.replay(g, agent)` for one.
 
 ## Docker
 

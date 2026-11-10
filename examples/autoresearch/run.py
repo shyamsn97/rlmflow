@@ -736,7 +736,7 @@ launch the next one.
 
     async def drive() -> None:
         async for step in checkpoint_stream(flow.run_streaming(g), g, graph_dir):
-            print(f"{g.path(step.agent):<20} {node_kind(step.node)}", flush=True)
+            print(f"{step.agent.path():<20} {node_kind(step.node)}", flush=True)
             if sync is not None:
                 sync.handle(step, g)
 
@@ -745,7 +745,7 @@ launch the next one.
         if sync is not None:
             sync.sync()
         asyncio.run(drive())
-        print(g.result(root))
+        print(root.final_result())
         write_run_report(state, args.out, announce=True)
     finally:
         if sync is not None:

@@ -148,7 +148,7 @@ def main() -> None:
         print(f"  {tid} [{board.claims.get(tid, 'unclaimed')}]: {task}")
         print(f"    -> {board.results.get(tid)!r}")
     for worker in g.agents():
-        print(f"{worker.root_data.name} finished: {g.result(worker)!r}")
+        print(f"{worker.name} finished: {worker.final_result()!r}")
     print(f"\nGraph saved to {Path(args.out_dir).resolve()}")
 
 

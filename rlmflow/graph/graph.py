@@ -1,16 +1,16 @@
-"""The run as a graph: agents' histories of nodes, and the edges between them.
+"""The run as a graph: agents, their nodes, and the edges between them.
 
-An agent is its root node; ``root.root_data.history`` is its own nodes, root
-first. A fork's history continues from the node it forked at. Edges say how
-agents affect each other:
+An agent is its first node, an ``Agent``; ``agent.nodes()`` are its nodes in
+the order they were added, and ``node.transcript()`` the ones up to ``node``.
+Edges say how agents affect each other:
 
 - ``spawn``: the node that launched a child -> the child's root
-- ``fork``: the node a fork continues from -> the fork's root
 - ``return``: a child's final node -> the node its result reached
 - ``write``: the node that attached a node to another agent -> that node
 
 The graph is mutable. ``edit``, ``delete``, ``remove`` and ``replace`` change it
 and invalidate what depended on the change (see ``rlmflow.graph.edits``).
+``fork`` leaves it alone and returns a cut copy.
 """
 
 from __future__ import annotations
@@ -32,33 +32,35 @@ from rlmflow.graph.config import (
 from rlmflow.graph.edits import GraphError, Invalidation
 from rlmflow.graph.nodes import (
     DONE,
-    FORK,
     READY,
-    SELF,
     SPAWN,
     WRITE,
+    Agent,
     Edge,
     LLMUsage,
     Node,
-    RootData,
     new_id,
     strict_json,
 )
 
 
 class Graph:
-    """Agents (root nodes), the nodes in their histories, and the edges between them."""
+    """Agents, their nodes, and the edges between them."""
 
     def __init__(self, id: str | None = None) -> None:
         self.id = id or new_id("graph")
-        self._roots: dict[str, Node] = {}
+        self._roots: dict[str, Agent] = {}
         self._nodes: dict[str, Node] = {}
+        #: Agent id -> its nodes in the order they were added; an index, not saved.
+        self._own: dict[str, list[Node]] = {}
         self._edges: dict[str, Edge] = {}
         self._out: defaultdict[str, list[str]] = defaultdict(list)
         self._in: defaultdict[str, list[str]] = defaultdict(list)
         self._parent: dict[str, str] = {}
         self._children: defaultdict[str, list[str]] = defaultdict(list)
         self._seq = 0
+        #: The application's; ``fork`` records ``forked_from`` here. Saved with the graph.
+        self.metadata: dict[str, Any] = {}
 
     def __repr__(self) -> str:
         return f"Graph({self.id!r}, agents={len(self._roots)}, nodes={len(self._nodes)})"
@@ -75,8 +77,8 @@ class Graph:
 
     # -- reads ----------------------------------------------------------------
 
-    def agent(self, agent: str | Node) -> Node:
-        """An agent's root node, by id or root node."""
+    def agent(self, agent: str | Node) -> Agent:
+        """An agent, by id or by the agent itself (in this graph or a copy of it)."""
         key = agent.id if isinstance(agent, Node) else agent
         try:
             return self._roots[key]
@@ -89,22 +91,16 @@ class Graph:
         except KeyError:
             raise KeyError(f"no node {node_id!r} in this graph") from None
 
-    def owner(self, node: Node) -> Node:
-        """The root of the agent whose history holds ``node``."""
-        return self._roots[node.owner]
-
-    def agents(self) -> list[Node]:
-        """Every agent's root node, in creation order."""
+    def agents(self) -> list[Agent]:
+        """Every agent, in creation order."""
         return list(self._roots.values())
 
-    def roots(self) -> list[Node]:
+    def roots(self) -> list[Agent]:
         """Agents nobody launched, in creation order."""
         return [root for root in self._roots.values() if root.id not in self._parent]
 
-    def nodes(self, *, agent: Node | str | None = None) -> list[Node]:
-        """Nodes in creation order: everywhere, or one agent's own history."""
-        if agent is not None:
-            return list(self.agent(agent).root_data.history)
+    def nodes(self) -> list[Node]:
+        """Every node, in creation order."""
         return sorted(self._nodes.values(), key=lambda node: node.seq)
 
     def edges(
@@ -136,91 +132,7 @@ class Graph:
             key=lambda edge: edge.seq,
         )
 
-    def base(self, agent: Node) -> Node | None:
-        """The node a fork's history continues from; ``None`` for an agent that isn't a fork."""
-        for edge_id in self._in.get(agent.id, ()):
-            edge = self._edges[edge_id]
-            if edge.kind == FORK:
-                return self._nodes.get(edge.source)
-        return None
-
-    def history(self, item: Node) -> list[Node]:
-        """What an agent has seen: a fork's base history, then its own nodes (up to ``item`` for a node)."""
-        root = self._roots[item.owner]
-        if item is root:
-            return [*self._prefix(root), *root.root_data.history]
-        return self._upto(item)
-
-    def _upto(self, node: Node) -> list[Node]:
-        own = self._roots[node.owner].root_data.history
-        return [*self._prefix(self._roots[node.owner]), *own[: own.index(node) + 1]]
-
-    def _prefix(self, root: Node) -> list[Node]:
-        base = self.base(root)
-        return self._upto(base) if base is not None else []
-
-    def tail(self, agent: Node) -> Node:
-        """The last node of the agent's history."""
-        return self.history(agent)[-1]
-
-    def last_turn(self, agent: Node) -> Node | None:
-        """The node that ended the agent's latest turn: the last one with ``seen``."""
-        for node in reversed(self.history(agent)):
-            if "seen" in node.data:
-                return node
-        return None
-
-    def status(self, agent: Node) -> str:
-        """``"done"``, ``"idle"`` (waiting for news), or ``"running"``.
-
-        Unfinished nodes, or nodes from others that arrived after its last turn
-        started, mean ``running``. Otherwise the last turn says: ``terminal`` is
-        done, ``idle`` is idle, anything else is still working.
-        """
-        history = self.history(agent)
-        if history[-1].state != DONE:
-            return "running"
-        turn = None
-        for node in reversed(history):
-            if "seen" in node.data:
-                turn = node
-                break
-        if turn is None:
-            return "running"
-        if any(node.producer != SELF for node in history[turn.data["seen"] :]):
-            return "running"
-        if turn.data.get("terminal"):
-            return "done"
-        if turn.data.get("idle"):
-            return "idle"
-        return "running"
-
-    def result(self, agent: Node) -> Any:
-        """The agent's result, or ``None`` until it is done."""
-        if self.status(agent) != "done":
-            return None
-        turn = self.last_turn(agent)
-        return turn.result if turn is not None else None
-
-    def parent(self, agent: Node) -> Node | None:
-        """The agent that launched this one; ``None`` when top-level."""
-        parent_id = self._parent.get(agent.id)
-        return self._roots.get(parent_id) if parent_id else None
-
-    def children(self, agent: Node) -> list[Node]:
-        """Agents this one launched, in creation order."""
-        return [self._roots[i] for i in self._children.get(agent.id, ()) if i in self._roots]
-
-    def subtree(self, agent: Node) -> list[Node]:
-        return queries.subtree(self, agent)
-
-    def lineage(self, agent: Node) -> list[Node]:
-        return queries.lineage(self, agent)
-
-    def path(self, agent: Node) -> str:
-        return queries.path(self, agent)
-
-    def usage(self, agents: Iterable[Node] | None = None) -> LLMUsage:
+    def usage(self, agents: Iterable[Agent] | None = None) -> LLMUsage:
         return queries.usage(self, agents)
 
     # -- writes ---------------------------------------------------------------
@@ -237,7 +149,7 @@ class Graph:
         config: str | None = None,
         parent: Node | None = None,
         **args: Any,
-    ) -> Node:
+    ) -> Agent:
         """Start an agent on ``task``: add its root node and return it. It runs when a Flow runs the graph.
 
         Keyword arguments are the root's inputs, so they become REPL variables
@@ -265,66 +177,46 @@ class Graph:
         descriptions = {
             arg: wrapped[1] for arg, value in args.items() if (wrapped := input_parts(value))
         }
-        root = Node("user", task, input={"task": task, **values})
-        root.root_data = RootData(name, task, config_name=config, arg_descriptions=descriptions)
-        self._add_root(root)
-        if parent is not None:
-            self.link(SPAWN, parent, root)
-        return root
-
-    def fork(
-        self,
-        at: Node,
-        *,
-        name: str | None = None,
-        parent: Node | None = None,
-        config: str | None = None,
-    ) -> Node:
-        """A new agent whose history continues from ``at``, through a ``fork`` edge.
-
-        Nothing is copied. Forking at an agent's root starts it over. The fork
-        runs with the owner's config unless ``config`` names another.
-        """
-        if at.id not in self._nodes:
-            raise GraphError(f"cannot fork at {at!r}: it is not in this graph")
-        owner = self._roots[at.owner].root_data
-        if name is None:
-            taken = {root.root_data.name for root in self._roots.values()}
-            index = 0
-            while f"{owner.name}-fork{index}" in taken:
-                index += 1
-            name = f"{owner.name}-fork{index}"
-        validate_agent_name(name)
-        root = Node("user", "", producer=SELF)
-        root.root_data = RootData(
-            name,
-            owner.task,
-            config_name=config if config is not None else owner.config_name,
-            arg_descriptions=owner.arg_descriptions,
+        root = Agent(
+            "user",
+            task,
+            input={"task": task, **values},
+            name=name,
+            task=task,
+            config_name=config,
+            arg_descriptions=descriptions,
         )
-        self._add_root(root)
-        self.link(FORK, at, root)
+        self._add_agent(root)
         if parent is not None:
             self.link(SPAWN, parent, root)
         return root
 
-    def _add_root(self, root: Node) -> None:
-        root.owner = root.id
-        root.root_data.history.append(root)
-        self._stamp(root)
-        self._roots[root.id] = root
-        self._nodes[root.id] = root
+    def _add_agent(self, agent: Agent) -> None:
+        agent.owner = agent.id
+        agent.repl_id = agent.repl_id or agent.id
+        agent.graph = self
+        self._stamp(agent)
+        self._roots[agent.id] = agent
+        self._nodes[agent.id] = agent
+        self._own[agent.id] = [agent]
 
     def append(self, agent: Node, node: Node) -> Node:
-        """Add ``node`` to the end of ``agent``'s history; code that hasn't run is ready to run."""
+        """Add ``node`` after ``agent``'s last node; code that hasn't run is ready to run."""
         root = self.agent(agent)
+        if isinstance(node, Agent):
+            raise GraphError("an agent is added with start, not append")
         if node.id in self._nodes:
             raise GraphError(f"node {node.id!r} is already in the graph")
+        if node.data.get("terminal") and root.status() == "done":
+            raise GraphError(
+                f"agent {root.name!r} already finished; send it a message to reopen it"
+            )
         if node.runs_code and node.finished_at is None and node.state == DONE:
             node.state = READY
         node.owner = root.id
+        node.graph = self
         self._stamp(node)
-        root.root_data.history.append(node)
+        self._own[root.id].append(node)
         self._nodes[node.id] = node
         return node
 
@@ -390,11 +282,11 @@ class Graph:
         if edge.kind == SPAWN and (parent := self._parent.pop(edge.target, None)):
             self._children[parent].remove(edge.target)
 
-    def _default_name(self, config: str | None, parent: Node | None) -> str:
+    def _default_name(self, config: str | None, parent: Agent | None) -> str:
         """The config name (``root`` for a root) for the first top-level agent of a kind, else ``<name>-<n>``."""
         base = config or "root"
-        peers = self.children(parent) if parent is not None else self.roots()
-        used = {peer.root_data.name for peer in peers}
+        peers = parent.children() if parent is not None else self.roots()
+        used = {peer.name for peer in peers}
         if parent is None and base not in used:
             return base
         index = 0
@@ -409,7 +301,7 @@ class Graph:
         return self._apply(edits.edit, node, dry_run, **fields)
 
     def delete(self, node: Node, *, dry_run: bool = False) -> Invalidation:
-        """Remove a node and everything after it from its agent's history."""
+        """Remove a node and its agent's nodes after it."""
         return self._apply(edits.delete, node, dry_run)
 
     def remove(self, agent: Node, *, dry_run: bool = False) -> Invalidation:
@@ -442,6 +334,34 @@ class Graph:
         return edit(trial, trial.node(target.id), *args, **kwargs)
 
     # -- copies and files -------------------------------------------------------
+
+    def fork(self, at: Node, *, repl: str = "copy") -> Graph:
+        """A new graph: a copy of this one, with the same ids, cut right after ``at``.
+
+        This graph is left as it is. ``at``'s agent ends at ``at``; what came
+        after it is gone, and so is what that caused (agents launched, messages
+        sent, results delivered). If ``at``'s code launched agents or sent
+        messages, those are gone too and ``at`` is set to run again. Every other
+        agent is copied as it is, finished or not.
+
+        ``repl="copy"`` gives every agent a new REPL, rebuilt by running its
+        nodes again, with its own workspace and session. ``repl="same"``
+        keeps the agents' REPLs, workspaces and sessions, so the copy carries on
+        where this graph is; agents the cut rewound still get new ones. Don't
+        run this graph and a ``"same"`` copy at once.
+        """
+        if at.id not in self._nodes:
+            raise GraphError(f"cannot fork at {at!r}: it is not in this graph")
+        if repl not in ("copy", "same"):
+            raise ValueError(f'repl must be "copy" or "same", not {repl!r}')
+        branch = self.copy()
+        branch.id = new_id("graph")
+        branch.metadata["forked_from"] = {"graph": self.id, "node": at.id}
+        cut = edits.fork(branch, branch.node(at.id))
+        for agent in branch.agents():
+            if repl == "copy" or agent.id in cut.rewound:
+                agent.repl_id = new_id("repl")
+        return branch
 
     def copy(self) -> Graph:
         """A full, independent copy (same ids), for editing without losing the original."""

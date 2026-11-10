@@ -68,10 +68,10 @@ async def checkpoint_stream(
 
 
 def print_agent_tree(graph: Graph, agent: Node, depth: int = 0) -> None:
-    """Each agent's history on one line, with the agents it launched indented below."""
-    history = " -> ".join(kind(node) for node in graph.history(agent))
-    print(f"{'  ' * depth}[{graph.path(agent)}] {history}")
-    for child in graph.children(agent):
+    """Each agent's nodes on one line, with the agents it launched indented below."""
+    line = " -> ".join(kind(node) for node in agent.nodes())
+    print(f"{'  ' * depth}[{agent.path()}] {line}")
+    for child in agent.children():
         print_agent_tree(graph, child, depth + 1)
 
 
@@ -86,7 +86,7 @@ async def print_run(
     """Run ``graph`` to quiescence, checkpointing it and printing each node as it lands."""
     stream = flow.run_streaming(graph, root_config=root_config)
     async for step in checkpoint_stream(stream, graph, path):
-        print(f"{graph.path(step.agent):<{width}}  {kind(step.node)}")
+        print(f"{step.agent.path():<{width}}  {kind(step.node)}")
 
 
 def add_model_args(

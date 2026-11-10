@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from rlmflow.graph.nodes import Node
+from rlmflow.runtime.runtime import repl_key
 
 
 class LocalWorkspace:
@@ -49,7 +50,7 @@ def git(cwd: Path, *args: str, env: dict[str, str] | None = None) -> str:
 
 
 class GitWorktrees:
-    """Each agent works in its own detached git worktree of ``repo``.
+    """Each agent works in its own detached git worktree of ``repo``, one per ``repl_id``.
 
     A snapshot is a commit of the worktree's files (tracked and untracked, minus
     ignored ones), made without touching any branch and kept alive by a ref
@@ -61,24 +62,24 @@ class GitWorktrees:
         self.repo = Path(repo).resolve()
         git_dir = Path(git(self.repo, "rev-parse", "--absolute-git-dir"))
         self.root = Path(root).resolve() if root is not None else git_dir / "rlmflow-worktrees"
-        #: Node id -> the commit its worktree starts from, when not ``HEAD``.
+        #: ``repl_id`` -> the commit its worktree starts from, when not ``HEAD``.
         self.bases: dict[str, str] = {}
 
     def path(self, agent: Node) -> Path:
         """The agent's worktree, created on first use."""
-        tree = self.root / agent.id
+        tree = self.root / repl_key(agent)
         if not tree.exists():
-            base = self.bases.pop(agent.id, None) or git(self.repo, "rev-parse", "HEAD")
+            base = self.bases.pop(repl_key(agent), None) or git(self.repo, "rev-parse", "HEAD")
             self.root.mkdir(parents=True, exist_ok=True)
             git(self.repo, "worktree", "add", "--detach", str(tree), base)
         return tree
 
     def branch(self, child: Node, parent: Node) -> None:
         """Start ``child`` from ``parent``'s files as they are now."""
-        if (self.root / parent.id).exists():
-            self.bases[child.id] = self._snapshot(parent)
-        elif parent.id in self.bases:
-            self.bases[child.id] = self.bases[parent.id]
+        if (self.root / repl_key(parent)).exists():
+            self.bases[repl_key(child)] = self._snapshot(parent)
+        elif repl_key(parent) in self.bases:
+            self.bases[repl_key(child)] = self.bases[repl_key(parent)]
 
     async def snapshot(self, agent: Node) -> str:
         return await asyncio.to_thread(self._snapshot, agent)
@@ -108,15 +109,15 @@ class GitWorktrees:
             "-p",
             head,
             "-m",
-            f"rlmflow snapshot of {agent.root_data.name}",
+            f"rlmflow snapshot of {agent.name}",
         )
         git(self.repo, "update-ref", f"refs/rlmflow/{commit}", commit)
         return commit
 
     def _checkout(self, agent: Node, snapshot: str) -> None:
-        tree_dir = self.root / agent.id
+        tree_dir = self.root / repl_key(agent)
         if not tree_dir.exists():
-            self.bases[agent.id] = snapshot
+            self.bases[repl_key(agent)] = snapshot
             self.path(agent)
             return
         git(tree_dir, "checkout", "--detach", "--force", snapshot)

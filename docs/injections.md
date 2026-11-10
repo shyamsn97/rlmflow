@@ -5,8 +5,8 @@ then continue the same run.
 
 ## Send a message
 
-A message is how a controller gets a word in. It is a node appended to the
-agent's history, which the agent reads at its next turn:
+A message is how a controller gets a word in. It is a user node added to
+the agent, which the agent reads at its next turn:
 
 ```python
 g.send(root, "Controller stop request: finalize now.")
@@ -24,25 +24,29 @@ Messages from the host have producer `"user"` unless you pass `sender=`, and no
 `write` edge unless you pass `by=` the node they come from. They carry no
 timing, because no turn produced them.
 
-## Change history
+## Edit the graph
 
 Everything already in the graph can be edited; see
 [The graph](node_model.md#editing) for the rules.
 
 ```python
-node = next(n for n in g.history(root) if n.runs_code)
+node = next(n for n in root.nodes() if n.runs_code)
 print(g.edit(node, code="print(sorted(files)[:20])", dry_run=True))
 g.edit(node, code="print(sorted(files)[:20])")  # root rewinds to this node
 flow.run(g)
 ```
 
-To keep the original and try something else, fork instead:
+To keep the original and try something else, fork instead. The copy is cut
+right after `node`, and the message is injected into it:
 
 ```python
-branch = g.fork(node, name="retry")
-g.send(branch, "Try a different approach.")
-flow.run(g)
+branch = g.fork(node)
+branch.send(branch.agent(node.owner), "Try a different approach.")
+flow.run(branch)
 ```
+
+[`examples/graph/06_fork.py`](../examples/graph/06_fork.py) forks one run twice
+and injects a different instruction into each copy.
 
 ## Inject tools and values
 
@@ -106,4 +110,4 @@ def root_idle(step):
     return step.agent is root and (step.node.runs_code or "seen" in step.node.data)
 ```
 
-See [`examples/control/branching/fork_repair.py`](../examples/control/branching/fork_repair.py) for forking a run and steering each fork, and [`examples/shepherd/`](../examples/shepherd/) for the same done live, rewinding Sokoban workers.
+See [`examples/graph/08_streaming.py`](../examples/graph/08_streaming.py) for stopping a run, sending a message and resuming, and [`examples/shepherd/`](../examples/shepherd/) for forking a run and steering each fork live, rewinding Sokoban workers.

@@ -3,7 +3,7 @@
 Each model call is an assistant node: the reply is its text, and its one
 ``repl`` block is its code, which runs in place. The system prompt is
 ``prompt_sections()`` with ``config.prompt`` on top; the messages are the
-agent's history.
+agent's transcript.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from rlmflow import schema
 from rlmflow.graph.config import DEFAULT_MAX_ITERS
-from rlmflow.graph.nodes import IMAGES_KEY, Node, Step
+from rlmflow.graph.nodes import IMAGES_KEY, Agent, Node, Step
 from rlmflow.harnesses.base import Harness
 from rlmflow.harnesses.prompts import argument_manifest, guidance
 from rlmflow.utils import find_repl_blocks, has_repl_fence
@@ -75,10 +75,10 @@ def append_text(content: str | list[dict[str, Any]], text: str) -> str | list[di
 
 
 def node_messages(node: Node, *, first: bool = False) -> list[dict[str, Any]]:
-    """One history node as chat messages: its text, then what running it printed."""
+    """One node as chat messages: its text, then what running it printed."""
     messages: list[dict[str, Any]] = []
     text = node.text
-    if node.root_data is not None and not first:
+    if isinstance(node, Agent) and not first:
         text = ""
     if node.role == "user":
         if text:
@@ -96,20 +96,15 @@ def node_messages(node: Node, *, first: bool = False) -> list[dict[str, Any]]:
     return messages
 
 
-def history(step: Step) -> list[Node]:
-    """The nodes the agent has seen, up to ``step.node``."""
-    return step.graph.history(step.node)
-
-
 def turns(step: Step) -> int:
     """How many turns the agent has taken."""
-    return sum("seen" in node.data for node in history(step))
+    return sum("seen" in node.data for node in step.node.transcript())
 
 
-def history_messages(step: Step) -> list[dict[str, Any]]:
-    """The agent's history as chat messages; the last ``keep_n_messages`` when set."""
-    g, agent, config = step.graph, step.agent, step.config
-    nodes = history(step)
+def transcript_messages(step: Step) -> list[dict[str, Any]]:
+    """The agent's transcript as chat messages; the last ``keep_n_messages`` when set."""
+    agent, config = step.agent, step.config
+    nodes = step.node.transcript()
     messages = [
         message
         for index, node in enumerate(nodes)
@@ -119,15 +114,15 @@ def history_messages(step: Step) -> list[dict[str, Any]]:
     if keep is not None and len(messages) > keep:
         messages = [{"role": "user", "content": TRUNCATION_TEXT}, *messages[-keep:]] if keep else []
     notes = []
-    children = g.children(agent)
+    children = agent.children()
     if children:
         notes.append(
             "\n".join(
                 [
                     "Background agents:",
                     *(
-                        f"- `{child.root_data.name}` ({g.path(child)}): "
-                        + ("result ready" if g.status(child) == "done" else g.status(child))
+                        f"- `{child.name}` ({child.path()}): "
+                        + ("result ready" if child.status() == "done" else child.status())
                         for child in children
                     ),
                 ]
@@ -146,7 +141,7 @@ def history_messages(step: Step) -> list[dict[str, Any]]:
 
 def final_turn(step: Step) -> bool:
     """Whether rlmflow announced the final turn since the agent's last one."""
-    for node in reversed(history(step)):
+    for node in reversed(step.node.transcript()):
         if "seen" in node.data:
             return False
         if node.data.get("final"):
@@ -157,7 +152,7 @@ def final_turn(step: Step) -> bool:
 def final_turn_spent(step: Step) -> bool:
     """The agent already had its final turn and didn't finish."""
     took_turn = False
-    for node in reversed(history(step)):
+    for node in reversed(step.node.transcript()):
         if node.data.get("final"):
             return took_turn
         if node.data.get("terminal") or node.data.get("idle"):
@@ -211,19 +206,21 @@ class ReplHarness(Harness):
         }
 
     def messages(self, flow: Flow, step: Step) -> list[dict[str, Any]]:
-        """The system prompt, then the agent's history."""
-        return [{"role": "system", "content": self.prompt(flow, step)}, *history_messages(step)]
+        """The system prompt, then the agent's transcript."""
+        return [{"role": "system", "content": self.prompt(flow, step)}, *transcript_messages(step)]
 
     async def step(self, flow: Flow, step: Step) -> Node:
         g, agent, config = step.graph, step.agent, step.config
-        seen = len(history(step))
+        seen = len(step.node.transcript())
         if final_turn_spent(step):
             return flow.append(g, agent, final_node(MAX_BUDGET_EXCEEDED, seen))
         if turns(step) >= (config.max_iters or DEFAULT_MAX_ITERS):
             return flow.append(g, agent, final_node(MAX_ITERS_EXCEEDED, seen))
         started = time.time()
         text, usage = await flow.complete(self.messages(flow, step), config.model)
-        node = Node("assistant", text, usage=usage.as_dict(), model=config.model, seen=seen)
+        node = Node(
+            "assistant", text, data={"usage": usage.as_dict(), "model": config.model, "seen": seen}
+        )
         node.started_at = started
         if text.strip() and not has_repl_fence(text):
             self.text_answer(step, node, text.strip())
@@ -252,7 +249,7 @@ class ReplHarness(Harness):
 
 def final_node(result: str, seen: int) -> Node:
     """A turn that ends the agent without calling the model."""
-    return Node("assistant", result=result, seen=seen, terminal=True)
+    return Node("assistant", result=result, data={"seen": seen, "terminal": True})
 
 
 __all__ = [
@@ -265,9 +262,8 @@ __all__ = [
     "TRUNCATION_TEXT",
     "final_turn",
     "final_turn_spent",
-    "history",
     "final_node",
-    "history_messages",
+    "transcript_messages",
     "node_messages",
     "turns",
 ]

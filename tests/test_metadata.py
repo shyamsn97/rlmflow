@@ -35,12 +35,12 @@ def test_node_metadata_is_strict_durable_and_forkable(tmp_path):
     g.save(tmp_path / "graph")
     loaded = Graph.load(tmp_path / "graph")
     loaded_root = loaded.agent(root.id)
-    forked = loaded.fork(loaded.tail(loaded_root))
+    branch = loaded.fork(loaded_root.nodes()[-1])
 
     assert loaded_root.metadata == root.metadata == {"experiment": {"run": "abc", "seed": 7}}
-    assert loaded_root.root_data.metadata == root.root_data.metadata
-    assert loaded.tail(loaded_root).metadata == {"metrics": {"score": 1.0}}
-    assert loaded.history(forked)[-2].metadata == {"metrics": {"score": 1.0}}
+    assert loaded_root.metadata == root.metadata
+    assert loaded_root.nodes()[-1].metadata == {"metrics": {"score": 1.0}}
+    assert branch.node(code_node.id).metadata == {"metrics": {"score": 1.0}}
     assert persistence.node_record(root)["metadata"] == root.metadata
     assert persistence.node_record(code_node)["metadata"] == {"metrics": {"score": 1.0}}
 
@@ -113,7 +113,7 @@ def test_a_model_call_records_usage_model_and_timing_on_its_node():
     root = g.start("answer")
 
     flow.run(g)
-    [reply] = g.history(root)[1:]
+    [reply] = root.nodes()[1:]
     assert (reply.role, reply.code, reply.data["terminal"]) == ("assistant", "submit('ok')", True)
     assert reply.data["usage"]["input_tokens"] >= 0
     assert reply.data["model"] == "m"

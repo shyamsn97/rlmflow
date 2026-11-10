@@ -85,8 +85,8 @@ def test_a_claude_lead_delegates_from_code_nodes_waits_and_resumes_its_session(c
     worker = AgentConfig(name="worker", description="Counts x's in one chunk.")
     run(ScriptedFlow(StubLLM(lambda messages: WORKER), configs=[worker]), g, claude.config())
 
-    assert g.result(root) == 5
-    _, *code_before, idle, results, last_code, done = g.history(root)
+    assert root.final_result() == 5
+    _, *code_before, idle, results, last_code, done = root.nodes()
     assert [c.runs_code for c in code_before] == [True, True]
     assert idle.data["idle"] and results.role == "user" and last_code.runs_code
     assert done.data["terminal"] and done.data["seen"] == 5
@@ -95,7 +95,7 @@ def test_a_claude_lead_delegates_from_code_nodes_waits_and_resumes_its_session(c
     assert idle.text.startswith("Launched the counters; ending my turn. 8 |")
     assert flag(second, "--resume") == idle.data["session_id"] and "--fork-session" not in second
     assert {e.source for e in g.edges(kind="return", target=results.id)} == {
-        g.tail(c).id for c in g.children(root)
+        c.nodes()[-1].id for c in root.children()
     }
     assert "Agents you started have finished" in flag(second, "-p")
 
@@ -128,27 +128,34 @@ def test_forking_a_claude_agent_resumes_at_turn_ends_and_restarts_mid_turn(claud
     root = g.start("Plan")
     configs = [AgentConfig(name="worker")]
     run(ScriptedFlow(StubLLM(lambda messages: WORKER), configs=configs), g, claude.config())
-    assert g.result(root) == 1
+    assert root.final_result() == 1
 
-    history = g.history(root)
-    idle = next(n for n in history if n.data.get("idle"))
+    nodes = root.nodes()
+    idle = next(n for n in nodes if n.data.get("idle"))
     first_code = code_nodes(g, root)[0]
-    at_turn_end = g.fork(idle, name="at-turn-end")
-    g.send(at_turn_end, "Continue")
-    mid_turn = g.fork(first_code, name="mid-turn")
+    at_turn_end = g.fork(idle)
+    at_turn_end.send(at_turn_end.agent(root.id), "Continue")
+    mid_turn = g.fork(first_code)
     calls_before = len(claude.calls())
-    run(ScriptedFlow(StubLLM(lambda messages: WORKER), configs=configs), g, claude.config())
+    for branch in (at_turn_end, mid_turn):
+        run(
+            ScriptedFlow(StubLLM(lambda messages: WORKER), configs=configs), branch, claude.config()
+        )
 
-    assert g.result(at_turn_end) == "plan: count"
-    assert g.result(mid_turn) == "plan: count!"
-    resumed, fresh = sorted(claude.calls()[calls_before:], key=lambda argv: "--resume" not in argv)
+    assert at_turn_end.agent(root.id).final_result() == "plan: count"
+    assert mid_turn.agent(root.id).final_result() == "plan: count!"
+    resumed, fresh = claude.calls()[calls_before:]
     assert flag(resumed, "--resume") == idle.data["session_id"] and "--fork-session" in resumed
     prompt = flag(fresh, "-p")
     assert "--session-id" in fresh and prompt.startswith("Your task: Plan")
     assert "[1] notes = 'plan: count'" in prompt
     assert "notes (str, 11 chars)" in prompt
-    # Neither fork launched the worker again.
-    assert len([a for a in g.agents() if a.root_data.config_name == "worker"]) == 1
+    # The turn-end copy keeps the worker; the mid-turn one is cut before the launch.
+    workers = [
+        [a for a in branch.agents() if a.config_name == "worker"]
+        for branch in (g, at_turn_end, mid_turn)
+    ]
+    assert [len(found) for found in workers] == [1, 1, 0]
 
 
 def test_a_message_reopens_a_finished_claude_agent_in_the_same_session(claude):
@@ -159,11 +166,11 @@ def test_a_message_reopens_a_finished_claude_agent_in_the_same_session(claude):
     g = Graph()
     root = g.start("first")
     run(Flow(), g, claude.config())
-    assert g.result(root) == "first"
+    assert root.final_result() == "first"
 
     g.send(root, "and now?")
     run(Flow(), g, claude.config())
-    assert g.result(root) == "second"
+    assert root.final_result() == "second"
     first, second = claude.calls()
     assert flag(second, "--resume") == flag(first, "--session-id")
 
@@ -183,8 +190,8 @@ def test_claude_output_schema_and_plain_text_results(claude):
     plain = g.start("plain", config="plain")
     run(flow, g)
 
-    assert g.result(structured) == {"n": 3}
-    assert g.result(plain) == "just text"
+    assert structured.final_result() == {"n": 3}
+    assert plain.final_result() == "just text"
     by_task = {flag(argv, "-p"): argv for argv in claude.calls()}
     assert json.loads(flag(by_task["structured"], "--json-schema")) == schema
     assert flag(by_task["structured"], "--permission-mode") is None
@@ -236,7 +243,7 @@ def define(word: str) -> str:
 def test_the_session_prompt_lists_the_flows_tools_and_where_the_repl_runs():
     g = Graph()
     agent = g.start("t")
-    agent.root_data.bind_config(AgentConfig())
+    agent.bind_config(AgentConfig())
     step = Step(g, agent, agent)
 
     local = PiHarness().prompt(Flow(tools=[FILE_TOOLS, define]), step)
@@ -252,7 +259,7 @@ def test_the_session_prompt_lists_the_flows_tools_and_where_the_repl_runs():
 def test_config_prompt_replaces_drops_and_adds_sections():
     g = Graph()
     agent = g.start("t")
-    agent.root_data.bind_config(
+    agent.bind_config(
         AgentConfig(prompt={"state": "KEEP NOTES.", "record": None, "style": "BE TERSE."})
     )
     prompt = PiHarness().prompt(Flow(), Step(g, agent, agent))
@@ -267,7 +274,7 @@ def test_every_harness_gets_the_same_guidance():
 
     g = Graph()
     agent = g.start("t")
-    agent.root_data.bind_config(AgentConfig())
+    agent.bind_config(AgentConfig())
     step = Step(g, agent, agent)
     shared = guidance(step)
     assert shared["orchestration"]
@@ -282,10 +289,13 @@ def test_a_session_starts_fresh_resumes_or_forks():
     start = Session.for_step(Step(g, agent, agent))
     assert start.resume is False and start == Session.for_step(Step(g, agent, agent))
 
-    end = g.append(agent, Node("assistant", session_id="s1", seen=1, idle=True))
+    end = g.append(agent, Node("assistant", data={"session_id": "s1", "seen": 1, "idle": True}))
     assert Session.for_step(Step(g, agent, end)) == Session("s1", resume=True, fork=False)
-    fork = g.fork(end)
-    assert Session.for_step(Step(g, fork, end)).fork is True
+    copy = g.fork(end)
+    resumed = Session.for_step(Step.latest(copy, copy.agent(agent.id)))
+    assert resumed == Session("s1", resume=True, fork=True)
+    same = g.fork(end, repl="same")
+    assert Session.for_step(Step.latest(same, same.agent(agent.id))).fork is False
     code_node = g.append(agent, Node("assistant", code="x = 1"))
     assert Session.for_step(Step(g, agent, code_node)).resume is False
 
@@ -324,9 +334,7 @@ def test_pi_reads_the_final_assistant_text_and_usage():
 def test_pi_session_files_resume_in_place_and_fork_by_copy(tmp_path):
     g = Graph()
     agent = g.start("t")
-    agent.root_data.bind_config(
-        AgentConfig(harness="pi", harness_options={"session_dir": str(tmp_path)})
-    )
+    agent.bind_config(AgentConfig(harness="pi", harness_options={"session_dir": str(tmp_path)}))
     step, pi = Step(g, agent, agent), PiHarness()
     fresh = pi.session_file(step, Session("abc"))
     assert fresh == tmp_path / "abc.jsonl"
@@ -359,6 +367,6 @@ def test_pi_args_are_appended_to_its_command_line(tmp_path):
     root = g.start("t")
     run(Flow(), g, AgentConfig(harness="pi", harness_options=options))
 
-    assert g.result(root) == "done"
+    assert root.final_result() == "done"
     argv = json.loads((tmp_path / "pi.py.log").read_text())
     assert argv[:2] == ["-p", "t"] and argv[-2:] == ["--thinking", "high"]

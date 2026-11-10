@@ -71,7 +71,7 @@ def test_a_finished_child_keeps_its_repl():
     try:
         g, root = agent_graph("parent")
         assert run_result(flow, g, root) == "a,b"
-        children = g.children(root)
+        children = root.children()
         assert [flow.runtime.get_var(child, "kept") for child in children] == ["a", "b"]
         assert sorted(flow.runtime.repls) == sorted([root.id, *(c.id for c in children)])
     finally:
@@ -87,7 +87,7 @@ def test_host_spawned_subtrees_get_a_thread_each():
     assert (
         run_result(ScriptedFlow(BarrierLLM(2, parent=JOIN_CHILDREN), workers=2), g, root) == "c,c"
     )
-    assert g.children(root) == [a, b]
+    assert root.children() == [a, b]
 
 
 def test_host_spawned_children_with_queued_messages_step_once_each():
@@ -113,7 +113,7 @@ def test_host_spawned_children_with_queued_messages_step_once_each():
     async def run():
         try:
             await asyncio.wait_for(flow.arun(g), timeout=5)
-            return g.result(root)
+            return root.final_result()
         finally:
             await flow.aclose()
 
@@ -147,7 +147,7 @@ def test_a_failing_child_does_not_cancel_its_sibling():
     g, root = agent_graph("parent")
     failed = "[child failed: RuntimeError: exploded]"
     assert run_result(ScriptedFlow(HalfBrokenLLM()), g, root) == f"good,{failed}"
-    assert [g.result(child) for child in g.children(root)] == ["good", failed]
+    assert [child.final_result() for child in root.children()] == ["good", failed]
 
 
 def test_cancelling_a_run_cancels_the_children_it_launched():

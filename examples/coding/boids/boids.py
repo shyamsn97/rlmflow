@@ -131,7 +131,7 @@ def main() -> None:
     validation = validate_project(run_dir, browser=True, screenshot=run_dir / "boids-smoke.png")
     write_report(validation, run_dir / "validation.json")
     peers = {peer.id: peer for peer in g.agents()}
-    results = {peer.root_data.name: g.result(peer) for peer in peers.values()}
+    results = {peer.name: peer.final_result() for peer in peers.values()}
     (run_dir / "run-metadata.json").write_text(
         json.dumps(
             {
@@ -156,7 +156,7 @@ def main() -> None:
         sender = peers.get(message.producer)
         if sender is not None and message.role == "user":
             text = " ".join(message.text.split())[:160]
-            print(f"  {sender.root_data.name} -> {g.owner(message).root_data.name}: {text}")
+            print(f"  {sender.name} -> {message.agent.name}: {text}")
     print("\nvalidation:")
     for name, check in validation["checks"].items():
         print(f"  {'PASS' if check['passed'] else 'FAIL'} {name}: {str(check['detail'])[:200]}")

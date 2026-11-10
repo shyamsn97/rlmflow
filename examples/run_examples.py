@@ -63,9 +63,6 @@ class Example:
 
 
 EXAMPLES: list[Example] = [
-    Example("controller-injection", "examples/control/controller_injection.py"),
-    Example("streaming-until", "examples/control/streaming_until.py"),
-    Example("nonblocking-delegation", "examples/control/delegation/nonblocking.py"),
     Example(
         "decentralized-peers",
         "examples/collaboration/decentralized_peers.py",
@@ -98,17 +95,6 @@ EXAMPLES: list[Example] = [
         note="workers claim and post tasks on a board of host-function tools",
     ),
     Example(
-        "step-until",
-        "examples/control/delegation/step_until.py",
-        category="live",
-        args=("--max-iters", "8", "--out-dir", "{tmp}/step-until"),
-        env=("OPENAI_API_KEY",),
-        modules=("openai",),
-        timeout=300,
-        note="uses a live model to demonstrate minimal step(..., until=...) boundaries",
-    ),
-    Example("llm-query-fanout", "examples/llm_query_fanout.py"),
-    Example(
         "structured-output",
         "examples/structured_output.py",
         category="live",
@@ -117,32 +103,6 @@ EXAMPLES: list[Example] = [
         modules=("openai",),
         timeout=300,
         note="uses a live model to validate root and child structured outputs",
-    ),
-    Example(
-        "claude-code-delegation",
-        "examples/providers/claude_code_delegation.py",
-        category="manual",
-        args=(
-            "--workdir",
-            "{tmp}/claude-code-workspace",
-            "--out-dir",
-            "{tmp}/claude-code-delegation",
-        ),
-        env=("OPENAI_API_KEY",),
-        modules=("openai",),
-        timeout=600,
-        note="requires an installed and authenticated Claude Code CLI",
-    ),
-    Example(
-        "best-of-n",
-        "examples/control/branching/best_of_n.py",
-        args=("--n", "4", "--root-dir", "{tmp}/best_of_n"),
-    ),
-    Example(
-        "fork-repair",
-        "examples/control/branching/fork_repair.py",
-        args=("--root-dir", "{tmp}/fork_repair"),
-        modules=("pytest",),
     ),
     Example(
         "showcase",
@@ -164,6 +124,7 @@ EXAMPLES: list[Example] = [
         args=("--out-dir", "{tmp}/graph-fork"),
     ),
     Example("graph-host-spawn", "examples/graph/07_host_spawn.py"),
+    Example("graph-streaming", "examples/graph/08_streaming.py"),
     Example(
         "graph-deep-tree",
         "examples/graph/deep_tree.py",
@@ -174,18 +135,17 @@ EXAMPLES: list[Example] = [
     Example(
         "skills",
         "examples/skills.py",
+        args=("--scripted", "--print-prompt", "--out-dir", "{tmp}/skills"),
+        note="agent installs a skill mid-run via add_skill; prompt grows next turn",
+    ),
+    Example(
+        "skills-live",
+        "examples/skills.py",
         category="live",
-        args=("--out-dir", "{tmp}/skills"),
+        args=("--out-dir", "{tmp}/skills-live"),
         env=("OPENAI_API_KEY",),
         modules=("openai",),
         timeout=300,
-        note="on-disk SKILL.md loaded into a callable prompt section; live LLM",
-    ),
-    Example(
-        "dynamic-skills",
-        "examples/dynamic_skills.py",
-        args=("--scripted", "--print-prompt", "--out-dir", "{tmp}/dynamic-skills"),
-        note="agent installs a skill mid-run via add_skill; prompt grows next turn",
     ),
     Example(
         "shepherd",
@@ -198,22 +158,6 @@ EXAMPLES: list[Example] = [
         # and gets a ceiling it can actually finish inside of.
         timeout=2400,
         note="backtrack-and-branch: worker dead-ends in Sokoban, meta-agent rewinds + fans out",
-    ),
-    Example(
-        "summarizer",
-        "examples/summarizer.py",
-        category="live",
-        args=(
-            "--sections",
-            "6",
-            "--max-iters",
-            "8",
-            "--out-dir",
-            "{tmp}/summarizer",
-        ),
-        env=("OPENAI_API_KEY",),
-        modules=("openai",),
-        timeout=300,
     ),
     Example(
         "needle-haystack",
@@ -240,6 +184,7 @@ EXAMPLES: list[Example] = [
             "50",
             "--max-iters",
             "8",
+            "--no-viz",
             "--out-dir",
             "{tmp}/needle-filesystem",
         ),
@@ -259,30 +204,21 @@ EXAMPLES: list[Example] = [
     ),
     Example(
         "sandbox-docker",
-        "examples/sandboxes/docker_agent.py",
+        "examples/sandboxes/platformer.py",
         category="sandbox",
-        args=("--max-iters", "2"),
+        args=("--runtime", "docker", "--max-iters", "2", "--out-dir", "{tmp}/sandbox-docker"),
         env=("OPENAI_API_KEY",),
         modules=("openai",),
         timeout=600,
     ),
     Example(
         "sandbox-modal",
-        "examples/sandboxes/modal_agent.py",
+        "examples/sandboxes/platformer.py",
         category="sandbox",
-        args=("--max-iters", "2"),
+        args=("--runtime", "modal", "--max-iters", "2", "--out-dir", "{tmp}/sandbox-modal"),
         env=("OPENAI_API_KEY",),
         modules=("modal", "openai"),
         timeout=900,
-    ),
-    Example(
-        "coding-agent-interactive",
-        "examples/coding/agent.py",
-        category="manual",
-        env=("OPENAI_API_KEY",),
-        modules=("openai",),
-        stdin="quit\n",
-        note="interactive coding agent; the smoke run types quit and exits",
     ),
 ]
 

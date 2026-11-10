@@ -1,8 +1,9 @@
-"""What a graph holds: ``Node``s in agents' histories and ``Edge``s between them.
+"""What a graph holds: ``Node``s, ``Agent``s and the ``Edge``s between them.
 
 A node is text, inputs and code. Running it binds each input as a REPL
-variable, then runs the code. An agent is its root node, which carries
-``RootData``: the agent's name, task and history.
+variable, then runs the code. An ``Agent`` is a node too, its agent's first:
+it adds the agent's name, task and config. Every other node names its agent
+in ``owner``.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import os
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -35,10 +36,9 @@ SELF = "self"
 
 #: The edge kinds the engine writes and reads; any other kind is the application's.
 SPAWN = "spawn"
-FORK = "fork"
 RETURN = "return"
 WRITE = "write"
-EDGE_KINDS = (SPAWN, FORK, RETURN, WRITE)
+EDGE_KINDS = (SPAWN, RETURN, WRITE)
 
 
 def new_id(prefix: str) -> str:
@@ -94,45 +94,103 @@ class LLMUsage:
         )
 
 
-class RootData:
-    """What only an agent's root node has: its name, task and history.
+@dataclass(eq=False, repr=False, slots=True)
+class Node:
+    """One step of an agent's run: ``text``, ``input`` variables and ``code``.
 
-    ``config_name`` names the Flow config it runs with (``None`` for a root,
-    which gets the run's ``root_config``). ``history`` is the agent's own nodes,
-    the root first. ``metadata`` is open JSON for the application.
+    ``role`` is ``"user"`` or ``"assistant"``, as in a chat. Running the node
+    binds ``input`` as REPL variables and runs ``code``; ``output``, ``result``
+    and ``error`` are what that did. ``calls`` are its saved tool calls.
+    ``data`` holds flags the engine reads (``seen``, ``terminal``, ``idle``,
+    ``usage``, ...); ``metadata`` is open JSON for the application. Everything
+    after ``text`` is passed by keyword. ``owner`` (its agent's id), ``seq`` and ``graph`` are set by
+    the graph that adds it.
     """
 
-    __slots__ = (
-        "name",
-        "task",
-        "config_name",
-        "arg_descriptions",
-        "history",
-        "metadata",
-        "_config",
-    )
+    role: str = "user"
+    text: str = ""
+    _: KW_ONLY
+    input: dict[str, Any] = field(default_factory=dict)
+    code: str = PASS
+    output: str = ""
+    result: Any = None
+    error: bool = False
+    state: str = DONE
+    calls: list[dict[str, Any]] = field(default_factory=list)
+    data: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    #: Who wrote it: ``"self"`` for the agent, else a sender (``"user"``, an agent id, ...).
+    producer: str = ""
+    id: str = field(default_factory=lambda: new_id("node"))
+    owner: str = ""
+    seq: int = -1
+    #: Bumped by every edit; a run that started on an older version is discarded.
+    version: int = 0
+    created_at: float = field(default_factory=time.time)
+    started_at: float | None = None
+    finished_at: float | None = None
+    graph: Graph | None = None
 
-    def __init__(
-        self,
-        name: str,
-        task: str,
-        *,
-        config_name: str | None = None,
-        arg_descriptions: dict[str, str] | None = None,
-    ) -> None:
-        self.name = name
-        self.task = task
-        self.config_name = config_name
-        self.arg_descriptions: dict[str, str] = dict(arg_descriptions or {})
-        self.history: list[Node] = []
-        self.metadata: dict[str, Any] = {}
-        self._config: AgentConfig | None = None
+    def __post_init__(self) -> None:
+        if self.role not in ("user", "assistant"):
+            raise ValueError(f"node role must be 'user' or 'assistant', not {self.role!r}")
+        if not isinstance(self.text, str):
+            raise TypeError("node text must be a string")
+        self.input = dict(self.input or {})
+        self.code = self.code or PASS
+        self.data = dict(self.data)
+        self.producer = self.producer or (SELF if self.role == "assistant" else "user")
+
+    def __repr__(self) -> str:
+        return f"Node({self.role!r}, id={self.id!r}, state={self.state!r})"
+
+    @property
+    def runs_code(self) -> bool:
+        return self.code.strip() not in ("", PASS)
+
+    def _graph(self) -> Graph:
+        if self.graph is None:
+            raise LookupError(f"{self!r} is not in a graph")
+        return self.graph
+
+    @property
+    def agent(self) -> Agent:
+        """The agent this node belongs to."""
+        return self._graph()._roots[self.owner]
+
+    def transcript(self) -> list[Node]:
+        """Its agent's nodes up to and including this one: what the agent had seen here."""
+        own = self._graph()._own[self.owner]
+        return own[: own.index(self) + 1]
+
+
+@dataclass(eq=False, repr=False, slots=True, kw_only=True)
+class Agent(Node):
+    """An agent: its first node, plus what only an agent has.
+
+    ``config_name`` names the Flow config it runs with (``None`` for a
+    top-level agent, which gets the run's ``root_config``). ``repl_id`` names
+    the REPL, workspace and session it runs in: its own id, unless a fork gave
+    it a new one. ``config_record`` is the JSON of the config it last ran
+    with, for viewers; a Flow never reads it back to run the agent.
+    """
+
+    name: str = ""
+    task: str = ""
+    config_name: str | None = None
+    arg_descriptions: dict[str, str] = field(default_factory=dict)
+    repl_id: str = ""
+    config_record: dict[str, Any] | None = None
+    _config: AgentConfig | None = field(default=None, init=False)
+
+    def __repr__(self) -> str:
+        return f"Agent({self.name!r}, id={self.id!r})"
 
     @property
     def config(self) -> AgentConfig:
         """The config a Flow bound to this agent, or the record of the last one that ran it."""
         if self._config is None:
-            recorded = self.metadata.get("config")
+            recorded = self.config_record
             if recorded is None:
                 raise AttributeError(f"agent {self.name!r} has no config until a Flow runs it")
             from rlmflow.graph.config import AgentConfig
@@ -141,103 +199,86 @@ class RootData:
         return self._config
 
     def bind_config(self, config: AgentConfig, *, record: bool = True) -> None:
-        """Run this agent with ``config``; ``record`` keeps its JSON in ``metadata["config"]``."""
+        """Run this agent with ``config``; ``record`` keeps its JSON in ``config_record``."""
         self._config = config
         if record:
-            self.metadata["config"] = strict_json(config.to_dict(), "config")
+            self.config_record = strict_json(config.to_dict(), "config")
 
+    def nodes(self) -> list[Node]:
+        """Its nodes, this one first, in the order they were added."""
+        return list(self._graph()._own[self.id])
 
-class Node:
-    """One step of an agent's history: ``text``, ``input`` variables and ``code``.
+    def last_turn(self) -> Node | None:
+        """The node that ended its latest turn: the last one with ``seen``."""
+        for node in reversed(self._graph()._own[self.id]):
+            if "seen" in node.data:
+                return node
+        return None
 
-    ``role`` is ``"user"`` or ``"assistant"``, as in a chat. Running the node
-    binds ``input`` as REPL variables and runs ``code``; ``output``, ``result``
-    and ``error`` are what that did. ``calls`` are its saved tool calls.
-    ``data`` holds flags the engine reads (``producer``, ``seen``,
-    ``terminal``, ``idle``, ``usage``, ...); ``metadata`` is open JSON for the
-    application.
-    """
+    def status(self) -> str:
+        """``"done"``, ``"idle"`` (waiting for news), or ``"running"``.
 
-    __slots__ = (
-        "id",
-        "role",
-        "text",
-        "input",
-        "code",
-        "calls",
-        "output",
-        "result",
-        "error",
-        "state",
-        "data",
-        "metadata",
-        "root_data",
-        "owner",
-        "seq",
-        "version",
-        "created_at",
-        "started_at",
-        "finished_at",
-    )
+        Unfinished nodes, or nodes from others that arrived after its last turn
+        started, mean ``running``. Otherwise the last turn says: ``terminal`` is
+        done, ``idle`` is idle, anything else is still working.
+        """
+        own = self._graph()._own[self.id]
+        if own[-1].state != DONE:
+            return "running"
+        turn = self.last_turn()
+        if turn is None:
+            return "running"
+        if any(node.producer != SELF for node in own[turn.data["seen"] :]):
+            return "running"
+        if turn.data.get("terminal"):
+            return "done"
+        if turn.data.get("idle"):
+            return "idle"
+        return "running"
 
-    def __init__(
-        self,
-        role: str = "user",
-        text: str = "",
-        *,
-        input: dict[str, Any] | None = None,
-        code: str = PASS,
-        output: str = "",
-        result: Any = None,
-        error: bool = False,
-        state: str = DONE,
-        producer: str | None = None,
-        **data: Any,
-    ) -> None:
-        if role not in ("user", "assistant"):
-            raise ValueError(f"node role must be 'user' or 'assistant', not {role!r}")
-        if not isinstance(text, str):
-            raise TypeError("node text must be a string")
-        self.id = new_id("node")
-        self.role = role
-        self.text = text
-        self.input: dict[str, Any] = dict(input or {})
-        self.code = code or PASS
-        self.calls: list[dict[str, Any]] = []
-        self.output = output
-        self.result = result
-        self.error = error
-        self.state = state
-        self.data: dict[str, Any] = data
-        self.data["producer"] = producer or (SELF if role == "assistant" else "user")
-        self.metadata: dict[str, Any] = {}
-        self.root_data: RootData | None = None
-        #: The id of the root node whose history holds this node.
-        self.owner = ""
-        self.seq = -1
-        #: Bumped by every edit; a run that started on an older version is discarded.
-        self.version = 0
-        self.created_at = time.time()
-        self.started_at: float | None = None
-        self.finished_at: float | None = None
+    def final_result(self) -> Any:
+        """What it finished with, or ``None`` until it is done."""
+        if self.status() != "done":
+            return None
+        turn = self.last_turn()
+        return turn.result if turn is not None else None
 
-    def __repr__(self) -> str:
-        if self.root_data is not None:
-            return f"Node(root {self.root_data.name!r}, id={self.id!r})"
-        return f"Node({self.role!r}, id={self.id!r}, state={self.state!r})"
+    def parent(self) -> Agent | None:
+        """The agent that launched this one; ``None`` when top-level."""
+        g = self._graph()
+        parent_id = g._parent.get(self.id)
+        return g._roots.get(parent_id) if parent_id else None
 
-    @property
-    def producer(self) -> str:
-        return self.data["producer"]
+    def children(self) -> list[Agent]:
+        """Agents this one launched, in creation order."""
+        g = self._graph()
+        return [g._roots[i] for i in g._children.get(self.id, ()) if i in g._roots]
 
-    @property
-    def runs_code(self) -> bool:
-        return self.code.strip() not in ("", PASS)
+    def subtree(self) -> list[Agent]:
+        """This agent and every agent it launched, transitively, depth first."""
+        found: list[Agent] = []
+        stack: list[Agent] = [self]
+        while stack:
+            current = stack.pop()
+            found.append(current)
+            stack.extend(reversed(current.children()))
+        return found
+
+    def lineage(self) -> list[Agent]:
+        """Its top-level ancestor first, ending with this agent."""
+        chain: list[Agent] = [self]
+        while (parent := chain[-1].parent()) is not None and parent not in chain:
+            chain.append(parent)
+        return chain[::-1]
+
+    def path(self) -> str:
+        """Agent names from the top, joined with dots: ``root.worker-0``."""
+        return ".".join(agent.name for agent in self.lineage())
 
 
 @dataclass(slots=True)
 class Edge:
-    """A connection between nodes: ``spawn``, ``fork``, ``return``, ``write``, or an application kind."""
+    """A connection between nodes: ``spawn``, ``return``, ``write``, or an application kind."""
 
     kind: str
     source: str
@@ -254,7 +295,7 @@ class Edge:
 
 @dataclass(frozen=True, slots=True)
 class Step:
-    """One agent (its root node) at one node of its history.
+    """One agent at one of its nodes.
 
     Every node that finishes is streamed as a ``Step``; tools see the step of
     the node whose code is running. ``replaying`` marks code rerun to rebuild
@@ -262,20 +303,19 @@ class Step:
     """
 
     graph: Graph
-    agent: Node
+    agent: Agent
     node: Node
     replaying: bool = False
     calls: CallLog | None = None
 
     @classmethod
-    def latest(cls, graph: Graph, agent: Node) -> Step:
-        """The agent at the last node of its history."""
-        return cls(graph, agent, graph.history(agent)[-1])
+    def latest(cls, graph: Graph, agent: Agent) -> Step:
+        """The agent at its last node."""
+        return cls(graph, agent, agent.nodes()[-1])
 
     @property
     def config(self) -> AgentConfig:
-        assert self.agent.root_data is not None
-        return self.agent.root_data.config
+        return self.agent.config
 
     @property
     def edges(self) -> list[Edge]:
@@ -349,7 +389,6 @@ def record_metadata(
 __all__ = [
     "DONE",
     "EDGE_KINDS",
-    "FORK",
     "IMAGES_KEY",
     "PASS",
     "READY",
@@ -358,10 +397,10 @@ __all__ = [
     "SELF",
     "SPAWN",
     "WRITE",
+    "Agent",
     "Edge",
     "LLMUsage",
     "Node",
-    "RootData",
     "Step",
     "attach_image",
     "current_step",

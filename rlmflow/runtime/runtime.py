@@ -172,12 +172,13 @@ class PopenConnection:
                     stream.close()
 
 
-def _key(agent: Node | str) -> str:
-    return agent if isinstance(agent, str) else agent.id
+def repl_key(agent: Node | str) -> str:
+    """The ``repl_id`` an agent runs in; forks can share one or get their own."""
+    return agent if isinstance(agent, str) else agent.repl_id or agent.id
 
 
 class Runtime:
-    """Own one REPL per agent, each in its own worker process.
+    """Own one REPL per ``repl_id`` (usually one per agent), each in its own worker process.
 
     Worker runtimes implement ``connect()``; ``open`` wraps that connection in a
     session.
@@ -232,17 +233,17 @@ class Runtime:
             timeout=self.repl_timeout,
             execution_timeout=self.execution_timeout,
         )
-        return WorkerRepl(session, tenant_id=agent.id)
+        return WorkerRepl(session, tenant_id=repl_key(agent))
 
     def get(self, agent: Node | str) -> Repl | None:
-        return self.repls.get(_key(agent))
+        return self.repls.get(repl_key(agent))
 
     def repl_for(self, agent: Node, graph: Graph | None = None) -> Repl:
         """The agent's live REPL, opened on first use; ``graph`` places it in the run."""
-        repl = self.repls.get(agent.id)
+        repl = self.repls.get(repl_key(agent))
         if repl is None:
             repl = self.open(agent)
-            self.repls[agent.id] = repl
+            self.repls[repl_key(agent)] = repl
             repl.update_env(agent_env(agent, graph))
         return repl
 
@@ -265,7 +266,7 @@ class Runtime:
             return ReplRun(output=text, status=ReplStatus.DEAD, error=exc)
 
     def close_repl(self, agent: Node | str) -> None:
-        repl = self.repls.pop(_key(agent), None)
+        repl = self.repls.pop(repl_key(agent), None)
         if repl is not None:
             with suppress(Exception):
                 repl.close()
@@ -304,16 +305,16 @@ def agent_env(agent: Node, graph: Graph | None = None) -> dict[str, str]:
     """The ``ENV`` metadata describing where ``agent`` sits in its run."""
 
     if graph is None:
-        path, depth, parent = agent.root_data.name, 0, None
+        path, depth, parent = agent.name, 0, None
     else:
-        path, depth = graph.path(agent), len(graph.lineage(agent)) - 1
-        launcher = graph.parent(agent)
-        parent = graph.path(launcher) if launcher is not None else None
+        path, depth = agent.path(), len(agent.lineage()) - 1
+        launcher = agent.parent()
+        parent = launcher.path() if launcher is not None else None
     return agent_process_env(
         agent_id=path,
         depth=depth,
         parent_agent_id=parent,
-        max_depth=agent.root_data.config.max_depth,
+        max_depth=agent.config.max_depth,
     )
 
 
@@ -380,4 +381,5 @@ __all__ = [
     "SubprocessRuntime",
     "agent_env",
     "agent_process_env",
+    "repl_key",
 ]

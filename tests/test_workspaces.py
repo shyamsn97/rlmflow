@@ -56,7 +56,7 @@ def test_code_nodes_run_in_the_agents_worktree_and_carry_snapshots(repo):
     root = g.start("edit")
     run(flow, g)
 
-    assert g.result(root) == "base\nfirst\nsecond\n"
+    assert root.final_result() == "base\nfirst\nsecond\n"
     assert (repo / "notes.txt").read_text() == "base\n"  # the checkout itself is untouched
     assert git(repo, "status", "--porcelain") == ""
     first, second, _ = code_nodes(g, root)
@@ -93,8 +93,8 @@ def test_children_start_from_the_parents_files_in_their_own_worktrees(repo):
     )
     run(flow, g)
 
-    assert g.result(root) == "base\nlead\n"
-    assert [g.result(c) for c in g.children(root)] == [
+    assert root.final_result() == "base\nlead\n"
+    assert [c.final_result() for c in root.children()] == [
         "base\nlead\nchild a\n",
         "base\nlead\nchild b\n",
     ]
@@ -119,18 +119,20 @@ def test_a_fork_rebuilds_its_repl_then_restores_the_files_at_the_fork_point(repo
         ),
         g,
     )
-    assert g.result(root) == "original"
+    assert root.final_result() == "original"
 
-    first = code_nodes(g, root)[0]
-    fork = g.fork(first, name="fork")
-    g.send(fork, "resume here")
+    second = code_nodes(g, root)[1]
+    branch = g.fork(second)
+    copy = branch.agent(root.id)
+    branch.send(copy, "resume here")
     workspaces = GitWorktrees(repo)
     run(
         ScriptedFlow(StubLLM(reply), runtime=LocalRuntime(repl_timeout=10), workspaces=workspaces),
-        g,
+        branch,
     )
 
-    # The rebuilt code_node appended to notes.txt again; the checkout undid that.
-    assert g.result(fork) == [1, "base\none\n"]
-    assert workspaces.path(fork) != workspaces.path(root)
+    # Replaying the first node appended to notes.txt again; the checkout undid
+    # that before the second node ran for real.
+    assert copy.final_result() == [2, "base\none\ntwo\n"]
+    assert workspaces.path(copy) != workspaces.path(root)
     assert (workspaces.path(root) / "notes.txt").read_text() == "base\none\ntwo\n"

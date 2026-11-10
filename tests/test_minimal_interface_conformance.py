@@ -60,12 +60,12 @@ def test_minimal_interface_end_to_end_reruns_without_work(tmp_path):
     flow = ScriptedFlow(StubLLM(reply), configs=configs, runtime=TestRuntime())
 
     assert run_result(flow, g, root, root_config=AgentConfig(max_iters=8)) == "done"
-    children = g.subtree(root)[1:]
-    assert [child.root_data.config.name for child in children] == ["value", "ok", "sum"]
+    children = root.subtree()[1:]
+    assert [child.config.name for child in children] == ["value", "ok", "sum"]
     left, right, joined = children
-    assert g.result(left) == {"value": 1}
-    assert g.result(right) == {"ok": True}
-    assert g.result(joined) == {"sum": 2}
+    assert left.final_result() == {"value": 1}
+    assert right.final_result() == {"ok": True}
+    assert joined.final_result() == {"sum": 2}
     assert joined.input == {
         "task": "join typed children",
         "primary": {"value": 1},
@@ -75,7 +75,7 @@ def test_minimal_interface_end_to_end_reruns_without_work(tmp_path):
     assert len(rejected) == 1
     code_node = code_nodes(g, root)[0]
     assert {e.source for e in g.edges(kind=RETURN, target=code_node.id)} == {
-        g.history(child)[-1].id for child in children
+        child.nodes()[-1].id for child in children
     }
     assert launched(code_node) == [
         left.id,
@@ -94,9 +94,11 @@ def test_minimal_interface_end_to_end_reruns_without_work(tmp_path):
         ScriptedFlow(StubLLM(no_model_call), configs=configs, runtime=TestRuntime()).run(loaded)
         is loaded
     )
-    assert loaded.result(loaded.agent(root.id)) == "done"
+    assert loaded.agent(root.id).final_result() == "done"
     assert len(calls) == call_count
 
-    forked = g.fork(code_node)
-    assert g.history(forked)[-2:] == [code_node, forked]
-    assert not g.status(forked) == "done"
+    branch = g.fork(code_node)
+    again = branch.node(code_node.id)
+    assert branch.agent(root.id).nodes()[-1] is again and again.state == "ready"
+    assert branch.agent(root.id).children() == [] and branch.agent(root.id).status() != "done"
+    assert root.status() == "done" and root.subtree()[1:] == children

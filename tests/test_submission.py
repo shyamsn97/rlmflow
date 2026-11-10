@@ -19,7 +19,7 @@ def test_immediate_submission_is_one_turn():
 
     assert run_result(flow, g, root) == "answer"
     [turn] = turns(g, root)
-    assert g.history(root) == [root, turn]
+    assert root.nodes() == [root, turn]
     assert turn.code == "submit('answer')" and turn.data["terminal"]
 
 
@@ -52,7 +52,7 @@ def test_output_schema_failure_is_a_code_error_and_the_agent_retries():
     assert run_result(flow, g, root, root_config=AgentConfig(output_schema=schema)) == {"ok": True}
     rejected = code_nodes(g, root)[0]
     assert rejected.error is True and "ok" in rejected.output
-    assert g.tail(root).data["terminal"]
+    assert root.nodes()[-1].data["terminal"]
 
 
 def test_output_schema_accepts_a_json_text_reply():

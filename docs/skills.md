@@ -63,4 +63,4 @@ AgentConfig(
 )
 ```
 
-[`examples/skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/skills.py) loads `SKILL.md` files this way. [`examples/dynamic_skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/dynamic_skills.py) adds an `add_skill` tool that writes into the directory, so the agent sees the skill it installed in its own prompt on the next turn.
+[`examples/skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/skills.py) reads skill files from a directory this way, and adds an `add_skill` tool that writes into the same directory, so the agent sees the skill it installed in its own prompt on the next turn.

@@ -1,14 +1,6 @@
-# Coding agent
+# Coding
 
-Interactive coding agent as a plain REPL. The example owns the `flow.run_streaming(...)` loop: it prints one line per node the run lands (agent path and node kind), checkpoints the tree under `<workdir>/graph` as it goes, and prints the final answer when the root is done.
-
-```bash
-pip install -e ".[openai]"
-python examples/coding/agent.py --workdir ./myproject
-python examples/coding/agent.py --workdir ./myproject --docker-image rlmflow:local
-```
-
-Default working directory: `examples/_runs/coding/`.
+For a coding agent over your own project, use `rlmflow run` (see [Command line](../../docs/cli.md)).
 
 ## Boids: peers build components
 

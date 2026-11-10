@@ -41,8 +41,8 @@ def main() -> None:
         return [item.id for item in [*graph.nodes(), *graph.edges()]]
 
     print(f"saved: {run_dir}")
-    print("agents:", [loaded.path(agent) for agent in loaded.agents()])
-    print("result:", loaded.result(loaded.agent(root.id)))
+    print("agents:", [agent.path() for agent in loaded.agents()])
+    print("result:", loaded.agent(root.id).final_result())
     print("roundtrip:", ids(loaded) == ids(g))
 
 

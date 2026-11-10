@@ -50,7 +50,7 @@ def send(flow: Flow, step: Step, target: object, text: str, **inputs: Any) -> No
         raise TypeError("message text must be a string")
     g = step.graph
     agent = resolve_agent(g, target)
-    message = g.send(agent, f"From {g.path(step.agent)}: {text}", by=step.node, **inputs)
+    message = g.send(agent, f"From {step.agent.path()}: {text}", by=step.node, **inputs)
     flow._land(message)
     return message
 
@@ -64,7 +64,7 @@ def done(flow: Flow, step: Step, result: Any) -> Any:
 
 
 async def repl(flow: Flow, step: Step, code: str) -> dict[str, Any]:
-    """Run ``code`` as a new node at the end of the caller's history."""
+    """Run ``code`` as a new node after the caller's last node."""
     g, agent = step.graph, step.agent
     node = flow.append(g, agent, Node("assistant", code=code))
     run = await flow.run_node(g, agent, node)

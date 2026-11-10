@@ -27,7 +27,7 @@ from rlmflow import AgentConfig, Graph
 g = Graph()
 root = g.start("Count the x's in doc.", doc="xxaaxbxx")
 flow.run(g, root_config=AgentConfig(max_iters=10))  # returns the graph
-g.result(root)  # 5
+root.final_result()  # 5
 g.save("runs/count")
 ```
 
@@ -35,7 +35,7 @@ Inside async code, use `await flow.arun(g)` and `await flow.aclose()` when done.
 
 ## Configs
 
-An `AgentConfig` is a kind of agent: its harness, model, limits and prompt. The Flow holds them by name, and agents launch each other by that name. The graph only records which config each agent ran with (in its root's `root_data.metadata`, for display); running a saved graph uses the configs of the Flow you run it with.
+An `AgentConfig` is a kind of agent: its harness, model, limits and prompt. The Flow holds them by name, and agents launch each other by that name. The graph only records which config each agent ran with (in `agent.config_record`, for display); running a saved graph uses the configs of the Flow you run it with.
 
 | Field             | Default     | Meaning                                                                |
 | ----------------- | ----------- | ---------------------------------------------------------------------- |
@@ -141,7 +141,7 @@ flow = Flow(
 from rlmflow.view.text import kind
 
 async for step in flow.run_streaming(g, until="idle"):
-    print(g.path(step.agent), kind(step.node))
+    print(step.agent.path(), kind(step.node))
 ```
 
 `until` is `"done"` (default), `"next"`, `"idle"` (the next node that ran code or ended a turn), or a function of the step. Stop, look or change the graph, then call `run_streaming` again. Consumers handle the stream for you:
@@ -161,14 +161,14 @@ More in [Streaming](streaming.md).
 ## Read the graph
 
 ```python
-g.result(root)  # None until done
-g.status(root)  # "running" | "idle" | "done"
-g.history(root)  # the agent's nodes, its root first
-g.last_turn(root)  # the node that ended its latest turn
-g.children(root)  # agents it launched; g.parent(agent) is the one that launched it
+root.final_result()  # None until done
+root.status()  # "running" | "idle" | "done"
+root.nodes()  # the agent's nodes, its root first
+root.last_turn()  # the node that ended its latest turn
+root.children()  # agents it launched; agent.parent() is the one that launched it
 g.edges(kind="return", target=node.id)  # whose results reached a node
 g.usage()  # tokens; g.usage().cost_usd
-[n for n in g.history(root) if n.runs_code]  # the nodes that ran code
+[n for n in root.nodes() if n.runs_code]  # the nodes that ran code
 ```
 
 Nodes, agents and edges: [The graph](node_model.md).
@@ -178,15 +178,13 @@ Nodes, agents and edges: [The graph](node_model.md).
 ```python
 g.send(root, "Also report the file name.", ext=".py")  # a message; ext becomes a variable
 helper = g.start("Collect the sources.", parent=root)  # a child, from host code
-retry = g.fork(
-    some_node, name="retry", config="cheap"
-)  # branch from any node, optionally on another config
-g.edit(g.history(helper)[-1], result="...", dry_run=True)  # what changing a result would redo
+retry = g.fork(some_node)  # a copy of the run cut after some_node; g is untouched
+g.edit(helper.nodes()[-1], result="...", dry_run=True)  # what changing a result would redo
 g.replace(node, 0, "cached value")  # bind the node's first saved call; the node reruns
 flow.run(g)
 ```
 
-A fork shares the history up to its node and doesn't redo work that already finished. Edits follow the edges to what used what they changed: see [The graph](node_model.md#editing). More in [Control](control.md) and [Injections](injections.md).
+`flow.run(retry)` runs the copy. Its REPLs are rebuilt by running their agents' nodes again, so finished work isn't redone; children launched by `some_node` or after it aren't copied. Edits follow the edges to what used what they changed: see [The graph](node_model.md#editing). More in [Control](control.md) and [Injections](injections.md).
 
 ## Save and resume
 
@@ -234,7 +232,7 @@ $ claude --plugin-dir "$(rlmflow plugin path)"
 
 ```bash
 rlmflow view show runs/x --step 14                          # the header has the node id
-rlmflow fork runs/x NODE --config worker                    # headless, saved back (or --out)
+rlmflow fork runs/x NODE --config worker                    # headless; the copy is saved beside runs/x (or --out)
 rlmflow fork runs/x NODE --interactive                      # prints the claude command to continue it
 ```
 

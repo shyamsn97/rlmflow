@@ -3,7 +3,7 @@
 A harness opens a turn for the agent it is stepping and starts its session with
 ``turn.env``. Each request carries the turn's token, so it acts as that agent at
 its latest node; the token stops working when the turn ends. ``/repl`` runs a
-call as a new node at the end of the agent's history.
+call as a new node after the agent's last node.
 
 ``rlmflow serve`` also hands out an agent token (``attach``), which lasts across
 turns and acts for whichever turn of that agent is open, and a host token for

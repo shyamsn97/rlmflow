@@ -303,14 +303,12 @@ class LiveGraphTree(StreamConsumer):
 
         def render_label(agent: Node):
             text = _status(graph, agent)
-            status = graph.status(agent)
+            status = agent.status()
             if status == "done":
-                if graph.last_turn(agent).error:
+                if agent.last_turn().error:
                     return Text.assemble(("✗ ", "red"), (text, "red"))
                 return Text.assemble(("✓ ", "green"), (text, "green"))
-            if status == "idle" or not all(
-                graph.status(c) == "done" for c in graph.children(agent)
-            ):
+            if status == "idle" or not all(c.status() == "done" for c in agent.children()):
                 return Text.assemble(("◌ ", "magenta"), (text, "magenta"))
             if self.spinners:
                 return Spinner("dots", text=Text(text, style="cyan"))
@@ -319,7 +317,7 @@ class LiveGraphTree(StreamConsumer):
         tree = Tree(Text(label or graph.id, style="bold"), guide_style="dim")
 
         def populate(branch, agent: Node) -> None:
-            for child in graph.children(agent):
+            for child in agent.children():
                 child_branch = branch.add(render_label(child), guide_style="dim")
                 populate(child_branch, child)
 

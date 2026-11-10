@@ -19,11 +19,11 @@ flow = Flow(configs=[AgentConfig(model="gpt-5", max_depth=2)])  # "default"
 
 async def drive():
     async for step in flow.run_streaming(g):
-        print(g.path(step.agent), kind(step.node))
+        print(step.agent.path(), kind(step.node))
 
 
 asyncio.run(drive())
-print(g.result(root))
+print(root.final_result())
 ```
 
 `flow.run("query")` and `await flow.arun("query")` return the root's result;
@@ -71,7 +71,7 @@ g.send(g.roots()[0], "Now check the tests too.")
 flow.run(g, root_config=AgentConfig(max_depth=2, max_iters=40))
 ```
 
-Each agent records the config it last ran with in `root_data.metadata["config"]`. That
+Each agent records the config it last ran with in `agent.config_record`. That
 copy is for viewers and is never read back to drive a run.
 
 ### Named configs
@@ -109,13 +109,13 @@ flow.add_config(AgentConfig(name="claude", harness="claude_code", harness_option
 ```
 
 External sessions reach the same agent tools from the shell through
-`rlmflow repl`, so all the code they run lands as nodes in their history. They keep their
+`rlmflow repl`, so all the code they run lands as their nodes. They keep their
 own tools and permissions.
 
 ## Multi-turn runs
 
-A finished agent is one whose last turn submitted (`g.status(agent) == "done"`).
-Send it a message and it runs again, with its REPL and history intact:
+A finished agent is one whose last turn submitted (`agent.status() == "done"`).
+Send it a message and it runs again, with its REPL and nodes intact:
 
 ```python
 flow.run(g)
@@ -123,7 +123,7 @@ g.send(root, "Now implement the fixes.")
 flow.run(g)
 ```
 
-`max_iters` counts an agent's model turns across its whole history, so a root
+`max_iters` counts an agent's model turns across all its nodes, so a root
 you drive for several turns needs headroom for all of them.
 
 ## Editing a run
@@ -134,11 +134,11 @@ depended on what it changed, and returns what it invalidated
 without changing anything:
 
 ```python
-node = next(n for n in g.history(root) if n.runs_code)
+node = next(n for n in root.nodes() if n.runs_code)
 
 g.edit(node, code="print(len(docs))")  # rewind root to the node, with new code
-g.delete(g.history(root)[-1])  # drop the last node; the agent redoes it
-g.remove(g.children(root)[0])  # an agent, its subtree, what they caused
+g.delete(root.nodes()[-1])  # drop the last node; the agent redoes it
+g.remove(root.children()[0])  # an agent, its subtree, what they caused
 g.replace(node, 0, "cached")  # the node's first saved call returns this instead
 flow.run(g)
 ```
@@ -163,19 +163,40 @@ async for _ in flow.run_streaming(g):
 
 ## Fork
 
-`g.fork(node)` adds an agent that shares another's history up to `node` and
-continues on its own; nothing is copied and the original is untouched:
+`g.fork(node)` returns a new graph: a copy of the run with the same ids, cut
+right after `node`. The original is untouched.
 
 ```python
-node = next(n for n in g.history(root) if n.runs_code)
-branch = g.fork(node, name="retry", config="worker")
-g.send(branch, "Try a different approach.")
-flow.run(g)
+node = next(n for n in root.nodes() if n.runs_code)
+branch = g.fork(node)
+agent = branch.agent(root.id)
+agent.config_name = "worker"  # optional: run the copy on another config
+branch.send(agent, "Try a different approach.")
+flow.run(branch)
 ```
 
-The fork's REPL is rebuilt by running the shared history again; launches and
-`llm_query` calls in them return their recorded results, so finished children
-aren't run again. There is no merge: continue the branch you want.
+What the copy keeps and drops:
+
+- `node`'s agent ends at `node`. What came after it is gone, with what that
+  caused: agents launched later are removed, messages sent later are taken
+  back, and a result delivered to a parent from the dropped nodes is taken back
+  too, so the code that awaited it runs again.
+- If `node`'s own code launched agents or sent messages, those are gone and
+  `node` is set to run again. To keep the children, fork at a later node.
+- Every other agent is copied as it is, finished or not, including other
+  top-level agents; running the copy runs them. To leave one out, remove it
+  from the copy with `branch.remove(branch.agent(id))`.
+
+Each agent's REPL, workspace and Claude Code or pi session is named by its
+`repl_id`. By default (`repl="copy"`) the copy's agents get new ones: a REPL is
+rebuilt by running its nodes again, with launches and `llm_query` calls
+returning their recorded results, files come back from the latest workspace
+snapshot, and a resumed session is forked. `g.fork(node, repl="same")` keeps
+the live ones, so the copy carries on where the original is (agents the cut
+rewound still get new ones); don't run the original and that copy at once.
+
+There is no merge: run the copy you want, each on its own `Flow` if they run
+at the same time, and `branch.save(path)` keeps one.
 
 ## Launching agents
 
@@ -267,7 +288,7 @@ flow.run(g)
 ```
 
 Loading restores the graph, not the REPLs. The first time a Flow steps an agent
-whose REPL it doesn't hold, it rebuilds it by running the agent's history
+whose REPL it doesn't hold, it rebuilds it by running the agent's nodes
 again: tool calls with saved results return them, launches resolve to the
 existing children, and `llm_query` doesn't repeat a request. Nothing is
 appended; `ENV["RLMFLOW_REPLAY"]` is `"1"` while it happens, so agent code can

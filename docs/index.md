@@ -14,7 +14,7 @@
 - [Control](control.md): limits, multi-turn runs, save and resume, forks, custom tools.
 - [Node injection](injections.md): add messages and edits between streaming calls and continue the run.
 - [Observability](observability.md): querying the graph, consumers, reading a saved run.
-- [The graph](node_model.md): nodes, agents as root nodes, edges, editing, and the saved format.
+- [The graph](node_model.md): nodes, agents, edges, editing, and the saved format.
 - [Prompt customization](prompt_customization.md): each harness's prompt sections, and overriding them from a config or a harness subclass.
 - [Skills](skills.md): `SKILL.md` files in prompts.
 

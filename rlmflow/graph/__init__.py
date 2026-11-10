@@ -1,17 +1,16 @@
-"""The run itself: agents' histories of nodes, the edges between them, and the format they are saved in."""
+"""The run itself: agents and their nodes, the edges between them, and the format they are saved in."""
 
 from rlmflow.graph.config import AgentConfig, Input
 from rlmflow.graph.edits import RULES, GraphError, Invalidation
 from rlmflow.graph.graph import Graph
 from rlmflow.graph.nodes import (
-    FORK,
     RETURN,
     SPAWN,
     WRITE,
+    Agent,
     Edge,
     LLMUsage,
     Node,
-    RootData,
     Step,
     attach_image,
     current_step,
@@ -20,7 +19,6 @@ from rlmflow.graph.nodes import (
 )
 
 __all__ = [
-    "FORK",
     "RETURN",
     "RULES",
     "SPAWN",
@@ -32,8 +30,8 @@ __all__ = [
     "Input",
     "Invalidation",
     "LLMUsage",
+    "Agent",
     "Node",
-    "RootData",
     "Step",
     "attach_image",
     "current_step",

@@ -13,9 +13,9 @@ root = g.start("Audit this repository.")
 
 flow = Flow(configs=[AgentConfig(model="gpt-5-mini")])
 async for step in flow.run_streaming(g):
-    print(g.path(step.agent), kind(step.node), [e.kind for e in step.edges])
+    print(step.agent.path(), kind(step.node), [e.kind for e in step.edges])
 
-print(g.result(root))
+print(root.final_result())
 ```
 
 The graph is durable state. The Flow holds only live execution state.
@@ -24,7 +24,7 @@ The graph is durable state. The Flow holds only live execution state.
 durable                      live
 ─────────────────────        ───────────────────────────
 Graph                        Flow.run_streaming
-  root nodes, histories        flow.tasks: one turn per agent
+  agents, their nodes          flow.tasks: one turn per agent
   edges                        REPL locks, waiters
                                Runtime resources
 ```
@@ -65,13 +65,13 @@ A turn runs the node an edit left ready, if there is one; otherwise it calls the
 agent's harness. The native `repl` harness:
 
 ```text
-call the model with the history         -> one assistant node with the reply
+call the model with the transcript      -> one assistant node with the reply
 reply has one repl block                -> its code runs in place; terminal if it submitted
 reply has no repl block                 -> the reply is the answer; terminal
 reply has several, empty or open blocks -> the node records the error; nothing runs
 ```
 
-The node records `seen`, how many history entries the prompt had, so a message
+The node records `seen`, how many of the agent's nodes the prompt had, so a message
 that arrived during the model call is still unread and the agent takes another
 turn.
 
@@ -118,8 +118,8 @@ runs again. A run saved mid-run loads the same way.
 
 ## Ordering
 
-Nodes are yielded in the order they finished. Within one agent that is its
-history order, which is the order its REPL ran things in; across agents it is
+Nodes are yielded in the order they finished. Within one agent that is the
+order of its nodes, which is the order its REPL ran things in; across agents it is
 completion order, which `seq` records.
 
 ## Failure behaviour

@@ -3,7 +3,7 @@
 rlmflow has one durable type and two resource owners:
 
 ```text
-Graph      the run: nodes in agents' histories, and edges
+Graph      the run: agents, their nodes, and edges
 Flow       execution and policy: turns, results, edits
 Runtime    live REPL sessions
 ```
@@ -12,7 +12,7 @@ Runtime    live REPL sessions
 itself, so which file a name lives in is an implementation detail.
 
 The layout follows that. `rlmflow.graph` is the run: `nodes.py` (`Node`,
-`RootData`, `Edge`, `Step`, and the context variable a running node's tools
+`Agent`, `Edge`, `Step`, and the context variable a running node's tools
 read), `graph.py` (reads and writes), `edits.py` (edits and `RULES`),
 `calls.py` (saved tool calls) and `persistence.py` (the saved format).
 `rlmflow.flow` takes turns, runs nodes and delivers results.
@@ -26,18 +26,20 @@ API over HTTP, for session harnesses and the Claude Code plugin.
 ## The graph
 
 ```python
-g.agent(id), g.node(id), g.owner(node)
-root.root_data.history, g.base(root)
-g.history(root), g.tail(root), g.last_turn(root)
+g.agent(id), g.node(id), node.agent
+agent.nodes(), agent.repl_id, node.transcript()
+agent.nodes()[-1], agent.last_turn()
 g.edges(kind=..., source=..., target=..., touching=...)
 ```
 
-An agent's history is a list on its root; history order is the order its REPL
-ran things in, so there is no linked structure to keep consistent. Edges are
+An agent is an `Agent`, its first node. Every node records its `owner` (its
+agent's id) and `seq`, and the graph keeps a private index from them that is
+not saved. The order of an agent's nodes is the order its REPL ran things in,
+so there is no linked structure to keep consistent. Edges are
 kept in one table with per-endpoint indexes, so "which edges touch this node"
-is a lookup. `spawn` edges also maintain a parent-to-children index. A fork is a
-root with a `fork` edge from its base node, and shares the base's history
-without copying it.
+is a lookup. `spawn` edges also maintain a parent-to-children index. A fork is
+another graph: `g.fork(node)` copies the graph (same ids) and cuts the copy
+with the edit rules (`rlmflow.graph.edits.fork`).
 
 There is no lock. The Flow is the only writer during a run, and host code inside
 `async for step in flow.run_streaming(g)` runs on the same loop between steps.
@@ -52,12 +54,12 @@ run_streaming(g)
   -> wait for the graph to change, then schedule again
 ```
 
-`g.status(agent) == "running"` is the scheduling rule (see
+`agent.status() == "running"` is the scheduling rule (see
 [the graph](node_model.md#status)). `flow.tasks` maps an agent id to its turn in
 flight, so an agent never takes two turns at once.
 
 A turn runs a node an edit left ready, if there is one, and otherwise calls the
-agent's harness. The native `repl` harness turns the history into chat
+agent's harness. The native `repl` harness turns the agent's nodes into chat
 messages, calls the model, appends the reply as one assistant node with its
 `repl` block as `code`, and runs it in place. A turn that raises appends a
 terminal node with `[run failed: ...]` or `[child failed: ...]`, so a crashed
@@ -88,9 +90,11 @@ node's calls.
 
 ## Replay
 
-A Flow keeps a REPL per agent it has run. When it reaches an agent whose REPL
-it doesn't hold (a loaded run, a fork, a different process), it runs the
-agent's history again, the fork base's included, before the next node. Each
+A Flow keeps a REPL per `repl_id` it has run: an agent's own id, unless a fork
+gave it a new one. Workspaces and Claude Code or pi session forking are keyed
+the same way. When it reaches an agent whose REPL it doesn't hold (a loaded
+run, a fork, a different process), it runs the agent's nodes again before the
+next node. Each
 tool call claims what the node saved instead of running: a launch resolves to
 the existing child, an await to the saved result, `llm_query` and
 `@tool(cache=True)` tools to their saved value. Calls are keyed by tool name and
@@ -98,13 +102,13 @@ arguments, so repeated identical calls get their entries in order. Nothing is
 appended, and `RLMFLOW_REPLAY` is `"1"` while it happens.
 
 The Flow remembers the last node (and its version) each live REPL ran. When
-that node is no longer in the agent's history, the REPL is dropped and rebuilt
-from the new history.
+that node is no longer among the agent's nodes, the REPL is dropped and rebuilt
+from the ones that remain.
 
 ## Running a node again
 
 `g.edit`, `g.delete`, `g.remove` and `g.replace` set the nodes that consumed a
-changed result ready again: the history after the node is cut, its output is
+changed result ready again: the agent's nodes after it are cut, its output is
 cleared, its `return` edges are removed, and its version is bumped. The
 agent's next turn runs it in place on a REPL rebuilt up to the node before it:
 calls it makes the same way return what they saved, the changed one returns
@@ -131,19 +135,20 @@ reopens it. Closing is the caller's: `flow.runtime.close_repl(agent)`,
 
 ## Persistence
 
-`g.save(path)` writes one JSON document (format 6): nodes, with each root's
-history by id, and edges, plus content-addressed blobs for large inputs.
-Loading validates that every node is in exactly one history and that every
-edge endpoint exists. A node saved mid-run loads ready, and runs again with
-what it launched still in place. A root records only the name of the config it
-runs with; the config a Flow bound is in `root_data.metadata["config"]` for
-viewers and is never read back.
+`g.save(path)` writes one JSON document (format 7): nodes, each with its
+`owner`, `seq` and `producer`, and edges, plus content-addressed blobs for
+large inputs. Loading validates that every node's owner is an agent in the
+graph, that no node comes before its agent, and that every edge endpoint
+exists. A node saved mid-run loads ready, and runs again with what it launched
+still in place. An agent records only the name of the config it runs with; the
+config a Flow bound is in `agent.config_record` for viewers and is never read
+back. Format 6 runs still load; their `history` lists are ignored.
 
 ## Invariants
 
 1. Records hold no live execution objects.
-1. Every node is in exactly one agent's history.
-1. Engine edges (`spawn`, `fork`, `return`, `write`) are written by the Flow,
+1. Every node belongs to exactly one agent (its `owner`).
+1. Engine edges (`spawn`, `return`, `write`) are written by the Flow,
    its tools and edits only.
 1. An agent with a turn in flight is never given another; edits through
    `flow.edit` cancel it first.

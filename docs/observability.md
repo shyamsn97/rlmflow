@@ -5,14 +5,14 @@ Everything needed to inspect a run lives in its graph, live or saved.
 ## Query the graph
 
 ```python
-g.result(root)  # the root's answer, or None
-g.status(root)  # "running" | "idle" | "done"
-g.history(root)  # its nodes, root first (a fork's base history included)
-g.tail(root)  # its latest node
-g.last_turn(root)  # the node that ended its latest turn
-g.children(root)  # the agents it launched
-g.subtree(root)  # it and every agent below it
-g.usage(), g.usage().cost_usd  # tokens and cost, for the run or g.usage(g.subtree(a))
+root.final_result()  # the root's answer, or None
+root.status()  # "running" | "idle" | "done"
+root.nodes()  # its nodes, root first
+root.nodes()[-1]  # its latest node
+root.last_turn()  # the node that ended its latest turn
+root.children()  # the agents it launched
+root.subtree()  # it and every agent below it
+g.usage(), g.usage().cost_usd  # tokens and cost, for the run or g.usage(a.subtree())
 
 g.agents(), g.nodes(), g.edges(kind="return")
 [n for n in g.nodes() if n.runs_code and n.error]  # every node whose code failed
@@ -21,11 +21,11 @@ g.agents(), g.nodes(), g.edges(kind="return")
 To ask about a worker, hold the worker:
 
 ```python
-worker = g.children(root)[0]
-g.path(worker)  # "root.worker-0"
-g.history(worker)
-g.result(worker)
-g.usage(g.subtree(worker))
+worker = root.children()[0]
+worker.path()  # "root.worker-0"
+worker.nodes()
+worker.final_result()
+g.usage(worker.subtree())
 ```
 
 Each node carries `role`, `text`, `input`, `code`, `output`, `result`, `error`,
@@ -71,7 +71,7 @@ from rlmflow.view.text import kind
 
 class Progress(StreamConsumer):
     def handle(self, step, graph):
-        print(graph.path(step.agent), kind(step.node), step.node.finished_at)
+        print(step.agent.path(), kind(step.node), step.node.finished_at)
 
     def close(self):
         print("done")
@@ -172,7 +172,7 @@ shows the edited graph cut at each step, not what it held before the edit.
 ## The browser viewer
 
 `open_viewer` puts a step slider over the figure, an agent picker beside it, and
-that agent's history underneath, all as of the step you are on:
+that agent's nodes underneath, all as of the step you are on:
 
 ```python
 from rlmflow import open_viewer

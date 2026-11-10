@@ -103,14 +103,14 @@ def main() -> None:
 
     # `submit(value)` parsed the answer against the schema, so the result is a
     # dict; the Pydantic model is the typed view of that same value.
-    plan = PackingPlan.model_validate(g.result(root))
+    plan = PackingPlan.model_validate(root.final_result())
 
     print("Typed result:")
     print(type(plan).__name__)
     print(plan.model_dump_json(indent=2))
 
     print("\nRoot result:")
-    print(json.dumps(g.result(root), indent=2))
+    print(json.dumps(root.final_result(), indent=2))
 
     print(f"\nRun saved to {out_dir}")
 

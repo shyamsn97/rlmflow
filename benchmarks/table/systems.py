@@ -174,7 +174,7 @@ def rlmflow(task: str, workdir: Path, limits: Limits, model: str) -> Outcome:
     finally:
         checkpointer.close()
         flow.runtime.close_repls()
-    result = g.result(root)
+    result = root.final_result()
     return Outcome(
         "rlmflow",
         time.monotonic() - start,

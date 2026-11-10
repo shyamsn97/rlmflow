@@ -59,7 +59,7 @@ class RulesOnly(ReplHarness):
 AgentConfig(name="worker", model="gpt-5-mini", harness=RulesOnly, prompt={"rules": RULES})
 ```
 
-Or override `prompt(flow, step)` to return the final string, which skips the config's overrides as well. Settings a subclass needs can go in `harness_options`, read with `self.options(step)`; see [`examples/skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/skills.py) and [`examples/dynamic_skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/dynamic_skills.py).
+Or override `prompt(flow, step)` to return the final string, which skips the config's overrides as well. Settings a subclass needs can go in `harness_options`, read with `self.options(step)`; see [`examples/skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/skills.py).
 
 ## Default sections
 

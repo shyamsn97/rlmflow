@@ -8,7 +8,7 @@
 #   runtime = DockerRuntime("rlmflow:local")
 #
 # Or via any of the bundled examples:
-#   python examples/summarizer.py --runtime docker --docker-image rlmflow:local
+#   python examples/sandboxes/platformer.py --runtime docker --docker-image rlmflow:local
 
 FROM python:3.12.11-slim-bookworm
 

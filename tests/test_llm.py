@@ -345,7 +345,7 @@ def test_flow_consumes_a_clients_stream():
     root = g.start("go")
     flow = ScriptedFlow(llm)
     flow.run(g)
-    assert g.result(root) == "ok"
+    assert root.final_result() == "ok"
     assert llm.chat_calls == 0
     [turn] = turns(g, root)
     assert LLMUsage.of(turn.data["usage"]) == LLMUsage(2, 2)

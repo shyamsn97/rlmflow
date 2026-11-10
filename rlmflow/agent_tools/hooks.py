@@ -10,7 +10,8 @@ this session. A hook never fails the session: errors go to stderr, exit 0.
 - ``stop`` (Stop): ends the turn. If the root is waiting on agents it started,
   holds until their results arrive and prints a ``block`` decision carrying
   them, so Claude continues with them in the same session.
-- ``end`` (SessionEnd): shuts the serve down; the run stays on disk.
+- ``end`` (SessionEnd): shuts the serve down; the run stays on disk. If the root
+  already finished, agents still running finish first.
 """
 
 from __future__ import annotations

@@ -12,16 +12,27 @@ import argparse
 import time
 from pathlib import Path
 
-from rlmflow import SPAWN, Graph, LLMUsage, Node
+from rlmflow import SPAWN, Agent, Graph, LLMUsage, Node
 from rlmflow.view.text import kind
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1]
 OUT_DIR = EXAMPLES_DIR / "_runs" / "deep-tree"
 
 
-def turn(g: Graph, agent: Node, text: str = "", **fields) -> Node:
+def turn(
+    g: Graph,
+    agent: Node,
+    text: str = "",
+    *,
+    code: str = "pass",
+    output: str = "",
+    result=None,
+    error: bool = False,
+    **data,
+) -> Node:
     """Append one finished model turn to ``agent``."""
-    node = Node("assistant", text, seen=len(g.history(agent)), **fields)
+    data = {"seen": len(agent.nodes()), **data}
+    node = Node("assistant", text, code=code, output=output, result=result, error=error, data=data)
     node.finished_at = time.time()
     return g.append(agent, node)
 
@@ -32,7 +43,7 @@ def grow(g: Graph, agent: Node, *, depth: int, branch: int) -> None:
     Children are launched by the node whose code called ``launch_agent``, the
     way a real run records it.
     """
-    path = g.path(agent)
+    path = agent.path()
     usage = LLMUsage(input_tokens=10, output_tokens=5).as_dict()
 
     if depth <= 0:
@@ -50,11 +61,11 @@ def grow(g: Graph, agent: Node, *, depth: int, branch: int) -> None:
 
 
 def tree_children(g: Graph) -> dict[str, list[Node]]:
-    """Each node's successors: the next node in its agent's history, and the agents it launched."""
+    """Each node's successors: the next node of its agent, and the agents it launched."""
     kids: dict[str, list[Node]] = {node.id: [] for node in g.nodes()}
     for agent in g.agents():
-        history = agent.root_data.history
-        for before, after in zip(history, history[1:]):
+        nodes = agent.nodes()
+        for before, after in zip(nodes, nodes[1:]):
             kids[before.id].append(after)
     for edge in g.edges(kind=SPAWN):
         kids[edge.source].append(g.agent(edge.target))
@@ -84,10 +95,10 @@ def render_ascii(
 def render_agents(g: Graph, agent: Node, *, prefix: str = "", is_last: bool = True) -> list[str]:
     """Render only the agent tree."""
     connector = "└── " if is_last else "├── "
-    label = f"{g.path(agent)}  [{kind(g.tail(agent))}]"
+    label = f"{agent.path()}  [{kind(agent.nodes()[-1])}]"
     lines = [f"{prefix}{connector}{label}" if prefix or not is_last else label]
     child_prefix = prefix + ("    " if is_last else "│   ")
-    children = g.children(agent)
+    children = agent.children()
     for index, child in enumerate(children):
         lines.extend(
             render_agents(g, child, prefix=child_prefix, is_last=index == len(children) - 1)
@@ -96,8 +107,8 @@ def render_agents(g: Graph, agent: Node, *, prefix: str = "", is_last: bool = Tr
 
 
 def _label(node: Node) -> str:
-    if node.root_data is not None:
-        return f"agent:{node.root_data.name}"
+    if isinstance(node, Agent):
+        return f"agent:{node.name}"
     text = str(node.text or node.output or node.result or "").replace("\n", " ")
     if len(text) > 40:
         text = text[:37] + "..."
@@ -232,7 +243,7 @@ def _color(node: Node) -> str:
 
 
 def _short(node: Node) -> str:
-    return node.root_data.name if node.root_data is not None else kind(node)
+    return node.name if isinstance(node, Agent) else kind(node)
 
 
 def main() -> None:

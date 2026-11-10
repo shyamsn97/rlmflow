@@ -11,10 +11,12 @@ from typing import Any
 
 from rlmflow.graph.config import RECURSE, transform_argument
 from rlmflow.graph.graph import Graph, GraphError
-from rlmflow.graph.nodes import DONE, READY, RUNNING, Edge, Node, RootData, strict_json
+from rlmflow.graph.nodes import DONE, READY, RUNNING, Agent, Edge, Node, strict_json
 
-#: Bumped on any incompatible change; older formats are not read.
-FORMAT_VERSION = 6
+#: Bumped on any incompatible change. Format 6 is read too: its agents' ``history``
+#: lists are ignored (``owner`` and ``seq`` give the same order).
+FORMAT_VERSION = 7
+READS = (6, 7)
 BLOB_THRESHOLD_BYTES = 64 * 1024
 BLOB_REF_KEY = "$rlmflow_blob"
 
@@ -27,6 +29,7 @@ def node_record(node: Node) -> dict[str, Any]:
         "seq": node.seq,
         "version": node.version,
         "role": node.role,
+        "producer": node.producer,
         "text": node.text,
         "input": strict_json(node.input, f"{what} input"),
         "code": node.code,
@@ -50,16 +53,16 @@ def node_record(node: Node) -> dict[str, Any]:
             "finished_at": isoformat(node.finished_at),
             "duration_ms": round((node.finished_at - node.started_at) * 1000, 3),
         }
-    root = node.root_data
-    if root is not None:
-        record["root"] = {
-            "name": root.name,
-            "task": root.task,
-            "config": root.config_name,
-            "arg_descriptions": dict(root.arg_descriptions),
-            "history": [item.id for item in root.history],
-            "metadata": strict_json(root.metadata, f"agent {root.name!r} metadata"),
+    if isinstance(node, Agent):
+        record["agent"] = {
+            "name": node.name,
+            "task": node.task,
+            "config": node.config_name,
+            "arg_descriptions": dict(node.arg_descriptions),
+            "repl": node.repl_id,
         }
+        if node.config_record is not None:
+            record["agent"]["config_record"] = strict_json(node.config_record, "config record")
     return record
 
 
@@ -79,6 +82,7 @@ def to_records(graph: Graph) -> dict[str, Any]:
     return {
         "format": FORMAT_VERSION,
         "id": graph.id,
+        "metadata": strict_json(graph.metadata, "graph metadata"),
         "nodes": [node_record(node) for node in graph.nodes()],
         "edges": [edge_record(edge) for edge in graph.edges()],
     }
@@ -87,62 +91,79 @@ def to_records(graph: Graph) -> dict[str, Any]:
 def from_records(document: dict[str, Any]) -> Graph:
     """Rebuild a graph from ``to_records``; a node that was running is ready to run again."""
     graph = Graph(_text(document.get("id"), "graph id"))
+    graph.metadata = _dict(document.get("metadata"), "graph metadata")
     nodes: dict[str, Node] = {}
     for raw in _list(document, "nodes"):
-        node = Node(str(raw.get("role") or "user"), str(raw.get("text") or ""))
-        node.id = _text(raw.get("id"), "node id")
-        node.owner = _text(raw.get("owner"), f"node {node.id} owner")
-        node.seq = int(raw.get("seq", -1))
-        node.version = int(raw.get("version", 0))
-        node.input = _dict(raw.get("input"), "node input")
-        node.code = str(raw.get("code") or "pass")
-        node.calls = list(raw.get("calls") or [])
-        node.output = str(raw.get("output") or "")
-        node.result = raw.get("result")
-        node.error = bool(raw.get("error"))
+        node_id = _text(raw.get("id"), "node id")
         state = raw.get("state", DONE)
         if state not in (READY, RUNNING, DONE):
-            raise ValueError(f"node {node.id} has unknown state {state!r}")
-        node.state = READY if state == RUNNING else state
-        node.data = _dict(raw.get("data"), "node data")
-        node.data.setdefault("producer", "self" if node.role == "assistant" else "user")
-        node.metadata = dict(raw.get("metadata") or {})
-        node.created_at = _epoch(raw.get("created_at")) or node.created_at
+            raise ValueError(f"node {node_id} has unknown state {state!r}")
         timing = raw.get("timing") or {}
-        node.started_at = _epoch(timing.get("started_at"))
-        node.finished_at = _epoch(timing.get("finished_at"))
+        data = _dict(raw.get("data"), "node data")
+        fields: dict[str, Any] = dict(
+            role=str(raw.get("role") or "user"),
+            text=str(raw.get("text") or ""),
+            input=_dict(raw.get("input"), "node input"),
+            code=str(raw.get("code") or "pass"),
+            output=str(raw.get("output") or ""),
+            result=raw.get("result"),
+            error=bool(raw.get("error")),
+            state=READY if state == RUNNING else state,
+            calls=list(raw.get("calls") or []),
+            data=data,
+            producer=str(raw.get("producer") or data.pop("producer", "")),
+            metadata=_dict(raw.get("metadata"), "node metadata"),
+            id=node_id,
+            owner=_text(raw.get("owner"), f"node {node_id} owner"),
+            seq=int(raw.get("seq", -1)),
+            version=int(raw.get("version", 0)),
+            started_at=_epoch(timing.get("started_at")),
+            finished_at=_epoch(timing.get("finished_at")),
+            graph=graph,
+        )
+        if created := _epoch(raw.get("created_at")):
+            fields["created_at"] = created
+        agent = raw.get("agent", raw.get("root"))
+        if agent is None:
+            node: Node = Node(**fields)
+        else:
+            agent = _dict(agent, "agent")
+            # Format 6 kept the agent's own metadata, and its config record, apart.
+            older = _dict(agent.get("metadata"), "agent metadata")
+            recorded = agent.get("config_record", older.pop("config", None))
+            fields["metadata"] = {**older, **fields["metadata"]}
+            node = Agent(
+                **fields,
+                name=_text(agent.get("name"), "agent name"),
+                task=str(agent.get("task") or ""),
+                config_name=agent.get("config"),
+                arg_descriptions=_dict(agent.get("arg_descriptions"), "argument descriptions"),
+                repl_id=str(agent.get("repl") or node_id),
+                config_record=recorded,
+            )
         if nodes.setdefault(node.id, node) is not node:
             raise GraphError(f"node {node.id!r} appears twice")
-        if "root" in raw:
-            root = _dict(raw["root"], "root")
-            node.root_data = RootData(
-                _text(root.get("name"), "agent name"),
-                str(root.get("task") or ""),
-                config_name=root.get("config"),
-                arg_descriptions=_dict(root.get("arg_descriptions"), "argument descriptions"),
-            )
-            node.root_data.metadata = _dict(root.get("metadata"), "agent metadata")
-            node.root_data.history = list(root.get("history") or [])  # ids until resolved
-    placed: set[str] = set()
-    for node in sorted(nodes.values(), key=lambda n: n.seq):
-        if node.root_data is None:
-            continue
-        ids = node.root_data.history
-        if not ids or ids[0] != node.id:
-            raise GraphError(f"agent {node.id!r} history must start with its root")
-        history = []
-        for node_id in ids:
-            item = nodes.get(node_id)
-            if item is None or item.owner != node.id or node_id in placed:
-                raise GraphError(f"agent {node.id!r} lists node {node_id!r} it doesn't own")
-            placed.add(node_id)
-            history.append(item)
-        node.root_data.history = history
-        graph._roots[node.id] = node
-    if placed != set(nodes):
-        raise GraphError("every node must be in exactly one agent's history")
-    graph._nodes = {node.id: node for node in sorted(nodes.values(), key=lambda n: n.seq)}
+    ordered = sorted(nodes.values(), key=lambda n: n.seq)
+    for node in ordered:
+        if isinstance(node, Agent):
+            if node.owner != node.id:
+                raise GraphError(f"agent {node.id!r} must own itself")
+            graph._roots[node.id] = node
+            graph._own[node.id] = []
+    for node in ordered:
+        own = graph._own.get(node.owner)
+        if own is None:
+            raise GraphError(f"node {node.id!r} names {node.owner!r}, which is no agent here")
+        if not own and node.owner != node.id:
+            raise GraphError(f"node {node.id!r} comes before its agent {node.owner!r}")
+        own.append(node)
+    graph._nodes = {node.id: node for node in ordered}
     for raw in _list(document, "edges"):
+        if raw.get("kind") == "fork":
+            raise GraphError(
+                "this run has a fork edge, saved before forks became copies of the graph; "
+                "an older rlmflow can still read it"
+            )
         edge = Edge(
             _text(raw.get("kind"), "edge kind"),
             _text(raw.get("source"), "edge source"),
@@ -226,10 +247,10 @@ def load_graph(path: str | Path) -> Graph:
     if not isinstance(document, dict):
         raise TypeError(f"{run / 'graph.json'} must contain a JSON object")
     version = document.get("format")
-    if version != FORMAT_VERSION:
+    if version not in READS:
         raise ValueError(
             f"{run} was saved in run format {version or 1}, and this rlmflow reads only "
-            f"format {FORMAT_VERSION}; rerun it with this version."
+            f"formats {', '.join(map(str, READS))}; rerun it with this version."
         )
     for record in _list(document, "nodes"):
         record["input"] = _resolve_blobs(_dict(record.get("input"), "node input"), run / "blobs")

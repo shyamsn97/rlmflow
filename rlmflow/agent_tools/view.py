@@ -262,19 +262,19 @@ def build_agent_directory(graph: Graph, viewer: Node) -> AgentDirectory:
     """Snapshot every agent in ``graph`` as seen by ``viewer``."""
     records = []
     for agent in graph.agents():
-        parent = graph.parent(agent)
-        status = graph.status(agent)
+        parent = agent.parent()
+        status = agent.status()
         records.append(
             AgentRecord(
                 agent_id=agent.id,
-                name=agent.root_data.name,
-                config=agent.root_data.config_name or "root",
-                path=graph.path(agent),
-                task=agent.root_data.task,
+                name=agent.name,
+                config=agent.config_name or "root",
+                path=agent.path(),
+                task=agent.task,
                 parent_id=parent.id if parent is not None else None,
-                child_ids=tuple(child.id for child in graph.children(agent)),
+                child_ids=tuple(child.id for child in agent.children()),
                 status=status,  # type: ignore[arg-type]
-                result=_json_safe(graph.result(agent)) if status == "done" else None,
+                result=_json_safe(agent.final_result()) if status == "done" else None,
             )
         )
     links = tuple(
@@ -300,8 +300,8 @@ def resolve_agent(g: Graph, selector: object) -> Node:
     if selector in g._roots:
         return g._roots[selector]
     agents = g.agents()
-    matches = [a for a in agents if g.path(a) == selector] or [
-        a for a in agents if a.root_data.name == selector
+    matches = [a for a in agents if a.path() == selector] or [
+        a for a in agents if a.name == selector
     ]
     if len(matches) == 1:
         return matches[0]
@@ -311,7 +311,7 @@ def resolve_agent(g: Graph, selector: object) -> Node:
 
 
 def agent_handle(g: Graph, agent: Node) -> AgentHandle:
-    return AgentHandle(agent_id=agent.id, name=agent.root_data.name, path=g.path(agent))
+    return AgentHandle(agent_id=agent.id, name=agent.name, path=agent.path())
 
 
 __all__ = [

@@ -31,7 +31,7 @@ from rlmflow.agent_tools.hooks import RUN_COMMAND, STOP_WAIT
 from rlmflow.agent_tools.server import Turn
 from rlmflow.graph.config import harness_path
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import SELF, Node, Step
+from rlmflow.graph.nodes import SELF, Agent, Node, Step
 from rlmflow.harnesses.interactive import read_transcript
 from rlmflow.harnesses.sessions import (
     Session,
@@ -39,6 +39,7 @@ from rlmflow.harnesses.sessions import (
     pending_messages,
     resume_prompt,
 )
+from rlmflow.runtime.runtime import repl_key
 
 if TYPE_CHECKING:
     from rlmflow.flow import Flow
@@ -83,6 +84,7 @@ class Serve:
         self.checkpointer = GraphCheckpointer(self.graph_dir)
         self.wakeup = asyncio.Event()
         self.stopping = asyncio.Event()
+        self.draining = False
         self.error: BaseException | None = None
         self.agent_token: str | None = None
         self.host_token: str | None = None
@@ -124,7 +126,10 @@ class Serve:
         os.replace(partial, path)
 
     async def run(self) -> None:
-        """Serve until ``/shutdown``: step whatever is ready, then idle until a prompt arrives."""
+        """Serve until ``/shutdown``: step whatever is ready, then idle until a prompt arrives.
+
+        A shutdown after the root finished lets the agents still running finish first.
+        """
         await self.start()
         stopping = asyncio.ensure_future(self.stopping.wait())
         try:
@@ -137,15 +142,24 @@ class Serve:
                     with suppress(asyncio.CancelledError):
                         await streaming
                     break
+                if self.draining:
+                    break
                 woken = asyncio.ensure_future(self.wakeup.wait())
                 await asyncio.wait({woken, stopping}, return_when=asyncio.FIRST_COMPLETED)
                 woken.cancel()
         finally:
             stopping.cancel()
             self.graph.save(self.graph_dir)
-            with suppress(FileNotFoundError):
-                self.serve_file.unlink()
+            self.release_serve_file()
             await self.flow.aclose()
+
+    def release_serve_file(self) -> None:
+        """Remove serve.json if it is still this serve's; a newer serve may have replaced it."""
+        try:
+            if json.loads(self.serve_file.read_text()).get("pid") == os.getpid():
+                self.serve_file.unlink()
+        except (FileNotFoundError, ValueError):
+            pass
 
     async def _stream(self) -> None:
         try:
@@ -201,7 +215,7 @@ class Serve:
         if session_id not in self._briefed:
             self._briefed.add(session_id)
             parts.append(turn.step.config.load_harness().prompt(self.flow, turn.step))
-            has_code = any(node.runs_code for node in self.graph.history(turn.step.agent))
+            has_code = any(node.runs_code for node in turn.step.agent.nodes())
             if has_code and not Session.for_step(turn.step).resume:
                 parts.append(await resume_prompt(self.flow, turn.step))
         if turn.token not in self._shown:
@@ -241,11 +255,15 @@ class Serve:
     async def shutdown(self, body: dict[str, Any]) -> dict[str, Any]:
         if body.get("session_id") != self.session_id:
             return {"bound": False}
+        if self.root is not None and self.root.status() == "done" and self.flow.tasks:
+            self.draining = True
+            self.release_serve_file()
+            return {"bound": True, "stopping": True, "draining": len(self.flow.tasks)}
         asyncio.get_running_loop().call_later(0.05, self.stopping.set)
         return {"bound": True, "stopping": True}
 
     def _turn_end_since(self, mark: int) -> Node | None:
-        for node in reversed(self.root.root_data.history):
+        for node in reversed(self.root.nodes()):
             if node.seq < mark:
                 return None
             if "seen" in node.data and node.data.get("session_id"):
@@ -269,12 +287,12 @@ async def until(probe: Callable[[], T | None], timeout: float, interval: float =
 
 def pending(step: Step) -> list[Node]:
     """What others wrote since the agent's last turn began, which this turn opened on."""
-    turn = step.graph.last_turn(step.agent)
+    turn = step.agent.last_turn()
     start = turn.data["seen"] if turn is not None else 1
     return [
         node
-        for node in step.graph.history(step.agent)[start:]
-        if node.producer != SELF and node.text and node.root_data is None
+        for node in step.agent.nodes()[start:]
+        if node.producer != SELF and node.text and not isinstance(node, Agent)
     ]
 
 
@@ -286,26 +304,30 @@ def interactive_config(base: AgentConfig | None = None) -> AgentConfig:
     )
 
 
-def ran_interactively(agent: Node) -> bool:
-    """An ``interactive`` fork, or a root a serve ran with the interactive harness."""
-    data = agent.root_data
-    if data.config_name == INTERACTIVE_CONFIG:
+def ran_interactively(agent: Agent) -> bool:
+    """An agent forked to run ``interactive``, or a root a serve ran with the interactive harness."""
+    if agent.config_name == INTERACTIVE_CONFIG:
         return True
-    recorded = data.metadata.get("config") or {}
-    return data.config_name is None and recorded.get("harness") == INTERACTIVE
+    recorded = agent.config_record or {}
+    return agent.config_name is None and recorded.get("harness") == INTERACTIVE
 
 
-def interactive_root(graph: Graph) -> Node | None:
+def interactive_root(graph: Graph) -> Agent | None:
     """The latest agent in ``graph`` your session drives."""
     found = [agent for agent in graph.agents() if ran_interactively(agent)]
     return found[-1] if found else None
 
 
 def last_session(graph: Graph, agent: Node) -> str | None:
-    """The session that ended ``agent``'s latest turn; a fork has none of its own."""
-    for node in reversed(agent.root_data.history):
+    """The session that ended ``agent``'s latest turn in its own ``repl_id``.
+
+    A fork with a new ``repl_id`` has none: the session it resumes is forked
+    into a new one, which serve binds to when it first reports.
+    """
+    repl = repl_key(agent)
+    for node in reversed(agent.nodes()):
         if "seen" in node.data and node.data.get("session_id"):
-            return node.data["session_id"]
+            return node.data["session_id"] if node.data.get("repl", node.owner) == repl else None
     return None
 
 

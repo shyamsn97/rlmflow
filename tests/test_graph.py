@@ -23,7 +23,7 @@ def test_input_like_user_dictionary_remains_plain_data_after_roundtrip(tmp_path)
 
     assert root.input == {"task": "query", "payload": value}
     assert loaded.input == {"task": "query", "payload": value}
-    assert loaded.root_data.arg_descriptions == {}
+    assert loaded.arg_descriptions == {}
 
 
 def test_input_wrapped_arguments_resolve_and_keep_their_description(tmp_path):
@@ -33,21 +33,21 @@ def test_input_wrapped_arguments_resolve_and_keep_their_description(tmp_path):
     loaded = Graph.load(tmp_path / "run").agent(root.id)
 
     assert loaded.input == {"task": "query", "rows": [1, 2]}
-    assert loaded.root_data.arg_descriptions == {"rows": "Parsed rows."}
+    assert loaded.arg_descriptions == {"rows": "Parsed rows."}
 
 
-def test_an_agent_is_its_root_node_and_owns_an_ordered_history():
+def test_an_agent_is_its_first_node_and_owns_its_nodes_in_order():
     g, agent = agent_graph("query")
     first = g.append(agent, ran("x = 1", "one"))
     second = finish(g, agent, "ok")
 
-    assert g.history(agent) == [agent, first, second]
+    assert agent.nodes() == [agent, first, second]
     assert own(agent) == [first, second]
     assert agent.seq < first.seq < second.seq
     assert first.owner == agent.id and agent.owner == agent.id
-    assert g.lineage(agent) == [agent]
-    assert g.status(agent) == "done"
-    assert g.result(agent) == "ok"
+    assert agent.lineage() == [agent]
+    assert agent.status() == "done"
+    assert agent.final_result() == "ok"
 
 
 def test_a_child_agent_branches_off_the_node_that_launched_it():
@@ -55,17 +55,17 @@ def test_a_child_agent_branches_off_the_node_that_launched_it():
     turn = g.append(root, ran("launch"))
     child = g.start("child", parent=turn, name="worker")
 
-    assert g.parent(child) is root
-    assert g.lineage(child) == [root, child]
-    assert g.children(root) == [child]
-    assert [g.path(agent) for agent in (root, child)] == ["root", "root.worker"]
+    assert child.parent() is root
+    assert child.lineage() == [root, child]
+    assert root.children() == [child]
+    assert [agent.path() for agent in (root, child)] == ["root", "root.worker"]
     # Launching moved neither agent on: the parent still stands at the turn,
     # and the child has only its root.
-    assert g.tail(root) is turn
-    assert g.history(child) == [child]
+    assert root.nodes()[-1] is turn
+    assert child.nodes() == [child]
 
 
-def test_fork_after_a_launch_shares_its_children_instead_of_copying_them():
+def test_fork_after_a_launch_copies_its_children_and_before_it_drops_them():
     g, root = agent_graph("parent")
     turn = g.append(root, ran("launch"))
     child = g.start("child", parent=turn, name="child")
@@ -76,22 +76,34 @@ def test_fork_after_a_launch_shares_its_children_instead_of_copying_them():
     after = g.fork(later)
     before = g.fork(root)
 
-    assert turn in g.history(after)
-    assert calls.launched(turn) == [child.id]
-    assert len(g.agents()) == 4  # root, child, and two forks
-    assert g.children(after) == [] and g.children(root) == [child]
-    assert turn not in g.history(before)
-    assert g.history(before)[0] is root
+    assert [a.id for a in after.agents()] == [root.id, child.id]
+    assert after.agent(child.id).final_result() == "done"
+    assert calls.launched(after.node(turn.id)) == [child.id]
+    assert [a.id for a in before.agents()] == [root.id] and turn.id not in before
+    assert len(g.agents()) == 2 and root.children() == [child]
 
 
 def test_status_follows_the_last_turn_and_what_arrived_after_it():
     g, root = agent_graph("q")
-    assert g.status(root) == "running"
+    assert root.status() == "running"
     finish(g, root, "first")
-    assert g.status(root) == "done"
+    assert root.status() == "done"
 
     g.send(root, "one more thing", n=2)
-    assert g.status(root) == "running"
-    assert g.result(root) is None
+    assert root.status() == "running"
+    assert root.final_result() is None
     finish(g, root, "second")
-    assert (g.status(root), g.result(root)) == ("done", "second")
+    assert (root.status(), root.final_result()) == ("done", "second")
+
+
+def test_a_finished_agent_takes_another_done_only_after_something_reopens_it():
+    from rlmflow.graph.graph import GraphError
+
+    g = Graph()
+    root = g.start("count")
+    finish(g, root, 1)
+    with pytest.raises(GraphError, match="already finished"):
+        finish(g, root, 2)
+    g.send(root, "count again")
+    finish(g, root, 2)
+    assert root.final_result() == 2

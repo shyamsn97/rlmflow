@@ -13,7 +13,7 @@ from rlmflow import Flow, Node
 from rlmflow.graph import calls
 from rlmflow.graph.edits import RULES, GraphError, Invalidation
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import DONE, FORK, READY, RETURN, RUNNING, SPAWN, WRITE
+from rlmflow.graph.nodes import DONE, READY, RETURN, RUNNING, SPAWN, WRITE
 from rlmflow.graph.persistence import to_records
 from rlmflow.graph.queries import unseen_results
 from rlmflow.view.text import render_tree
@@ -30,7 +30,7 @@ def launch(g: Graph, code_node: Node, task: str, index: int = 0, **kwargs) -> No
 def awaited(g: Graph, code_node: Node, *children: Node) -> None:
     """``await child`` inside ``code_node``: the saved awaits, and their return edges."""
     for index, child in enumerate(children):
-        done = g.tail(child)
+        done = child.nodes()[-1]
         calls.record(code_node, calls.AWAIT, f"await-{index}", agent=child.id, done=done.id)
         g.link(RETURN, done, code_node)
 
@@ -65,7 +65,6 @@ def call(code_node: Node, tool: str, index: int = 0) -> int:
 def test_rules_name_what_each_engine_edge_does_when_its_source_drops_or_changes():
     assert RULES == {
         SPAWN: ("remove_root", "match_calls"),
-        FORK: ("remove_root", "restart_root"),
         RETURN: ("rerun_target", "rerun_target"),
         WRITE: ("retract_target", "match_calls"),
     }
@@ -76,7 +75,7 @@ def test_spawn_dropped_removes_the_child():
     inv = d.g.delete(d.code_node)
 
     assert d.worker.id not in d.g and inv.removed == [d.worker.id]
-    assert d.g.edges(kind=SPAWN) == [] and d.g.children(d.root) == []
+    assert d.g.edges(kind=SPAWN) == [] and d.root.children() == []
 
 
 def test_spawn_changed_keeps_the_child_until_the_rerun_matches_calls():
@@ -84,38 +83,17 @@ def test_spawn_changed_keeps_the_child_until_the_rerun_matches_calls():
     inv = d.g.edit(d.code_node, code="print(await launch_agent('work'), 2)")
 
     assert inv.rerun == [d.code_node.id] and inv.removed == []
-    assert d.worker.id in d.g and d.g.children(d.root) == [d.worker]
-    assert d.g.status(d.worker) == "done"
+    assert d.worker.id in d.g and d.root.children() == [d.worker]
+    assert d.worker.status() == "done"
     [edge] = d.g.edges(kind=SPAWN)
     assert (edge.source, edge.target) == (d.code_node.id, d.worker.id)
-
-
-def test_fork_dropped_removes_the_fork():
-    d = delegation()
-    fork = d.g.fork(d.code_node, name="retry")
-    inv = d.g.delete(d.code_node)
-
-    assert fork.id not in d.g and fork.id in inv.removed
-
-
-def test_fork_changed_restarts_the_fork_from_its_base():
-    g, root = agent_graph("root")
-    plan = g.append(root, Node("assistant", "plan"))
-    fork = g.fork(plan, name="branch")
-    mine = g.append(fork, ran("x = 2"))
-
-    inv = g.edit(plan, text="other plan")
-
-    assert fork.id in g and own(fork) == [] and g.base(fork) is plan
-    assert g.history(fork) == [root, plan, fork]
-    assert fork.id in inv.rewound and inv.dropped == [mine.id]
 
 
 def test_return_dropped_reruns_the_code_that_awaited_it():
     d = delegation()
     inv = d.g.delete(d.done)
 
-    assert own(d.worker) == [d.think] and d.g.status(d.worker) == "running"
+    assert own(d.worker) == [d.think] and d.worker.status() == "running"
     assert inv.rerun == [d.code_node.id] and d.code_node.state == READY
     assert own(d.root) == [d.plan, d.code_node] and d.g.edges(kind=RETURN) == []
 
@@ -124,14 +102,14 @@ def test_return_changed_reruns_the_code_that_awaited_it():
     d = delegation()
     inv = d.g.edit(d.done, result=2)
 
-    assert d.done.result == 2 and d.g.result(d.worker) == 2
+    assert d.done.result == 2 and d.worker.final_result() == 2
     assert inv.rerun == [d.code_node.id]
     assert inv.rewound == [d.root.id, d.worker.id]
     assert inv.dropped == [d.final.id, d.reply.id] and inv.removed == []
     assert own(d.root) == [d.plan, d.code_node] and d.code_node.state == READY
-    assert own(d.worker) == [d.think, d.done] and d.g.status(d.worker) == "done"
+    assert own(d.worker) == [d.think, d.done] and d.worker.status() == "done"
     assert d.g.edges(kind=RETURN) == []
-    assert d.g.tail(d.root) is d.code_node and d.g.status(d.root) == "running"
+    assert d.root.nodes()[-1] is d.code_node and d.root.status() == "running"
 
 
 def test_return_changed_takes_back_a_delivered_result_and_redelivers_it():
@@ -206,7 +184,7 @@ def test_edit_changes_the_node_and_rewinds_the_owner_to_it():
     }
     assert inv.rerun == []
     assert d.worker.id not in g and g.edges() == []
-    assert g.status(d.root) == "running"
+    assert d.root.status() == "running"
 
 
 def test_editing_a_node_bumps_its_version():
@@ -237,36 +215,8 @@ def test_editing_a_root_task_updates_the_agent():
 
     inv = g.edit(root, text="new task")
 
-    assert root.root_data.task == "new task" and own(root) == []
+    assert root.task == "new task" and own(root) == []
     assert inv.dropped == [step.id]
-
-
-def test_edit_reruns_a_fork_based_at_the_node_and_removes_forks_based_later():
-    g, root = agent_graph("root")
-    plan = g.append(root, Node("assistant", "plan"))
-    code_node = g.append(root, ran("x = 1"))
-    at_plan = g.fork(plan, name="at_plan")
-    mine = g.append(at_plan, ran("x = 2"))
-    at_code = g.fork(code_node, name="at_code")
-
-    inv = g.edit(plan, text="other plan")
-
-    assert at_plan.id in g and own(at_plan) == [] and g.base(at_plan) is plan
-    assert at_code.id not in g
-    assert set(inv.rewound) == {root.id, at_plan.id}
-    assert inv.removed == [at_code.id]
-    assert {code_node.id, mine.id} <= set(inv.dropped)
-    assert [a for a in g.agents() if g.base(a) is not None] == [at_plan]
-
-
-def test_a_rerun_restarts_forks_taken_at_the_code():
-    d = delegation()
-    fork = d.g.fork(d.code_node, name="retry")
-    mine = d.g.append(fork, Node("assistant", "try again"))
-
-    inv = d.g.edit(d.done, result=2)
-
-    assert fork.id in d.g and own(fork) == [] and mine.id in inv.dropped
 
 
 def test_edit_rejects_bad_fields_and_unknown_nodes():
@@ -290,15 +240,15 @@ def test_an_edited_await_makes_the_code_ready_and_drops_its_final():
     done = finish(g, worker, 1)
     submitting = g.append(root, ran("submit(await w)", result=1, terminal=True, seen=3))
     awaited(g, submitting, worker)
-    assert g.status(root) == "done" and g.result(root) == 1
+    assert root.status() == "done" and root.final_result() == 1
 
     inv = g.edit(done, result=2)
 
     assert inv.rerun == [submitting.id] and submitting.state == READY
     assert submitting.output == "" and submitting.result is None
     assert "terminal" not in submitting.data
-    assert g.tail(root) is submitting
-    assert g.status(root) == "running" and g.result(root) is None
+    assert root.nodes()[-1] is submitting
+    assert root.status() == "running" and root.final_result() is None
 
 
 # -- rerunning an edited code_node -----------------------------------------------------
@@ -312,18 +262,18 @@ def test_rerunning_an_edited_code_reuses_an_unchanged_launch_and_removes_a_chang
         g, root = agent_graph("root")
         code_node = g.append(root, Node("assistant", code="h = launch_agent('work')"))
         await flow.run_node(g, root, code_node)
-        [child] = g.children(root)
+        [child] = root.children()
 
         g.edit(code_node, code="h = launch_agent('work')\nprint('again')")
         await flow.run_node(g, root, code_node)
         assert code_node.output.strip() == "again"
-        assert g.children(root) == [child] and calls.launched(code_node) == [child.id]
+        assert root.children() == [child] and calls.launched(code_node) == [child.id]
 
         g.edit(code_node, code="h = launch_agent('other')")
         await flow.run_node(g, root, code_node)
-        [other] = g.children(root)
+        [other] = root.children()
         assert other is not child and child.id not in g
-        assert other.root_data.task == "other" and calls.launched(code_node) == [other.id]
+        assert other.task == "other" and calls.launched(code_node) == [other.id]
         await flow.aclose()
 
     asyncio.run(scenario())
@@ -404,22 +354,74 @@ def test_remove_takes_out_the_subtree_and_what_it_caused():
     assert inv.rerun == [d.code_node.id] and d.code_node.state == READY
     assert own(d.root) == [d.plan, d.code_node]
     assert own(peer) == [] and note.id not in g
-    assert g.children(d.root) == [] and g.edges(kind=SPAWN) == []
+    assert d.root.children() == [] and g.edges(kind=SPAWN) == []
     assert d.root.id in inv.rewound
 
 
-def test_remove_an_agent_removes_forks_based_on_its_nodes():
+# -- fork ---------------------------------------------------------------------------
+
+
+def test_fork_at_a_code_node_drops_what_it_launched_and_sets_it_to_run_again():
+    d = delegation()
+    before = records(d.g)
+
+    branch = d.g.fork(d.code_node)
+
+    root, code_node = branch.agent(d.root.id), branch.node(d.code_node.id)
+    assert [n.id for n in own(root)] == [d.plan.id, d.code_node.id]
+    assert code_node.state == READY and code_node.calls == [] and code_node.output == ""
+    assert d.worker.id not in branch and root.children() == [] and branch.edges() == []
+    assert records(d.g) == before
+
+
+def test_fork_at_a_code_node_that_launched_nothing_keeps_it_as_it_ran():
     g, root = agent_graph("root")
-    plan = g.append(root, Node("assistant", "plan"))
-    fork = g.fork(plan, name="branch")
-    g.append(fork, Node("assistant", "own"))
-    restart = g.fork(root, name="restart")
-    peer = g.start("peer", name="peer")
+    first = g.append(root, ran("x = 1", "ok"))
+    g.append(root, ran("x = 2"))
 
-    inv = g.remove(root)
+    branch = g.fork(first)
 
-    assert g.agents() == [peer]
-    assert set(inv.removed) == {root.id, fork.id, restart.id}
+    copy = branch.node(first.id)
+    assert (copy.state, copy.output) == (DONE, "ok")
+    assert own(branch.agent(root.id)) == [copy]
+
+
+def test_fork_after_a_launch_keeps_the_children_and_their_results():
+    d = delegation()
+
+    branch = d.g.fork(d.reply)
+
+    assert [a.id for a in branch.agents()] == [d.root.id, d.worker.id]
+    assert own(branch.agent(d.root.id))[-1].id == d.reply.id
+    assert branch.node(d.code_node.id).calls == d.code_node.calls
+    assert branch.agent(d.worker.id).final_result() == 1
+    assert [(e.source, e.target) for e in branch.edges(kind=RETURN)] == [
+        (d.done.id, d.code_node.id)
+    ]
+
+
+def test_fork_inside_a_worker_takes_its_result_back_from_the_parent():
+    d = delegation()
+
+    branch = d.g.fork(d.think)
+
+    worker, code_node = branch.agent(d.worker.id), branch.node(d.code_node.id)
+    assert [n.id for n in own(worker)] == [d.think.id] and worker.status() == "running"
+    assert code_node.state == READY and branch.edges(kind=RETURN) == []
+    assert [n.id for n in own(branch.agent(d.root.id))] == [d.plan.id, d.code_node.id]
+    assert d.root.status() == "done"
+
+
+def test_fork_at_a_code_node_takes_back_the_messages_it_sent():
+    g, root = agent_graph("root")
+    peer = g.start("peer", name="peer", parent=root)
+    code_node = g.append(root, ran("send"))
+    note = g.send(peer, "hi", by=code_node)
+
+    branch = g.fork(code_node)
+
+    assert note.id not in branch and own(branch.agent(peer.id)) == []
+    assert note.id in g
 
 
 # -- replace ------------------------------------------------------------------------
@@ -456,7 +458,7 @@ def test_replace_an_await_with_a_value_keeps_the_old_result_from_being_delivered
         "value": 5,
     }
     assert inv.rerun == [d.code_node.id] and inv.removed == []
-    assert d.worker.id in g and g.status(d.worker) == "done"
+    assert d.worker.id in g and d.worker.status() == "done"
     [edge] = g.edges(kind=RETURN)
     assert (edge.source, edge.target, edge.data) == (d.done.id, d.code_node.id, {"replaced": True})
     assert unseen_results(g, d.root) == []
@@ -488,7 +490,7 @@ def test_replace_a_launch_with_another_agent_removes_the_old_child():
     assert calls.launched(d.code_node) == [other.id]
     assert inv.removed == [d.worker.id] and d.worker.id not in g
     assert inv.rerun == [d.code_node.id]
-    assert g.parent(other) is d.root and g.children(d.root) == [other]
+    assert other.parent() is d.root and d.root.children() == [other]
     assert g.roots() == [d.root]
     [edge] = g.edges(kind=SPAWN)
     assert (edge.source, edge.target, edge.data) == (d.code_node.id, other.id, {})
@@ -584,7 +586,7 @@ def test_an_edited_graph_saves_and_loads_with_the_code_ready(tmp_path):
         "key": "await-0",
         "value": 7,
     }
-    assert loaded.status(loaded.agent(d.root.id)) == "running"
+    assert loaded.agent(d.root.id).status() == "running"
 
 
 def test_a_code_cut_off_mid_run_keeps_what_it_launched_through_save_and_load(tmp_path):
@@ -598,8 +600,8 @@ def test_a_code_cut_off_mid_run_keeps_what_it_launched_through_save_and_load(tmp
     loaded = Graph.load(g.save(tmp_path / "run"))
 
     again = loaded.node(code_node.id)
-    assert again.state == READY and loaded.status(loaded.agent(root.id)) == "running"
-    assert loaded.parent(loaded.agent(child.id)).id == root.id
+    assert again.state == READY and loaded.agent(root.id).status() == "running"
+    assert loaded.agent(child.id).parent().id == root.id
     assert calls.launched(again) == [child.id]
     assert [m.text for m in own(loaded.agent(peer.id))] == ["for later"]
 
@@ -635,7 +637,7 @@ def test_flow_edit_cancels_the_affected_agents_task_before_applying():
     async def scenario():
         flow = Flow()
         running = asyncio.ensure_future(turn(d.worker, d.done))
-        unaffected = asyncio.ensure_future(turn(d.other, g.tail(d.other)))
+        unaffected = asyncio.ensure_future(turn(d.other, d.other.nodes()[-1]))
         flow.tasks.update({d.worker.id: running, d.other.id: unaffected})
         await asyncio.sleep(0)
 
@@ -667,7 +669,7 @@ def small_run() -> Graph:
     child = launch(g, code_node, "work", name="worker")
     finish(g, child, 1)
     awaited(g, code_node, child)
-    g.fork(code_node, name="retry")
+    g.start("again", name="retry")
     finish(g, root, 1)
     return g
 
@@ -696,6 +698,24 @@ def test_timeline_lists_agents_as_their_own_steps():
     assert [item.id for item in timeline(g)] == [step.node.id for step in ordered]
 
 
+def test_a_saved_runs_timeline_names_the_recorded_harness_and_model(tmp_path):
+    from rlmflow.view.timeline import summarize
+
+    g = Graph()
+    root = g.start("count")
+    root.config_record = {
+        "harness": "rlmflow.harnesses.claude_code:ClaudeCodeHarness",
+        "model": "gpt-5",
+    }
+    g.save(tmp_path / "run")
+    loaded = Graph.load(tmp_path / "run")
+
+    assert summarize(loaded.agent(root.id)) == "start root · root · claude_code · model gpt-5"
+
+    root.config_record["harness"] = "rlmflow.harnesses.interactive:InteractiveHarness"
+    assert summarize(root) == "start root · root · interactive"
+
+
 def test_replay_snapshots_grow_monotonically_to_the_whole_graph():
     g = small_run()
     total = len(timeline(g))
@@ -716,13 +736,13 @@ def test_replay_snapshots_grow_monotonically_to_the_whole_graph():
 def test_snapshot_cuts_the_graph_at_a_step():
     g = small_run()
     root = g.agents()[0]
-    worker = g.children(root)[0]
+    worker = root.children()[0]
 
     cut = snapshot(g, 4)
 
     assert [a.id for a in cut.agents()] == [root.id, worker.id]
-    assert own(cut.agent(worker.id)) == [] and cut.parent(cut.agent(worker.id)).id == root.id
-    assert cut.agent(root.id).root_data.config == root.root_data.config
+    assert own(cut.agent(worker.id)) == [] and cut.agent(worker.id).parent().id == root.id
+    assert cut.agent(root.id).config == root.config
     assert cut is not g and len(g.agents()) == 3
 
 

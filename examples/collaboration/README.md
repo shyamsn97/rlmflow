@@ -9,7 +9,7 @@ root or manager agent.
 Peers can't await each other, so one asks the others for their values with
 `AGENTS[name].send(...)` and ends its turn; their replies arrive as messages and
 reopen it, and once it has both it sends them the total.
-Each message is a node in the receiver's history with a `write` edge from the
+Each message is one of the receiver's nodes, with a `write` edge from the
 node whose code sent it, so the saved graph shows who told whom what.
 
     python examples/collaboration/decentralized_peers.py --model gpt-5-mini

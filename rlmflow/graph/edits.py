@@ -5,10 +5,9 @@ outgoing edges. ``RULES`` says, for each engine edge kind, what happens to the
 edge's target when its source is dropped and when its source changes:
 
 - ``remove_root``: the target agent is removed.
-- ``restart_root``: the target fork starts over from its base.
 - ``rerun_target``: the target runs again (a node with no code is taken back,
   so its agent gets the new value).
-- ``retract_target``: the target is taken back from its agent's history.
+- ``retract_target``: the target is taken back: its agent is rewound to before it.
 - ``match_calls``: nothing yet; the source runs again, and saved calls it
   doesn't make again are undone when it finishes.
 
@@ -24,12 +23,12 @@ from typing import TYPE_CHECKING, Any
 
 from rlmflow.graph import calls
 from rlmflow.graph.nodes import (
-    FORK,
     IMAGES_KEY,
     READY,
     RETURN,
     SPAWN,
     WRITE,
+    Agent,
     Node,
     strict_json,
 )
@@ -38,7 +37,6 @@ if TYPE_CHECKING:
     from rlmflow.graph.graph import Graph
 
 REMOVE_ROOT = "remove_root"
-RESTART_ROOT = "restart_root"
 RERUN_TARGET = "rerun_target"
 RETRACT_TARGET = "retract_target"
 MATCH_CALLS = "match_calls"
@@ -46,7 +44,6 @@ MATCH_CALLS = "match_calls"
 #: ``kind: (when the source is dropped, when the source changes)``.
 RULES: dict[str, tuple[str, str]] = {
     SPAWN: (REMOVE_ROOT, MATCH_CALLS),
-    FORK: (REMOVE_ROOT, RESTART_ROOT),
     RETURN: (RERUN_TARGET, RERUN_TARGET),
     WRITE: (RETRACT_TARGET, MATCH_CALLS),
 }
@@ -114,20 +111,18 @@ class _Edit:
                 continue
             if action == REMOVE_ROOT:
                 self.remove_root(target)
-            elif action == RESTART_ROOT:
-                self.cut(target, 1)
             elif action == RERUN_TARGET:
                 self.rerun(target) if target.runs_code else self.retract(target)
             elif action == RETRACT_TARGET:
                 self.retract(target)
 
-    def cut(self, root: Node, keep: int) -> None:
+    def cut(self, root: Agent, keep: int) -> None:
         """Keep ``root``'s first ``keep`` own nodes; drop the rest and what they caused."""
-        history = root.root_data.history
-        dropped = history[keep:]
+        own = self.g._own[root.id]
+        dropped = own[keep:]
         if not dropped:
             return
-        del history[keep:]
+        del own[keep:]
         self.inv._add("rewound", root.id)
         for node in reversed(dropped):
             self.drop(node)
@@ -135,6 +130,7 @@ class _Edit:
     def drop(self, node: Node) -> None:
         if self.g._nodes.pop(node.id, None) is None:
             return
+        node.graph = None
         self.inv._add("dropped", node.id)
         self.follow(node, changed=False)
         for edge in self.g.edges(target=node.id):
@@ -142,9 +138,9 @@ class _Edit:
 
     def retract(self, node: Node) -> None:
         """Take a node back: rewind its agent to before it."""
-        root = self.g._roots.get(node.owner)
-        if root is not None and node in root.root_data.history:
-            self.cut(root, root.root_data.history.index(node))
+        own = self.g._own.get(node.owner, [])
+        if node in own:
+            self.cut(self.g._roots[node.owner], own.index(node))
 
     def rerun(self, node: Node) -> None:
         """Rewind the node's agent to it and set it to run again."""
@@ -152,7 +148,7 @@ class _Edit:
         for edge in self.g.edges(kind=RETURN, target=node.id):
             self.g._unlink(edge)
         self.follow(node, changed=True)
-        self.cut(root, root.root_data.history.index(node) + 1)
+        self.cut(root, self.g._own[root.id].index(node) + 1)
         node.output, node.result, node.error, node.state = "", None, False, READY
         for key in RUN_DATA:
             node.data.pop(key, None)
@@ -160,13 +156,14 @@ class _Edit:
         self.inv._add("rewound", root.id)
         self.inv._add("rerun", node.id)
 
-    def remove_root(self, root: Node) -> None:
+    def remove_root(self, root: Agent) -> None:
         g = self.g
         if root.id not in g._roots:
             return
         self.cut(root, 1)
         self.drop(root)
         del g._roots[root.id]
+        del g._own[root.id]
         g._children.pop(root.id, None)
         self.inv._add("removed", root.id)
         if root.id in self.inv.rewound:
@@ -187,24 +184,23 @@ def edit(g: Graph, node: Node, **fields: Any) -> Invalidation:
             raise TypeError(f"node {name} must be a string")
     for name, value in fields.items():
         setattr(node, name, value)
-    if node.root_data is not None and "text" in fields:
-        node.root_data.task = node.text
+    if isinstance(node, Agent) and "text" in fields:
+        node.task = node.text
     node.version += 1
     change = _Edit(g)
     if node.runs_code and ("code" in fields or "input" in fields):
         change.rerun(node)
     else:
         change.follow(node, changed=True)
-        root = g._roots[node.owner]
-        change.cut(root, root.root_data.history.index(node) + 1)
-        change.inv._add("rewound", root.id)
+        change.cut(g._roots[node.owner], g._own[node.owner].index(node) + 1)
+        change.inv._add("rewound", node.owner)
     return change.inv
 
 
 def delete(g: Graph, node: Node) -> Invalidation:
     """Remove a node and everything after it; deleting a root removes its agent."""
     change = _Edit(g)
-    if node.root_data is not None:
+    if isinstance(node, Agent):
         change.remove_root(node)
     else:
         change.retract(node)
@@ -215,6 +211,32 @@ def remove(g: Graph, agent: Node) -> Invalidation:
     """Remove an agent, the agents it launched, and what they caused."""
     change = _Edit(g)
     change.remove_root(g.agent(agent))
+    return change.inv
+
+
+def fork(g: Graph, node: Node) -> Invalidation:
+    """Cut ``g`` (a copy, for ``Graph.fork``) right after ``node``.
+
+    Everything else stays unless it depended on what was cut. A node whose code
+    launched agents or sent messages is set to run again without them: the
+    agents are removed, the messages taken back, and its saved calls cleared.
+    """
+    change = _Edit(g)
+    root = g._roots[node.owner]
+    effects = [edge for edge in g.edges(source=node.id) if edge.kind in (SPAWN, WRITE)]
+    if not isinstance(node, Agent) and node.runs_code and effects:
+        for edge in effects:
+            target = g._nodes.get(edge.target)
+            if target is None:
+                continue
+            if edge.kind == SPAWN:
+                change.remove_root(target)
+            else:
+                change.retract(target)
+        node.calls = []
+        change.rerun(node)
+    else:
+        change.cut(root, g._own[root.id].index(node) + 1)
     return change.inv
 
 
@@ -273,13 +295,13 @@ __all__ = [
     "MATCH_CALLS",
     "REMOVE_ROOT",
     "RERUN_TARGET",
-    "RESTART_ROOT",
     "RETRACT_TARGET",
     "RULES",
     "GraphError",
     "Invalidation",
     "delete",
     "edit",
+    "fork",
     "remove",
     "replace",
 ]

@@ -18,7 +18,7 @@ python examples/shepherd/render_rewind.py --run-dir examples/_runs/results/sheph
 python examples/shepherd/render_graph.py --run-dir examples/_runs/results/shepherd
 ```
 
-A worker plays Sokoban and jams a box against a wall after 8 pushes. The shepherd reads the stuck transcript, previews the board at each rewind depth, and forks 8 branches from 8 different points in the worker's history, each with its own plan.
+A worker plays Sokoban and jams a box against a wall after 8 pushes. The shepherd reads the stuck transcript, previews the board at each rewind depth, and forks 8 branches from 8 different points in the worker's run, each with its own plan.
 
 ![Shepherd graph](static/results/shepherd-graph.png)
 
@@ -38,18 +38,18 @@ The animation plays the jam, undoes it push by push to the chosen depth, then re
 ## Needle: harnesses mixed per agent
 
 ```bash
-env -u ANTHROPIC_API_KEY python examples/needle/harnesses/run.py --all --no-viz \
+env -u ANTHROPIC_API_KEY python examples/needle/filesystem.py --all --no-viz \
   --out-dir examples/_runs/results/needle
 ```
 
-100 files with one needle. The root launches 10 searchers over chunks of the files and submits the number they find. `--all` runs every combination of root harness and worker harness.
+100 files with one needle. The root splits the files into batches, launches a `searcher` agent per batch, and submits the number they find; the REPL root chose 10 batches and the Claude Code root 4. `--all` runs every combination of root harness and worker harness. One run of each (November 2026):
 
 | Root | Workers | Correct | Agents | Seconds | Input tokens | Output tokens |
 | --- | --- | --- | ---: | ---: | ---: | ---: |
-| REPL (gpt-5-mini) | REPL (gpt-5-nano) | yes | 11 | 67 | 38k | 29k |
-| REPL | Claude Code | yes | 11 | 58 | 712k | 7k |
-| Claude Code | REPL | yes | 11 | 48 | 104k | 33k |
-| Claude Code | Claude Code | yes | 11 | 35 | 671k | 4k |
+| REPL (gpt-5-mini) | REPL (gpt-5-nano) | yes | 11 | 77 | 42k | 34k |
+| REPL | Claude Code | yes | 11 | 41 | 661k | 8k |
+| Claude Code | REPL | yes | 5 | 33 | 170k | 13k |
+| Claude Code | Claude Code | yes | 5 | 21 | 400k | 3k |
 
 Claude Code root, Claude Code searchers:
 
@@ -128,7 +128,7 @@ All five loaded with no console errors, so load-only validation can't tell the g
 
 **Why the first gpt-5 runs broke.** The two broken apps had physics bugs in gpt-5's own code. Run 2's cohesion averaged `position × affinity` with negative affinities, so it pulled every boid toward (0, 0). In both runs, separation was about 100× weaker than cohesion. Patching only those lines makes both flock. No agent noticed, because none of them ran the simulation or looked at it; `open_page` only returned console output. The Claude Code peers wrote probe pages and ran node themselves.
 
-**The rerun with screenshots.** The REPL harness can now show images to the model: a host tool calls `attach_image(path)`, and the image goes out with that cell's output (`rlmflow/graph/nodes.py`, `rlmflow/harnesses/repl.py`). `open_page` now also shows the agent evenly spaced screenshots of the page. On three new gpt-5 runs all three apps flock. The tool isn't why: 4 of the 9 agents opened the page, and none in run 3. Run 3's renderer draws with additive blending (`globalCompositeOperation = 'lighter'`), so 2000 overlapping boids add up to near-white, which a single screenshot would have shown. The difference from the first round is mostly variance in the physics gpt-5 writes, and gpt-5 still treats "loads without errors" as done.
+**The rerun with screenshots.** The REPL harness can now show images to the model: a host tool calls `attach_image(path)`, and the image goes out with that node's output (`rlmflow/graph/nodes.py`, `rlmflow/harnesses/repl.py`). `open_page` now also shows the agent evenly spaced screenshots of the page. On three new gpt-5 runs all three apps flock. The tool isn't why: 4 of the 9 agents opened the page, and none in run 3. Run 3's renderer draws with additive blending (`globalCompositeOperation = 'lighter'`), so 2000 overlapping boids add up to near-white, which a single screenshot would have shown. The difference from the first round is mostly variance in the physics gpt-5 writes, and gpt-5 still treats "loads without errors" as done.
 
 ![gpt-5 reruns 1–3, early (top) and late (bottom) frames](static/results/boids-gpt5-v6.png)
 

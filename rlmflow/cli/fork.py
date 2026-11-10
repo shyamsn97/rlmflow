@@ -1,10 +1,12 @@
-"""``rlmflow fork RUN NODE``: branch a saved run, then run the branch or drive it yourself.
+"""``rlmflow fork RUN NODE``: copy a saved run cut after NODE, then run the copy or drive it yourself.
 
-Headless, the branch runs to the end with its own config (or ``--config``, a
-config name on the project's Flow) and the run is saved. ``--interactive`` starts ``rlmflow serve`` on the branch
-and prints the ``claude`` command that continues it: ``--resume <id>
---fork-session`` when NODE ended a Claude session turn, otherwise a fresh
-session, which serve briefs on the REPL's code and variables.
+The copy is saved to its own directory (``--out``, by default beside RUN); RUN
+is left as it is. Headless, the copy runs to the end with its agents' configs
+(``--config``, a config name on the project's Flow, for NODE's agent) and is
+saved. ``--interactive`` starts ``rlmflow serve`` on the copy and prints the
+``claude`` command that continues it: ``--resume <id> --fork-session`` when
+NODE ended a Claude session turn, otherwise a fresh session, which serve
+briefs on the REPL's code and variables.
 """
 
 from __future__ import annotations
@@ -29,12 +31,12 @@ def find_node(graph: Any, selector: str) -> Any:
     return matches[0]
 
 
-def resume_command(graph: Any, fork: Any, plugin_dir: Path) -> str:
-    """The ``claude`` invocation that continues ``fork`` in your own session."""
+def resume_command(graph: Any, agent: Any, plugin_dir: Path) -> str:
+    """The ``claude`` invocation that continues ``agent`` in your own session."""
     from rlmflow.graph.nodes import Step
     from rlmflow.harnesses.sessions import Session
 
-    session = Session.for_step(Step.latest(graph, fork))
+    session = Session.for_step(Step.latest(graph, agent))
     argv = ["claude", "--plugin-dir", str(plugin_dir)]
     if session.resume:
         argv += ["--resume", session.id, "--fork-session"]
@@ -47,7 +49,6 @@ def fork_run(
     *,
     config: str | None = None,
     interactive: bool = False,
-    name: str | None = None,
     project: str = ".",
     out: str | None = None,
 ) -> None:
@@ -59,15 +60,19 @@ def fork_run(
         raise CliError(f"path not found: {run_dir}")
     graph = Graph.load(run_dir)
     at = find_node(graph, node)
-    owner = graph.owner(at)
+    owner = at.agent
     if interactive:
         config = INTERACTIVE_CONFIG
     elif config is None and ran_interactively(owner):
         raise CliError("this run's agent was interactive; pass --config, or --interactive")
-    fork = graph.fork(at, name=name, config=config)
-    out_dir = Path(out) if out is not None else run_dir
-    graph.save(out_dir)
-    print(f"forked {owner.root_data.name} at {at.id} as {fork.root_data.name} ({fork.id})")
+    branch = graph.fork(at)
+    agent = branch.agent(owner.id)
+    if config is not None:
+        agent.config_name = config
+    tag = branch.id.removeprefix("graph_")[:8]
+    out_dir = Path(out) if out is not None else run_dir.with_name(f"{run_dir.name}-fork-{tag}")
+    branch.save(out_dir)
+    print(f"forked {owner.name} after {at.id} into {out_dir}")
 
     if interactive:
         from rlmflow.agent_tools.cli import ToolError
@@ -75,17 +80,19 @@ def fork_run(
 
         project_dir = Path(project).expanduser().resolve()
         try:
-            start_serve(project_dir, ["--graph", str(out_dir.resolve()), "--root", fork.id])
+            start_serve(project_dir, ["--graph", str(out_dir.resolve()), "--root", agent.id])
         except ToolError as exc:
             raise CliError(str(exc)) from exc
         print(f"serving {out_dir} for {project_dir}; continue it with:\n")
-        print(f"  cd {shlex.quote(str(project_dir))} && {resume_command(graph, fork, PLUGIN_DIR)}")
+        print(
+            f"  cd {shlex.quote(str(project_dir))} && {resume_command(branch, agent, PLUGIN_DIR)}"
+        )
         return
 
-    _run_headless(graph, fork, out_dir, project)
+    _run_headless(branch, agent, out_dir, project)
 
 
-def _run_headless(graph: Any, fork: Any, out_dir: Path, project: str) -> None:
+def _run_headless(graph: Any, agent: Any, out_dir: Path, project: str) -> None:
     from rlmflow.cli.run import build_flow
     from rlmflow.consumers import GraphCheckpointer
 
@@ -106,7 +113,7 @@ def _run_headless(graph: Any, fork: Any, out_dir: Path, project: str) -> None:
     except KeyError as exc:
         raise CliError(f"{exc.args[0]}; set `flow` in rlmflow.toml to a Flow that has it") from exc
     graph.save(out_dir)
-    print(f"\n{graph.result(fork) or '(no result)'}\n")
+    print(f"\n{agent.final_result() or '(no result)'}\n")
     print(f"run saved to {out_dir}")
 
 

@@ -20,7 +20,7 @@ from typing import Any
 from xml.sax.saxutils import escape
 
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import RETURN, SPAWN, WRITE, LLMUsage, Node
+from rlmflow.graph.nodes import RETURN, SPAWN, WRITE, Agent, LLMUsage, Node
 from rlmflow.view.text import kind
 from rlmflow.view.timeline import timeline
 
@@ -95,20 +95,18 @@ def node_shape(node: Node) -> str:
 
 def node_label(node: Node) -> str:
     """Agents get named; the rest are identified by colour and shape."""
-    return node.root_data.name if node.root_data is not None else ""
+    return node.name if isinstance(node, Agent) else ""
 
 
 def parent_ids(g: Graph) -> dict[str, str]:
-    """Each item's drawn parent: the node that launched an agent or its fork base, else the node before it."""
+    """Each item's drawn parent: the node that launched an agent, else the node before it."""
     parents: dict[str, str] = {}
     for agent in g.agents():
-        base = g.base(agent)
-        source = [base.id] if base is not None else []
-        source += [e.source for e in g.edges(kind=SPAWN, target=agent.id)]
+        source = [e.source for e in g.edges(kind=SPAWN, target=agent.id)]
         if source:
             parents[agent.id] = source[0]
         previous = agent.id
-        for node in agent.root_data.history[1:]:
+        for node in agent.nodes()[1:]:
             parents[node.id] = previous
             previous = node.id
     return parents
@@ -126,7 +124,7 @@ def handoffs(g: Graph) -> list[tuple[str, str]]:
 
 def node_tokens(node: Node) -> int:
     """What this node cost, which is what sizes its marker."""
-    if node.root_data is not None:
+    if isinstance(node, Agent):
         return 0
     usage = LLMUsage.of(node.data.get("usage"))
     return int(usage.input_tokens) + int(usage.output_tokens)
@@ -141,7 +139,7 @@ def tidy_tree(nodes: list[Node], parents: dict[str, str]) -> dict[str, tuple[flo
     """Give every subtree a horizontal slot by leaf count.
 
     An agent's own chain is a straight column at the left of its slot; agents it
-    launches or forks take the slots to its right.
+    launches take the slots to its right.
     """
     present = {node.id for node in nodes}
     by_id = {node.id: node for node in nodes}
@@ -152,7 +150,7 @@ def tidy_tree(nodes: list[Node], parents: dict[str, str]) -> dict[str, tuple[flo
             children[parent].append(node)
 
     def continues(parent: Node, kid: Node) -> bool:
-        return kid.root_data is None and kid.owner == parent.owner
+        return not isinstance(kid, Agent) and kid.owner == parent.owner
 
     for node_id, kids in children.items():
         kids.sort(key=lambda kid: not continues(by_id[node_id], kid))
@@ -354,7 +352,7 @@ def marker(x: float, y: float, shape: str, color: str, r: float, *, ring: bool =
 
 def hover_text(g: Graph, node: Node) -> str:
     """Identity only — the detail panel carries the content."""
-    rows = [f"{g.path(g.owner(node))} · {kind(node)}"]
+    rows = [f"{node.agent.path()} · {kind(node)}"]
     tokens = node_tokens(node)
     if tokens:
         usage = LLMUsage.of(node.data.get("usage"))
@@ -502,7 +500,7 @@ def _legend(width: float, y: float) -> str:
 
 def run_title(g: Graph) -> str:
     """The run's name: its top-level agents."""
-    tops = [a.root_data.name for a in g.roots()]
+    tops = [a.name for a in g.roots()]
     return ", ".join(tops) or "empty graph"
 
 

@@ -10,7 +10,7 @@
 
 [Shepherd: Enabling Programmable Meta-Agents via Reversible Agentic Execution Traces](https://arxiv.org/abs/2605.10913) (Yu et al., 2026) argues that an agent's execution should be a reversible object rather than a one-way transcript. Record the run as a Git-like trace, and you can program a second model against it — a *meta-agent* that inspects any earlier point, reverts to it, then plans and steers parallel alternative routes.
 
-`rlmflow` already keeps a run as a durable graph of nodes, so Shepherd's four operations — observe, rewind, fork, re-instruct — are graph edits, and the meta-agent's forks are simply its own children.
+`rlmflow` already keeps a run as a durable graph of nodes, so Shepherd's four operations — observe, rewind, fork, re-instruct — are graph operations: a fork is a copy of the run cut at an earlier node, and re-instructing it is a message injected into the copy.
 
 Only the revert itself works differently. The paper checkpoints the worker's process and filesystem, so any program comes back byte-identical. `rlmflow` already tracks every action as a node, so the cheap route is to fork the graph and replay those actions — no snapshot to take, and exactly as faithful whenever the environment is deterministic.
 
@@ -87,7 +87,7 @@ def branch(specs: list[Plan]) -> str:
     """Each plan is one revert depth plus the box-to-goal order for that worker."""
 ```
 
-`preview(k)` forks the graph, replays it to `k` pushes ago and returns that state; the failed run is untouched, so the shepherd can look at every earlier board for free. `branch(plans)` takes one `{rewind, order}` per attempt and ends the shepherd's turn: each plan becomes a worker of its own, rewound to that depth and carrying that order.
+`preview(k)` forks the graph at `k` pushes ago, rebuilds the copy's REPL there and returns that state, then drops the copy; the failed run is untouched, so the shepherd can look at every earlier board for free. `branch(plans)` takes one `{rewind, order}` per attempt and ends the shepherd's turn: each plan becomes a fork of its own, rewound to that depth and carrying that order.
 
 #### Step 1 — observe: `preview(k)`
 
@@ -135,7 +135,7 @@ plans = [
 branch(plans)
 ```
 
-After the host forked and ran those recovery children, their joined outcomes were:
+After the host forked the run for each plan and ran the forks, their outcomes were:
 
 ```text
 ['stuck', 'solved', 'solved', 'solved', 'solved', 'solved', 'stuck', 'solved']
@@ -145,19 +145,29 @@ A plan is two decisions: where to revert back to, and what strategy to hand the 
 
 #### Step 3 — rewind and fork
 
-The host takes each plan's revert depth and turns it into a graph edit:
+The host takes each plan's revert depth and forks the run there:
 
 ```python
 cut, depth = rewind_point(g, worker, plan["rewind"])  # the turn before that push
-fork = g.fork(cut, name=f"branch{index}", parent=planning_turn)
-await flow.replay(g, fork)
+branch = g.fork(cut)  # a new graph: the run cut right after cut
+copy = branch.agent(worker.id)
+await branch_flow.replay(branch, copy)
 ```
 
-`cut` is the worker's turn just before the push `depth` pushes back. `g.fork(cut)` copies nothing: the fork is a new root with a `fork` edge from `cut`, its history is the worker's history up to `cut`, and everything after that point is simply not part of it. `parent=planning_turn`, the shepherd's turn that recorded the plans, makes the fork a child of the shepherd. `replay` runs the retained history again in the fork's own REPL, so its board is the one the worker had at that point.
+`cut` is the worker's turn just before the push `depth` pushes back. `g.fork(cut)` returns a new graph, a copy of the run with the same ids, holding the worker with its nodes ending at `cut`. The shepherd runs on a graph of its own and only reads and forks the worker's run, so no branch carries a copy of it. The original run is untouched. `replay` runs the copy's nodes again in a REPL of its own, so its board is the one the worker had at that point.
 
-#### Step 4 — resume: each fork is a sub-agent
+#### Step 4 — resume: inject the order and run each fork
 
-The forks launch as children of the shepherd, so the search is itself one recursive agent tree. Each child wakes in a rewound REPL with its instruction appended:
+Each fork gets its instruction as a message, then runs on its own Flow, all eight at once:
+
+```python
+branch.send(
+    copy, f"Rewound {depth} pushes. ... Lock the boxes in this order: {order}.", sender="shepherd"
+)
+await asyncio.gather(*(play(branch) for branch in branches))
+```
+
+Each copy wakes in a rewound REPL with its instruction appended:
 
 ```text
 Rewound 7 pushes. This is a fresh recovery attempt, so abandon the plan you
@@ -167,7 +177,7 @@ Lock the boxes in this order: B1->G1 entering from (2,3), then B3->G5 entering
 from (7,7). The routes are yours to work out.
 ```
 
-From there the subagents make their moves, all eight at once:
+From there the forks make their moves:
 
 <table class="branch-grid" style="width:100%;table-layout:fixed;border-collapse:separate;border-spacing:12px 16px">
   <colgroup>
@@ -190,9 +200,18 @@ From there the subagents make their moves, all eight at once:
   </tr>
 </table>
 
+#### Forking a Claude Code worker
+
+The workers here run on the REPL harness, where every turn is a node and a fork's REPL is rebuilt by running the agent's nodes again. A Claude Code worker forks the same way, with one difference: the conversation lives in Claude's session, not in the graph.
+
+- Forked at the end of a session turn, the copy resumes that session as a new branch (`--fork-session`), so Claude remembers everything up to that point and the original session is left alone.
+- Forked in the middle of a turn, it can't resume. It starts a fresh session, briefed on the code run so far and on the variables in its rebuilt REPL, and starts by reading the `notes` string the worker kept there.
+
+Searchers a worker launched before the fork point are copied with it, and launches in the replayed nodes return those copies instead of running again. Forking at the node that launched them drops them instead, and that node runs again. [`tests/live/fork_halfway.py`](https://github.com/shyamsn97/rlmflow/blob/main/tests/live/fork_halfway.py) checks this on the filesystem needle: it stops a Claude Code root right after the node that launched its searchers and forks it there. The copy reruns that code, which launches its own searchers, then a fresh session finishes the task; the original keeps its searchers.
+
 #### Overall Results
 
-Six of the eight branches solved the board. The shepherd selected `branch2`, which rewound seven pushes and solved in 11 total pushes for a score of 989. The full recovery tree contains 585 graph nodes; the selected path is the fresh `rewind.gif` at the top of this page.
+Six of the eight branches solved the board. The shepherd selected `branch2`, which rewound seven pushes and solved in 11 total pushes for a score of 989. That run, saved before forks became copies, held 585 graph nodes in one tree; the selected path is the fresh `rewind.gif` at the top of this page.
 
 <p align="center">
   <img
@@ -217,4 +236,4 @@ uv run --locked --python 3.12 --extra openai --extra image \
 make showcase-shepherd-assets
 ```
 
-The run writes the failed worker graph under `examples/_runs/shepherd/worker/`, the complete v7 recovery tree (including the selected branch) under `examples/_runs/shepherd/shepherd/`, and JSON/GIF board traces under `examples/_runs/shepherd/traces/`. The make target regenerates `docs/static/shepherd_graph.svg`, `docs/static/shepherd_nodes.svg`, `docs/static/shepherd/rewind.gif`, `jam.gif`, and every `branchN.gif` from those traces. See the [example README](https://github.com/shyamsn97/rlmflow/tree/main/examples/shepherd) for the browser and direct-renderer variants.
+The run writes the worker's jam under `examples/_runs/shepherd/graph/`, the shepherd's graph under `examples/_runs/shepherd/shepherd/`, each fork under `examples/_runs/shepherd/branches/branchN/`, and JSON/GIF board traces under `examples/_runs/shepherd/traces/`. The make target regenerates `docs/static/shepherd_graph.svg`, `docs/static/shepherd_nodes.svg`, `docs/static/shepherd/rewind.gif`, `jam.gif`, and every `branchN.gif` from those traces. See the [example README](https://github.com/shyamsn97/rlmflow/tree/main/examples/shepherd) for the browser and direct-renderer variants.

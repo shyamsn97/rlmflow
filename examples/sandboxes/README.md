@@ -1,38 +1,28 @@
-# Sandbox Examples
+# Sandbox example
 
-These examples run one platformer-building `Flow` task with Python execution
-isolated in Docker or Modal. They use `OpenAIClient`, so set `OPENAI_API_KEY`
-before running them.
-
-Each runtime lazily opens one REPL per agent.
+[`platformer.py`](platformer.py) runs one platformer-building `Flow` task with
+every agent's Python running in a sandbox: a Docker container or a Modal
+Sandbox. Each runtime lazily opens one REPL per agent. Set `OPENAI_API_KEY`
+first.
 
 ## Docker
 
 ```bash
 docker build -t rlmflow:local .
 pip install -e ".[openai]"
-export OPENAI_API_KEY=...
-python examples/sandboxes/docker_agent.py --docker-image rlmflow:local
+python examples/sandboxes/platformer.py --runtime docker --docker-image rlmflow:local
 ```
-
-The generated project and run data are written under
-`examples/_runs/sandbox-docker/`.
 
 ## Modal
 
 ```bash
 pip install -e ".[openai,modal]"
-export OPENAI_API_KEY=...
 modal setup
-python examples/sandboxes/modal_agent.py --model gpt-5
+python examples/sandboxes/platformer.py --runtime modal --model gpt-5
 ```
 
-The Modal example builds its image from this checkout, installs `rlmflow`
-inside it, and runs each agent REPL under `/workspace`.
+The Modal run builds its image from this checkout, installs `rlmflow` inside
+it, and runs each agent's REPL under `/workspace` (`--remote-workdir`).
+`--app-name`, `--sandbox-timeout` and `--repl-timeout` tune the sandbox.
 
-```bash
-python examples/sandboxes/modal_agent.py \
-  --app-name rlmflow-dev \
-  --sandbox-timeout 600 \
-  --remote-workdir /workspace
-```
+Runs are saved under `examples/_runs/sandbox-<runtime>/`.

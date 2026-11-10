@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import Node
+from rlmflow.graph.nodes import Agent, Node
 from rlmflow.view.text import kind, render_tree
 
 DETAIL_LIMIT = 1600
@@ -47,13 +47,20 @@ def timeline(g: Graph) -> list[Node]:
 
 def summarize(item: Node, limit: int = 96) -> str:
     """A single line describing what this node did."""
-    root = item.root_data
-    if root is not None:
+    if isinstance(item, Agent):
+        root = item
         config = root._config
-        text = (
-            f"start {root.name} · {root.config_name or 'root'} · "
-            f"{getattr(config, 'harness', '?')} · model {getattr(config, 'model', '?')}"
-        )
+        recorded = root.config_record or {}
+        harness = getattr(config, "harness", None) or recorded.get("harness") or "?"
+        if not isinstance(harness, str):
+            harness = getattr(harness, "name", None) or getattr(harness, "__name__", str(harness))
+        elif harness.startswith("rlmflow.harnesses."):
+            harness = harness.split(":")[0].rsplit(".", 1)[-1]
+        text = f"start {root.name} · {root.config_name or 'root'} · {harness}"
+        # A person's own session drives an interactive agent; its config's model only serves llm_query.
+        if harness != "interactive":
+            model = getattr(config, "model", None) or recorded.get("model") or "?"
+            text += f" · model {model}"
         return _clip(text, limit)
     match kind(item):
         case "message":
@@ -72,8 +79,8 @@ def summarize(item: Node, limit: int = 96) -> str:
 def node_detail(item: Node, limit: int = DETAIL_LIMIT) -> str:
     """The content worth reading for this node, trimmed."""
     blocks: list[str] = []
-    if item.root_data is not None:
-        blocks.append(f"task:\n{item.root_data.task}")
+    if isinstance(item, Agent):
+        blocks.append(f"task:\n{item.task}")
         args = [name for name in item.input if name != "task"]
         if args:
             blocks.append(f"args: {', '.join(args)}")
@@ -115,7 +122,7 @@ def steps(g: Graph) -> list[Step]:
         Step(
             index=index,
             node=item,
-            agent=g.path(g.owner(item)),
+            agent=item.agent.path(),
             kind=kind(item),
             summary=summarize(item),
             detail=node_detail(item),
@@ -143,9 +150,6 @@ def snapshot(g: Graph, count: int) -> Graph:
     document = to_records(g)
     nodes = [record for record in document["nodes"] if record["seq"] < cutoff]
     kept = {record["id"] for record in nodes}
-    for record in nodes:
-        if "root" in record:
-            record["root"]["history"] = [i for i in record["root"]["history"] if i in kept]
     edges = [
         record
         for record in document["edges"]

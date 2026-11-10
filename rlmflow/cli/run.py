@@ -217,7 +217,7 @@ def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> 
     finally:
         consumers.close()
         flow.runtime.close_repls()
-    print(f"\n{graph.result(agent) or '(no result)'}\n")
+    print(f"\n{agent.final_result() or '(no result)'}\n")
 
 
 def _first_agent(graph: Any) -> Any:

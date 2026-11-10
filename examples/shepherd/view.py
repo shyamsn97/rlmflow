@@ -59,8 +59,8 @@ def panel_status(flow: Flow, g: Graph, agent: Node) -> str:
     # "stuck" and running out of turns look identical on the board but mean opposite
     # things. ``blocked`` only records that the last action was refused, so reading it
     # here would blame a stray illegal step for ending the branch.
-    if g.status(agent) == "done":
-        claim = str(g.result(agent) or "done").strip("[]")
+    if agent.status() == "done":
+        claim = str(agent.final_result() or "done").strip("[]")
         return f"{step} · {claim} (dist {env.get('dist')})"
     if env.get("blocked"):
         # A rejected push, not a terminal state — don't say DONE/BLOCKED.
@@ -69,10 +69,15 @@ def panel_status(flow: Flow, g: Graph, agent: Node) -> str:
     return f"{step} · dist {dist}" if pushes is not None else ""
 
 
+def lane_key(graph: Graph, agent: Node) -> str:
+    """A lane is one agent in one graph: every branch's copy of the worker keeps its id."""
+    return f"{graph.id}:{agent.id}"
+
+
 def trace_line(g: Graph, node: Node, labels: dict[str, str]) -> str:
     """One compact line for the streamed node."""
-    agent = g.owner(node)
-    lane = labels.get(agent.id, agent.root_data.name)
+    agent = node.agent
+    lane = labels.get(lane_key(g, agent), agent.name)
     label = kind(node)
     if label == "done":
         detail = f"submit({node.result!r})"
@@ -116,14 +121,14 @@ def export_run_traces(
 
 
 class PanelViewer(StreamConsumer):
-    """Live side-by-side boards, one panel per **labelled agent**, updated push-by-push.
+    """Live side-by-side boards, one panel per **labelled lane**, updated push-by-push.
 
-    One panel per agent the host named with :meth:`label`, keyed by the agent's
-    id in first-seen order; scratch agents such as previews never get a lane. Each panel shows that agent's board (via
-    ``board_of``) or the grid its latest code printed, so the worker and every
-    recovery branch animate as their streams advance. Safe to share across
-    concurrently-gathered streams: node handling runs on one asyncio loop, so
-    updates never interleave.
+    One panel per agent in a graph the host named with :meth:`label`, in
+    first-seen order; anything unlabelled never gets a lane. Each panel shows that
+    agent's board (via ``board_of(graph, agent)``) or the grid its latest code
+    printed, so the worker and every recovery branch animate as their streams
+    advance. Safe to share across concurrently-gathered streams: node handling
+    runs on one asyncio loop, so updates never interleave.
     """
 
     def __init__(
@@ -132,9 +137,9 @@ class PanelViewer(StreamConsumer):
         title: str = "",
         cols: int = 4,
         every_s: float = 0.1,
-        status_of: Callable[[Node], str] | None = None,
-        board_of: Callable[[Node], str] | None = None,
-        frames_of: Callable[[Node], list[str]] | None = None,
+        status_of: Callable[[Graph, Node], str] | None = None,
+        board_of: Callable[[Graph, Node], str] | None = None,
+        frames_of: Callable[[Graph, Node], list[str]] | None = None,
         frame_ms: int = 70,
         sink: Callable[[list[tuple[str, str]]], None] | None = None,
         paint: bool = True,
@@ -162,55 +167,53 @@ class PanelViewer(StreamConsumer):
         # When False, still aggregate + sink, but do not clear/print the TTY —
         # use this when something else (a node trace, say) owns the terminal.
         self.paint = paint
-        # Panels are keyed per agent by the agent's own id. ``_root_labels``
-        # holds the host-supplied name of every agent that gets a lane.
+        # Panels are keyed by ``lane_key``. ``_root_labels`` holds the
+        # host-supplied name of every lane.
         self._order: list[str] = []
         self._labels: dict[str, str] = {}
         self._blocks: dict[str, str] = {}
-        self._agents: dict[str, Node] = {}
+        self._agents: dict[str, tuple[Graph, Node]] = {}
         self._root_labels: dict[str, str] = {}
         self._last_paint = 0.0
         self._closed = False
 
-    def label(self, agent: Node, label: str) -> None:
-        """Give ``agent`` a lane under ``label`` (e.g. "worker"/"shepherd")."""
-        self._root_labels[agent.id] = label
-        if agent.id in self._labels:
-            self._labels[agent.id] = label
-
-    def _default_label(self, agent: Node) -> str:
-        return self._root_labels.get(agent.id) or agent.root_data.name
+    def label(self, graph: Graph, agent: Node, label: str) -> None:
+        """Give ``agent`` in ``graph`` a lane under ``label`` (e.g. "worker"/"branch0")."""
+        key = lane_key(graph, agent)
+        self._root_labels[key] = label
+        if key in self._labels:
+            self._labels[key] = label
 
     def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
         item = item.node if isinstance(item, Step) else item
         if self._closed or not isinstance(item, Node):
             return
-        agents = [a for a in graph.agents() if a.id in self._root_labels]
+        agents = [a for a in graph.agents() if lane_key(graph, a) in self._root_labels]
         for agent in agents:
-            self._observe(agent, item if item.owner == agent.id else None)
+            self._observe(graph, agent, item if item.owner == agent.id else None)
         # Play out this turn's per-sub-step frames so a box-level push visibly walks
         # the player around square by square instead of snapping (looking teleporty).
         if self.frames_of is not None:
             for agent in agents:
-                self._animate(agent)
+                self._animate(graph, agent)
         now = time.monotonic()
         if self.every_s and now - self._last_paint < self.every_s:
             return
         self._paint()
 
-    def _safe_frames(self, agent: Node) -> list[str]:
+    def _safe_frames(self, graph: Graph, agent: Node) -> list[str]:
         try:
-            return list(self.frames_of(agent) or [])  # type: ignore[misc]
+            return list(self.frames_of(graph, agent) or [])  # type: ignore[misc]
         except Exception:  # noqa: BLE001 - a viewer must never crash a run
             return []
 
-    def _animate(self, agent: Node) -> None:
+    def _animate(self, graph: Graph, agent: Node) -> None:
         """Paint this turn's sub-step frames for ``agent`` in sequence (short delay
         each) so the walk-around before each shove is visible. ``frames`` is the
         current turn only (replaced each turn), so we play it once — when it differs
         from what we last drew for this lane."""
-        key = agent.id
-        frames = self._safe_frames(agent)
+        key = lane_key(graph, agent)
+        frames = self._safe_frames(graph, agent)
         if not frames or frames == self._last_frames.get(key):
             return
         self._last_frames[key] = frames
@@ -221,19 +224,19 @@ class PanelViewer(StreamConsumer):
             if delay and i < len(frames) - 1:
                 time.sleep(delay)
 
-    def _observe(self, agent: Node, changed: Node | None) -> None:
-        key = agent.id
+    def _observe(self, graph: Graph, agent: Node, changed: Node | None) -> None:
+        key = lane_key(graph, agent)
         if key not in self._order:
             self._order.append(key)
-            self._labels.setdefault(key, self._default_label(agent))
+            self._labels.setdefault(key, self._root_labels[key])
             # Seed with the lane's current frames so a fork's inherited (replayed)
             # turn isn't re-animated on first sight — only turns from here play.
             if self.frames_of is not None:
-                self._last_frames[key] = self._safe_frames(agent)
-        self._agents[key] = agent
+                self._last_frames[key] = self._safe_frames(graph, agent)
+        self._agents[key] = (graph, agent)
         if self.board_of is not None:
             try:
-                board = self.board_of(agent)
+                board = self.board_of(graph, agent)
             except Exception:  # noqa: BLE001 - a viewer must never crash a run
                 board = None
             if board:
@@ -255,7 +258,7 @@ class PanelViewer(StreamConsumer):
             heading = self._labels.get(key) or key
             if self.status_of is not None and key in self._agents:
                 try:
-                    status = self.status_of(self._agents[key])
+                    status = self.status_of(*self._agents[key])
                 except Exception:  # noqa: BLE001 - a viewer must never crash a run
                     status = ""
                 if status:
@@ -300,6 +303,7 @@ __all__ = [
     "PanelViewer",
     "export_run_traces",
     "grid_of_blocks",
+    "lane_key",
     "panel_status",
     "side_by_side",
     "trace_line",

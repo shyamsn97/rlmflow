@@ -27,13 +27,13 @@ def _launch_node(g: Graph, root_nodes: Sequence[Node]) -> Node:
 
 def _parallel_order(g: Graph, root: Node) -> tuple[list[Node], list[tuple[int, str]]]:
     """Return a parent-safe order of the graph's nodes, and reveal boundaries with frame titles."""
-    root_nodes = g.nodes(agent=root)
+    root_nodes = root.nodes()
     launch = _launch_node(g, root_nodes)
     launch_index = root_nodes.index(launch)
     prelude = root_nodes[: launch_index + 1]
     tail = root_nodes[launch_index + 1 :]
-    workers = g.children(root)
-    worker_items = [g.nodes(agent=worker) for worker in workers]
+    workers = root.children()
+    worker_items = [worker.nodes() for worker in workers]
 
     ordered: list[Node] = []
     frames: list[tuple[int, str]] = []
@@ -59,7 +59,7 @@ def _parallel_order(g: Graph, root: Node) -> tuple[list[Node], list[tuple[int, s
     for node in tail:
         ordered.append(node)
         label = (
-            f"root combines worker results · answer {g.result(root)}"
+            f"root combines worker results · answer {root.final_result()}"
             if node.data.get("terminal")
             else "root combines completed worker results"
         )
