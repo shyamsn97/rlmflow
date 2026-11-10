@@ -1,15 +1,5 @@
-.PHONY: clean clean-build clean-pyc clean-test coverage dist docs help install lint lint/flake8 format-md lint-md test test-all examples examples-list examples-optional examples-live examples-sandbox examples-all eval-help eval-smoke eval-test eval-run eval-wandb eval-benchmark eval-clean animation animation-preview animation-mp4 animation-gif animation-gif-small animation-clean bump-version release-check release-tag release-push release
-	{%- if cookiecutter.use_black == 'y' %} lint/black{% endif %}
+.PHONY: clean clean-build clean-pyc clean-test help install lint format-md lint-md serve-docs test test-all examples examples-list examples-optional examples-live examples-sandbox examples-all examples-slow showcase-shepherd-assets showcase-needle-assets showcase-boids-assets animation animation-preview animation-mp4 animation-gif animation-gif-small animation-clean bump-version release-check release-tag release-push release
 .DEFAULT_GOAL := help
-
-define BROWSER_PYSCRIPT
-import os, webbrowser, sys
-
-from urllib.request import pathname2url
-
-webbrowser.open("file://" + pathname2url(os.path.abspath(sys.argv[1])))
-endef
-export BROWSER_PYSCRIPT
 
 define PRINT_HELP_PYSCRIPT
 import re, sys
@@ -59,7 +49,6 @@ print(f"{path}: {old_version} -> {new_version}")
 endef
 export BUMP_VERSION_PYSCRIPT
 
-BROWSER := python -c "$$BROWSER_PYSCRIPT"
 BUMP ?= patch
 VERSION ?=
 
@@ -88,16 +77,13 @@ clean-test: ## remove test and coverage artifacts
 	rm -fr coverage/
 	rm -fr .pytest_cache
 
-lint: ## check style with flake8
-	isort --profile black rlmflow
-	black rlmflow
-	flake8 rlmflow
+lint: ## Check Python style with Ruff, matching CI.
 	python -m ruff check .
 
 # ── Markdown ─────────────────────────────────────────────────────────
 # Scoped to public-facing docs only.
 # Install once:  pip install mdformat mdformat-gfm
-MD_FILES := README.md CHANGELOG.md $(wildcard docs/*.md)
+MD_FILES := README.md CHANGELOG.md UPGRADING.md $(wildcard docs/*.md)
 
 format-md: ## Auto-format public markdown (one paragraph per line, no hard wrap).
 	python -m mdformat --wrap no $(MD_FILES)
@@ -108,19 +94,8 @@ lint-md: ## Check public markdown formatting without writing changes.
 install: clean lint
 	python -m pip install . --upgrade
 
-doc:
-	rm -r docs/reference/
-	pdocs as_markdown rlmflow -o docs/reference
-	rm docs/reference/rlmflow/index.md
-	cp examples/*.ipynb docs/examples/
-	cp README.md docs/index.md
-
 serve-docs:
 	mkdocs serve
-
-commit: install test doc
-	git add .
-	git commit -a
 
 test: ## Run the default test suite.
 	python -m pytest
@@ -128,16 +103,17 @@ test: ## Run the default test suite.
 test-all: build-docker-image ## Run all tests, including Docker-gated integration tests.
 	RECURSIVE_FLOW_DOCKER_TEST=1 python -m pytest
 
-test-html: test
-	$(BROWSER) tests/cov-report/index.html
-
+# Every examples target writes a pass/fail/skip report to
+# examples/_runs/examples_report.md (with the output of each failure). Override
+# the path or add flags with EXAMPLES_ARGS, e.g.
+#   make examples-live EXAMPLES_ARGS="--report /tmp/live.md --fail-fast"
 EXAMPLES_ARGS ?=
 
-examples: ## Run deterministic/offline examples.
+examples: ## Run deterministic/offline examples (report: examples/_runs/examples_report.md).
 	python examples/run_examples.py $(EXAMPLES_ARGS)
 
 examples-list: ## List all examples and skip reasons.
-	python examples/run_examples.py --all --list $(EXAMPLES_ARGS)
+	python examples/run_examples.py --all --include-slow --list $(EXAMPLES_ARGS)
 
 examples-optional: ## Run offline + optional-dependency examples.
 	python examples/run_examples.py --include-optional $(EXAMPLES_ARGS)
@@ -148,20 +124,67 @@ examples-live: ## Run offline + live LLM examples.
 examples-sandbox: ## Run offline + sandbox runtime examples.
 	python examples/run_examples.py --include-sandbox $(EXAMPLES_ARGS)
 
-examples-all: ## Run every example category.
+examples-slow: ## Run offline + the long opt-in examples that --all skips.
+	python examples/run_examples.py --include-slow $(EXAMPLES_ARGS)
+
+examples-all: ## Run every example category except the slow opt-in ones.
 	python examples/run_examples.py --all $(EXAMPLES_ARGS)
+
+SHEPHERD_RUN ?= examples/_runs/shepherd
+SHEPHERD_DOC_ASSETS := docs/static/shepherd
+
+showcase-shepherd-assets: ## Publish Shepherd SVGs and GIFs from SHEPHERD_RUN.
+	@test -d "$(SHEPHERD_RUN)/graph" || (echo "missing $(SHEPHERD_RUN)/graph; run the Shepherd example first" >&2; exit 1)
+	mkdir -p $(SHEPHERD_DOC_ASSETS)
+	uv run --locked --python 3.12 --extra image python examples/shepherd/render_graph.py \
+		--run-dir $(SHEPHERD_RUN) \
+		--out docs/static/shepherd_graph.svg \
+		--nodes-out docs/static/shepherd_nodes.svg
+	uv run --locked --python 3.12 --extra image python examples/shepherd/render_rewind.py \
+		--run-dir $(SHEPHERD_RUN) \
+		--out $(SHEPHERD_DOC_ASSETS)/rewind.gif
+	cp "$(SHEPHERD_RUN)/traces/worker.gif" "$(SHEPHERD_DOC_ASSETS)/jam.gif"
+	rm -f $(SHEPHERD_DOC_ASSETS)/branch*.gif
+	cp "$(SHEPHERD_RUN)"/traces/branch*.gif $(SHEPHERD_DOC_ASSETS)/
+
+NEEDLE_RUN ?= examples/_runs/needle-haystack
+NEEDLE_DOC_ASSETS := docs/static
+
+showcase-needle-assets: ## Render and publish the saved million-line Needle graph.
+	@test -f "$(NEEDLE_RUN)/graph.json" || (echo "missing $(NEEDLE_RUN)/graph.json; run the Needle example first" >&2; exit 1)
+	uv run --locked --python 3.12 rlmflow render svg \
+		$(NEEDLE_RUN) $(NEEDLE_DOC_ASSETS)/needle-haystack.svg
+	uv run --locked --python 3.12 rlmflow render html \
+		$(NEEDLE_RUN) $(NEEDLE_RUN)/run.html
+	uv run --locked --python 3.12 --extra image python examples/needle/render_parallel.py \
+		--run-dir $(NEEDLE_RUN) \
+		--out $(NEEDLE_DOC_ASSETS)/needle-haystack.gif
+
+BOIDS_RUN ?= examples/_runs/coding/boids
+BOIDS_DOC_ASSETS := docs/static/boids
+
+showcase-boids-assets: ## Validate Boids and publish its browser and graph visuals.
+	@test -f "$(BOIDS_RUN)/graph/graph.json" || (echo "missing $(BOIDS_RUN)/graph/graph.json; run the Boids example first" >&2; exit 1)
+	mkdir -p $(BOIDS_DOC_ASSETS)
+	uv run --locked --python 3.12 python examples/coding/boids/validate.py \
+		$(BOIDS_RUN) \
+		--browser \
+		--screenshot $(BOIDS_DOC_ASSETS)/simulation.png \
+		--report $(BOIDS_RUN)/validation.json
+	uv run --locked --python 3.12 --extra image python examples/coding/boids/render_simulation.py \
+		--run-dir $(BOIDS_RUN) \
+		--gif $(BOIDS_DOC_ASSETS)/simulation.gif \
+		--mp4 $(BOIDS_DOC_ASSETS)/simulation.mp4
+	uv run --locked --python 3.12 rlmflow render svg \
+		$(BOIDS_RUN)/graph $(BOIDS_DOC_ASSETS)/graph.svg
+	uv run --locked --python 3.12 --extra image rlmflow render gif \
+		$(BOIDS_RUN)/graph $(BOIDS_DOC_ASSETS)/graph.gif
 
 build-docker-image:
 	docker build -t rlmflow:local .
 
-# ── Eval harness ─────────────────────────────────────────────────────
-# Eval/benchmark targets now live in benchmarks/Makefile. Run them with
-# `make -C benchmarks <target>` (or `cd benchmarks && make <target>`).
-eval-help eval-smoke eval-test eval-run eval-wandb eval-benchmark eval-clean:
-	$(MAKE) -C benchmarks $@
-
 # ── Animation (manim) ────────────────────────────────────────────────
-ANIMATION_SRC := docs/rlm_animation.py
+ANIMATION_SRC := docs/static/rlm_animation.py
 ANIMATION_SCENE := RecursiveFlowHero
 ANIMATION_OUT_DIR := media/videos/rlm_animation/1080p60
 
@@ -170,18 +193,18 @@ animation: animation-mp4 animation-gif-small ## Render the rlmflow animation: MP
 animation-preview: ## Quick low-res manim preview of the rlmflow animation.
 	manim -pql $(ANIMATION_SRC) $(ANIMATION_SCENE)
 
-animation-mp4: ## Render docs/rlm_animation.mp4 (1080p60).
+animation-mp4: ## Render docs/static/rlm_animation.mp4 (1080p60).
 	manim -qh $(ANIMATION_SRC) $(ANIMATION_SCENE)
-	cp $(ANIMATION_OUT_DIR)/$(ANIMATION_SCENE).mp4 docs/rlm_animation.mp4
+	cp $(ANIMATION_OUT_DIR)/$(ANIMATION_SCENE).mp4 docs/static/rlm_animation.mp4
 
 animation-gif: ## Raw 1080p60 GIF from manim — WARNING: ~1GB+ output.
 	manim -qh --format=gif $(ANIMATION_SRC) $(ANIMATION_SCENE)
-	cp "$$(ls -t $(ANIMATION_OUT_DIR)/$(ANIMATION_SCENE)*.gif | head -n 1)" docs/rlm_animation.gif
+	cp "$$(ls -t $(ANIMATION_OUT_DIR)/$(ANIMATION_SCENE)*.gif | head -n 1)" docs/static/rlm_animation.gif
 
 animation-gif-small: animation-mp4 ## Share-friendly GIF (ffmpeg, ~5MB) — replaces the README hero.
-	ffmpeg -y -i docs/rlm_animation.mp4 \
+	ffmpeg -y -i docs/static/rlm_animation.mp4 \
 		-vf "fps=20,scale=960:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=5" \
-		docs/rlm_animation.gif
+		docs/static/rlm_animation.gif
 
 animation-clean: ## Remove manim render artifacts (media/).
 	rm -rf media/
@@ -193,8 +216,7 @@ release-check: ## Validate VERSION matches pyproject and working tree is clean.
 	@test -n "$(VERSION)" || (echo "VERSION is required, e.g. make release VERSION=0.4.1" >&2; exit 1)
 	@python -c "import re,sys; v='$(VERSION)'; sys.exit(0 if re.fullmatch(r'\d+\.\d+\.\d+', v) else 'VERSION must be MAJOR.MINOR.PATCH, e.g. 0.4.1')"
 	@python -c "import pathlib,sys,tomllib; v=tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version']; exp='$(VERSION)'; sys.exit(0 if v == exp else f'pyproject version {v} != VERSION {exp}')"
-	@git diff --quiet || (echo "working tree has unstaged changes; commit the release first" >&2; exit 1)
-	@git diff --cached --quiet || (echo "working tree has staged changes; commit the release first" >&2; exit 1)
+	@test -z "$$(git status --porcelain --untracked-files=all)" || (echo "working tree has tracked or untracked changes; commit the complete release first" >&2; exit 1)
 	@! git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null || (echo "tag v$(VERSION) already exists locally" >&2; exit 1)
 
 release-tag: release-check ## Create git tag v$(VERSION) for the current commit.

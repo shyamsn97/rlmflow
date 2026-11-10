@@ -1,17 +1,11 @@
-"""Docker-backed runtime for the minimal remote REPL protocol."""
+"""Docker provisioner for the lightweight Python worker."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from rlmflow.runtime.connections import PopenConnection
-from rlmflow.runtime.repl import Repl
-from rlmflow.runtime.repl_client import RemoteRepl
-from rlmflow.runtime.runtime import Runtime
-
-if TYPE_CHECKING:
-    from rlmflow.graph import Graph
+from rlmflow.runtime.runtime import DEFAULT_REPL_TIMEOUT, PopenConnection, Runtime
 
 
 def build_docker_argv(
@@ -19,15 +13,17 @@ def build_docker_argv(
     *,
     mounts: dict[str, str] | None = None,
     env: dict[str, str] | None = None,
-    network: str | None = None,
-    cpus: float | None = None,
-    memory: str | None = None,
-    user: str | None = None,
+    network: str | None = "none",
+    cpus: float | None = 1.0,
+    memory: str | None = "512m",
+    user: str | None = "1000:1000",
     workdir: str | None = None,
     extra_args: list[str] | None = None,
     docker_bin: str = "docker",
+    preimports: Sequence[str] | None = None,
 ) -> list[str]:
-    argv: list[str] = [docker_bin, "run", "-i", "--rm"]
+    """Build a bounded, stdio-attached, automatically removed worker container."""
+    argv = [docker_bin, "run", "-i", "--rm"]
     for host, container in (mounts or {}).items():
         argv += ["-v", f"{Path(host).resolve()}:{container}"]
     for key, value in (env or {}).items():
@@ -42,15 +38,27 @@ def build_docker_argv(
         argv += ["--user", user]
     if workdir is not None:
         argv += ["--workdir", workdir]
-    argv += list(extra_args or [])
+    if extra_args is None:
+        extra_args = [
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--pids-limit",
+            "256",
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,size=64m",
+        ]
+    argv += extra_args
     argv += [image, "python", "-u", "-m", "rlmflow.runtime.repl_server"]
-    if workdir is not None:
-        argv += ["--workdir", workdir]
+    if preimports is not None:
+        argv += ["--preimport", ",".join(preimports)]
     return argv
 
 
 class DockerRuntime(Runtime):
-    """Run each agent in a Docker container using the minimal remote protocol."""
+    """Run isolated or explicitly shared agents in Docker workers."""
 
     def __init__(
         self,
@@ -59,54 +67,55 @@ class DockerRuntime(Runtime):
         working_directory: str | Path | None = None,
         mounts: dict[str, str] | None = None,
         env: dict[str, str] | None = None,
-        network: str | None = None,
-        cpus: float | None = None,
-        memory: str | None = None,
-        user: str | None = None,
+        network: str | None = "none",
+        cpus: float | None = 1.0,
+        memory: str | None = "512m",
+        user: str | None = "1000:1000",
         workdir: str | None = None,
         extra_args: list[str] | None = None,
         docker_bin: str = "docker",
-        repl_timeout: float | None = None,
-        **options: object,
+        repl_timeout: float | None = DEFAULT_REPL_TIMEOUT,
+        execution_timeout: float | None = None,
+        preimports: Sequence[str] | None = None,
     ) -> None:
-        super().__init__(working_directory=working_directory)
+        super().__init__(working_directory=working_directory, preimports=preimports)
         self.image = image
         if self.working_directory is not None:
             host = str(self.working_directory.resolve())
-            if mounts is None:
-                mounts = {host: "/workspace"}
-            if workdir is None:
-                workdir = "/workspace"
-        self.options = dict(
-            mounts=mounts,
-            env=env,
-            network=network,
-            cpus=cpus,
-            memory=memory,
-            user=user,
-            workdir=workdir,
-            extra_args=extra_args,
-            docker_bin=docker_bin,
-            repl_timeout=repl_timeout,
-            **options,
+            mounts = mounts or {host: "/workspace"}
+            workdir = workdir or "/workspace"
+        self.repl_timeout = repl_timeout or DEFAULT_REPL_TIMEOUT
+        self.execution_timeout = execution_timeout
+        self.options = {
+            "mounts": mounts,
+            "env": env,
+            "network": network,
+            "cpus": cpus,
+            "memory": memory,
+            "user": user,
+            "workdir": workdir,
+            "extra_args": extra_args,
+            "docker_bin": docker_bin,
+        }
+
+    @property
+    def location(self) -> str:
+        workdir = self.options["workdir"] or "/"
+        mounted = ", ".join(
+            f"`{container}` is `{Path(host).resolve()}`"
+            for host, container in (self.options["mounts"] or {}).items()
+        )
+        return f"a Docker container, working in `{workdir}`" + (
+            f" ({mounted} on this machine)" if mounted else ""
         )
 
-    def deploy_repl_server(self, graph: Graph) -> RemoteRepl:
-        cwd = str(self.working_directory) if self.working_directory else None
-        options = dict(self.options)
-        repl_timeout = options.pop("repl_timeout", None)
-        argv = build_docker_argv(self.image, **options)
-        return RemoteRepl(
-            PopenConnection(
-                argv,
-                cwd=cwd,
-                label="minimal Docker REPL",
-                repl_timeout=repl_timeout,
-            )
+    def connect(self, directory: Path | None = None) -> PopenConnection:
+        # The container mounts ``working_directory``; per-agent directories don't apply.
+        return PopenConnection(
+            build_docker_argv(self.image, preimports=self.preimports, **self.options),
+            cwd=self.working_directory or Path.cwd(),
+            label="Docker REPL worker",
         )
-
-    def open(self, graph: Graph) -> Repl:
-        return self.deploy_repl_server(graph)
 
 
 __all__ = ["DockerRuntime", "build_docker_argv"]

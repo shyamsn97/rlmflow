@@ -2,85 +2,47 @@
 
 ## Trust model
 
-`LocalRuntime` runs agent Python in your process. Same permissions as
-your interpreter: filesystem, network, env vars, subprocesses. **Use
-it only for code you'd run yourself.**
+`LocalRuntime` runs agent Python in a separate worker process, but that process still has the host user's filesystem, network, environment, and subprocess permissions. Process separation is not a sandbox. **Use it only for code you'd run yourself.**
 
-For untrusted agents, or agents you haven't audited yet, use an
-isolated runtime:
+For untrusted agents, or agents you haven't audited yet, use an isolated runtime:
 
 - `DockerRuntime` — a fresh container per session.
 - `ModalRuntime` — a remote Modal container.
-- `E2BRuntime` — a remote E2B sandbox.
-- `DaytonaRuntime` — a remote Daytona sandbox.
 - Custom `Runtime` — SSH, `kubectl exec`, Firecracker, gVisor, anything.
+
+`SubprocessRuntime` selects another Python executable or environment but retains the host user's permissions. It is not a security boundary for untrusted code.
 
 ## Docker isolation knobs
 
 ```python
 DockerRuntime(
     image="rlmflow:local",
-    network="none",           # no outbound traffic
-    cpus=1.0,                 # CPU quota
-    memory="512m",            # OOM cap
-    user="1000:1000",         # non-root
-    extra_args=[
-        "--read-only",        # read-only rootfs
-        "--security-opt", "no-new-privileges",
-    ],
     mounts={"./workspace": "/workspace"},
 )
 ```
 
-Mount only what the agent needs. A hostile agent inside the container
-can still fill its writable volumes, burn CPU up to the quota, and
-call any tool you injected.
+Those defaults disable networking, cap the worker at one CPU, 512 MiB, and 256 processes, run as `1000:1000`, drop Linux capabilities, enable `no-new-privileges`, use a read-only root filesystem, and provide a bounded `/tmp`. Pass explicit alternatives only when the task requires them; pass `extra_args=[]` to replace the default hardening flags.
+
+The Docker worker uses stdin/stdout for its control protocol, so `network="none"` is supported and requires no published ports.
+
+Mount only what the agent needs. A hostile agent inside the container can still fill its writable volumes, burn CPU up to the quota, and call any tool you injected.
 
 ## Engine-level caps
 
 Independent of the runtime:
 
-- `max_depth` — recursion limit.
-- `max_iters` — LLM calls per agent.
-- `max_budget` — total tokens across the subtree.
-- `max_output_length` — truncate oversized stdout.
-- `workers` — cap concurrent blocking LLM calls on the flow's thread pool.
+- `max_depth=1` — recursion limit.
+- `max_iters=None` — LLM calls per agent (set a number to cap).
+- `max_budget=None` — soft whole-run token threshold; exhaustion allows in-flight calls and one bottom-up final turn per unfinished agent.
+- `max_output_length=20_000` — truncate oversized stdout (official RLM's per-block cap).
+- `Flow(workers=n)` — cap concurrent model calls.
 
 ## Proxied tools
 
-`runtime.register_tool(fn)` and `runtime.register_tools([...])` expose
-callables to the agent REPL. Tools marked `@tool(proxy=True)` execute on the
-host when called from a remote sandbox; local tools are shipped into the sandbox
-when possible. Working-directory-aware tools run relative to
-`runtime.working_directory`.
+`Flow(tools=[...])` and `flow.add_tool(fn)` expose callables to the agent worker. Tools execute on the host through the worker's private protocol stream, so a host tool runs with the host's privileges whatever runtime the agent uses; `@tool(where="repl")` tools are copied into the worker instead. Working-directory-aware tools run relative to `runtime.working_directory`. `@tool(..., when=...)` hides a name from that agent's prompt and namespace; it is not a sandbox. The worker can still write files with ordinary Python.
 
-Tools you register are part of the trust boundary. The container can
-be sealed off, but any injected tool runs on the host with host
-privileges. Keep that surface small and validate arguments.
+Tools you register are part of the trust boundary. The container can be sealed off, but any injected tool runs on the host with host privileges. Worker-to-host arguments are restricted to JSON data; the host never deserializes worker-controlled Python objects. Keep the tool surface small and still validate the meaning and bounds of every argument.
 
-## Overrides for approval gates
+## Approval gates
 
-Override `Flow.exec_turn(graph, code, *, replay=False)` to gate, classify, or
-rewrite code before it touches the runtime. Short-circuit by appending an
-`ErrorOutput` (the next model turn sees it as a normal failure observation)
-instead of running the code:
-
-```python
-import rlmflow
-
-class ReviewingFlow(rlmflow.Flow):
-    async def exec_turn(self, graph, code, *, replay=False):
-        if not replay and "rm -rf" in code and input(f"run? {code}\n> ") != "y":
-            node = rlmflow.ErrorOutput(
-                content="rejected by reviewer",
-                output="rejected by reviewer",
-                error="rejected",
-            )
-            self.append_node(graph, node)
-            return node
-        return await super().exec_turn(graph, code, replay=replay)
-```
-
-Wrap the runtime or backend if you want approval at the transport layer.
-Subclass `Runtime.open(...)` to return a backend that gates `start(...)` and
-`resume(...)` before delegating to the underlying backend.
+There is no built-in approval gate. To review code before it runs, subclass the runtime and check `code` in `execute(agent, code, graph)` before calling `super().execute(...)`; return or raise to refuse. Refused code is an error the next model turn sees, so the agent can repair its plan.

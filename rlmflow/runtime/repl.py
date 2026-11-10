@@ -1,54 +1,69 @@
-"""Tiny async Python REPL for minimal rlmflow."""
+"""Execution outcomes, the stateful Python worker contract, and how agent handles
+cross the REPL boundary as data-only references."""
 
 from __future__ import annotations
 
 import ast
 import asyncio
 import contextvars
+import importlib
 import inspect
 import io
-import os
 import sys
-import threading
 from abc import ABC, abstractmethod
-from collections.abc import Callable
-from contextlib import contextmanager
+from collections.abc import Callable, Iterable, MutableMapping
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
 
-class MissingReplError(Exception):
-    """Raised when the assistant response has no executable REPL block."""
-
-
 class DoneSignal(BaseException):
-    """Raised by ``done(...)`` to end a block immediately."""
+    """Internal control flow raised by the host completion tool."""
+
+    def __init__(self, answer: Any = None) -> None:
+        super().__init__(answer)
+        self.answer = answer
+
+
+class _CodeStopIteration(Exception):
+    """StopIteration from the code, lifted out of the async runner (PEP 479)."""
+
+
+class ReplStatus(StrEnum):
+    OK = "ok"
+    ERROR = "error"
+    DONE = "done"
+    DEAD = "dead"
+
+
+@dataclass
+class ReplRun:
+    """Outcome of one agent execution."""
+
+    output: str = ""
+    status: ReplStatus = ReplStatus.OK
+    answer: Any = None
+    error: BaseException | None = None
+
+    @property
+    def submitted(self) -> bool:
+        return self.status is ReplStatus.DONE
+
+    @property
+    def failed(self) -> bool:
+        return self.status in (ReplStatus.ERROR, ReplStatus.DEAD)
 
 
 class Repl(ABC):
-    """Abstract REPL contract the ``Flow`` drives, regardless of where code runs.
-
-    Two concrete subclasses implement it: :class:`LocalRepl` (in this process)
-    and :class:`~rlmflow.runtime.repl_client.RemoteRepl` (a stub that speaks the
-    wire protocol to a sandbox). Being an ABC (not a ``Protocol``) makes the
-    relationship explicit — you can see both subclasses inherit from it, and
-    Python enforces that each implements every abstract method.
-
-    Implementations expose four state attributes: ``namespace`` (the Python
-    globals code runs against), ``env`` (the host<->REPL metadata channel),
-    ``done_result`` (the final answer once ``done(...)`` fires), and ``errored``
-    (whether the last run raised).
-    """
+    """One agent tenant in a Python worker."""
 
     namespace: dict[str, Any]
     env: dict[str, Any]
-    done_result: str | None
-    errored: bool
 
     @abstractmethod
-    def seed(
-        self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]
-    ) -> None: ...
+    def seed(self, tools: dict[str, Callable[..., object]]) -> None:
+        """Bind ``tools`` before a run."""
 
     @abstractmethod
     def inject(self, name: str, fn: Any) -> None: ...
@@ -57,202 +72,318 @@ class Repl(ABC):
     def get_var(self, name: str) -> Any: ...
 
     @abstractmethod
-    def get_env_var(self, name: str) -> Any: ...
-
-    @abstractmethod
     def remove_tool(self, name: str) -> None: ...
 
     @abstractmethod
     def update_env(self, values: dict[str, Any]) -> None: ...
 
     @abstractmethod
-    async def run(self, code: str) -> str: ...
-
-    @abstractmethod
-    def drain(self) -> str: ...
+    async def run(self, code: str) -> ReplRun: ...
 
     @abstractmethod
     def close(self) -> None: ...
 
+    def get_env_var(self, name: str) -> Any:
+        if name not in self.env:
+            raise KeyError(name)
+        return self.env[name]
 
-_stdout_buf: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar(
-    "minimal_rflow_stdout", default=None
+
+REPL_FILENAME = "<rlmflow>"
+
+#: Modules bound in every REPL namespace before any agent code runs, under their own
+#: name. Models reach for these reflexively — ``json.loads``, ``re.findall`` — and a
+#: ``NameError`` costs a whole turn to recover from. Keep the default set to cheap,
+#: side-effect-free stdlib: importing is not free and the namespace is shared by every
+#: tenant in a worker. An explicit ``preimports`` may name anything importable,
+#: third-party packages included.
+DEFAULT_PREIMPORTS: tuple[str, ...] = (
+    "asyncio",
+    "collections",
+    "csv",
+    "datetime",
+    "itertools",
+    "json",
+    "math",
+    "os",
+    "pathlib",
+    "re",
+    "statistics",
+    "sys",
+    "textwrap",
+    "time",
 )
-_CWD_LOCK = threading.RLock()
 
 
-class _Stdout:
-    def __init__(self, real):
+def base_namespace(preimports: Iterable[str] | None = None) -> dict[str, Any]:
+    """Build a fresh REPL global namespace with ``preimports`` bound by module name.
+
+    ``None`` means ``DEFAULT_PREIMPORTS``; an empty iterable means bind nothing. An
+    unimportable name raises rather than being skipped, so a bad configuration fails
+    at worker startup instead of surfacing later as a puzzling ``NameError``.
+    """
+    names = DEFAULT_PREIMPORTS if preimports is None else tuple(preimports)
+    namespace: dict[str, Any] = {"__builtins__": __builtins__}
+    for name in names:
+        namespace[name] = importlib.import_module(name)
+    return namespace
+
+
+_BINDING: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "rlmflow_binding", default=None
+)
+_OUTPUT: contextvars.ContextVar[io.StringIO | None] = contextvars.ContextVar(
+    "rlmflow_output", default=None
+)
+
+
+def current_binding() -> dict[str, Any]:
+    binding = _BINDING.get()
+    if binding is None:
+        raise RuntimeError("agent bindings are only available during execution")
+    return binding
+
+
+class CurrentMapping(MutableMapping[str, Any]):
+    """Mapping view resolved from the execution thread's agent binding."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def _value(self) -> dict[str, Any]:
+        return current_binding()[self.name]
+
+    def __getitem__(self, key: str) -> Any:
+        return self._value()[key]
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._value()[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self._value()[key]
+
+    def __iter__(self):
+        return iter(self._value())
+
+    def __len__(self) -> int:
+        return len(self._value())
+
+    def copy(self) -> dict[str, Any]:
+        return self._value().copy()
+
+    def __repr__(self) -> str:
+        return repr(self._value())
+
+
+class CurrentObject:
+    """Object proxy resolved from the execution thread's agent binding."""
+
+    def __init__(self, name: str) -> None:
+        object.__setattr__(self, "name", name)
+
+    def _value(self) -> Any:
+        return current_binding()[self.name]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._value(), name)
+
+    def __getitem__(self, key: Any) -> Any:
+        return self._value()[key]
+
+    def __contains__(self, key: Any) -> bool:
+        return key in self._value()
+
+    def __iter__(self):
+        return iter(self._value())
+
+    def __len__(self) -> int:
+        return len(self._value())
+
+    def __repr__(self) -> str:
+        return repr(self._value())
+
+
+class _ContextStream:
+    """Route Python writes to the active run without replacing stdout per run."""
+
+    def __init__(self, real: Any) -> None:
         self.real = real
 
-    def write(self, text):
-        buf = _stdout_buf.get()
-        return buf.write(text) if buf is not None else self.real.write(text)
+    def write(self, text: str) -> int:
+        buffer = _OUTPUT.get()
+        return buffer.write(text) if buffer is not None else self.real.write(text)
 
-    def flush(self):
+    def flush(self) -> None:
         self.real.flush()
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         return getattr(self.real, name)
 
 
-def has_top_level_await(tree: ast.AST) -> bool:
-    boundaries = (
-        ast.FunctionDef,
-        ast.AsyncFunctionDef,
-        ast.Lambda,
-        ast.ClassDef,
-        ast.ListComp,
-        ast.SetComp,
-        ast.DictComp,
-        ast.GeneratorExp,
-    )
-    stack = [tree]
-    while stack:
-        node = stack.pop()
-        if isinstance(node, ast.Await):
-            return True
-        stack.extend(
-            child
-            for child in ast.iter_child_nodes(node)
-            if not isinstance(child, boundaries)
-        )
-    return False
+class LocalRepl:
+    """Worker-side code executor with context-bound agent metadata."""
 
-
-class LocalRepl(Repl):
-    """Stateful in-process REPL: a namespace with top-level await support.
-
-    Runs agent code in *this* Python process, so injected objects are the real
-    live objects (by reference, zero-copy) and ``get_var`` returns them as-is.
-    Returned by :class:`~rlmflow.runtime.runtime.LocalRuntime`.
-    """
-
-    def __init__(self, working_directory: str | Path | None = None) -> None:
-        self.namespace: dict[str, Any] = {"__builtins__": __builtins__}
-        # Per-REPL environment: a flat key/value channel distinct from the
-        # Python namespace. The host seeds it (agent RLMFLOW_* metadata) and REPL
-        # code reads/writes it via the injected ``ENV`` handle
-        # (e.g. ``ENV["RLMFLOW_AGENT_ID"]`` or ``ENV["solved"] = True``). Because
-        # it is per-REPL it stays isolated across concurrent local agents.
+    def __init__(
+        self,
+        working_directory: str | Path | None = None,
+        *,
+        namespace: dict[str, Any] | None = None,
+    ) -> None:
+        self.namespace = namespace if namespace is not None else base_namespace()
+        self._base: frozenset[str] = frozenset(self.namespace)
         self.env: dict[str, Any] = {}
-        self.namespace["ENV"] = self.env
-        self.done_result: str | None = None
-        self.errored = False
-        self._buf = io.StringIO()
         self.working_directory = (
             Path(working_directory).resolve() if working_directory is not None else None
         )
         if self.working_directory is not None:
             self.working_directory.mkdir(parents=True, exist_ok=True)
-        if not isinstance(sys.stdout, _Stdout):
-            sys.stdout = _Stdout(sys.stdout)
+        self.namespace.setdefault("ENV", CurrentMapping("env"))
+        if not isinstance(sys.stdout, _ContextStream):
+            sys.stdout = _ContextStream(sys.stdout)
+        if not isinstance(sys.stderr, _ContextStream):
+            sys.stderr = _ContextStream(sys.stderr)
 
-    @property
-    def output(self) -> str:
-        return self._buf.getvalue().strip()
-
-    def drain(self) -> str:
-        output = self.output
-        self._buf = io.StringIO()
-        _stdout_buf.set(self._buf)
-        return output
-
-    def seed(
-        self, tools: dict[str, Callable[..., object]], inputs: dict[str, str]
-    ) -> None:
+    def seed(self, tools: dict[str, Callable[..., object]]) -> None:
         self.namespace.update(tools)
-        self.namespace["INPUTS"] = dict(inputs)
 
-    def inject(self, name: str, fn: Any) -> None:
-        """Bind any Python object (function, class, or value) into the live
-        namespace under ``name``. The general injection primitive; dynamic tools
-        are just one use of it."""
-        self.namespace[name] = fn
+    def inject(self, name: str, value: Any) -> None:
+        self.namespace[name] = value
 
     def get_var(self, name: str) -> Any:
-        """Return the live object bound to ``name`` in the Python namespace
-        (in-process: the real object, not a copy). Raises ``KeyError`` if unbound."""
         if name not in self.namespace:
             raise KeyError(name)
         return self.namespace[name]
-
-    def get_env_var(self, name: str) -> Any:
-        """Return a value from this REPL's ``env`` metadata channel (``ENV``).
-
-        Distinct from :meth:`get_var`, which reads the Python namespace. Raises
-        ``KeyError`` if ``name`` is unset.
-        """
-        if name not in self.env:
-            raise KeyError(name)
-        return self.env[name]
 
     def remove_tool(self, name: str) -> None:
         self.namespace.pop(name, None)
 
     def update_env(self, values: dict[str, Any]) -> None:
-        """Merge ``values`` into this REPL's ``env`` (host -> REPL metadata)."""
         self.env.update(values)
 
     def close(self) -> None:
-        """Release runtime resources; local minimal REPLs have none."""
+        pass
 
-    @contextmanager
-    def capture(self):
-        self._buf = io.StringIO()
-        self.errored = False
-        token = _stdout_buf.set(self._buf)
-        previous_cwd: str | None = None
-        if self.working_directory is not None:
-            _CWD_LOCK.acquire()
-            previous_cwd = os.getcwd()
-            os.chdir(self.working_directory)
+    async def run(self, code: str, *, binding: dict[str, Any] | None = None) -> ReplRun:
+        current = binding or {"env": self.env}
+        current.setdefault("env", self.env)
+        buffer = io.StringIO()
+        binding_token = _BINDING.set(current)
+        output_token = _OUTPUT.set(buffer)
         try:
-            yield
-        except DoneSignal:
-            pass
+            await self._execute(code)
+        except DoneSignal as signal:
+            return ReplRun(
+                output=buffer.getvalue().strip(),
+                status=ReplStatus.DONE,
+                answer=signal.answer,
+            )
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
-            # Never swallow control-flow exceptions: a cancelled agent must
-            # actually unwind (otherwise run/interpreter shutdown hangs on it).
             raise
-        except BaseException as exc:  # noqa: BLE001
-            self.errored = True
-            self._buf.write(f"{type(exc).__name__}: {exc}")
+        except _CodeStopIteration:
+            buffer.write("StopIteration")
+            return ReplRun(output=buffer.getvalue().strip(), status=ReplStatus.ERROR)
+        except BaseException as exc:  # noqa: BLE001 - agent exceptions are results
+            buffer.write(f"{type(exc).__name__}: {exc}")
+            return ReplRun(output=buffer.getvalue().strip(), status=ReplStatus.ERROR)
         finally:
-            _stdout_buf.reset(token)
-            if previous_cwd is not None:
-                os.chdir(previous_cwd)
-                _CWD_LOCK.release()
+            _OUTPUT.reset(output_token)
+            _BINDING.reset(binding_token)
+        return ReplRun(output=buffer.getvalue().strip(), status=ReplStatus.OK)
 
-    async def run(self, code: str) -> str:
-        with self.capture():
-            if not code.strip():
-                raise MissingReplError("missing ```repl``` block")
-            try:
-                tree = ast.parse(code)
-            except SyntaxError as exc:
-                self.errored = True
-                self._buf.write(f"SyntaxError: {exc}")
-                return self.output
-            if not has_top_level_await(tree):
-                exec(compile(tree, "<minimal-rlmflow>", "exec"), self.namespace)
-            else:
-                compiled = compile(
-                    tree,
-                    "<minimal-rlmflow>",
-                    "exec",
-                    flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT,
-                )
-                result = eval(compiled, self.namespace)
-                if inspect.iscoroutine(result):
-                    await result
-        return self.output
+    async def _execute(self, code: str) -> None:
+        compiled = compile(
+            code,
+            REPL_FILENAME,
+            "exec",
+            flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT,
+        )
+        try:
+            result = eval(compiled, self.namespace)
+            if inspect.isawaitable(result):
+                await result
+        except StopIteration:
+            raise _CodeStopIteration from None
+        except RuntimeError as exc:
+            if str(exc) != "coroutine raised StopIteration":
+                raise
+            raise _CodeStopIteration from None
+
+
+class NotYourAgent(RuntimeError):
+    """``await`` on an agent the caller did not launch."""
+
+
+#: Key of the data-only agent reference that stands in for a handle in values crossing the wire.
+AGENT_REF_KEY = "$rlmflow_agent"
+AGENTS_BINDING = "__rlmflow_agents__"
+#: Namespace keys of ``await agent`` and ``agent.send``; the code can't name them, and
+#: they are the names their calls are saved under. The worker can't import
+#: ``rlmflow.graph``, so these must equal ``rlmflow.graph.calls.AWAIT`` and ``SEND``.
+AGENT_WAIT_TOOL = "await"
+AGENT_SEND_TOOL = "agent.send"
+
+
+class AgentReference:
+    """A REPL-side object that names one agent by ``agent_id``."""
+
+    __slots__ = ()
+    agent_id: str
+
+
+def encode_agent_references(value: object) -> object:
+    """Replace agent handles with data-only ``{AGENT_REF_KEY: id}`` references."""
+    if isinstance(value, AgentReference):
+        return {AGENT_REF_KEY: value.agent_id}
+    if isinstance(value, dict):
+        return {key: encode_agent_references(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [encode_agent_references(item) for item in value]
+    return value
+
+
+@dataclass(frozen=True)
+class ToolMetadata:
+    name: str
+    description: str
+    proxy: bool = False
+    is_async: bool = False
+    #: ``(flow, node) -> bool``. ``None`` means always visible. Evaluated for
+    #: both the prompt and the REPL binding.
+    when: Callable[..., bool] | None = None
+    #: Save this host tool's results, keyed by its JSON arguments (``@tool(cache=True)``).
+    cache: bool = False
+    #: Built-in tools only. ``(*args, **kwargs) -> str``: the key a call is saved under.
+    key: Callable[..., str] | None = None
+    #: Built-in tools only. ``(entry, *args, **kwargs) -> value``: what a saved call
+    #: returns instead of running; by default the entry's ``value``.
+    restore: Callable[..., Any] | None = None
+    #: Built-in tools only. ``(result, *args, **kwargs) -> fields``: what a call saves
+    #: instead of ``value=result``.
+    receipt: Callable[..., Any] | None = None
+
+
+def get_tool_metadata(fn: Any) -> ToolMetadata | None:
+    target = getattr(fn, "__func__", fn)
+    return getattr(target, "_tool_meta", None)
 
 
 __all__ = [
+    "ToolMetadata",
+    "get_tool_metadata",
+    "AGENTS_BINDING",
+    "AGENT_SEND_TOOL",
+    "AGENT_WAIT_TOOL",
+    "AgentReference",
+    "NotYourAgent",
+    "CurrentMapping",
+    "CurrentObject",
+    "DEFAULT_PREIMPORTS",
     "DoneSignal",
     "LocalRepl",
-    "MissingReplError",
     "Repl",
-    "has_top_level_await",
+    "ReplRun",
+    "ReplStatus",
+    "base_namespace",
+    "current_binding",
+    "encode_agent_references",
 ]

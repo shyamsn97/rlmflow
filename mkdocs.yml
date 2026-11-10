@@ -1,9 +1,9 @@
-# site_name: REPLACE_rlmflow
-# copyright: Copyright (c) 2023-present REPLACE_FULL_NAME <REPLACE_EMAIL>
-
-
-# mkdocs.yml
 site_name: rlmflow Docs
+
+# There is no explicit nav, so mkdocs would otherwise publish every file under
+# docs/ — including the maintainer notes in docs/internal/.
+exclude_docs: |
+  internal/
 
 theme:
   name: material

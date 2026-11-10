@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import base64
 import io
-from functools import lru_cache
+from functools import cache, lru_cache
 from pathlib import Path
 
 _ASSETS = Path(__file__).with_name("assets") / "sokoban"
@@ -29,8 +29,25 @@ _GLYPH = {
     "@": "player",
     "+": "player_on_target",
 }
-_BOARD_CHARS = frozenset(_GLYPH)
 _TILE_NAMES = frozenset(_GLYPH.values())
+
+# Sokoban.render(ids=True) numbers each box instead of drawing a shared "$"/"*"
+# (see BOX_GLYPHS / BOX_ON_GOAL_GLYPHS there). Same two crate tiles, recoloured
+# per box, so a viewer can follow B1 from its start square to the goal it takes.
+_BOX_IDS = "123456789"
+_BOX_ON_GOAL_IDS = "ABCDEFGHI"
+_BOX_COLORS = (
+    (255, 190, 60),  # B1 amber
+    (90, 190, 255),  # B2 sky
+    (185, 130, 255),  # B3 violet
+    (120, 225, 130),  # B4 green
+    (255, 120, 170),  # B5 pink
+    (90, 220, 205),  # B6 teal
+    (255, 130, 80),  # B7 ember
+    (205, 205, 235),  # B8 pale
+    (210, 230, 90),  # B9 lime
+)
+_BOARD_CHARS = frozenset(_GLYPH) | frozenset(_BOX_IDS) | frozenset(_BOX_ON_GOAL_IDS)
 
 
 def available() -> bool:
@@ -42,12 +59,43 @@ def available() -> bool:
     return _ASSETS.is_dir() and all((_ASSETS / f"{n}.png").exists() for n in _TILE_NAMES)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _tile(name: str, size: int):
     from PIL import Image
 
     im = Image.open(_ASSETS / f"{name}.png").convert("RGB")
     return im if im.size == (size, size) else im.resize((size, size), Image.NEAREST)
+
+
+@cache
+def _tinted(name: str, size: int, rgb: tuple[int, int, int], locked: bool):
+    """``name``'s tile recoloured towards ``rgb``, keeping the crate's shading."""
+    from PIL import ImageDraw, ImageOps
+
+    shadow = tuple(channel // 4 for channel in rgb)
+    im = ImageOps.colorize(_tile(name, size).convert("L"), black=shadow, white=rgb)
+    if locked:
+        # The stock on-target tile marks the goal with a red border that the tint
+        # flattens into the crate, so redraw it: a locked box has to stay legible
+        # as locked whatever colour it carries.
+        edge = max(1, size // 16)
+        ImageDraw.Draw(im).rectangle(
+            [0, 0, size - 1, size - 1], outline=(255, 255, 255), width=edge
+        )
+    return im
+
+
+def _glyph_tile(ch: str, size: int):
+    name = _GLYPH.get(ch)
+    if name is not None:
+        return _tile(name, size)
+    index = _BOX_IDS.find(ch)
+    if index >= 0:
+        return _tinted("box", size, _BOX_COLORS[index % len(_BOX_COLORS)], False)
+    index = _BOX_ON_GOAL_IDS.find(ch)
+    if index >= 0:
+        return _tinted("box_on_target", size, _BOX_COLORS[index % len(_BOX_COLORS)], True)
+    return _tile("floor", size)
 
 
 def _board_lines(text: str) -> list[str]:
@@ -74,7 +122,7 @@ def render_image(board_text: str, tile: int = 32):
     for r, line in enumerate(rows):
         for c in range(width):
             ch = line[c] if c < len(line) else " "
-            img.paste(_tile(_GLYPH.get(ch, "floor"), tile), (c * tile, r * tile))
+            img.paste(_glyph_tile(ch, tile), (c * tile, r * tile))
     return img
 
 
@@ -91,23 +139,61 @@ def data_uri(board_text: str, tile: int = 32) -> str | None:
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def save_gif(frames, path, *, tile: int = 32, ms: int = 450) -> bool:
+def _captioned(img, caption: str | None):
+    """Board plus the same caption bar rewind.gif uses, so a held last frame can say why it stopped."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    bar_h = 28
+    canvas = Image.new("RGB", (img.width, img.height + bar_h), (24, 26, 32))
+    canvas.paste(img, (0, 0))
+    if not caption:
+        return canvas
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle([0, img.height, 4, img.height + bar_h], fill=(217, 59, 48))
+    font = ImageFont.load_default(size=14)
+    draw.text((12, img.height + bar_h / 2), caption, font=font, fill=(236, 239, 244), anchor="lm")
+    return canvas
+
+
+def save_gif(
+    frames,
+    path,
+    *,
+    tile: int = 32,
+    ms: int = 450,
+    loop: int | None = 0,
+    hold_last_ms: int | None = None,
+    end_caption: str | None = None,
+) -> bool:
     """Write an animated GIF, one board frame per sub-step, so the play-by-play
     (the man walking around before each shove) animates. ``frames`` is a list of
-    board-render strings (see ``Sokoban.step_frames``). Returns ``False`` (writes
-    nothing) if Pillow/tiles are missing or no frame is renderable."""
+    board-render strings (see ``Sokoban.step_frames``).
+
+    ``loop=0`` repeats forever. ``loop=None`` omits the Netscape loop extension,
+    so the clip plays once and stops on the last frame. ``hold_last_ms`` keeps
+    that frame on screen after the motion. ``end_caption`` is drawn on that
+    frame only. Returns ``False`` (writes nothing) if Pillow/tiles are missing
+    or no frame is renderable."""
     if not available():
         return False
     imgs = [im for im in (render_image(f, tile) for f in frames) if im is not None]
     if not imgs:
         return False
+    if end_caption:
+        imgs = [
+            _captioned(im, end_caption if i == len(imgs) - 1 else None) for i, im in enumerate(imgs)
+        ]
+    duration: int | list[int] = ms
+    if hold_last_ms is not None:
+        duration = [ms] * (len(imgs) - 1) + [hold_last_ms]
+    kwargs = {"loop": loop} if loop is not None else {}
     imgs[0].save(
         path,
         format="GIF",
         save_all=True,
         append_images=imgs[1:],
-        duration=ms,
-        loop=0,
+        duration=duration,
+        **kwargs,
     )
     return True
 

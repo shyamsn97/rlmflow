@@ -1,14 +1,17 @@
-"""Needle in a haystack across many files.
+"""Needle in a haystack across many files, on any harness.
 
-Generates many files of random noise. One file contains a magic string. The
-agent uses the standard file tools to find it, delegating the search in
-parallel across batches.
+Generates files of random words; one line in one file holds a magic number. The
+root splits the files into batches and gives each to a ``searcher`` agent. The
+root and the searchers can each be rlmflow's REPL loop, a Claude Code session,
+or a pi session; ``--all`` runs every combination your machine can run and
+prints a table.
 
 Usage:
-    python examples/needle/filesystem.py
-    python examples/needle/filesystem.py --no-viz
-    python examples/needle/filesystem.py --viewer
-    python examples/needle/filesystem.py --in-process-local
+    python examples/needle/filesystem.py                              # repl root, repl workers
+    python examples/needle/filesystem.py --root claude_code
+    python examples/needle/filesystem.py --root repl --workers claude_code
+    python examples/needle/filesystem.py --root pi --workers pi --pi-provider anthropic
+    python examples/needle/filesystem.py --all --num-files 60
     python examples/needle/filesystem.py --docker-image rlmflow:local
 """
 
@@ -16,34 +19,40 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
+import os
 import random
+import shutil
 import string
 import sys
 import tempfile
+import time
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from rlmflow import (
-    ConsumerGroup,
-    DockerRuntime,
-    FILE_TOOLS,
-    Flow,
-    Graph,
-    GraphCheckpointer,
-    LiveTreeRenderer,
-    LocalRuntime,
-    SubprocessRuntime,
+from rlmflow import AgentConfig, DockerRuntime, Flow, Graph, SubprocessRuntime
+from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
+from rlmflow.tools.files import (
+    append_file,
+    edit_file,
+    line_count,
+    ls,
+    read_file,
+    read_lines,
+    write_file,
 )
 
-examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
-if str(examples_dir) not in sys.path:
-    sys.path.insert(0, str(examples_dir))
+NEEDLE_FILE_TOOLS = [read_file, write_file, append_file, edit_file, ls, read_lines, line_count]
+HARNESSES = ("repl", "claude_code", "pi")
+RUNS = Path(__file__).resolve().parents[1] / "_runs" / "needle-filesystem"
+TASK = (
+    "There are {n} text files in haystack/. Exactly one line in one file matches "
+    "`The magic number is <number>`. Find and return the number. Split the files "
+    "into batches and give each batch to a `searcher` agent; run them in parallel."
+)
 
-from common import build_client  # noqa: E402
 
-
-def generate_haystack(
-    directory: Path, num_files: int = 500, lines_per_file: int = 200
-) -> str:
+def generate_haystack(directory: Path, num_files: int = 500, lines_per_file: int = 200) -> str:
     words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"]
     answer = "".join(random.choices(string.digits, k=7))
     needle_file = random.randint(0, num_files - 1)
@@ -63,126 +72,157 @@ def generate_haystack(
     return answer
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Needle in a haystack across many files"
-    )
-    parser.add_argument("--num-files", type=int, default=500)
-    parser.add_argument(
-        "--viewer", action="store_true", help="Open the state viewer after finishing"
-    )
-    parser.add_argument("--model", default="gpt-5-mini")
-    parser.add_argument("--fast-model", default="gpt-5-nano")
-    parser.add_argument(
-        "--docker-image",
-        default=None,
-        help="If set, run agent code inside this Docker image (e.g. rlmflow:local).",
-    )
-    parser.add_argument(
-        "--in-process-local",
-        action="store_true",
-        help=(
-            "Use in-process LocalRuntime for debugging. This serializes REPL "
-            "blocks that need cwd/env isolation, so it is not true parallel "
-            "filesystem execution."
-        ),
-    )
-    parser.add_argument(
-        "--workdir",
-        default=None,
-        help="Directory to hold haystack/ and run in (default: a temp dir).",
-    )
-    parser.add_argument("--max-depth", type=int, default=1)
-    parser.add_argument("--max-iters", type=int, default=15)
-    parser.add_argument("--no-viz", action="store_true")
-    parser.add_argument(
-        "--out-dir",
-        default=str(Path(__file__).resolve().parents[1] / "_runs" / "needle-filesystem"),
-        help="Save the final run here (default: examples/_runs/needle-filesystem/).",
-    )
-    args = parser.parse_args()
+@dataclass
+class Outcome:
+    root: str
+    workers: str
+    correct: bool
+    result: object
+    seconds: float
+    agents: int
+    saved: Path
 
-    if args.docker_image:
-        print(f">>> DOCKER RUNTIME  image={args.docker_image}")
-    elif args.in_process_local:
-        print(">>> LOCAL RUNTIME (in-process; REPL blocks may serialize)")
-    else:
-        print(">>> SUBPROCESS RUNTIME")
 
-    tmp = None
-    if args.workdir is None:
-        tmp = tempfile.TemporaryDirectory()
-        workdir = Path(tmp.name)
-    else:
-        workdir = Path(args.workdir)
-        workdir.mkdir(parents=True, exist_ok=True)
+def missing(harness: str, args: argparse.Namespace) -> str | None:
+    """Why this machine can't run ``harness``, or ``None``."""
+    if (
+        harness == "repl"
+        and not os.environ.get("OPENAI_API_KEY")
+        and not args.model.startswith("claude")
+    ):
+        return "OPENAI_API_KEY is not set"
+    if harness == "claude_code" and importlib.util.find_spec("claude_agent_sdk") is None:
+        return "pip install 'rlmflow[claude]'"
+    if harness == "pi" and shutil.which(args.pi_command) is None:
+        return f"`{args.pi_command}` is not on PATH (npm i -g @mariozechner/pi-coding-agent)"
+    return None
 
-    try:
-        haystack_path = workdir / "haystack"
-        haystack_path.mkdir(parents=True, exist_ok=True)
-        for stale in haystack_path.glob("*.txt"):
-            stale.unlink()
-        answer = generate_haystack(haystack_path, num_files=args.num_files)
-        print(f"Generated {args.num_files} files in {haystack_path}")
 
-        if args.docker_image:
-            runtime = DockerRuntime(args.docker_image, working_directory=workdir)
-        elif args.in_process_local:
-            runtime = LocalRuntime(working_directory=workdir)
-        else:
-            runtime = SubprocessRuntime(working_directory=workdir)
-        runtime.register_tools(FILE_TOOLS)
+def config(harness: str, args: argparse.Namespace, **fields) -> AgentConfig:
+    """An ``AgentConfig`` for ``harness``, with the model and options that harness takes."""
+    if harness == "claude_code":
+        return AgentConfig(harness=harness, model=args.claude_model, **fields)
+    if harness == "pi":
+        options = {
+            "command": args.pi_command,
+            **({"provider": args.pi_provider} if args.pi_provider else {}),
+        }
+        return AgentConfig(harness=harness, model=args.pi_model, harness_options=options, **fields)
+    return AgentConfig(harness=harness, model=args.model, **fields)
 
-        llm_clients = None
-        if args.fast_model:
-            llm_clients = {"fast": build_client(args.fast_model)}
 
-        flow = Flow(
-            build_client(args.model),
-            llm_clients=llm_clients,
-            runtime=runtime,
-            max_depth=args.max_depth,
+def run_one(root_harness: str, worker_harness: str, args: argparse.Namespace) -> Outcome:
+    saved = Path(args.out_dir) / f"{root_harness}-{worker_harness}"
+    with tempfile.TemporaryDirectory() as tmp:
+        workdir = Path(tmp)
+        (workdir / "haystack").mkdir()
+        random.seed(args.seed)
+        answer = generate_haystack(workdir / "haystack", num_files=args.num_files)
+
+        searcher = config(
+            worker_harness,
+            args,
+            name="searcher",
+            description="searches one batch of files and returns the magic number, or None",
+            max_depth=0,
             max_iters=args.max_iters,
         )
-
-        graph = Graph(
-            query=(
-                f"There are {args.num_files} text files in haystack/. "
-                "Exactly one line in one file matches the pattern "
-                "`The magic number is <number>`. Find and return the number. "
-                "There are too many files to search manually, so split the work "
-                "into batches and delegate the search to subagents."
-            )
+        if worker_harness == "repl":
+            searcher = replace(searcher, model=args.worker_model)
+        flow = Flow(
+            configs=[searcher],
+            runtime=DockerRuntime(args.docker_image, working_directory=workdir)
+            if args.docker_image
+            else SubprocessRuntime(working_directory=workdir),
+            tools=NEEDLE_FILE_TOOLS,
         )
+        root_config = config(root_harness, args, max_depth=1, max_iters=args.max_iters)
 
-        consumers = ConsumerGroup([LiveTreeRenderer(clear=not args.no_viz)])
-        if args.out_dir:
-            consumers.append(GraphCheckpointer(Path(args.out_dir)))
+        g = Graph()
+        root = g.start(TASK.format(n=args.num_files))
+        consumers = ConsumerGroup([GraphCheckpointer(saved)])
+        if not args.no_viz:
+            consumers.append(
+                LiveGraphTree(title=f"needle: {root_harness} root, {worker_harness} workers")
+            )
 
         async def drive() -> None:
             try:
-                async for event in flow.run_streaming(graph=graph):
-                    consumers.handle(event, graph)
+                async for step in flow.run_streaming(g, root_config=root_config):
+                    consumers.handle(step, g)
             finally:
                 consumers.close()
+                await flow.aclose()
 
+        started = time.monotonic()
         asyncio.run(drive())
+        result = root.final_result()
+        return Outcome(
+            root_harness,
+            worker_harness,
+            answer in str(result),
+            result,
+            time.monotonic() - started,
+            len(g.agents()),
+            saved,
+        )
 
-        print(f"\n{'=' * 40}")
-        print(f"Result:         {graph.result()}")
-        print(f"Actual answer:  {answer}")
-        print(f"Correct:        {answer in graph.result()}")
 
-        if args.out_dir:
-            print(f"Graph checkpointed to {Path(args.out_dir)}")
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--root", choices=HARNESSES, default="repl", help="the root agent's harness"
+    )
+    parser.add_argument(
+        "--workers", choices=HARNESSES, default="repl", help="the searchers' harness"
+    )
+    parser.add_argument(
+        "--all", action="store_true", help="every root x workers combination that can run here"
+    )
+    parser.add_argument("--num-files", type=int, default=100)
+    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--max-iters", type=int, default=15)
+    parser.add_argument(
+        "--model", default="gpt-5-mini", help="a repl root's model (the Flow's default)"
+    )
+    parser.add_argument("--worker-model", default="gpt-5-nano", help="repl searchers' model")
+    parser.add_argument(
+        "--claude-model",
+        default=None,
+        help="Claude Code's model; default: your Claude setting",
+    )
+    parser.add_argument("--pi-model", default=None, help="pi's --model; default: pi's own")
+    parser.add_argument("--pi-provider", default=None, help="pi's --provider")
+    parser.add_argument("--pi-command", default="pi")
+    parser.add_argument(
+        "--docker-image", default=None, help="run every REPL in this image, e.g. rlmflow:local"
+    )
+    parser.add_argument("--no-viz", action="store_true", help="no live agent tree")
+    parser.add_argument(
+        "--out-dir", default=str(RUNS), help="each run is saved in <out-dir>/<root>-<workers>/"
+    )
+    args = parser.parse_args()
 
-        if args.viewer:
-            print("Viewer support is not part of the minimal example path.")
+    pairs = (
+        [(r, w) for r in HARNESSES for w in HARNESSES] if args.all else [(args.root, args.workers)]
+    )
+    outcomes: list[Outcome] = []
+    for root_harness, worker_harness in pairs:
+        reason = missing(root_harness, args) or missing(worker_harness, args)
+        if reason:
+            print(f"skip {root_harness} root, {worker_harness} workers: {reason}")
+            continue
+        print(f"\n>>> {root_harness} root, {worker_harness} workers")
+        outcome = run_one(root_harness, worker_harness, args)
+        outcomes.append(outcome)
+        print(f"result {outcome.result!r}, correct {outcome.correct}, saved to {outcome.saved}")
 
-        flow.close_repls(graph.graph_id)
-    finally:
-        if tmp is not None:
-            tmp.cleanup()
+    if not outcomes:
+        sys.exit("nothing ran")
+    print(f"\n{'root':<12} {'workers':<12} {'correct':<8} {'agents':<7} seconds")
+    for o in outcomes:
+        print(f"{o.root:<12} {o.workers:<12} {o.correct!s:<8} {o.agents:<7} {o.seconds:.0f}")
+    sys.exit(0 if all(o.correct for o in outcomes) else 1)
 
 
 if __name__ == "__main__":

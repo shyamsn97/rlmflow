@@ -2,13 +2,13 @@
 
 Inspired by alexzhang13/rlm-minimal's million-line magic-number demo. This
 version passes the haystack as a single REPL input instead of writing many
-files, so the agent must chunk `INPUTS["haystack"]` and fan out parallel child
+files, so the agent must chunk `haystack` and fan out parallel child
 agents.
 
 Usage:
     python examples/needle/haystack.py
-    python examples/needle/haystack.py --num-lines 1000000 --no-viz
-    python examples/needle/haystack.py --viewer
+    python examples/needle/haystack.py --no-viz
+    python examples/needle/haystack.py --num-lines 1000000
     python examples/needle/haystack.py --docker-image rlmflow:local
 """
 
@@ -21,20 +21,12 @@ import string
 import sys
 from pathlib import Path
 
-from rlmflow import (
-    ConsumerGroup,
-    DockerRuntime,
-    Flow,
-    Graph,
-    GraphCheckpointer,
-    LiveTreeRenderer,
-)
+from rlmflow import AgentConfig, DockerRuntime, Flow, Graph
+from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
 
-examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
+examples_dir = next(path for path in Path(__file__).resolve().parents if path.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
-
-from common import build_client  # noqa: E402
 
 
 def generate_massive_context(
@@ -67,9 +59,6 @@ def generate_massive_context(
 def main():
     parser = argparse.ArgumentParser(description="Needle in a massive haystack input")
     parser.add_argument("--num-lines", type=int, default=1_000_000)
-    parser.add_argument(
-        "--viewer", action="store_true", help="Open the state viewer after finishing"
-    )
     parser.add_argument("--model", default="gpt-5-mini")
     parser.add_argument("--fast-model", default="gpt-5-nano")
     parser.add_argument(
@@ -79,7 +68,13 @@ def main():
     )
     parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument("--max-iters", type=int, default=15)
-    parser.add_argument("--no-viz", action="store_true")
+    parser.add_argument(
+        "--harness",
+        default="repl",
+        choices=["repl", "claude_code", "pi"],
+        help="What runs the root agent; workers always use the REPL harness (filesystem.py mixes both).",
+    )
+    parser.add_argument("--no-viz", action="store_true", help="Disable the live agent tree")
     parser.add_argument(
         "--out-dir",
         default=str(Path(__file__).resolve().parents[1] / "_runs" / "needle-haystack"),
@@ -92,58 +87,61 @@ def main():
     else:
         print(">>> LOCAL RUNTIME")
 
-    haystack, answer, needle_line = generate_massive_context(num_lines=args.num_lines)
+    haystack, answer, _needle_line = generate_massive_context(num_lines=args.num_lines)
 
     runtime = DockerRuntime(args.docker_image) if args.docker_image else None
 
-    llm = build_client(args.model)
-    llm_clients = None
+    configs = [AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)]
     if args.fast_model:
-        llm_clients = {"fast": build_client(args.fast_model)}
-
-    flow = Flow(
-        llm,
-        llm_clients=llm_clients,
-        runtime=runtime,
+        configs.append(
+            AgentConfig(
+                name="searcher",
+                model=args.fast_model,
+                description="cheap model for searching one chunk",
+                max_iters=args.max_iters,
+                max_depth=0,
+            )
+        )
+    flow = Flow(configs=configs, runtime=runtime)
+    # Claude Code and pi pick their own model; --model is the REPL harness's.
+    config = AgentConfig(
+        harness=args.harness,
+        model=args.model if args.harness == "repl" else None,
         max_depth=args.max_depth,
         max_iters=args.max_iters,
     )
 
-    graph = Graph(
-        query=(
-            "I'm looking for a magic number buried somewhere in the haystack in "
-            "INPUTS['haystack']. What is it? Chunk the string and search the "
-            "pieces in parallel."
-        )
+    g = Graph()
+    root = g.start(
+        "I'm looking for a magic number buried somewhere in the haystack in "
+        "`haystack`. What is it? Chunk the string and search the "
+        "pieces in parallel.",
+        haystack=haystack,
     )
-
-    consumers = ConsumerGroup([LiveTreeRenderer(clear=not args.no_viz)])
+    out_dir = Path(args.out_dir)
+    consumers = ConsumerGroup()
+    if not args.no_viz:
+        consumers.append(LiveGraphTree(title="Needle haystack search"))
     if args.out_dir:
-        consumers.append(GraphCheckpointer(Path(args.out_dir)))
+        consumers.append(GraphCheckpointer(out_dir))
 
     async def drive() -> None:
         try:
-            async for event in flow.run_streaming(
-                graph=graph, inputs={"haystack": haystack}
-            ):
-                consumers.handle(event, graph)
+            async for item in flow.run_streaming(g, root_config=config):
+                consumers.handle(item, g)
         finally:
             consumers.close()
 
     asyncio.run(drive())
 
     print(f"\n{'=' * 40}")
-    print(f"Result:         {graph.result()}")
+    result = root.final_result()
+    print(f"Result:         {result}")
     print(f"Actual answer:  {answer}")
-    print(f"Correct:        {answer in graph.result()}")
+    print(f"Correct:        {answer in str(result)}")
+    print(f"Run saved to    {out_dir}")
 
-    if args.out_dir:
-        print(f"Graph checkpointed to {Path(args.out_dir)}")
-
-    if args.viewer:
-        print("Viewer support is not part of the minimal example path.")
-
-    flow.close_repls(graph.graph_id)
+    flow.runtime.close_repls()
 
 
 if __name__ == "__main__":

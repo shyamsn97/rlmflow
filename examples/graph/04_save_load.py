@@ -1,4 +1,4 @@
-"""Saving and loading a minimal Graph."""
+"""Saving and loading a graph."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 from rlmflow import Graph
 
 
-def build_graph() -> Graph:
+def build_graph():
     spec = importlib.util.spec_from_file_location(
         "graph_01_query", Path(__file__).with_name("01_query.py")
     )
@@ -33,14 +33,17 @@ def main() -> None:
     if out_dir.exists():
         shutil.rmtree(out_dir)
 
-    graph = build_graph()
-    run_dir = graph.save(out_dir / "run")
+    g, root = build_graph()
+    run_dir = g.save(out_dir / "run")
     loaded = Graph.load(run_dir)
 
+    def ids(graph: Graph) -> list[str]:
+        return [item.id for item in [*graph.nodes(), *graph.edges()]]
+
     print(f"saved: {run_dir}")
-    print("agents:", list(loaded.agents))
-    print("result:", loaded.result())
-    print("roundtrip:", graph.to_dict() == loaded.to_dict())
+    print("agents:", [agent.path() for agent in loaded.agents()])
+    print("result:", loaded.agent(root.id).final_result())
+    print("roundtrip:", ids(loaded) == ids(g))
 
 
 if __name__ == "__main__":

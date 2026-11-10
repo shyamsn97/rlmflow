@@ -1,0 +1,243 @@
+"""``rlmflow run``: a Fire class that builds a Flow and drives it.
+
+Constructor flags pick the model, runtime, and tools. ``rlmflow run print "fix
+the tests"`` (or ``rlmflow run --query "fix the tests"``) streams the tree and
+prints the answer.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+from rlmflow.cli import CliError, RunOptions, resolve_options
+
+# Anthropic for ``claude*``, OpenAI otherwise — the same rule ``client_for`` uses
+# to pick a client, applied one step earlier so a missing key is one line of
+# stderr instead of a stack trace from inside the SDK.
+API_KEYS = {"anthropic": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}
+
+
+class RunCLI:
+    """Run a coding agent over --workdir, checkpointing to <workdir>/graph.
+
+    Flags pick the model and runtime.
+
+        rlmflow run print "add a test for parse_args"
+        rlmflow run print "fix the failing test"
+        rlmflow run --model gpt-5 --workdir ./proj --query "fix the failing test"
+    """
+
+    def __init__(
+        self,
+        query: str | None = None,
+        model: str | None = None,
+        fast_model: str | None = None,
+        reasoning_effort: str | None = None,
+        workdir: str | None = None,
+        docker_image: str | None = None,
+        max_depth: int | None = None,
+        max_iters: int | None = None,
+        workers: int | None = None,
+        tools: str | None = None,
+        resume: str | None = None,
+        flow: str | None = None,
+    ) -> None:
+        self.query = None if query is None else str(query)
+        self.resume = resume
+        self.options, _ = resolve_options(
+            {
+                "model": model,
+                "fast_model": fast_model,
+                "reasoning_effort": reasoning_effort,
+                "workdir": workdir,
+                "docker_image": docker_image,
+                "max_depth": max_depth,
+                "max_iters": max_iters,
+                "workers": workers,
+                "tools": tools,
+                "flow": flow,
+            }
+        )
+
+    def print(self, query: str | None = None) -> None:
+        """Stream the tree and print the final answer.
+
+        Args:
+          query: What to do. Required unless ``--resume`` already has a run.
+        """
+        run_agent(self.query if query is None else str(query), self.options, resume=self.resume)
+
+    def __str__(self) -> str:
+        """``rlmflow run --query "..."`` with no verb is ``print``."""
+        self.print()
+        return ""
+
+
+def run_agent(
+    query: str | None,
+    options: RunOptions,
+    *,
+    resume: str | Path | None = None,
+    flow: Any = None,
+) -> None:
+    """Run the coding agent: stream one query, printing the tree as it grows."""
+    workdir = Path(options.workdir).expanduser().resolve()
+    workdir.mkdir(parents=True, exist_ok=True)
+    graph_dir = workdir / "graph"
+
+    own_flow = flow is None and options.flow is None
+    if flow is None:
+        flow = build_flow(options, workdir=workdir)
+    root = load_root(resume) if resume is not None else None
+
+    # Naming a model we did not choose would be a lie when --flow built the flow.
+    model = options.model if own_flow else (options.flow or "custom flow")
+    print(f"rlmflow · {model} · {options.docker_image or 'local'} · {workdir}")
+    _run_headless(flow, query, root, graph_dir)
+    print(f"run saved to {graph_dir}")
+
+
+def coding_configs(options: RunOptions) -> list[Any]:
+    """The coding agent's ``default`` config, and a ``worker`` config whose agents report what they changed."""
+    from rlmflow import CODING_HANDOFF_SCHEMA, AgentConfig
+
+    default = AgentConfig(
+        model=options.model, max_depth=options.max_depth, max_iters=options.max_iters
+    )
+    worker = AgentConfig(
+        name="worker",
+        model=options.fast_model,
+        description="Does one bounded coding task in the working directory and reports what changed.",
+        max_iters=options.max_iters,
+        output_schema=CODING_HANDOFF_SCHEMA if options.tools == "files" else None,
+    )
+    return [default, worker]
+
+
+def build_flow(options: RunOptions, *, workdir: Path) -> Any:
+    """The coding agent's Flow, or ``options.flow``'s (a ``module:factory``) when the caller has their own."""
+    from rlmflow import FILE_TOOLS, DockerRuntime, Flow, LocalRuntime
+    from rlmflow.llm import client_for
+
+    if options.flow is not None:
+        return load_factory(options.flow, project=workdir)
+
+    require_api_key(options.model)
+    runtime = (
+        DockerRuntime(options.docker_image, working_directory=workdir)
+        if options.docker_image
+        else LocalRuntime(working_directory=workdir)
+    )
+    effort = options.reasoning_effort
+    return Flow(
+        llm_clients={
+            name: client_for(name, reasoning_effort=effort)
+            for name in (options.model, options.fast_model)
+        },
+        configs=coding_configs(options),
+        runtime=runtime,
+        tools=[FILE_TOOLS] if options.tools == "files" else None,
+        workers=options.workers,
+    )
+
+
+def load_factory(target: str, *, project: Path | None = None) -> Any:
+    """Import ``module:factory`` (from ``project`` too) and call it; it must hand back a Flow."""
+    from rlmflow import Flow
+
+    module_name, _, attr = target.partition(":")
+    if not module_name or not attr:
+        raise CliError(f"--flow wants 'module:factory', not {target!r}")
+    if project is not None and str(project) not in sys.path:
+        sys.path.insert(0, str(project))
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as exc:
+        raise CliError(f"cannot import {module_name!r}: {exc}") from exc
+    factory = getattr(module, attr, None)
+    if factory is None:
+        raise CliError(f"{module_name!r} has no {attr!r}")
+    if not callable(factory):
+        raise CliError(f"{target} is not callable, so it cannot return a Flow")
+    flow = factory()
+    if not isinstance(flow, Flow):
+        raise CliError(f"{target} returned {type(flow).__name__}, not a Flow")
+    return flow
+
+
+def load_root(source: str | Path) -> Any:
+    """Load a saved run's graph to resume."""
+    from rlmflow import Graph
+
+    path = Path(source)
+    if not path.exists():
+        raise CliError(f"path not found: {path}")
+    try:
+        return Graph.load(path)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise CliError(f"cannot read a run from {path}: {exc}") from exc
+
+
+def require_api_key(model: str, environ: dict[str, str] | None = None) -> None:
+    environ = os.environ if environ is None else environ
+    provider = "anthropic" if model.startswith("claude") else "openai"
+    key = API_KEYS[provider]
+    if not environ.get(key):
+        raise CliError(f"{key} is not set, and {model} needs it")
+
+
+def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> None:
+    """Stream one query, printing the tree as it grows."""
+    from rlmflow import Graph
+    from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveTreeRenderer
+
+    if graph is None and not query:
+        raise CliError("nothing to run: pass a query, or --resume a saved run")
+    consumers = ConsumerGroup([LiveTreeRenderer(), GraphCheckpointer(graph_dir)])
+    consumers.init(flow)
+    if graph is None:
+        graph = Graph()
+        agent = graph.start(query or "")
+    else:
+        agent = _first_agent(graph)
+        if query:
+            _ask(graph, query)
+
+    async def stream() -> None:
+        async for item in flow.run_streaming(graph):
+            consumers.handle(item, graph)
+
+    try:
+        asyncio.run(stream())
+    finally:
+        consumers.close()
+        flow.runtime.close_repls()
+    print(f"\n{agent.final_result() or '(no result)'}\n")
+
+
+def _first_agent(graph: Any) -> Any:
+    tops = graph.roots()
+    if not tops:
+        raise CliError("the saved run has no agents")
+    return tops[0]
+
+
+def _ask(graph: Any, query: str) -> None:
+    """Queue another turn on a run that already exists."""
+
+    graph.send(_first_agent(graph), query)
+
+
+__all__ = [
+    "RunCLI",
+    "build_flow",
+    "load_factory",
+    "load_root",
+    "require_api_key",
+    "run_agent",
+]

@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {"hooks": [{"type": "command", "command": "rlmflow hook prompt", "timeout": 120}]}
+    ],
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "rlmflow hook stop", "timeout": 600}]}
+    ],
+    "SessionEnd": [
+      {"hooks": [{"type": "command", "command": "rlmflow hook end", "timeout": 30}]}
+    ]
+  }
+}

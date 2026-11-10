@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import threading
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,9 @@ from typing import Any
 # ``app.run()`` calls share the already-initialized manager.
 _OUTPUT_LOCK = threading.Lock()
 _OUTPUT_ENABLED = False
+# Starting an app draws its mount progress on that same shared manager, so
+# concurrent ``app.run()`` startups race the same way; start them one at a time.
+_APP_START_LOCK = threading.Lock()
 
 
 SUMMARY_KEYS = (
@@ -229,7 +233,7 @@ def submit(
                     }
                 try:
                     cache_volume.commit()
-                except Exception:
+                except Exception:  # noqa: BLE001 - the cache commit is best effort
                     pass
 
             try:
@@ -279,8 +283,10 @@ def submit(
     # ephemeral app alive until the remote call finishes. Each rlmflow child blocks
     # here, so several children block on independent Modal calls concurrently.
     _enable_output_once(modal)
-    with app.run():
-        call = run_trial.spawn(payload)
+    with ExitStack() as stack:
+        with _APP_START_LOCK:
+            stack.enter_context(app.run())
+            call = run_trial.spawn(payload)
         job_id = (
             getattr(call, "object_id", None)
             or getattr(call, "function_call_id", None)
@@ -351,9 +357,7 @@ def _secrets(modal, _config: ModalConfig) -> list[Any]:
 
 
 def _image(modal, config: ModalConfig):
-    python_version = config.python_version or (
-        f"{sys.version_info.major}.{sys.version_info.minor}"
-    )
+    python_version = config.python_version or (f"{sys.version_info.major}.{sys.version_info.minor}")
     return (
         modal.Image.from_registry(
             "nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04",

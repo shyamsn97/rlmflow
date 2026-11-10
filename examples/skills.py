@@ -1,135 +1,174 @@
-"""Skills as on-disk artifacts plus a dynamic prompt section.
+"""Skills as files on disk, in a live prompt section the agent can add to.
 
-This example demonstrates the intended shape for user-authored skills:
+Two pieces work together here:
 
-1. A skill is just a file on disk you choose, e.g.
-   ``skills/numpy-linear-algebra/SKILL.md``. There is no hardcoded directory.
-2. A prompt-builder callable section reads selected skill files at prompt
-   render time, so edits show up on the next turn.
-3. The agent runs with a real LLM client; pass ``--print-prompt`` to inspect
-   the rendered prompt before the LLM call.
+1. A **``ReplHarness`` subclass** whose ``prompt_sections`` add a ``skills``
+   section read from a ``SkillLibrary`` directory on every turn, so it is always live.
+   A skill is just a ``<name>.md`` file there: write your own before the run, or
+   edit one mid-run, and the agent sees it on its next turn.
+2. An **``add_skill`` tool**. A plain ``@tool``-decorated function passed via
+   ``tools=[...]`` lands in the REPL namespace and auto-documents itself in the
+   prompt. Because it closes over the same ``SkillLibrary``, the agent can
+   install a new skill mid-run and *see it in its own prompt on the next turn*.
+
+That is the self-extending pattern: give the model a tool that writes skills,
+and the prompt teaches it those skills one turn later.
 
     export OPENAI_API_KEY=...
-    python examples/skills.py --model gpt-4o-mini
+    python examples/skills.py --model gpt-4o-mini --print-prompt
+
+Runs against a real model by default. Pass ``--scripted`` to use ``ScriptedLLM``:
+a deterministic offline client that drives the *same* agent loop, installing the
+skill on turn one and, seeing it in its own prompt, solving the task on turn two.
 """
 
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
-from rlmflow import Flow, Graph, GraphCheckpointer, SystemPromptBuilder
-from rlmflow.clients import OpenAIClient
+from rlmflow import AgentConfig, Flow, Graph, LLMUsage
+from rlmflow.harnesses.repl import ReplHarness
+from rlmflow.tools import tool
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import example_run_dir, save_example_graph  # noqa: E402
+from common import example_run_dir  # noqa: E402
 
 
-NUMPY_LINEAR_ALGEBRA_SKILL = """\
-# NumPy Linear Algebra
+class SkillLibrary:
+    """Skills as ``<name>.md`` files in one directory, read on every render."""
 
-Use this skill when the user asks for a concrete matrix/vector computation,
-least-squares fit, eigenvalue calculation, or numerical verification.
+    def __init__(self, directory: str | Path) -> None:
+        self.directory = Path(directory)
+        self.directory.mkdir(parents=True, exist_ok=True)
 
-## Instructions
+    def add(self, name: str, body: str) -> None:
+        (self.directory / f"{name}.md").write_text(body.strip())
 
-- Use NumPy in the REPL for the actual arithmetic. Do not do matrix algebra by
-  hand when code can compute it exactly enough.
-- Print the key intermediate arrays or scalars so the trace is auditable.
-- Use `np.linalg.solve` for square nonsingular systems and `np.linalg.lstsq`
-  for overdetermined systems.
-- Verify the answer by computing a residual, reconstruction, or direct
-  substitution check.
-- In the final answer, include the numeric result and the verification residual.
+    def names(self) -> list[str]:
+        return sorted(path.stem for path in self.directory.glob("*.md"))
 
-## Example
-
-For a least-squares line `y = m*x + b` through points:
-
-```python
-import numpy as np
-
-x = np.array([0, 1, 2, 3], dtype=float)
-y = np.array([1, 2, 2, 4], dtype=float)
-A = np.column_stack([x, np.ones_like(x)])
-
-coeffs, residuals, rank, s = np.linalg.lstsq(A, y, rcond=None)
-m, b = coeffs
-pred = A @ coeffs
-residual = y - pred
-residual_norm = np.linalg.norm(residual)
-
-print("A =", A)
-print("coeffs =", coeffs)
-print("pred =", pred)
-print("residual =", residual)
-print("residual_norm =", residual_norm)
-```
-
-Then report `m`, `b`, `pred`, and `residual_norm`.
-"""
-
-
-def install_example_skill(skills_dir: Path) -> Path:
-    """Write a sample SKILL.md as a normal file on disk."""
-    path = skills_dir / "skills" / "numpy-linear-algebra" / "SKILL.md"
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(NUMPY_LINEAR_ALGEBRA_SKILL)
-    return path
-
-
-def skills_section(skill_paths: list[Path]):
-    """Return a callable prompt section that reads skill files dynamically."""
-
-    def render(flow, graph) -> str:
-        sections: list[str] = []
-        for path in skill_paths:
-            if not path.exists():
-                continue
-            body = path.read_text().strip()
-            sections.append(f"### `{path.name}`\n\n{body}")
-        if not sections:
-            return ""
+    def render(self) -> str:
+        skills = [(name, (self.directory / f"{name}.md").read_text()) for name in self.names()]
+        if not skills:
+            return (
+                "No skills installed yet. Call `add_skill(name, body)` to teach "
+                "yourself one; it will appear here on your next turn."
+            )
+        blocks = [f"### {name}\n\n{body}" for name, body in skills]
         return (
-            "Use these skills when they match the user's task. Each skill is a "
-            "file loaded into the prompt for this run.\n\n" + "\n\n".join(sections)
+            "Use these skills when they match the task. Each was installed into "
+            "this run via `add_skill` and is now part of your prompt.\n\n" + "\n\n".join(blocks)
         )
 
-    return render
+    def __len__(self) -> int:
+        return len(self.names())
 
 
-def build_flow(skills_dir: Path, *, model: str) -> Flow:
-    """Create a flow whose prompt includes the installed skill."""
-    skill_path = install_example_skill(skills_dir)
-    flow = Flow(OpenAIClient(model=model), max_iters=5)
-    prompt = SystemPromptBuilder()
-    prompt.sections.add(
-        "skills", skills_section([skill_path]), title="Skills", before="tools"
+@dataclass(frozen=True)
+class SkillsOptions:
+    directory: str
+
+
+class SkillsHarness(ReplHarness):
+    """The REPL harness, plus a ``skills`` section read from ``harness_options["directory"]``."""
+
+    name = "skills"
+    Options = SkillsOptions
+
+    def prompt_sections(self, flow, step):
+        library = SkillLibrary(self.options(step).directory)
+        return {**super().prompt_sections(flow, step), "skills": f"## Skills\n\n{library.render()}"}
+
+
+def make_add_skill(library: SkillLibrary):
+    """Build the ``add_skill`` tool bound to a specific library."""
+
+    @tool(
+        "Install a reusable skill (a name plus a markdown body of guidance) into "
+        "your own skill library. It appears in the Skills section of your system "
+        "prompt starting next turn.",
     )
-    flow.system_prompt = prompt
-    return flow
+    def add_skill(name: str, body: str) -> str:
+        library.add(name, body)
+        return f"installed skill {name!r} (library now has {len(library)}: {library.names()})"
+
+    return add_skill
+
+
+KADANE_SKILL = """\
+Kadane's algorithm finds the maximum-sum contiguous subarray in O(n): scan left
+to right keeping best_ending_here = max(x, best_ending_here + x) and track the
+running maximum of that quantity. Never carry a negative running sum into the
+next element. Verify small cases by brute force over all subarrays.
+"""
+
+QUERY = (
+    "You can extend yourself with `add_skill(name, body)`, which writes a skill "
+    "into your own system prompt (visible next turn). First, install a skill "
+    "named 'kadane' whose body explains, in a short paragraph, Kadane's algorithm "
+    "for the maximum contiguous subarray sum. Then apply it: compute the maximum "
+    "subarray sum of [-2, 1, -3, 4, -1, 2, 1, -5, 4] in the REPL, verify it by "
+    "brute force over all contiguous subarrays, and report the value."
+)
+
+
+class ScriptedLLM:
+    """Deterministic offline client that drives the add_skill -> solve loop.
+
+    It keys its reply on the *incoming system prompt*: turn one has an empty
+    Skills section, so it installs the skill; turn two sees that skill now in
+    the prompt (proof the section grew), so it solves and calls ``submit``.
+    """
+
+    def chat(self, messages, *args, **kwargs) -> str:
+        self.last_usage = LLMUsage(input_tokens=64, output_tokens=16)
+        system = messages[0]["content"] if messages else ""
+        if "### kadane" not in system:
+            return (
+                "```repl\n"
+                f'add_skill("kadane", """{KADANE_SKILL}""")\n'
+                'print("installed kadane; it will be in my prompt next turn")\n'
+                "```"
+            )
+        return (
+            "```repl\n"
+            "nums = [-2, 1, -3, 4, -1, 2, 1, -5, 4]\n"
+            "best = cur = nums[0]\n"
+            "for x in nums[1:]:\n"
+            "    cur = max(x, cur + x)\n"
+            "    best = max(best, cur)\n"
+            "brute = max(\n"
+            "    sum(nums[i:j])\n"
+            "    for i in range(len(nums))\n"
+            "    for j in range(i + 1, len(nums) + 1)\n"
+            ")\n"
+            "assert best == brute, (best, brute)\n"
+            'print("kadane =", best, "brute =", brute)\n'
+            "submit(str(best))\n"
+            "```"
+        )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--skills-dir",
-        type=Path,
-        default=None,
-        help="Directory where the sample SKILL.md is written (default: a temp dir).",
-    )
-    parser.add_argument("--model", default="gpt-4o-mini", help="OpenAI model to use.")
+    parser.add_argument("--model", default="gpt-4o-mini", help="Model to use.")
+    parser.add_argument("--max-iters", type=int, default=6)
     parser.add_argument(
         "--print-prompt",
         action="store_true",
-        help="Print the rendered prompt before making the LLM call.",
+        help="Print the Skills section before and after the run.",
+    )
+    parser.add_argument(
+        "--scripted",
+        action="store_true",
+        help="Use the deterministic offline ScriptedLLM instead of a real model.",
     )
     parser.add_argument(
         "--out-dir",
@@ -139,46 +178,39 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    tmp = None
-    if args.skills_dir is None:
-        tmp = tempfile.TemporaryDirectory()
-        skills_dir = Path(tmp.name)
+    library = SkillLibrary(tempfile.mkdtemp(prefix="skills-"))
+    if args.scripted:
+        flow = Flow(llm_clients={"scripted": ScriptedLLM()}, tools=[make_add_skill(library)])
+        model = "scripted"
+        print("Using the deterministic ScriptedLLM (offline).")
     else:
-        skills_dir = args.skills_dir
+        flow = Flow(tools=[make_add_skill(library)])
+        model = args.model
+        print(f"Using live client ({args.model}).")
+    config = AgentConfig(
+        harness=SkillsHarness,
+        model=model,
+        max_iters=args.max_iters,
+        harness_options={"directory": str(library.directory)},
+    )
 
-    try:
-        flow = build_flow(skills_dir, model=args.model)
+    g = Graph()
+    root = g.start(QUERY)
+    if args.print_prompt:
+        print("\n--- Skills section BEFORE run (empty) ---\n")
+        print(library.render())
 
-        query = (
-            "Fit the least-squares line y = m*x + b through points "
-            "(0, 1), (1, 2), (2, 2), (3, 4), then report m, b, the "
-            "predicted values, and the L2 residual norm."
-        )
-        graph = Graph(query=query)
+    print("\n--- run ---\n")
+    flow.run(g, root_config=config)
 
-        print(f"Wrote skill artifact under: {skills_dir}")
-        print("- skills/numpy-linear-algebra/SKILL.md")
-        if args.print_prompt:
-            print("\n--- rendered system prompt ---\n")
-            print(flow.build_system_prompt(graph))
-            print("\n--- live run ---\n")
+    print(f"\nagent installed skills: {library.names()}")
+    if args.print_prompt:
+        print("\n--- Skills section AFTER run (grown by the agent) ---\n")
+        print(library.render())
 
-        checkpointer = GraphCheckpointer(args.out_dir)
-
-        async def drive() -> None:
-            try:
-                async for _event in flow.run_streaming(graph=graph):
-                    checkpointer.handle(_event, graph)
-            finally:
-                checkpointer.close()
-
-        asyncio.run(drive())
-        print(graph.result())
-        save_example_graph(graph, "skills", out_dir=args.out_dir)
-        flow.close_repls(graph.graph_id)
-    finally:
-        if tmp is not None:
-            tmp.cleanup()
+    print("\nresult:", root.final_result())
+    print(f"Graph saved to {g.save(args.out_dir)}")
+    flow.runtime.close_repls()
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rlmflow"
-version = "0.4.2"
+version = "0.7.0"
 description = "Build recursive agents as inspectable execution graphs."
 readme = "README.md"
 license = "MIT"
@@ -24,6 +24,8 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
+    "cloudpickle>=3.0",
+    "fire>=0.6",
     "jsonschema>=4.0",
     "pydantic>=2.0",
     "tenacity>=8.0",
@@ -33,62 +35,46 @@ dependencies = [
 rlmflow = "rlmflow.cli:main"
 
 [project.optional-dependencies]
-openai = ["openai>=1.0"]
-anthropic = ["anthropic>=0.20"]
-tinker = ["tinker", "tinker-cookbook"]
-dspy = ["dspy"]
+openai = ["openai>=3.0"]
+anthropic = ["anthropic>=1.0"]
 mcp = ["mcp"]
+claude = ["claude-agent-sdk>=0.2"]
 modal = ["modal"]
-e2b = ["e2b"]
-# By-value injection/retrieval of live Python objects across a process-isolated
-# runtime (SubprocessRuntime / Docker / Modal). Not needed for LocalRuntime.
-cloudpickle = ["cloudpickle>=2.2"]
-daytona = ["daytona-sdk"]
-eval = [
-    "tqdm>=4.66",
-    "wandb>=0.16",
-    "datasets>=2.19",
-    "huggingface_hub>=0.23",
-    "pandas>=2.0",
-    "pyarrow>=15.0",
-    "openpyxl>=3.1",
-    "PyPDF2>=3.0",
-    "python-docx>=1.1",
+# The browser viewer. The figure, the timeline, the HTML stepper, and replay need
+# nothing; this is only for `open_viewer` / `rlmflow view --browser`.
+viewer = ["gradio>=4.44", "rich>=13.0"]
+# Rasterising those figures into PNG frames or a GIF.
+image = ["cairosvg>=2.7", "pillow>=10.0", "websocket-client>=1.8"]
+# Datasets for benchmarks/table (OOLONG) and examples/autoresearch.
+bench = ["datasets>=2.19"]
+docs = [
+    "mdformat>=0.7",
+    "mdformat-gfm>=0.3",
+    "mkdocs>=1.6",
+    "mkdocs-jupyter>=0.25",
+    "mkdocs-literate-nav>=0.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
 ]
-sandbox = ["modal", "e2b", "daytona-sdk"]
-# Gradio viewer pulls plotly transitively (used by the interactive timeline).
-# `rich` powers the live terminal tree (`LiveView`) and `rlmflow view` output.
-viewer = ["gradio>=4.29", "plotly>=5.0", "rich>=13.0"]
-tui = ["textual>=0.70", "rich>=13.0"]
-# Static image export of `node.plot()` (PNG/SVG/PDF) and GIFs. Used by
-# `save_image` / `save_steps` / `save_gif` and `node.save_image()`. Kaleido
-# ships native binaries; Pillow stitches step frames into a GIF.
-image = ["plotly>=5.0", "kaleido>=0.2.1", "pillow>=10.0"]
 all = [
-    "openai>=1.0",
-    "anthropic>=0.20",
-    "tinker",
-    "tinker-cookbook",
-    "dspy",
+    "claude-agent-sdk>=0.2",
+    "openai>=3.0",
+    "anthropic>=1.0",
     "mcp",
     "modal",
-    "e2b",
-    "daytona-sdk",
-    "cloudpickle>=2.2",
-    "tqdm>=4.66",
-    "wandb>=0.16",
-    "datasets>=2.19",
-    "huggingface_hub>=0.23",
-    "pandas>=2.0",
-    "pyarrow>=15.0",
-    "openpyxl>=3.1",
-    "PyPDF2>=3.0",
-    "python-docx>=1.1",
-    "gradio>=4.29",
-    "plotly>=5.0",
-    "textual>=0.70",
-    "kaleido>=0.2.1",
     "rich>=13.0",
+    "gradio>=4.44",
+    "cairosvg>=2.7",
+    "pillow>=10.0",
+    "websocket-client>=1.8",
+    "datasets>=2.19",
+    "mdformat>=0.7",
+    "mdformat-gfm>=0.3",
+    "mkdocs>=1.6",
+    "mkdocs-jupyter>=0.25",
+    "mkdocs-literate-nav>=0.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
 ]
 dev = [
     "pytest>=7.0",
@@ -96,6 +82,9 @@ dev = [
     "pytest-timeout>=2.0",
     "ruff>=0.4",
     "rich>=13.0",
+    # Tests that drive the claude_code harness and the `rlmflow serve` e2e runs import these.
+    "openai>=3.0",
+    "claude-agent-sdk>=0.2",
 ]
 
 [project.urls]
@@ -110,6 +99,9 @@ packages = ["rlmflow"]
 testpaths = ["tests"]
 pythonpath = ["tests"]
 addopts = "-q --strict-markers"
+markers = [
+    "live: runs the real claude CLI and model APIs; skipped unless RLMFLOW_LIVE=1",
+]
 # ``pytest-timeout`` is listed in the ``dev`` optional dependencies. If a test
 # ever hangs (REPL stdio deadlock, runaway proxy loop), this caps the damage
 # instead of the whole CI job stalling for hours.
@@ -128,15 +120,47 @@ exclude_lines = [
     "if __name__ == .__main__.:",
 ]
 
+# `make lint` runs isort, then black, then ruff over the same files, so all three
+# need the same column limit. Black defaults to 88, which used to re-wrap lines
+# ruff considered fine — and a re-wrapped `except` moves a trailing `# noqa` off
+# the line it suppresses.
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
 [tool.ruff]
 target-version = "py311"
 line-length = 100
 extend-exclude = [
     "examples/_data",
     "examples/_runs",
-    "examples/autoresearch_mini/prepare.py",
-    "examples/autoresearch_mini/train.py",
+    "examples/autoresearch/prepare.py",
+    "examples/autoresearch/train.py",
+    # Fixing a notebook rewrites the whole .ipynb JSON, so a one-import fix lands
+    # as a several-hundred-line diff. Not worth linting them for that.
+    "*.ipynb",
+]
+
+# Selected explicitly rather than left to ruff's defaults, which have widened
+# across releases: CI installs ruff unpinned, so an implicit rule set means a
+# green branch can go red without a code change. Anything added here has to be
+# paired with a pin bump in .github/workflows/ci.yml.
+[tool.ruff.lint]
+select = [
+    "E4",     # import placement (E402 is what the `from common import ...` noqas suppress)
+    "E7",
+    "E9",
+    "F",      # pyflakes
+    "I",      # import sorting, matching the isort pass in `make lint`
+    "UP",     # pyupgrade, floored at py311
+    "BLE",    # blind except — deliberate ones are annotated with a reason
+    "S102",   # exec(), allowed only where the REPL needs it
+    "RUF100", # keep the noqa list above honest
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"examples/autoresearch_mini/train.py" = ["E402"]
+"examples/autoresearch/train.py" = ["E402"]

@@ -13,31 +13,25 @@ starts with a tiny bootstrap that puts the ``examples/`` directory on
     if str(examples_dir) not in sys.path:
         sys.path.insert(0, str(examples_dir))
 
-    from common import build_client, example_run_dir, save_example_graph
+    from common import example_run_dir, save_example_graph
 
-This module centralizes the bits every example was duplicating: building an LLM
-client from a model name, resolving a per-example ``_runs`` directory, saving a
-graph, and adding the common CLI flags. Run directories are anchored to this
-file's location, so callers pass a name only (never ``__file__``).
+This module centralizes the bits every example was duplicating: resolving a
+per-example ``_runs`` directory, saving a trajectory, and adding the common CLI
+flags. Run directories are anchored to this file's location, so callers pass a
+name only (never ``__file__``).
 """
 
 from __future__ import annotations
 
 import argparse
+from collections.abc import AsyncIterable, AsyncIterator
 from pathlib import Path
 
-from rlmflow import Graph
-from rlmflow.clients import AnthropicClient, OpenAIClient
+from rlmflow import AgentConfig, Flow, Graph, GraphCheckpointer, Node, Step
+from rlmflow.view.text import kind
 
 # The directory this module lives in, i.e. the repo's ``examples/`` folder.
 EXAMPLES_DIR = Path(__file__).resolve().parent
-
-
-def build_client(model: str):
-    """Return an LLM client for ``model`` (Anthropic for ``claude*``, else OpenAI)."""
-    if model.startswith("claude"):
-        return AnthropicClient(model)
-    return OpenAIClient(model)
 
 
 def example_run_dir(name: str) -> Path:
@@ -56,6 +50,43 @@ def save_example_graph(
     path = graph.save(Path(out_dir) if out_dir is not None else example_run_dir(name))
     print(f"{label} {path}")
     return path
+
+
+async def checkpoint_stream(
+    items: AsyncIterable[Step],
+    graph: Graph,
+    path: str | Path,
+) -> AsyncIterator[Step]:
+    """Yield every streamed item while periodically checkpointing ``graph``."""
+    checkpointer = GraphCheckpointer(path)
+    try:
+        async for item in items:
+            checkpointer.handle(item, graph)
+            yield item
+    finally:
+        checkpointer.close()
+
+
+def print_agent_tree(graph: Graph, agent: Node, depth: int = 0) -> None:
+    """Each agent's nodes on one line, with the agents it launched indented below."""
+    line = " -> ".join(kind(node) for node in agent.nodes())
+    print(f"{'  ' * depth}[{agent.path()}] {line}")
+    for child in agent.children():
+        print_agent_tree(graph, child, depth + 1)
+
+
+async def print_run(
+    flow: Flow,
+    graph: Graph,
+    path: str | Path,
+    *,
+    width: int = 0,
+    root_config: AgentConfig | str | None = None,
+) -> None:
+    """Run ``graph`` to quiescence, checkpointing it and printing each node as it lands."""
+    stream = flow.run_streaming(graph, root_config=root_config)
+    async for step in checkpoint_stream(stream, graph, path):
+        print(f"{step.agent.path():<{width}}  {kind(step.node)}")
 
 
 def add_model_args(
@@ -83,13 +114,6 @@ def add_flow_args(
     parser.add_argument("--max-iters", type=int, default=max_iters)
 
 
-def add_viz_arg(parser: argparse.ArgumentParser) -> None:
-    """Add the common ``--no-viz`` flag."""
-    parser.add_argument(
-        "--no-viz", action="store_true", help="Disable the live terminal graph view."
-    )
-
-
 def add_out_dir_arg(
     parser: argparse.ArgumentParser,
     name: str,
@@ -110,8 +134,7 @@ __all__ = [
     "add_flow_args",
     "add_model_args",
     "add_out_dir_arg",
-    "add_viz_arg",
-    "build_client",
+    "checkpoint_stream",
     "example_run_dir",
     "save_example_graph",
 ]

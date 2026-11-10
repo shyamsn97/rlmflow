@@ -1,237 +1,108 @@
-# Streaming And Scheduling
+# Streaming and turns
 
-`Flow.run_streaming(...)` is the low-level way to drive a run. It mutates the
-caller-owned `Graph` in place and yields typed graph `Event`s as work is
-committed. The same method also controls **where execution stops** through the
-`until` argument.
-
-The important model is simple:
-
-- every agent has its own event queue;
-- every agent can have at most one active task at a time;
-- after an event is yielded, `Flow` decides whether to enqueue that agent's next
-  task;
-- if `Flow` does not enqueue a next task, that agent stops at the current
-  boundary.
-
-There are no parked coroutine frames for step boundaries. Stopping is just "do
-not add another task for this agent."
-
-## Basic Use
-
-Run to completion and observe every graph mutation:
+`Flow.run_streaming(g)` is the execution driver. It keeps one turn in flight for every running agent, including agents added to the graph while the stream runs, yields a `Step` for each node as it finishes, and stops at a boundary.
 
 ```python
-flow = Flow(client)
-graph = Graph(query="Audit this repository.")
+from rlmflow import AgentConfig, Flow, Graph
+from rlmflow.view.text import kind
 
-async for event in flow.run_streaming(graph=graph):
-    print(event.type, getattr(event, "node_type", ""))
+g = Graph()
+root = g.start("Audit this repository.")
 
-print(graph.result())
+flow = Flow(configs=[AgentConfig(model="gpt-5-mini")])
+async for step in flow.run_streaming(g):
+    print(step.agent.path(), kind(step.node), [e.kind for e in step.edges])
+
+print(root.final_result())
 ```
 
-`flow.run(graph=graph)` is the synchronous convenience wrapper for the same full run.
-
-## Boundaries With `until`
-
-`until` controls whether the scheduler adds more work after each event.
-
-`until="done"` is the default. It keeps scheduling until the whole graph is
-finished:
-
-```python
-async for event in flow.run_streaming(graph=graph, until="done"):
-    ...
-```
-
-`until="next"` advances the active frontier by one node-producing task, then
-stops:
-
-```python
-async for event in flow.run_streaming(graph=graph, until="next"):
-    ...
-```
-
-Use it when you want the most literal debug step. It surfaces errors immediately:
-if an agent emits `ErrorOutput`, the scheduler stops there instead of trying to
-heal it.
-
-`until="idle"` advances each active agent until it reaches a rest point:
-
-```python
-async for event in flow.run_streaming(graph=graph, until="idle"):
-    ...
-```
-
-Rest means `ExecOutput` or `DoneOutput`. `ErrorOutput` is not rest, so `idle`
-keeps scheduling the agent until it recovers to a clean observation or finishes.
-
-Named event boundaries stop when that event is observed:
-
-```python
-async for event in flow.run_streaming(graph=graph, until="supervising"):
-    ...
-
-async for event in flow.run_streaming(graph=graph, until="error"):
-    ...
-```
-
-A callable boundary receives `(event, graph)`:
-
-```python
-def child_finished(event, graph):
-    return (
-        event.type == "append_node"
-        and event.agent_id != "root"
-        and event.node_type == "done_output"
-    )
-
-async for event in flow.run_streaming(graph=graph, until=child_finished):
-    ...
-```
-
-For non-`done` boundaries, the run is left alive. Continue it by calling
-`run_streaming(...)` again with the same graph:
-
-```python
-async for _event in flow.run_streaming(graph=graph, until="idle"):
-    pass
-
-graph.inject("Use this controller note before finalizing.")
-
-async for _event in flow.run_streaming(graph=graph, until="done"):
-    pass
-```
-
-Because the previous streaming call stopped with no active work, the injected
-graph edit is read before any new task is scheduled.
-
-## Multiple Steps With `n`
-
-`n` means "number of boundary passes", not "number of raw events".
-
-```python
-async for event in flow.run_streaming(graph=graph, until="next", n=3):
-    ...
-```
-
-With `until="next"`, that advances the active frontier three scheduler steps.
-With `until="idle"`, it advances to idle three times. Each step may yield more
-than one event because multiple agents can run in parallel.
-
-## What A Task Is
-
-Internally, one scheduled agent task emits one graph-producing unit:
-
-- if the current node is a `UserQuery`, `ExecOutput`, `ErrorOutput`, or
-  `ResumeAction`, the task calls the model and commits `LLMOutput`;
-- if the current node is `LLMOutput`, the task commits `ExecAction`;
-- if the current node is `ExecAction`, the task executes the code and commits
-  `ExecOutput`, `ErrorOutput`, `DoneOutput`, or `SupervisingOutput`.
-
-After each committed event, the scheduler decides whether to schedule the next
-task for that same agent.
-
-This keeps `next` precise: one scheduler step cannot silently run a full model
-turn beyond the event you observed.
-
-## The Task Queue
-
-The queue is intentionally small and graph-free. It tracks:
-
-- `queues[agent_id]`: emitted events waiting to be streamed;
-- `tasks[agent_id]`: the currently running task for that agent, if any;
-- `queued[agent_id]`: follow-up work remembered for an agent that is still
-  running;
-- `notify`: an event that wakes the stream when new output or task completion
-  happens.
-
-The queue does not know about `until`, graph nodes, child agents, or prompts.
-Those are `Flow` concerns.
-
-The core behavior is:
-
-```python
-queue.add(agent_id, work)     # schedule next work, or remember it if running
-queue.emit(agent_id, event)   # append an event to that agent's stream
-queue.stop(agent_id)          # drop queued follow-up work
-
-async for agent_id, event in queue.stream():
-    ...
-```
-
-When a task finishes, the queue starts any remembered follow-up for the same
-agent. If there is no follow-up, the agent simply has no work.
-
-## Parallelism
-
-Parallelism falls out of per-agent scheduling:
-
-- every ready agent can have one active task;
-- different agents' tasks run concurrently as unbounded `asyncio` tasks;
-- only *blocking* leaf work (a sync `client.chat`) is bounded — by the flow's
-  `Pool` (`ThreadPool(workers=N)`); an async client bypasses the pool entirely;
-- `SequentialPool` runs blocking calls one at a time (deterministic; debug).
-
-So `until="next"` is a global step: every ready agent can advance once in the
-same streaming call. A parent waiting for children does not consume a step until
-the children finish.
-
-## Delegation
-
-`launch_subagents(...)` creates child graphs and emits normal graph events:
-
-1. the parent emits `SupervisingOutput`;
-2. child graphs get `UserQuery` nodes;
-3. child work is scheduled;
-4. the parent waits for child results;
-5. the parent emits `ResumeAction`, then continues and eventually emits its next
-   observation.
-
-Delegation uses one path regardless of `until`: each child is submitted to a task
-queue and self-drives (`run_agent`), and the parent polls until they finish. When
-a streaming run is driving the graph, children are submitted to *its* queue, so
-the stream observes their events and the queue's one-task-per-agent rule keeps
-anything from double-driving a child. No agent run ever holds a pool slot while
-it waits on its children, so nested delegation cannot starve at any depth.
-
-## Reactive Control
-
-The safe edit point is between streaming calls:
-
-```python
-async for _event in flow.run_streaming(graph=graph, until="idle"):
-    pass
-
-graph.inject("Controller instruction: finish now.")
-
-async for _event in flow.run_streaming(graph=graph, until="done"):
-    pass
-```
-
-At that point no scheduler task is running. The graph is the durable state; the
-queue is disposable execution state. Rewinds, forks, and injected nodes should be
-represented as graph mutations, then the next streaming call schedules work from
-that graph frontier.
-
-## Mental Model
-
-Think of the graph as the source of truth and the queue as a pump:
+The graph is durable state. The Flow holds only live execution state.
 
 ```text
-graph frontier -> schedule ready agent tasks -> emit events -> yield events
-              -> decide continue/stop per agent -> schedule next tasks
+durable                      live
+─────────────────────        ───────────────────────────
+Graph                        Flow.run_streaming
+  agents, their nodes          flow.tasks: one turn per agent
+  edges                        REPL locks, waiters
+                               Runtime resources
 ```
 
-`until` is the "decide continue/stop" policy:
+## Source map
 
-- `done`: keep going until the graph is finished;
-- `next`: stop each agent after its next event;
-- `idle`: keep going until each agent reaches a clean rest;
-- `error`: keep going until an error event is observed;
-- `supervising`: keep going until a delegation event is observed;
-- callable: keep going until your predicate returns true.
+- [`rlmflow/flow.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/flow.py): `run_streaming` (the driver loop), `_schedule`, `_turn` (one turn), `run_node` (run one node in the agent's REPL), `deliver_results`, `edit`.
+- [`rlmflow/graph/graph.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/graph/graph.py): `status`, `last_turn`, `send`.
+- [`rlmflow/graph/calls.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/graph/calls.py): `CallLog`, what a node's tool calls saved.
 
-This is why the implementation can stay small: stopping does not require a
-special pause primitive. It just means there is no next task in the queue.
+## The driver loop
+
+```text
+open toolkits
+loop:
+    forget finished turns; re-raise a root's error
+    for every agent with no turn in flight:
+        attach unseen results
+        if status is "running": send the budget's final-turn message if due, start a turn
+    yield a Step for every node that finished since; stop if the boundary says so
+    if no turn is in flight: stop
+    wait for the graph to change
+finally: cancel what's in flight, attach remaining results, close toolkits
+```
+
+Every node that finishes wakes the driver, and so does `flow.wake()`, which is safe from any thread. Anything that writes to the graph during a stream (code launching an agent, a peer's message, host code calling `g.send` between steps) is scheduled on the next pass.
+
+## One turn
+
+A turn runs the node an edit left ready, if there is one; otherwise it calls the agent's harness. The native `repl` harness:
+
+```text
+call the model with the transcript      -> one assistant node with the reply
+reply has one repl block                -> its code runs in place; terminal if it submitted
+reply has no repl block                 -> the reply is the answer; terminal
+reply has several, empty or open blocks -> the node records the error; nothing runs
+```
+
+The node records `seen`, how many of the agent's nodes the prompt had, so a message that arrived during the model call is still unread and the agent takes another turn.
+
+Session harnesses (`claude_code`, `pi`, `interactive`) run one session turn per step; code the session runs through `rlmflow repl` lands as nodes during the turn, and the turn ends with a node carrying `seen` and either `terminal` or `idle` (it is waiting for agents it launched or for unread results).
+
+A turn that raises appends a terminal node with the error as its result. Cancellation is not caught.
+
+## Waiting
+
+```python
+flow.tasks  # agent id -> its turn in flight
+flow.wake()  # ask the driver to look again; safe from any thread
+await flow.wait_for(pred)  # wait until pred() holds, checked whenever the graph changes
+```
+
+`await child` in agent code is a `wait_for` on "the child is done". It runs on the Flow's event loop, so code blocked on a child holds no model slot.
+
+## Workers versus Runtime
+
+`Flow(workers=n)` bounds how many model calls run at once; by default there is no bound. `Runtime` places code: one REPL per agent, in a worker process, container or sandbox. A parent awaiting its children holds neither.
+
+## Stream boundaries
+
+| `until`            | Stops after                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------- |
+| `"done"` (default) | No turn is in flight and no agent is running.                                               |
+| `"next"`           | The next node an agent wrote itself (messages are written by senders, so they don't count). |
+| `"idle"`           | The next node that ran code or ended a turn.                                                |
+| a callable         | The first `step` for which `until(step)` is true.                                           |
+
+Stopping cancels the turns still in flight. A node cut off mid-run goes back to ready, keeping what it saved: the agents it launched keep running on the next stream, and the next run executes it again in place, so its launches return the same agents and its finished awaits their saved results. Nothing a child did is paid for twice. Any other turn that was cut off (a model call, a session turn) runs again. A run saved mid-run loads the same way.
+
+## Ordering
+
+Nodes are yielded in the order they finished. Within one agent that is the order of its nodes, which is the order its REPL ran things in; across agents it is completion order, which `seq` records.
+
+## Failure behaviour
+
+Agent code that raises is an observation: the node records the error and the model sees it next turn. A turn that raises (a provider error, a harness crash) finishes its agent with a terminal node and an error; for a root it is also re-raised from the stream.
+
+## Invariants
+
+1. One turn per agent in flight, kept by `flow.tasks`.
+1. Every finished node is yielded exactly once.
+1. Results are delivered once, recorded by `return` edges.
+1. Edits through `flow.edit` cancel the affected turns before they apply.

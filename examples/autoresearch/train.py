@@ -159,7 +159,11 @@ def main() -> None:
     torch.manual_seed(42)
     torch.set_float32_matmul_precision("high")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    autocast = torch.amp.autocast(device_type=device, dtype=torch.bfloat16) if device == "cuda" else nullcontext()
+    autocast = (
+        torch.amp.autocast(device_type=device, dtype=torch.bfloat16)
+        if device == "cuda"
+        else nullcontext()
+    )
 
     tokenizer = Tokenizer.from_directory()
     config = GPTConfig(vocab_size=tokenizer.get_vocab_size())
@@ -208,7 +212,7 @@ def main() -> None:
         if step % 10 == 0:
             print(
                 f"step {step:05d} | loss {loss_f:.4f} | smooth {smooth_loss:.4f} | "
-                f"lr {LEARNING_RATE * mult:.2e} | dt {dt*1000:.0f}ms | elapsed {train_seconds:.0f}s",
+                f"lr {LEARNING_RATE * mult:.2e} | dt {dt * 1000:.0f}ms | elapsed {train_seconds:.0f}s",
                 flush=True,
             )
         if not math.isfinite(loss_f):

@@ -1,184 +1,164 @@
 # Observability
 
-Everything you need to debug a run lives in the `Graph`. Constructing a
-`Graph(query=...)` seeds it, `run`/`run_streaming` mutate it in place, and
-`Graph.save`/`Graph.load` persist it.
+Everything needed to inspect a run lives in its graph, live or saved.
 
-## Data model
-
-A `Graph` is a recursive structure: it represents **one agent**, and
-`graph[other_aid]` returns the `Graph` rooted at any descendant agent. Per-agent
-fields live on `Graph` itself; sub-agents live in `graph.children`; the
-trajectory lives in `graph.nodes`.
+## Query the graph
 
 ```python
-graph.agent_id           # str — this agent's id
-graph.graph_id           # str — session id (changes on an isolated fork)
-graph.depth              # int — recursion depth
-graph.query              # str — original task
-graph.inputs             # dict[str, str] — the agent's INPUTS
-graph.model              # str — model label for this agent
-graph.prompt_profile     # str — PromptProfile selector (not prompt text)
-graph.parent_agent_id    # str | None — id of the spawning agent
-graph.output_schema      # required output schema, if any
+root.final_result()  # the root's answer, or None
+root.status()  # "running" | "idle" | "done"
+root.nodes()  # its nodes, root first
+root.nodes()[-1]  # its latest node
+root.last_turn()  # the node that ended its latest turn
+root.children()  # the agents it launched
+root.subtree()  # it and every agent below it
+g.usage(), g.usage().cost_usd  # tokens and cost, for the run or g.usage(a.subtree())
 
-graph.nodes              # list[Node] — this agent's trajectory (seq order)
-graph.children           # dict[str, Graph] — direct sub-agents
-
-# subtree views
-graph.agents             # dict[agent_id, Graph] — every agent in the tree
-graph.walk()             # iterator over every Graph (this agent, then descendants)
+g.agents(), g.nodes(), g.edges(kind="return")
+[n for n in g.nodes() if n.runs_code and n.error]  # every node whose code failed
 ```
 
-`Node` carries only what changes per turn — the payload (`content`, `code`,
-`output`, `reply`, `result`, `error`, and token deltas in `metadata`) — tagged by
-its `type`. Trajectories strictly alternate **observation** and **action** nodes;
-every action is followed by exactly one observation. Eight concrete node classes
-live under three base classes. See [`node_model.md`](node_model.md) for the full
-flow and wait/resume semantics:
+To ask about a worker, hold the worker:
 
-| `type`               | Class               | Base              | Carries                                                                     |
-|----------------------|---------------------|-------------------|-----------------------------------------------------------------------------|
-| `user_query`         | `UserQuery`         | `ObservationNode` | initial task content (root user query / spawn prompt for a child)           |
-| `llm_output`         | `LLMOutput`         | `ObservationNode` | model reply, extracted REPL code, token deltas in `metadata["usage"]`       |
-| `exec_action`        | `ExecAction`        | `ActionNode`      | "ran fresh code" — optional code echo                                       |
-| `exec_output`        | `ExecOutput`        | `ObservationNode` | runtime stdout/stderr                                                       |
-| `supervising_output` | `SupervisingOutput` | `ObservationNode` | code suspended at an awaited launcher; `waiting_on` lists pending children  |
-| `resume_action`      | `ResumeAction`      | `ActionNode`      | "supervisor resumed paused code" — produces the next observation            |
-| `error_output`       | `ErrorOutput`       | `ObservationNode` | failure observation                                                         |
-| `done_output`        | `DoneOutput`        | `ObservationNode` | terminal answer from `done(...)`                                            |
+```python
+worker = root.children()[0]
+worker.path()  # "root.worker-0"
+worker.nodes()
+worker.final_result()
+g.usage(worker.subtree())
+```
 
-## Querying the graph
+Each node carries `role`, `text`, `input`, `code`, `output`, `result`, `error`, `owner`, `data`, `metadata` and `seq`; `rlmflow.view.text.kind(node)` names it for display. Model usage is on model turns' `data["usage"]`. Model turns and code that ran also carry host-measured timing, as epoch seconds:
+
+```python
+node.started_at, node.finished_at  # None for nodes no turn timed
+```
+
+A node written from inside a turn rather than by one, such as a message, has no timing. Timing is measured on the Flow host, so local, subprocess, Docker and Modal runs share one clock. Saved graphs store it as ISO timestamps plus a `duration_ms`.
+
+Edges answer where things came from: `g.edges(kind="spawn", target=agent.id)` is the node that launched an agent, and `g.edges(kind="return", target=node.id)` the results that reached a node. See [The graph](node_model.md).
+
+## Persistence
+
+```python
+g.save("runs/shepherd")
+loaded = Graph.load("runs/shepherd")
+```
+
+The directory holds `graph.json` (nodes and edges; see [The graph](node_model.md#persistence)) and `blobs/` for large inputs. The file is written to a temporary name, flushed and atomically replaced, so an interrupted save leaves the previous complete graph. Loading restores the graph but no REPL; see [Control](control.md#save-and-load).
+
+## Live consumers
+
+`run_streaming` hands you each finished node as a `Step`, which is all a consumer needs. `rlmflow.consumers` is the small protocol for fanning that out:
+
+```python
+from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveTreeRenderer, StreamConsumer
+from rlmflow.view.text import kind
+
+
+class Progress(StreamConsumer):
+    def handle(self, step, graph):
+        print(step.agent.path(), kind(step.node), step.node.finished_at)
+
+    def close(self):
+        print("done")
+
+
+consumers = ConsumerGroup([LiveTreeRenderer(), Progress(), GraphCheckpointer("runs/shepherd")])
+try:
+    async for step in flow.run_streaming(g):
+        consumers.handle(step, g)
+finally:
+    consumers.close()
+```
+
+`handle(step, graph)` is the whole contract; `close()` is optional. `ConsumerGroup` fans a step out to each consumer in turn and closes them in reverse, suppressing errors from a close so one failing consumer cannot strand the others.
+
+The shipped consumers are:
+
+- `LiveTreeRenderer`: clears and redraws a compact agent tree;
+- `LiveGraphTree`: a Rich live forest with status colors and spinners (falls back to the plain renderer without Rich or a terminal);
+- `GraphCheckpointer`: saves after two seconds or 50 nodes by default, and on every terminal node and on close; configure `interval_s` and `interval_nodes`, or call `flush()`;
+- `WorkspaceSync`: mirrors a sandbox working directory into a local copy.
+
+```text
+Find the needle across 500 files.
+└── root: children running 2 (1 turns)
+    ├── root.batch-0: running code (1 turns)
+    └── root.batch-1: planning (1 turns)
+```
+
+## Stepping through a run
+
+Every node, roots included, is stamped with a `seq` when it is added, so the order a run happened in is those stamps sorted, across agents. That is what `timeline` and `steps` hand back:
+
+```python
+from rlmflow.view import steps, timeline
+
+for node in timeline(loaded):  # every node, in the order they appeared
+    print(node.owner, node.role)
+
+for step in steps(loaded):  # the same order, with content and offsets
+    print(f"{step.index:>3} +{step.elapsed:6.2f}s {step.title:<32} {step.summary}")
+```
+
+The same run can be drawn. `graph_svg` is one marker per agent and node, coloured and shaped by kind, with `return` and `write` edges dashed, and `render_html` is a single self-contained file that walks the run: the graph with the step you are on ringed, everything after it faded back, and its content beside it.
+
+```python
+from rlmflow.view import save_html, save_svg
+
+save_svg(loaded, "run.svg")
+save_html(loaded, "run.html")  # steppable, no server, no network
+```
+
+From the shell:
+
+```bash
+RUN=examples/_runs/shepherd/shepherd
+rlmflow view show $RUN               # the agent tree, then the timeline
+rlmflow view show $RUN --step 12     # one step, with its content
+rlmflow render svg $RUN run.svg
+rlmflow render html $RUN run.html
+```
+
+In the stepper, the arrow keys move a step, `Home` and `End` jump to the ends, and the address bar carries the step you are on, so `run.html#12` opens on step 12.
+
+## Replaying a run
+
+`replay` hands back the graph as it stood after each step, so anything that reads a graph works on a replay:
 
 ```python
 from rlmflow import render_tree
+from rlmflow.view import render_steps, replay
 
-render_tree(graph)                             # ASCII tree render
-graph.current()                                # latest node on the root agent
-graph.result()                                 # terminal answer (DoneOutput.result)
-graph.finished                                 # root node terminal and all descendants finished
-graph.tokens()                                 # (in, out) — recursive by default
-graph.tokens(recursive=False)                  # (in, out) — just this agent
-graph.total_tokens()                           # in + out
+for snap in replay("examples/_runs/shepherd/shepherd"):
+    print(render_tree(snap))
 
-graph["root.scanner_api"]                      # sub-Graph rooted at that agent
-graph.agents["root.scanner_api"]               # same, but explicit
-graph.children                                 # dict[str, Graph] of direct children
-graph.agents["root.scanner_api"].nodes         # ordered list[Node] for one agent
-graph.agents["root.scanner_api"].result()      # that agent's latest DoneOutput payload
+for frame in render_steps("examples/_runs/shepherd/shepherd"):
+    print(frame)
 ```
 
-There is no separate node index — iterate the tree with `walk()` and filter on
-`node.type` (or `isinstance`):
+Each snapshot is rebuilt from the saved records, so they can be collected or rendered out of order. Edits are applied in place, so a replay of an edited run shows the edited graph cut at each step, not what it held before the edit.
 
-```python
-errors = [n for a in graph.walk() for n in a.nodes if n.type == "error_output"]
-dones  = [n for a in graph.walk() for n in a.nodes if n.type == "done_output"]
-```
+## The browser viewer
 
-## Run persistence
-
-`Graph.save(path)` writes a self-contained run directory. The manifest is
-`graph.json`; per-agent logs live under `agents/`; ordinary files produced by
-agent tools live beside the saved graph when your runtime working directory is
-the same directory.
-
-```text
-run/
-  graph.json
-  agents/
-    root/
-      agent.json
-      session.jsonl
-      latest.json
-      child_a/
-        agent.json
-        session.jsonl
-        latest.json
-```
-
-`Graph.load(path)` rehydrates the same recursive `Graph` shape the engine emits:
-
-```python
-run_dir = graph.save("runs/deep_research")
-latest = rlmflow.Graph.load(run_dir)
-```
-
-For live checkpointing, save inside the stream loop:
-
-```python
-graph = Graph(query=query)
-
-async def drive():
-    async for _event in agent.run_streaming(graph=graph):
-        graph.save("runs/deep_research")
-
-asyncio.run(drive())
-```
-
-## Live terminal tree
-
-`render_tree(graph)` renders the whole agent tree from any snapshot. Reprint it
-each tick, or hand events to a stream consumer:
-
-```python
-from rlmflow import render_tree, LiveGraphTree, LiveTreeRenderer, ConsumerGroup
-
-# One-shot render from any snapshot
-print(render_tree(graph))
-
-# Live consumer: Rich Live + active/waiting status (spinners on working agents)
-live = LiveGraphTree(title="run", every_s=0.1)
-
-async def drive():
-    async for event in agent.run_streaming(graph=graph):
-        live.handle(event, graph)
-    live.close()
-
-asyncio.run(drive())
-```
-
-`LiveTreeRenderer` is the lower-level renderer if you want to own the paint loop
-yourself. Fan events to several consumers with `ConsumerGroup([live, other])` —
-`handle`/`close` fan out; per-consumer methods like `label(...)` stay on the
-individual members.
-
-See [`examples/shepherd/`](../examples/shepherd/) for a `ConsumerGroup` of
-`LiveGraphTree` plus a custom board `PanelViewer`.
-
-## Gradio viewer
-
-`open_viewer(source)` launches a browser app with a step slider, an agent
-selector, and a per-agent transcript over a swimlane of the run. `source` can be
-a saved run directory, a `Graph`, or a list of snapshots:
+`open_viewer` puts a step slider over the figure, an agent picker beside it, and that agent's nodes underneath, all as of the step you are on:
 
 ```python
 from rlmflow import open_viewer
 
-open_viewer("runs/deep_research")   # saved run directory
-open_viewer(graph)                  # single snapshot
+open_viewer("examples/_runs/shepherd/shepherd")  # needs: pip install rlmflow[viewer]
 ```
 
-Requires `pip install rlmflow[viewer]`.
+## Frames and GIFs
 
-## Static image / step exports
-
-For blog posts, PR comments, papers, or CI artifacts, render the graph to a PNG
-(or SVG/PDF), or write one frame per execution step. `replay(graph)` gives the
-per-step snapshots these build on.
+For a strip of images or an animation, `rlmflow[image]` adds a rasteriser:
 
 ```python
-from rlmflow import save_image, save_steps, replay
+from rlmflow.view import save_frames, save_gif
 
-save_image("runs/deep_research", "final.png")
-save_steps("runs/deep_research", "frames/",     # step_000.png, step_001.png, ...
-           width=1600, height=1200, scale=2, marker_mult=3.5, text_mult=2.2)
-
-snapshots = replay(graph)                        # list[Graph], one per step
+save_frames(g, "out/", every=5)  # a PNG per fifth step
+save_gif(g, "run.gif", every=5, ms_per_frame=120)
 ```
 
-Image export needs `kaleido`:
-
-```
-pip install rlmflow[image]
-```
+`rlmflow render frames $RUN out/ --every 5` and `rlmflow render gif $RUN run.gif --every 5` do the same from the shell.

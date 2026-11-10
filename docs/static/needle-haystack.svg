@@ -1,0 +1,1101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1042" height="363" viewBox="0 0 1042 363">
+<rect width="1042" height="363" fill="#0d1117"/>
+<text x="16" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#e6edf3"><tspan font-weight="700">root · done_output</tspan><tspan fill="#8b949e" id="rlm-counts"> · 207 nodes · 206 edges</tspan></text>
+<path d="M 522.6 44.0 L 522.6 53.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 53.6 L 522.6 63.3" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 63.3 L 522.6 72.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 72.9 L 522.6 82.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 82.6 L 522.6 92.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 92.2 L 522.6 101.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 101.9 L 522.6 111.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 111.5 L 26.6 121.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 26.6 121.1 L 26.6 130.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 111.5 L 102.9 121.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 121.1 L 102.9 130.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 111.5 L 179.2 121.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 179.2 121.1 L 179.2 130.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 26.6 130.8 L 26.6 140.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 26.6 140.4 L 26.6 150.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 26.6 150.1 L 26.6 159.7" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 26.6 159.7 L 26.6 169.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 111.5 L 255.5 121.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 255.5 121.1 L 255.5 130.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 111.5 L 331.8 121.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 331.8 121.1 L 331.8 130.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 130.8 L 102.9 140.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 140.4 L 102.9 150.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 150.1 L 102.9 159.7" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 159.7 L 102.9 169.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 111.5 L 408.1 121.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 408.1 121.1 L 408.1 130.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 255.5 130.8 L 255.5 140.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 26.6 169.4 L 26.6 179.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 255.5 140.4 L 255.5 150.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 26.6 179.0 L 26.6 188.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 255.5 150.1 L 255.5 159.7" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 255.5 159.7 L 255.5 169.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 331.8 130.8 L 331.8 140.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 331.8 140.4 L 331.8 150.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 331.8 150.1 L 331.8 159.7" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 26.6 188.6 L 26.6 198.3" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 331.8 159.7 L 331.8 169.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 26.6 198.3 L 26.6 207.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 111.5 L 484.4 121.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 484.4 121.1 L 484.4 130.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 169.4 L 102.9 179.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 179.0 L 102.9 188.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 111.5 L 560.7 121.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 121.1 L 560.7 130.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 188.6 L 102.9 198.3" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 198.3 L 102.9 207.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 179.2 130.8 L 179.2 140.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 179.2 140.4 L 179.2 150.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 179.2 150.1 L 179.2 159.7" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 179.2 159.7 L 179.2 169.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 408.1 130.8 L 408.1 140.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 408.1 140.4 L 408.1 150.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 111.5 L 637.0 121.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 121.1 L 637.0 130.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 408.1 150.1 L 408.1 159.7" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 331.8 169.4 L 331.8 179.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 130.8 L 560.7 140.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 408.1 159.7 L 408.1 169.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 331.8 179.0 L 331.8 188.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 140.4 L 560.7 150.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 150.1 L 560.7 159.7" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 331.8 188.6 L 331.8 198.3" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 159.7 L 560.7 169.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 331.8 198.3 L 331.8 207.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 484.4 130.8 L 484.4 140.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 484.4 140.4 L 484.4 150.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 484.4 150.1 L 484.4 159.7" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 484.4 159.7 L 484.4 169.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 111.5 L 713.4 121.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 713.4 121.1 L 713.4 130.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 255.5 169.4 L 255.5 179.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 255.5 179.0 L 255.5 188.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 255.5 188.6 L 255.5 198.3" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 255.5 198.3 L 255.5 207.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 26.6 207.9 L 26.6 217.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 179.2 169.4 L 179.2 179.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 26.6 217.6 L 26.6 227.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 179.2 179.0 L 179.2 188.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 179.2 188.6 L 179.2 198.3" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 179.2 198.3 L 179.2 207.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 26.6 227.2 L 26.6 236.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 169.4 L 560.7 179.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 179.0 L 560.7 188.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 331.8 207.9 L 331.8 217.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 207.9 L 102.9 217.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 331.8 217.6 L 331.8 227.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 217.6 L 102.9 227.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 331.8 227.2 L 331.8 236.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 188.6 L 560.7 198.3" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 227.2 L 102.9 236.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 111.5 L 789.7 121.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 121.1 L 789.7 130.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 198.3 L 560.7 207.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 236.9 L 102.9 246.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 713.4 130.8 L 713.4 140.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 713.4 140.4 L 713.4 150.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 713.4 150.1 L 713.4 159.7" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 713.4 159.7 L 713.4 169.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 130.8 L 637.0 140.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 140.4 L 637.0 150.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 111.5 L 866.0 121.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 866.0 121.1 L 866.0 130.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 150.1 L 637.0 159.7" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 159.7 L 637.0 169.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 484.4 169.4 L 484.4 179.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 484.4 179.0 L 484.4 188.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 484.4 188.6 L 484.4 198.3" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 246.5 L 102.9 256.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 256.1 L 102.9 265.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 102.9 265.8 L 102.9 275.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 713.4 169.4 L 713.4 179.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 713.4 179.0 L 713.4 188.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 111.5 L 942.3 121.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 121.1 L 942.3 130.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 522.6 111.5 L 1018.6 121.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 1018.6 121.1 L 1018.6 130.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 1018.6 130.8 L 1018.6 140.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 713.4 188.6 L 713.4 198.3" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 713.4 198.3 L 713.4 207.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 866.0 130.8 L 866.0 140.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 866.0 140.4 L 866.0 150.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 866.0 150.1 L 866.0 159.7" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 866.0 159.7 L 866.0 169.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 408.1 169.4 L 408.1 179.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 408.1 179.0 L 408.1 188.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 130.8 L 942.3 140.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 207.9 L 560.7 217.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 140.4 L 942.3 150.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 217.6 L 560.7 227.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 150.1 L 942.3 159.7" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 408.1 188.6 L 408.1 198.3" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 159.7 L 942.3 169.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 130.8 L 789.7 140.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 227.2 L 560.7 236.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 408.1 198.3 L 408.1 207.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 140.4 L 789.7 150.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 713.4 207.9 L 713.4 217.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 236.9 L 560.7 246.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 1018.6 140.4 L 1018.6 150.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 713.4 217.6 L 713.4 227.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 1018.6 150.1 L 1018.6 159.7" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 179.2 207.9 L 179.2 217.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 179.2 217.6 L 179.2 227.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 713.4 227.2 L 713.4 236.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 150.1 L 789.7 159.7" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 179.2 227.2 L 179.2 236.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 255.5 207.9 L 255.5 217.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 159.7 L 789.7 169.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 255.5 217.6 L 255.5 227.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 866.0 169.4 L 866.0 179.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 169.4 L 637.0 179.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 866.0 179.0 L 866.0 188.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 179.0 L 637.0 188.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 188.6 L 637.0 198.3" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 198.3 L 637.0 207.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 255.5 227.2 L 255.5 236.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 866.0 188.6 L 866.0 198.3" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 866.0 198.3 L 866.0 207.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 408.1 207.9 L 408.1 217.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 408.1 217.6 L 408.1 227.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 408.1 227.2 L 408.1 236.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 246.5 L 560.7 256.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 256.1 L 560.7 265.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 560.7 265.8 L 560.7 275.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 207.9 L 637.0 217.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 169.4 L 942.3 179.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 217.6 L 637.0 227.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 169.4 L 789.7 179.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 179.0 L 942.3 188.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 179.0 L 789.7 188.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 188.6 L 942.3 198.3" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 198.3 L 942.3 207.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 227.2 L 637.0 236.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 236.9 L 637.0 246.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 188.6 L 789.7 198.3" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 198.3 L 789.7 207.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 207.9 L 789.7 217.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 217.6 L 789.7 227.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 227.2 L 789.7 236.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 246.5 L 637.0 256.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 236.9 L 789.7 246.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 256.1 L 637.0 265.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 637.0 265.8 L 637.0 275.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 866.0 207.9 L 866.0 217.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 207.9 L 942.3 217.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 866.0 217.6 L 866.0 227.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 217.6 L 942.3 227.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 866.0 227.2 L 866.0 236.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 227.2 L 942.3 236.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 236.9 L 942.3 246.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 246.5 L 789.7 256.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 256.1 L 789.7 265.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 265.8 L 789.7 275.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 275.4 L 789.7 285.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 246.5 L 942.3 256.1" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 256.1 L 942.3 265.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 285.1 L 789.7 294.7" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 294.7 L 789.7 304.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 789.7 304.4 L 789.7 314.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 942.3 265.8 L 942.3 275.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 1018.6 159.7 L 1018.6 169.4" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 1018.6 169.4 L 1018.6 179.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 1018.6 179.0 L 1018.6 188.6" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 1018.6 188.6 L 1018.6 198.3" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 1018.6 198.3 L 1018.6 207.9" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<g opacity="1">
+<title>root · agent_start</title>
+<circle cx="522.6" cy="44.0" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="522.6" y="36.1" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">root</text>
+</g>
+<g opacity="1">
+<title>root · plan_query</title>
+<circle cx="522.6" cy="53.6" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root · llm_output
+tokens 2,049 (in 1,035 / out 1,014)</title>
+<polygon points="522.6,57.6 528.2,63.3 522.6,68.9 516.9,63.3" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root · exec_action</title>
+<rect x="519.6" y="70.0" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root · error_output</title>
+<path d="M 520.2 80.2 L 525.0 85.0 M 525.0 80.2 L 520.2 85.0" stroke="#ff7b72" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+</g>
+<g opacity="1">
+<title>root · plan_query</title>
+<circle cx="522.6" cy="92.2" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root · llm_output
+tokens 2,370 (in 1,384 / out 986)</title>
+<polygon points="522.6,96.0 528.4,101.9 522.6,107.7 516.7,101.9" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root · exec_action</title>
+<rect x="519.6" y="108.6" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-0 · agent_start</title>
+<circle cx="26.6" cy="121.1" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="26.6" y="113.2" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">worker-0</text>
+</g>
+<g opacity="1">
+<title>root.worker-0 · plan_query</title>
+<circle cx="26.6" cy="130.8" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · agent_start</title>
+<circle cx="102.9" cy="121.1" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="102.9" y="113.2" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">worker-1</text>
+</g>
+<g opacity="1">
+<title>root.worker-1 · plan_query</title>
+<circle cx="102.9" cy="130.8" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-2 · agent_start</title>
+<circle cx="179.2" cy="121.1" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="179.2" y="113.2" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">worker-2</text>
+</g>
+<g opacity="1">
+<title>root.worker-2 · plan_query</title>
+<circle cx="179.2" cy="130.8" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-0 · llm_output
+tokens 1,279 (in 710 / out 569)</title>
+<polygon points="26.6,135.3 31.7,140.4 26.6,145.5 21.5,140.4" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-0 · exec_action</title>
+<rect x="23.6" y="147.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-0 · error_output</title>
+<path d="M 24.2 157.3 L 29.0 162.1 M 29.0 157.3 L 24.2 162.1" stroke="#ff7b72" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+</g>
+<g opacity="1">
+<title>root.worker-0 · plan_query</title>
+<circle cx="26.6" cy="169.4" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-3 · agent_start</title>
+<circle cx="255.5" cy="121.1" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="255.5" y="113.2" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">worker-3</text>
+</g>
+<g opacity="1">
+<title>root.worker-3 · plan_query</title>
+<circle cx="255.5" cy="130.8" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-4 · agent_start</title>
+<circle cx="331.8" cy="121.1" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="331.8" y="113.2" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">worker-4</text>
+</g>
+<g opacity="1">
+<title>root.worker-4 · plan_query</title>
+<circle cx="331.8" cy="130.8" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · llm_output
+tokens 1,946 (in 710 / out 1,236)</title>
+<polygon points="102.9,134.8 108.5,140.4 102.9,146.0 97.3,140.4" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · exec_action</title>
+<rect x="100.0" y="147.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · exec_output</title>
+<polygon points="100.4,156.8 105.8,159.7 100.4,162.7" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · plan_query</title>
+<circle cx="102.9" cy="169.4" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-5 · agent_start</title>
+<circle cx="408.1" cy="121.1" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="408.1" y="113.2" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">worker-5</text>
+</g>
+<g opacity="1">
+<title>root.worker-5 · plan_query</title>
+<circle cx="408.1" cy="130.8" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-3 · llm_output
+tokens 1,544 (in 710 / out 834)</title>
+<polygon points="255.5,135.1 260.8,140.4 255.5,145.7 250.2,140.4" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-0 · llm_output
+tokens 1,980 (in 998 / out 982)</title>
+<polygon points="26.6,173.4 32.2,179.0 26.6,184.6 21.0,179.0" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-3 · exec_action</title>
+<rect x="252.6" y="147.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-0 · exec_action</title>
+<rect x="23.6" y="185.7" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-3 · error_output</title>
+<path d="M 253.1 157.3 L 257.9 162.1 M 257.9 157.3 L 253.1 162.1" stroke="#ff7b72" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+</g>
+<g opacity="1">
+<title>root.worker-3 · plan_query</title>
+<circle cx="255.5" cy="169.4" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-4 · llm_output
+tokens 1,251 (in 710 / out 541)</title>
+<polygon points="331.8,135.4 336.9,140.4 331.8,145.5 326.8,140.4" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-4 · exec_action</title>
+<rect x="328.9" y="147.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-4 · error_output</title>
+<path d="M 329.4 157.3 L 334.2 162.1 M 334.2 157.3 L 329.4 162.1" stroke="#ff7b72" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+</g>
+<g opacity="1">
+<title>root.worker-0 · exec_output</title>
+<polygon points="24.1,195.3 29.5,198.3 24.1,201.2" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-4 · plan_query</title>
+<circle cx="331.8" cy="169.4" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-0 · plan_query</title>
+<circle cx="26.6" cy="207.9" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-6 · agent_start</title>
+<circle cx="484.4" cy="121.1" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="484.4" y="113.2" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">worker-6</text>
+</g>
+<g opacity="1">
+<title>root.worker-6 · plan_query</title>
+<circle cx="484.4" cy="130.8" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · llm_output
+tokens 3,317 (in 2,292 / out 1,025)</title>
+<polygon points="102.9,172.6 109.3,179.0 102.9,185.4 96.5,179.0" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · exec_action</title>
+<rect x="100.0" y="185.7" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · agent_start</title>
+<circle cx="560.7" cy="121.1" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="560.7" y="113.2" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">worker-7</text>
+</g>
+<g opacity="1">
+<title>root.worker-7 · plan_query</title>
+<circle cx="560.7" cy="130.8" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · error_output</title>
+<path d="M 100.5 195.9 L 105.3 200.7 M 105.3 195.9 L 100.5 200.7" stroke="#ff7b72" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · plan_query</title>
+<circle cx="102.9" cy="207.9" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-2 · llm_output
+tokens 2,852 (in 710 / out 2,142)</title>
+<polygon points="179.2,134.3 185.3,140.4 179.2,146.6 173.1,140.4" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-2 · exec_action</title>
+<rect x="176.3" y="147.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-2 · exec_output</title>
+<polygon points="176.7,156.8 182.1,159.7 176.7,162.7" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-2 · plan_query</title>
+<circle cx="179.2" cy="169.4" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-5 · llm_output
+tokens 1,588 (in 710 / out 878)</title>
+<polygon points="408.1,135.1 413.5,140.4 408.1,145.8 402.8,140.4" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-5 · exec_action</title>
+<rect x="405.2" y="147.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · agent_start</title>
+<circle cx="637.0" cy="121.1" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="637.0" y="113.2" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">worker-8</text>
+</g>
+<g opacity="1">
+<title>root.worker-8 · plan_query</title>
+<circle cx="637.0" cy="130.8" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-5 · exec_output</title>
+<polygon points="405.6,156.8 411.1,159.7 405.6,162.7" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-4 · llm_output
+tokens 1,988 (in 970 / out 1,018)</title>
+<polygon points="331.8,173.4 337.4,179.0 331.8,184.6 326.2,179.0" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · llm_output
+tokens 1,061 (in 710 / out 351)</title>
+<polygon points="560.7,135.5 565.6,140.4 560.7,145.3 555.8,140.4" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-5 · plan_query</title>
+<circle cx="408.1" cy="169.4" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-4 · exec_action</title>
+<rect x="328.9" y="185.7" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · exec_action</title>
+<rect x="557.8" y="147.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · error_output</title>
+<path d="M 558.3 157.3 L 563.1 162.1 M 563.1 157.3 L 558.3 162.1" stroke="#ff7b72" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+</g>
+<g opacity="1">
+<title>root.worker-4 · exec_output</title>
+<polygon points="329.3,195.3 334.8,198.3 329.3,201.2" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · plan_query</title>
+<circle cx="560.7" cy="169.4" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-4 · plan_query</title>
+<circle cx="331.8" cy="207.9" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-6 · llm_output
+tokens 2,134 (in 710 / out 1,424)</title>
+<polygon points="484.4,134.7 490.1,140.4 484.4,146.1 478.7,140.4" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-6 · exec_action</title>
+<rect x="481.5" y="147.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-6 · exec_output</title>
+<polygon points="481.9,156.8 487.4,159.7 481.9,162.7" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-6 · plan_query</title>
+<circle cx="484.4" cy="169.4" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-9 · agent_start</title>
+<circle cx="713.4" cy="121.1" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="713.4" y="113.2" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">worker-9</text>
+</g>
+<g opacity="1">
+<title>root.worker-9 · plan_query</title>
+<circle cx="713.4" cy="130.8" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-3 · llm_output
+tokens 2,836 (in 1,000 / out 1,836)</title>
+<polygon points="255.5,172.9 261.6,179.0 255.5,185.1 249.4,179.0" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-3 · exec_action</title>
+<rect x="252.6" y="185.7" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-3 · exec_output</title>
+<polygon points="253.0,195.3 258.4,198.3 253.0,201.2" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-3 · plan_query</title>
+<circle cx="255.5" cy="207.9" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-0 · llm_output
+tokens 4,139 (in 2,039 / out 2,100)</title>
+<polygon points="26.6,210.8 33.4,217.6 26.6,224.4 19.8,217.6" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-2 · llm_output
+tokens 2,999 (in 1,851 / out 1,148)</title>
+<polygon points="179.2,172.8 185.4,179.0 179.2,185.2 173.0,179.0" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-0 · exec_action</title>
+<rect x="23.6" y="224.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-2 · exec_action</title>
+<rect x="176.3" y="185.7" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-2 · error_output</title>
+<path d="M 176.8 195.9 L 181.6 200.7 M 181.6 195.9 L 176.8 200.7" stroke="#ff7b72" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+</g>
+<g opacity="1">
+<title>root.worker-2 · plan_query</title>
+<circle cx="179.2" cy="207.9" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-0 · done_output</title>
+<polygon points="29.5,236.9 28.1,239.4 25.1,239.4 23.6,236.9 25.1,234.3 28.1,234.3" fill="#56d364" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · llm_output
+tokens 1,383 (in 953 / out 430)</title>
+<polygon points="560.7,173.8 565.9,179.0 560.7,184.2 555.6,179.0" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · exec_action</title>
+<rect x="557.8" y="185.7" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-4 · llm_output
+tokens 3,038 (in 2,361 / out 677)</title>
+<polygon points="331.8,211.3 338.1,217.6 331.8,223.8 325.6,217.6" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · llm_output
+tokens 4,159 (in 2,524 / out 1,635)</title>
+<polygon points="102.9,210.8 109.7,217.6 102.9,224.4 96.1,217.6" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-4 · exec_action</title>
+<rect x="328.9" y="224.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · exec_action</title>
+<rect x="100.0" y="224.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-4 · done_output</title>
+<polygon points="334.8,236.9 333.3,239.4 330.3,239.4 328.9,236.9 330.3,234.3 333.3,234.3" fill="#56d364" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · exec_output</title>
+<polygon points="558.2,195.3 563.7,198.3 558.2,201.2" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · exec_output</title>
+<polygon points="100.4,233.9 105.8,236.9 100.4,239.8" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · agent_start</title>
+<circle cx="789.7" cy="121.1" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="789.7" y="113.2" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">worker-10</text>
+</g>
+<g opacity="1">
+<title>root.worker-10 · plan_query</title>
+<circle cx="789.7" cy="130.8" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · plan_query</title>
+<circle cx="560.7" cy="207.9" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · plan_query</title>
+<circle cx="102.9" cy="246.5" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-9 · llm_output
+tokens 1,831 (in 710 / out 1,121)</title>
+<polygon points="713.4,134.9 718.9,140.4 713.4,145.9 707.8,140.4" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-9 · exec_action</title>
+<rect x="710.4" y="147.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-9 · exec_output</title>
+<polygon points="710.9,156.8 716.3,159.7 710.9,162.7" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-9 · plan_query</title>
+<circle cx="713.4" cy="169.4" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · llm_output
+tokens 2,253 (in 710 / out 1,543)</title>
+<polygon points="637.0,134.6 642.8,140.4 637.0,146.2 631.3,140.4" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · exec_action</title>
+<rect x="634.1" y="147.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-11 · agent_start</title>
+<circle cx="866.0" cy="121.1" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="866.0" y="113.2" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">worker-11</text>
+</g>
+<g opacity="1">
+<title>root.worker-11 · plan_query</title>
+<circle cx="866.0" cy="130.8" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · exec_output</title>
+<polygon points="634.5,156.8 640.0,159.7 634.5,162.7" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · plan_query</title>
+<circle cx="637.0" cy="169.4" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-6 · llm_output
+tokens 3,912 (in 1,962 / out 1,950)</title>
+<polygon points="484.4,172.3 491.1,179.0 484.4,185.7 477.7,179.0" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-6 · exec_action</title>
+<rect x="481.5" y="185.7" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-6 · done_output</title>
+<polygon points="487.4,198.3 485.9,200.8 483.0,200.8 481.5,198.3 483.0,195.7 485.9,195.7" fill="#56d364" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · llm_output
+tokens 4,192 (in 3,656 / out 536)</title>
+<polygon points="102.9,249.3 109.7,256.1 102.9,263.0 96.1,256.1" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · exec_action</title>
+<rect x="100.0" y="262.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-1 · done_output</title>
+<polygon points="105.8,275.4 104.4,278.0 101.4,278.0 100.0,275.4 101.4,272.9 104.4,272.9" fill="#56d364" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-9 · llm_output
+tokens 2,451 (in 1,537 / out 914)</title>
+<polygon points="713.4,173.1 719.3,179.0 713.4,184.9 707.4,179.0" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-9 · exec_action</title>
+<rect x="710.4" y="185.7" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · agent_start</title>
+<circle cx="942.3" cy="121.1" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="942.3" y="113.2" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">worker-12</text>
+</g>
+<g opacity="1">
+<title>root.worker-12 · plan_query</title>
+<circle cx="942.3" cy="130.8" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root · exec_output</title>
+<polygon points="1016.1,118.2 1021.5,121.1 1016.1,124.1" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root · user_query</title>
+<circle cx="1018.6" cy="130.8" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>root · plan_query</title>
+<circle cx="1018.6" cy="140.4" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-9 · exec_output</title>
+<polygon points="710.9,195.3 716.3,198.3 710.9,201.2" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-9 · plan_query</title>
+<circle cx="713.4" cy="207.9" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-11 · llm_output
+tokens 1,394 (in 710 / out 684)</title>
+<polygon points="866.0,135.2 871.1,140.4 866.0,145.6 860.8,140.4" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-11 · exec_action</title>
+<rect x="863.0" y="147.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-11 · exec_output</title>
+<polygon points="863.5,156.8 868.9,159.7 863.5,162.7" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-11 · plan_query</title>
+<circle cx="866.0" cy="169.4" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-5 · llm_output
+tokens 4,300 (in 1,711 / out 2,589)</title>
+<polygon points="408.1,172.1 415.0,179.0 408.1,185.9 401.2,179.0" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-5 · exec_action</title>
+<rect x="405.2" y="185.7" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · llm_output
+tokens 1,226 (in 710 / out 516)</title>
+<polygon points="942.3,135.4 947.3,140.4 942.3,145.5 937.2,140.4" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · llm_output
+tokens 3,461 (in 1,727 / out 1,734)</title>
+<polygon points="560.7,211.1 567.2,217.6 560.7,224.0 554.3,217.6" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · exec_action</title>
+<rect x="939.3" y="147.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · exec_action</title>
+<rect x="557.8" y="224.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · error_output</title>
+<path d="M 939.9 157.3 L 944.7 162.1 M 944.7 157.3 L 939.9 162.1" stroke="#ff7b72" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+</g>
+<g opacity="1">
+<title>root.worker-5 · exec_output</title>
+<polygon points="405.6,195.3 411.1,198.3 405.6,201.2" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · plan_query</title>
+<circle cx="942.3" cy="169.4" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · llm_output
+tokens 2,465 (in 710 / out 1,755)</title>
+<polygon points="789.7,134.5 795.6,140.4 789.7,146.3 783.7,140.4" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · exec_output</title>
+<polygon points="558.2,233.9 563.7,236.9 558.2,239.8" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-5 · plan_query</title>
+<circle cx="408.1" cy="207.9" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · exec_action</title>
+<rect x="786.7" y="147.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-9 · llm_output
+tokens 3,586 (in 2,820 / out 766)</title>
+<polygon points="713.4,211.0 719.9,217.6 713.4,224.1 706.8,217.6" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · plan_query</title>
+<circle cx="560.7" cy="246.5" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root · llm_output
+tokens 4,168 (in 3,073 / out 1,095)</title>
+<polygon points="1018.6,143.3 1025.4,150.1 1018.6,156.9 1011.8,150.1" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-9 · exec_action</title>
+<rect x="710.4" y="224.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root · exec_action</title>
+<rect x="1015.6" y="156.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-2 · llm_output
+tokens 4,203 (in 2,078 / out 2,125)</title>
+<polygon points="179.2,210.7 186.0,217.6 179.2,224.4 172.4,217.6" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-2 · exec_action</title>
+<rect x="176.3" y="224.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-9 · done_output</title>
+<polygon points="716.3,236.9 714.8,239.4 711.9,239.4 710.4,236.9 711.9,234.3 714.8,234.3" fill="#56d364" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · exec_output</title>
+<polygon points="787.2,156.8 792.6,159.7 787.2,162.7" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-2 · done_output</title>
+<polygon points="182.1,236.9 180.7,239.4 177.7,239.4 176.3,236.9 177.7,234.3 180.7,234.3" fill="#56d364" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-3 · llm_output
+tokens 4,200 (in 1,975 / out 2,225)</title>
+<polygon points="255.5,210.7 262.3,217.6 255.5,224.4 248.7,217.6" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · plan_query</title>
+<circle cx="789.7" cy="169.4" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-3 · exec_action</title>
+<rect x="252.6" y="224.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-11 · llm_output
+tokens 3,364 (in 1,528 / out 1,836)</title>
+<polygon points="866.0,172.6 872.4,179.0 866.0,185.4 859.5,179.0" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · llm_output
+tokens 3,970 (in 1,935 / out 2,035)</title>
+<polygon points="637.0,172.3 643.8,179.0 637.0,185.7 630.3,179.0" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-11 · exec_action</title>
+<rect x="863.0" y="185.7" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · exec_action</title>
+<rect x="634.1" y="185.7" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · exec_output</title>
+<polygon points="634.5,195.3 640.0,198.3 634.5,201.2" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · plan_query</title>
+<circle cx="637.0" cy="207.9" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-3 · done_output</title>
+<polygon points="258.4,236.9 257.0,239.4 254.0,239.4 252.6,236.9 254.0,234.3 257.0,234.3" fill="#56d364" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-11 · exec_output</title>
+<polygon points="863.5,195.3 868.9,198.3 863.5,201.2" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-11 · plan_query</title>
+<circle cx="866.0" cy="207.9" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-5 · llm_output
+tokens 4,028 (in 3,590 / out 438)</title>
+<polygon points="408.1,210.8 414.9,217.6 408.1,224.3 401.4,217.6" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-5 · exec_action</title>
+<rect x="405.2" y="224.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-5 · done_output</title>
+<polygon points="411.1,236.9 409.6,239.4 406.7,239.4 405.2,236.9 406.7,234.3 409.6,234.3" fill="#56d364" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · llm_output
+tokens 3,137 (in 2,624 / out 513)</title>
+<polygon points="560.7,249.8 567.0,256.1 560.7,262.4 554.4,256.1" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · exec_action</title>
+<rect x="557.8" y="262.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-7 · done_output</title>
+<polygon points="563.7,275.4 562.2,278.0 559.3,278.0 557.8,275.4 559.3,272.9 562.2,272.9" fill="#56d364" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · llm_output
+tokens 4,261 (in 3,314 / out 947)</title>
+<polygon points="637.0,210.7 643.9,217.6 637.0,224.4 630.2,217.6" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · llm_output
+tokens 2,152 (in 945 / out 1,207)</title>
+<polygon points="942.3,173.3 948.0,179.0 942.3,184.7 936.6,179.0" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · exec_action</title>
+<rect x="634.1" y="224.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · llm_output
+tokens 3,389 (in 1,950 / out 1,439)</title>
+<polygon points="789.7,172.6 796.1,179.0 789.7,185.4 783.2,179.0" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · exec_action</title>
+<rect x="939.3" y="185.7" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · exec_action</title>
+<rect x="786.7" y="185.7" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · exec_output</title>
+<polygon points="939.8,195.3 945.2,198.3 939.8,201.2" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · plan_query</title>
+<circle cx="942.3" cy="207.9" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · exec_output</title>
+<polygon points="634.5,233.9 640.0,236.9 634.5,239.8" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · plan_query</title>
+<circle cx="637.0" cy="246.5" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · exec_output</title>
+<polygon points="787.2,195.3 792.6,198.3 787.2,201.2" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · plan_query</title>
+<circle cx="789.7" cy="207.9" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · llm_output
+tokens 3,455 (in 3,132 / out 323)</title>
+<polygon points="789.7,211.1 796.1,217.6 789.7,224.0 783.2,217.6" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · exec_action</title>
+<rect x="786.7" y="224.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · error_output</title>
+<path d="M 787.3 234.4 L 792.1 239.3 M 792.1 234.4 L 787.3 239.3" stroke="#ff7b72" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · llm_output
+tokens 5,018 (in 4,517 / out 501)</title>
+<polygon points="637.0,249.0 644.2,256.1 637.0,263.3 629.9,256.1" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · plan_query</title>
+<circle cx="789.7" cy="246.5" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · exec_action</title>
+<rect x="634.1" y="262.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-8 · done_output</title>
+<polygon points="640.0,275.4 638.5,278.0 635.6,278.0 634.1,275.4 635.6,272.9 638.5,272.9" fill="#56d364" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-11 · llm_output
+tokens 4,431 (in 2,545 / out 1,886)</title>
+<polygon points="866.0,210.6 872.9,217.6 866.0,224.5 859.0,217.6" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · llm_output
+tokens 3,644 (in 2,147 / out 1,497)</title>
+<polygon points="942.3,211.0 948.8,217.6 942.3,224.1 935.7,217.6" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-11 · exec_action</title>
+<rect x="863.0" y="224.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · exec_action</title>
+<rect x="939.3" y="224.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-11 · done_output</title>
+<polygon points="868.9,236.9 867.4,239.4 864.5,239.4 863.0,236.9 864.5,234.3 867.4,234.3" fill="#56d364" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · exec_output</title>
+<polygon points="939.8,233.9 945.2,236.9 939.8,239.8" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · plan_query</title>
+<circle cx="942.3" cy="246.5" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · llm_output
+tokens 4,400 (in 3,366 / out 1,034)</title>
+<polygon points="789.7,249.2 796.6,256.1 789.7,263.1 782.7,256.1" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · exec_action</title>
+<rect x="786.7" y="262.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · exec_output</title>
+<polygon points="787.2,272.5 792.6,275.4 787.2,278.4" fill="#56d4dd" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · plan_query</title>
+<circle cx="789.7" cy="285.1" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · llm_output
+tokens 5,080 (in 3,355 / out 1,725)</title>
+<polygon points="942.3,248.9 949.5,256.1 942.3,263.4 935.1,256.1" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · exec_action</title>
+<rect x="939.3" y="262.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · llm_output
+tokens 5,451 (in 5,082 / out 369)</title>
+<polygon points="789.7,287.3 797.0,294.7 789.7,302.1 782.3,294.7" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · exec_action</title>
+<rect x="786.7" y="301.4" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-10 · done_output</title>
+<polygon points="792.6,314.0 791.1,316.5 788.2,316.5 786.7,314.0 788.2,311.5 791.1,311.5" fill="#56d364" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root.worker-12 · done_output</title>
+<polygon points="945.2,275.4 943.7,278.0 940.8,278.0 939.3,275.4 940.8,272.9 943.7,272.9" fill="#56d364" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root · error_output</title>
+<path d="M 1016.2 166.9 L 1021.0 171.8 M 1021.0 166.9 L 1016.2 171.8" stroke="#ff7b72" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+</g>
+<g opacity="1">
+<title>root · plan_query</title>
+<circle cx="1018.6" cy="179.0" r="2.9" fill="#8b949e" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root · llm_output
+tokens 5,974 (in 3,830 / out 2,144)</title>
+<polygon points="1018.6,181.1 1026.1,188.6 1018.6,196.2 1011.0,188.6" fill="#bc8cff" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>root · exec_action</title>
+<rect x="1015.6" y="195.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>root · done_output</title>
+<polygon points="1021.5,207.9 1020.1,210.5 1017.1,210.5 1015.6,207.9 1017.1,205.4 1020.1,205.4" fill="#56d364" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<circle cx="163.7" cy="349.4" r="5.0" fill="#58a6ff"/><text x="173.7" y="352.9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.0" fill="#8b949e">agent_start</text><circle cx="256.3" cy="349.4" r="3.8" fill="#0d1117" stroke="#79c0ff" stroke-width="2.1"/><text x="266.3" y="352.9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.0" fill="#8b949e">user_query</text><polygon points="343.3,344.4 348.3,349.4 343.3,354.4 338.3,349.4" fill="#bc8cff"/><text x="353.3" y="352.9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.0" fill="#8b949e">llm_output</text><rect x="425.3" y="344.4" width="10.0" height="10.0" rx="1.2" fill="#ff9e64"/><text x="440.3" y="352.9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.0" fill="#8b949e">exec_action</text><polygon points="518.6,344.4 527.9,349.4 518.6,354.4" fill="#56d4dd"/><text x="532.9" y="352.9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.0" fill="#8b949e">exec_output</text><polygon points="615.5,342.7 617.1,347.3 621.9,347.4 618.0,350.3 619.4,354.9 615.5,352.1 611.5,354.9 612.9,350.3 609.1,347.4 613.9,347.3" fill="#ffd33d"/><text x="625.5" y="352.9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.0" fill="#8b949e">append_child</text><polygon points="718.7,349.4 716.2,353.8 711.2,353.8 708.7,349.4 711.2,345.1 716.2,345.1" fill="#56d364"/><text x="723.7" y="352.9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.0" fill="#8b949e">done_output</text><path d="M 802.2 345.3 L 810.4 353.5 M 810.4 345.3 L 802.2 353.5" stroke="#ff7b72" stroke-width="2.5" fill="none" stroke-linecap="round"/><text x="816.3" y="352.9" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.0" fill="#8b949e">error_output</text>
+</svg>

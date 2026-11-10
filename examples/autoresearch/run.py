@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import random
 import re
 import shutil
@@ -17,32 +18,30 @@ from pathlib import Path
 from typing import Any
 
 from rlmflow import (
-    ConsumerGroup,
-    DockerRuntime,
     FILE_TOOLS,
+    AgentConfig,
+    DockerRuntime,
     Flow,
     Graph,
-    GraphCheckpointer,
-    LiveTreeRenderer,
     LocalRuntime,
     SubprocessRuntime,
-    SystemPromptBuilder,
-    WorkspaceSync,
     tool,
 )
+from rlmflow.consumers import WorkspaceSync
+from rlmflow.view.text import kind as node_kind
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import build_client  # noqa: E402
+from common import checkpoint_stream  # noqa: E402
 
 try:  # Allow both `python examples/autoresearch/run.py` and imports.
     from .modal_runner import ModalConfig, preflight, submit, validate_gpu
-    from .plot_progress import load_trials, plot_matplotlib, plot_svg
+    from .plot_progress import load_trials, plot_matplotlib, plot_svg, plot_tree_svg
 except ImportError:  # pragma: no cover
     from modal_runner import ModalConfig, preflight, submit, validate_gpu
-    from plot_progress import load_trials, plot_matplotlib, plot_svg
+    from plot_progress import load_trials, plot_matplotlib, plot_svg, plot_tree_svg
 
 
 PROGRESS_TITLE = "Tiny Autoresearch — (TinyStories + GPT2)"
@@ -56,16 +55,15 @@ BASELINE_RESULT_PATH = Path(__file__).with_name("baseline_result.json")
 
 ADAPTER_PROMPT = """
 Autoresearch loop policy:
-- `INPUTS["task_instructions"]` is task context only. Inspect it first.
+- `task_instructions` is task context only. Inspect it first.
 - Do not use git or run training manually. Use `submit_trial(slug, hypothesis)`.
 - Call `run_baseline()` once; it uses the cached baseline result and does not
   submit a Modal job.
-- Hierarchy is flat: root is the planner. Each turn root plans a wave, fans out
-  several implementer children in ONE `launch_subagents([...])` call (they run in
-  parallel), then those children come back and root plans the next wave from the
-  new results. Anything passed in a single `launch_subagents` list runs
-  concurrently, so prefer wide waves over launching one child at a time. Children
-  may block while `submit_trial(...)` runs its Modal job.
+- Hierarchy is flat: root is the planner. Each turn root plans a wave, launches
+  several implementer handles before collecting any result (the children run in
+  parallel), then collects those handles and plans the next wave from the new
+  results. Prefer wide waves over launching and immediately waiting on one child
+  at a time. Children may block while `submit_trial(...)` runs its Modal job.
 
 Diagnose before proposing:
 - Read at least one prior log with `get_run(n)` before planning a wave (start
@@ -124,30 +122,31 @@ Build on what worked; never repeat a trial:
   of an idea already tried — that is wasted budget.
 
 Spend the WHOLE budget — a plateau means pivot, not stop:
-- The ONLY reason to call `done(...)` is `submission_status()["remaining_submissions"]
+- The ONLY reason to call `submit(...)` is `submission_status()["remaining_submissions"]
   == 0`. While it is > 0 you are NOT finished, no matter how the last wave went.
   A flat wave is not a stopping signal — it is a signal to change direction.
 - Plan ONE wave per turn, then FINISH the turn (print your results and stop the
   code block) so your NEXT turn can reason about the newest results and invent
   fresh hypotheses. Do NOT write a single script with a `while` loop that
-  pre-enumerates many waves from a fixed candidate list and calls `done()` at
+  pre-enumerates many waves from a fixed candidate list and calls `submit()` at
   the end — that hardcodes a finite menu and quits the moment it is drained.
   Returning between waves is NOT stopping; the run continues on your next turn.
 - Running out of ideas is NOT a stop condition. If your candidate list dedups to
   empty, that means you must BRAINSTORM genuinely new hypotheses, not quit:
   reach for an untried knob, a larger/opposite perturbation, an architecture
   change (attention/normalization/activation/weight-tying/init), or a fresh
-  COMBINATION of two prior winners. NEVER break out of planning or call `done()`
+  COMBINATION of two prior winners. NEVER break out of planning or call `submit()`
   with the reasoning "no new ideas / only duplicates left" while budget remains
   — there is always another untried direction within the task Constraints.
-- Keep waves wide: size each `launch_subagents([...])` list up to your
-  `parallel` limit and up to `remaining_submissions`, so the budget is spent in
-  a few wide waves rather than trickled out. Re-check `submission_status()` at
-  the start of every turn and keep going until `remaining_submissions == 0`.
+- Keep waves wide: launch up to your `parallel` limit and up to
+  `remaining_submissions` independent children before collecting their handles,
+  so the budget is spent in a few wide waves rather than trickled out. Re-check
+  `submission_status()` at the start of every turn and keep going until
+  `remaining_submissions == 0`.
 
 Editing train.py (do it the robust way):
-- Implementation children edit only `INPUTS["trial_dir"]/train.py`, then call
-  `submit_trial(INPUTS["slug"], INPUTS["hypothesis"])`.
+- Implementation children edit only `trial_dir/train.py`, then call
+  `submit_trial(slug, hypothesis)`.
 - ALWAYS edit by full-file rewrite: read the entire file, then `write_file` the
   COMPLETE updated contents yourself, changing only the constants/lines your
   hypothesis needs. Do NOT use `edit_file`, and NEVER construct source by string
@@ -156,11 +155,11 @@ Editing train.py (do it the robust way):
   `flush=True)` into `flush = 1798`).
 - If `submit_trial` returns `preflight_failed`, read the reported line number,
   re-read the current file, and fix it with ONE more full-file `write_file`. If
-  it still fails, re-read `INPUTS["trial_dir"]/train.py` from scratch and rewrite
+  it still fails, re-read `trial_dir/train.py` from scratch and rewrite
   cleanly. Do not retry more than twice; if still broken, return the failure row.
 - If it returns any other failure row, return it to the parent.
-- All `launch_subagents(..., inputs=...)` values must be strings. Use `str(...)`
-  for counts and JSON strings for structured values.
+- `launch_agent(task, **inputs)` values must be strict JSON values. To pass a
+  child's output on, `await` the child first and pass its result.
 
 Root sketch (root is the planner: plan a wave, fan out implementers, repeat):
 ```repl
@@ -168,7 +167,7 @@ run_baseline()
 status = submission_status()
 remaining = status["remaining_submissions"]
 if remaining == 0:
-    done(str({"status": "complete", "best": best_run(), "runs": list_runs()}))
+    submit(str({"status": "complete", "best": best_run(), "runs": list_runs()}))
 runs = list_runs()                 # everything already tried (slug, hypothesis, val_bpb)
 print(get_run(0))                  # cite a number from a log in each hypothesis
 best, sample = best_run(), sample_valid_run()   # exploit the leader; diversify from a random winner
@@ -184,32 +183,49 @@ candidates = [
 tried = {r.get("slug") for r in runs} | {r.get("hypothesis") for r in runs}
 ideas = [(s, h, seed) for s, h, seed in candidates if s not in tried and h not in tried][:remaining]
 trials = [create_trial(s, h, parent_slug=(seed["slug"] if seed else "baseline")) for s, h, seed in ideas]
-wave = [{
-    "name": row["slug"],
-    "query": "Read INPUTS['trial_dir']/train.py in full, then write_file the complete "
-             "updated file changing only the constants your hypothesis needs, then submit_trial(...).",
-    "inputs": {"trial_dir": row["agent_trial_dir"], "slug": row["slug"], "hypothesis": row["hypothesis"]},
-} for row in trials]
-results = await launch_subagents(wave)     # implementer children run concurrently
+handles = [
+    launch_agent(
+        "Read trial_dir/train.py in full, then write_file the complete "
+        "updated file changing only the constants your hypothesis needs, then submit_trial(...).",
+        trial_dir=row["agent_trial_dir"],
+        slug=row["slug"],
+        hypothesis=row["hypothesis"],
+    )
+    for row in trials
+]
+results = await asyncio.gather(*handles)
 # Print results and STOP here — this is ONE wave for ONE turn. Do not wrap this
 # in a `while` loop over a fixed candidate list; finishing the turn lets your
 # NEXT turn reason about `results` and brainstorm genuinely new hypotheses. If
 # submission_status()["remaining_submissions"] > 0 you are not done; plan another
-# wave next turn (pivot to a new/untried direction). Only call done() at 0.
+# wave next turn (pivot to a new/untried direction). Only call submit() at 0.
 print(results, list_runs(), best_run(), submission_status())
 ```
 """
 
 
-def build_prompt_builder():
-    prompt = SystemPromptBuilder()
-    prompt.sections.add(
-        "autoresearch_adapter",
-        ADAPTER_PROMPT,
-        title="Autoresearch Adapter",
-        before="tools",
-    )
-    return prompt
+IMPLEMENTER_PROMPT = """
+You implement one autoresearch trial. Your inputs `trial_dir`, `slug` and
+`hypothesis` are REPL variables; start with
+`rlmflow repl 'print(trial_dir, slug, hypothesis, sep="\\n")'`.
+
+- Edit only `train.py` inside `trial_dir` (relative to your working directory),
+  with your own file tools, changing only what the hypothesis needs. Do not touch
+  any other file, use git, or run training.
+- Then submit it from the REPL. The Modal job takes several minutes, so give the
+  code a long timeout and set your shell tool's timeout to its maximum:
+      rlmflow repl --timeout 1500 'row = submit_trial(slug, hypothesis); print(row)'
+- If the row's status is `preflight_failed`, read the reported line, fix
+  `train.py`, and submit again. Retry at most twice.
+- Finish with `rlmflow repl 'submit(row)'`, passing the last row unchanged.
+"""
+
+PLANNER_IMPLEMENTER_NOTE = """
+Implementers are Claude Code sessions: launch every implementer with
+`launch_agent(task, config="implementer", trial_dir=..., slug=..., hypothesis=...)`.
+They edit `train.py` with their own tools, so the task can simply say
+"Implement this trial's hypothesis in trial_dir/train.py, then submit it."
+"""
 
 
 class ExperimentCrashed(RuntimeError):
@@ -318,9 +334,9 @@ class AutoresearchState:
                 self._check_budget(count_created=True)
                 if hypothesis:
                     for other in self.latest_by_slug().values():
-                        if other.get("hypothesis") == hypothesis and other.get(
-                            "status"
-                        ) in (RUNNING_STATUSES | {"succeeded"}):
+                        if other.get("hypothesis") == hypothesis and other.get("status") in (
+                            RUNNING_STATUSES | {"succeeded"}
+                        ):
                             raise SubmissionError(
                                 f"duplicate hypothesis already tried as {other['slug']!r}; "
                                 "propose a new idea (see list_runs())"
@@ -443,7 +459,9 @@ class AutoresearchState:
         submitted_running = sum(1 for row in rows if row.get("status") == "submitted")
         succeeded = sum(1 for row in rows if row.get("status") == "succeeded")
         failed = sum(1 for row in rows if row.get("status") in FAIL_STATUSES)
-        remaining = None if self.max_submissions is None else max(0, self.max_submissions - used - created)
+        remaining = (
+            None if self.max_submissions is None else max(0, self.max_submissions - used - created)
+        )
         return {
             "max_submissions": self.max_submissions,
             "used_submissions": used,
@@ -564,35 +582,35 @@ class AutoresearchState:
 
 
 def build_autoresearch_tools(state: AutoresearchState) -> list[Callable[..., object]]:
-    @tool("Create or return the baseline trial and run it once.", proxy=True)
+    @tool("Create or return the baseline trial and run it once.")
     def run_baseline() -> dict[str, Any]:
         return state.run_baseline()
 
-    @tool("Create a fresh copied trial directory for one hypothesis.", proxy=True)
+    @tool("Create a fresh copied trial directory for one hypothesis.")
     def create_trial(slug: str, hypothesis: str, parent_slug: str | None = None) -> dict[str, Any]:
         return state.create_trial(slug, hypothesis, parent_slug)
 
-    @tool("Submit an existing trial slug and return the ledger row.", proxy=True)
+    @tool("Submit an existing trial slug and return the ledger row.")
     def submit_trial(slug: str, hypothesis: str = "") -> dict[str, Any]:
         return state.submit_trial(slug, hypothesis)
 
-    @tool("Compact best-first ledger view.", proxy=True)
+    @tool("Compact best-first ledger view.")
     def list_runs() -> list[dict[str, Any]]:
         return state.list_runs()
 
-    @tool("Best successful/scored trial, or None if none has scored.", proxy=True)
+    @tool("Best successful/scored trial, or None if none has scored.")
     def best_run() -> dict[str, Any] | None:
         return state.best_run()
 
-    @tool("Random already-succeeded trial to diversify from (not the best).", proxy=True)
+    @tool("Random already-succeeded trial to diversify from (not the best).")
     def sample_valid_run() -> dict[str, Any] | None:
         return state.sample_valid_run()
 
-    @tool("Full latest ledger row for trial number n.", proxy=True)
+    @tool("Full latest ledger row for trial number n.")
     def get_run(n: int) -> dict[str, Any] | None:
         return state.get_run(n)
 
-    @tool("Submission budget and pending created trial counts.", proxy=True)
+    @tool("Submission budget and pending created trial counts.")
     def submission_status() -> dict[str, int | None]:
         return state.submission_status()
 
@@ -641,6 +659,8 @@ def run(args: argparse.Namespace) -> None:
         "submitted_trial_timeout_s": args.submitted_trial_timeout_s,
         "agent_runtime": args.agent_runtime,
         "docker_image": args.docker_image,
+        "implementer_harness": args.implementer_harness,
+        "implementer_model": args.implementer_model,
         "preflight": preflight(modal_config),
         "run_id": state.run_id,
     }
@@ -648,77 +668,89 @@ def run(args: argparse.Namespace) -> None:
     (args.out / "config.json").write_text(json.dumps(config, indent=2, sort_keys=True))
 
     runtime = build_runtime(args.agent_runtime, args.docker_image, args.out)
-    runtime.register_tools(FILE_TOOLS)
-    runtime.register_tools(build_autoresearch_tools(state))
+
+    configs = [
+        AgentConfig(
+            model=args.model,
+            max_depth=args.max_depth,
+            max_iters=args.max_iters,
+            prompt={"autoresearch": ADAPTER_PROMPT},
+        )
+    ]
+    planner_note = ""
+    if args.implementer_harness == "claude_code":
+        # Claude Code's shell tool stops a command after 2 minutes by default;
+        # code that calls submit_trial blocks for the whole Modal job.
+        bash_timeout_ms = str((args.modal_timeout_s + 300) * 1000)
+        os.environ.setdefault("BASH_DEFAULT_TIMEOUT_MS", bash_timeout_ms)
+        os.environ.setdefault("BASH_MAX_TIMEOUT_MS", bash_timeout_ms)
+        configs.append(
+            AgentConfig(
+                name="implementer",
+                harness="claude_code",
+                description="a Claude Code session that implements and submits one trial",
+                model=args.implementer_model,
+                max_depth=0,
+                prompt={"autoresearch": IMPLEMENTER_PROMPT},
+                harness_options={"sdk": {"permission_mode": "acceptEdits"}},
+            )
+        )
+        planner_note = PLANNER_IMPLEMENTER_NOTE
 
     flow = Flow(
-        build_client(args.model),
+        configs=configs,
         runtime=runtime,
-        max_depth=args.max_depth,
-        max_iters=args.max_iters,
+        tools=[FILE_TOOLS, *build_autoresearch_tools(state)],
         workers=args.parallel,
-        system_prompt=build_prompt_builder(),
     )
 
     query = f"""\
 Run autoresearch for up to {args.max_submissions} non-baseline submissions.
 
-Use INPUTS["task_instructions"] for task context. Use the system prompt for the
+Use `task_instructions` for task context. Use the system prompt for the
 rlmflow loop policy and examples.
 
 Start with run_baseline(); it is cached and does not run Modal. You are the
-planner: each turn inspect list_runs()/best_run()/submission_status(), then fan
-out a PARALLEL WAVE of implementer children in a single launch_subagents([...])
-call — several trials at once, not one at a time. The children return here; plan
-the next wave from their results.
+planner: each turn inspect list_runs()/best_run()/submission_status(), then
+launch a PARALLEL WAVE of implementer handles before waiting for any result —
+several trials at once, not one at a time. Collect those handles and plan the
+next wave from their results.
 
 Keep launching waves until submission_status()["remaining_submissions"] == 0.
-That is the ONLY stop condition — do NOT call done() while submissions remain,
+That is the ONLY stop condition — do NOT call submit() while submissions remain,
 even if the last wave did not improve on the best (a plateau means pivot to a
 new direction, not stop). After each wave, re-check submission_status() and
 launch the next one.
-"""
+{planner_note}"""
     graph_dir = args.out / "graph"
-    graph = Graph(query=query)
-    inputs = {"task_instructions": (example_dir / "program.md").read_text()}
-    checkpointer = GraphCheckpointer(
-        graph_dir,
-        every_s=args.checkpoint_every_s,
-        metadata={
-            "kind": "autoresearch",
-            "max_submissions": args.max_submissions,
-            "model": args.model,
-            "out": str(args.out),
-        },
-    )
-    consumers = ConsumerGroup(
-        [
-            checkpointer,
-            LiveTreeRenderer(clear=not args.no_live),
-        ]
+    g = Graph()
+    root = g.start(
+        query,
+        task_instructions=(example_dir / "program.md").read_text(),
     )
     sync = (
         WorkspaceSync(args.out, args.sync_dir, every_s=args.sync_every_s)
         if args.sync_dir is not None
         else None
     )
-    if sync is not None:
-        consumers.append(sync)
+
+    async def drive() -> None:
+        async for step in checkpoint_stream(flow.run_streaming(g), g, graph_dir):
+            print(f"{step.agent.path():<20} {node_kind(step.node)}", flush=True)
+            if sync is not None:
+                sync.handle(step, g)
+
     try:
-        checkpointer.save(graph)
+        g.save(graph_dir)
         if sync is not None:
             sync.sync()
-
-        async def drive() -> None:
-            async for event in flow.run_streaming(graph=graph, inputs=inputs):
-                consumers.handle(event, graph)
-
         asyncio.run(drive())
-        print(graph.result())
+        print(root.final_result())
         write_run_report(state, args.out, announce=True)
     finally:
-        consumers.close()
-        flow.close_repls(graph.graph_id)
+        if sync is not None:
+            sync.close()
+        flow.runtime.close_repls()
 
 
 def build_runtime(kind: str, docker_image: str, workdir: Path):
@@ -740,9 +772,7 @@ def write_run_report(
     rows.sort(key=_rank_key)
     solutions = [_report_row(row) for row in rows]
     scored = [
-        row
-        for row in rows
-        if row.get("status") == "succeeded" and row.get("score") is not None
+        row for row in rows if row.get("status") == "succeeded" and row.get("score") is not None
     ]
     best = max(scored, key=lambda row: float(row["score"])) if scored else None
     best_summary = _report_row(best) if best else None
@@ -758,12 +788,10 @@ def write_run_report(
         print(f"\n[autoresearch] report={report_path}")
         print(f"[autoresearch] summary={out_dir / 'summary.md'}")
         print(f"[autoresearch] progress={out_dir / 'progress.svg'}")
+        print(f"[autoresearch] lineage={out_dir / 'lineage.svg'}")
         print(f"[autoresearch] ledger={state.ledger_path}")
         if best_summary:
-            print(
-                f"[autoresearch] best={best_summary['name']} "
-                f"score={best_summary['score']}"
-            )
+            print(f"[autoresearch] best={best_summary['name']} score={best_summary['score']}")
 
 
 def _report_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -786,7 +814,7 @@ def _markdown_report(
             [
                 "## Best",
                 "",
-                f"**{_markdown_cell(best['name'])}** — score `{_format_score(best['score'])}` "
+                f"**{_markdown_text(best['name'])}** — score `{_format_score(best['score'])}` "
                 f"(trial {best['n']}, {_format_elapsed(best['time_elapsed'])})",
                 "",
                 str(best.get("hypothesis") or ""),
@@ -803,8 +831,8 @@ def _markdown_report(
     )
     for row in solutions:
         lines.append(
-            f"| {row['n']} | {_markdown_cell(row['name'])} | "
-            f"{_markdown_cell(row['hypothesis'])} | "
+            f"| {row['n']} | {_markdown_text(row['name'])} | "
+            f"{_markdown_text(row['hypothesis'])} | "
             f"{_format_elapsed(row['time_elapsed'])} | "
             f"{_format_score(row['score'])} |"
         )
@@ -814,6 +842,10 @@ def _markdown_report(
             "## Progress",
             "",
             "![Autoresearch progress](progress.svg)",
+            "",
+            "## Lineage",
+            "",
+            "![Autoresearch lineage](lineage.svg)",
             "",
         ]
     )
@@ -829,11 +861,14 @@ def _write_progress_plots(ledger_path: Path, out_dir: Path, *, announce: bool = 
     matplotlib if it is available.
     """
     svg_path = out_dir / "progress.svg"
+    tree_path = out_dir / "lineage.svg"
     trials = load_trials(ledger_path) if ledger_path.exists() else []
     if not trials:
         svg_path.write_text(_empty_progress_svg())
+        tree_path.write_text(_empty_progress_svg())
         return
     plot_svg(trials, title=PROGRESS_TITLE, out=svg_path)
+    plot_tree_svg(trials, title=PROGRESS_TITLE, out=tree_path)
     if announce:
         try:
             plot_matplotlib(trials, title=PROGRESS_TITLE, out=out_dir / "progress.png")
@@ -850,7 +885,7 @@ def _empty_progress_svg() -> str:
     )
 
 
-def _markdown_cell(value: Any) -> str:
+def _markdown_text(value: Any) -> str:
     return str(value or "").replace("|", r"\|").replace("\n", " ")
 
 
@@ -942,7 +977,12 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
 
 
 def default_out_dir() -> Path:
-    return Path(__file__).resolve().parents[1] / "_runs" / "autoresearch" / time.strftime("%Y%m%d-%H%M%S")
+    return (
+        Path(__file__).resolve().parents[1]
+        / "_runs"
+        / "autoresearch"
+        / time.strftime("%Y%m%d-%H%M%S")
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -957,18 +997,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--modal-timeout-s", type=int, default=1200)
     parser.add_argument("--created-trial-timeout-s", type=int, default=1800)
     parser.add_argument("--submitted-trial-timeout-s", type=int, default=1500)
-    parser.add_argument("--agent-runtime", choices=("subprocess", "local", "docker"), default="subprocess")
+    parser.add_argument(
+        "--agent-runtime", choices=("subprocess", "local", "docker"), default="subprocess"
+    )
     parser.add_argument("--docker-image", default="rlmflow:local")
+    parser.add_argument(
+        "--implementer-harness",
+        choices=("repl", "claude_code"),
+        default="repl",
+        help="harness for the agents that edit and submit trials",
+    )
+    parser.add_argument(
+        "--implementer-model",
+        default=None,
+        help="Claude Code's model; default: your Claude setting",
+    )
     parser.add_argument("--out", type=Path, default=None)
-    parser.add_argument("--checkpoint-every-s", type=float, default=0.0)
     parser.add_argument("--sync-dir", type=Path, default=None)
     parser.add_argument("--sync-every-s", type=float, default=2.0)
-    parser.add_argument("--no-live", action="store_true")
     args = parser.parse_args()
     if args.out is None:
         args.out = default_out_dir()
     if args.parallel < 1 or args.max_submissions < 0 or args.max_depth < 1:
         raise SystemExit("bad parallel/max-submissions/max-depth")
+    if args.implementer_harness == "claude_code" and args.agent_runtime == "docker":
+        # Claude Code edits files on the host; a Docker REPL sees different paths.
+        raise SystemExit(
+            "--implementer-harness claude_code needs --agent-runtime subprocess or local"
+        )
     return args
 
 

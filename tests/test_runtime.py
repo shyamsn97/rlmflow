@@ -1,333 +1,387 @@
 import asyncio
 import sys
 
+import pytest
+from helpers import ScriptedFlow, StubLLM, agent_graph, first_user, run_result
+from helpers import repl as block
+
 from rlmflow import (
-    Flow,
-    Graph,
+    DockerRuntime,
     LocalRuntime,
+    ModalRuntime,
+    ReplStatus,
     SubprocessRuntime,
-    tool,
+    WorkerRepl,
 )
-from rlmflow.runtime import PopenConnection, build_docker_argv
-from rlmflow.runtime.protocol import (
-    CapabilitiesRequest,
-    PingRequest,
-    ProxyCall,
-    ReplResponse,
-    RunRequest,
-    parse_client_message,
-    parse_request,
+from rlmflow.graph import calls
+from rlmflow.graph.nodes import Node, Step
+from rlmflow.runtime import (
+    DEFAULT_PREIMPORTS,
+    base_namespace,
+    build_docker_argv,
 )
-from rlmflow.runtime.repl import DoneSignal
-from rlmflow.runtime.repl_client import RemoteRepl
+from rlmflow.runtime.repl_client import invoke_tool_call
+from rlmflow.tools import tool
 
-from helpers import (
-    StubLLM,
-    first_user,
+
+def bare_agent() -> Node:
+    return agent_graph("q")[1]
+
+
+WRITE_A_NOTE = block(
+    "from pathlib import Path\n"
+    'Path("note.txt").write_text("hello")\n'
+    'submit(Path("note.txt").read_text())'
 )
 
 
-def test_minimal_runtime_register_tools_are_prompted_and_executable():
-    seen = {}
+def test_cached_host_tool_calls_are_saved_by_their_arguments():
+    g, root = agent_graph("root")
+    action = g.append(root, Node("assistant"))
+    ran: list[tuple[str, object]] = []
 
-    @tool("Double a number.")
-    def double(x: int) -> int:
-        return x * 2
+    @tool("First tool.", cache=True)
+    def first(value):
+        ran.append(("first", value))
+        return {"value": value}
 
-    def reply(messages):
-        seen["system"] = messages[0]["content"]
-        return '```repl\nprint(double(3))\ndone("ok")\n```'
+    @tool("Opaque tool.", cache=True)
+    def opaque(value):
+        ran.append(("opaque", value))
+        return object()
 
-    runtime = LocalRuntime()
-    runtime.register_tools([double])
-    flow = Flow(StubLLM(reply), runtime=runtime)
-    graph = Graph(query="q")
+    step = Step(g, root, action, calls=calls.CallLog(action))
+    assert invoke_tool_call(first, step, ("a",), {}) == {"value": "a"}
+    assert invoke_tool_call(first, step, ("b",), {}) == {"value": "b"}
+    invoke_tool_call(opaque, step, ("x",), {})
 
-    assert flow.run(graph=graph) == "ok"
-    assert "`double" in seen["system"]
-    assert "6" in graph.nodes[-1].output
+    rerun = Step(g, root, action, calls=calls.CallLog(action))
+    assert invoke_tool_call(first, rerun, ("b",), {}) == {"value": "b"}
+    assert invoke_tool_call(first, rerun, ("c",), {}) == {"value": "c"}
+    invoke_tool_call(opaque, rerun, ("x",), {})
+    unclaimed = rerun.calls.unclaimed()
+
+    assert [entry["value"] for entry in unclaimed] == [{"value": "a"}]
+    assert [entry["value"] for entry in action.calls] == [{"value": "b"}, {"value": "c"}]
+    assert ran == [("first", "a"), ("first", "b"), ("opaque", "x"), ("first", "c"), ("opaque", "x")]
+    with pytest.raises(TypeError, match="must be JSON"):
+        invoke_tool_call(first, rerun, (object(),), {})
 
 
+def test_host_tools_without_cache_always_run():
+    g, root = agent_graph("root")
+    action = g.append(root, Node("assistant"))
+    ran = []
 
-def test_minimal_local_runtime_uses_working_directory(tmp_path):
-    flow = Flow(
-        StubLLM(
-            lambda _messages: (
-                "```repl\n"
-                "from pathlib import Path\n"
-                'Path("note.txt").write_text("hello")\n'
-                'done(Path("note.txt").read_text())\n'
-                "```"
+    @tool("Live tool.")
+    def live(value):
+        ran.append(value)
+        return value
+
+    step = Step(g, root, action, calls=calls.CallLog(action))
+    invoke_tool_call(live, step, ("a",), {})
+    invoke_tool_call(live, step, ("a",), {})
+
+    assert ran == ["a", "a"] and not action.calls
+
+
+class RecordingWorkerSession:
+    def __init__(self, *_args, **kwargs):
+        self.timeout = kwargs["timeout"]
+        self.execution_timeout = kwargs["execution_timeout"]
+        self.closed = False
+        self.tenants = {}
+
+    def add_tenant(self, tenant):
+        self.tenants[tenant.tenant_id] = tenant
+
+    def release(self, tenant):
+        self.tenants.pop(tenant.tenant_id, None)
+
+    def close(self, **_kwargs):
+        self.closed = True
+
+
+@pytest.mark.parametrize(
+    "runtime",
+    [
+        LocalRuntime(repl_timeout=19, execution_timeout=17),
+        SubprocessRuntime(repl_timeout=19, execution_timeout=17),
+    ],
+)
+def test_process_runtimes_propagate_execution_timeout(runtime):
+    repl = runtime.open(bare_agent())
+    try:
+        assert isinstance(repl, WorkerRepl)
+        assert repl.session.execution_timeout == 17
+        assert repl.session.timeout == 19
+    finally:
+        repl.close()
+
+
+@pytest.mark.parametrize(
+    "runtime",
+    [
+        DockerRuntime("rlmflow:test", repl_timeout=19, execution_timeout=17),
+        ModalRuntime(repl_timeout=19, execution_timeout=17),
+    ],
+)
+def test_sandbox_runtimes_propagate_execution_timeout(monkeypatch, runtime):
+    monkeypatch.setattr("rlmflow.runtime.repl_client.WorkerSession", RecordingWorkerSession)
+
+    repl = runtime.open(bare_agent())
+    try:
+        assert isinstance(repl, WorkerRepl)
+        assert repl.session.execution_timeout == 17
+        assert repl.session.timeout == 19
+    finally:
+        repl.close()
+
+
+def test_runtime_execution_timeout_returns_dead_and_removes_worker():
+    runtime = LocalRuntime(execution_timeout=0.05)
+    flow = ScriptedFlow(StubLLM(lambda _messages: ""), runtime=runtime)
+    root = bare_agent()
+    try:
+        result = asyncio.run(
+            runtime.execute(
+                root,
+                "import asyncio\nawait asyncio.sleep(0.15)",
             )
-        ),
+        )
+
+        assert result.status is ReplStatus.DEAD
+        assert isinstance(result.error, TimeoutError)
+        assert result.output == "REPL execution failed: TimeoutError: REPL execution exceeded 0.05s"
+        assert runtime.get(root) is None
+    finally:
+        asyncio.run(flow.aclose())
+
+
+def test_local_runtime_uses_worker_and_working_directory(tmp_path):
+    flow = ScriptedFlow(
+        StubLLM(lambda _messages: WRITE_A_NOTE),
         runtime=LocalRuntime(working_directory=tmp_path),
     )
-    graph = Graph(query="q")
-
-    assert flow.run(graph=graph) == "hello"
-    assert (tmp_path / "note.txt").read_text() == "hello"
-
-
-
-def test_minimal_repl_client_uses_minimal_repl_server():
-    repl = RemoteRepl(
-        PopenConnection(
-            [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
-            label="test minimal remote REPL",
-            repl_timeout=5,
-        )
-    )
-
-    def done(answer):
-        repl.done_result = str(answer)
-        raise DoneSignal()
-
-    async def run():
-        try:
-            repl.seed({"done": done}, {"x": "remote"})
-            return await repl.run('print(INPUTS["x"])\ndone("ok")')
-        finally:
-            repl.close()
-
-    output = asyncio.run(run())
-
-    assert "remote" in output
-    assert repl.done_result == "ok"
-    assert not repl.errored
+    g, root = agent_graph("q")
+    try:
+        assert run_result(flow, g, root) == "hello"
+        assert isinstance(flow.runtime.repl_for(root), WorkerRepl)
+        assert (tmp_path / "note.txt").read_text() == "hello"
+    finally:
+        asyncio.run(flow.aclose())
 
 
-
-def test_minimal_local_repl_env_channel_round_trips():
-    # Host seeds the env; agent code reads it via ENV and publishes new state;
-    # the host reads that back off ``repl.env`` (distinct from ``namespace``).
-    published = {}
-
-    def reply(messages):
-        return (
-            "```repl\n"
-            'ENV["solved"] = ENV["RLMFLOW_IS_ROOT"] == "1"\n'
-            'done(ENV["RLMFLOW_AGENT_ID"])\n'
-            "```"
-        )
-
-    flow = Flow(StubLLM(reply))
-    graph = Graph(query="q")
-
-    assert flow.run(graph=graph) == "root"
-    published.update(flow.repl_for(graph).env)
-    assert published["solved"] is True
-    assert published["RLMFLOW_AGENT_ID"] == "root"
-
-
-def test_minimal_subprocess_runtime_exposes_env_metadata():
-    flow = Flow(
-        StubLLM(
-            lambda _messages: (
-                '```repl\ndone(ENV["RLMFLOW_AGENT_ID"] + "|" + ENV["RLMFLOW_IS_ROOT"])\n```'
-            )
+def test_subprocess_runtime_uses_selected_python_and_working_directory(tmp_path):
+    flow = ScriptedFlow(
+        StubLLM(lambda _messages: WRITE_A_NOTE),
+        runtime=SubprocessRuntime(
+            working_directory=tmp_path,
+            python=sys.executable,
         ),
+    )
+    try:
+        assert flow.run("q") == "hello"
+        assert (tmp_path / "note.txt").read_text() == "hello"
+    finally:
+        asyncio.run(flow.aclose())
+
+
+def test_subprocess_runtime_exposes_the_agents_tree():
+    code = block(
+        'submit(AGENTS.self.path + "|" + str(len(AGENTS.children)) + "|" '
+        '+ AGENTS["root"].status + "|" + str(len(AGENTS)) + "|" + str("root" in AGENTS) + "|" '
+        "+ AGENTS.render_graph())"
+    )
+    flow = ScriptedFlow(
+        StubLLM(lambda _messages: code),
         runtime=SubprocessRuntime(),
-        max_depth=2,
     )
+    try:
+        assert flow.run("q") == "root|0|running|1|True|root (root) [running] (you)"
+    finally:
+        asyncio.run(flow.aclose())
 
-    assert flow.run(graph=Graph(query="q")) == "root|1"
+
+def test_subprocess_runtime_supports_subagent_handles():
+    def reply(messages):
+        if first_user(messages) == "parent":
+            return block('child = launch_agent("child")\nsubmit(await child)')
+        return block('submit("child-done")')
+
+    flow = ScriptedFlow(StubLLM(reply), runtime=SubprocessRuntime())
+    try:
+        assert run_result(flow, *agent_graph("parent")) == "child-done"
+    finally:
+        asyncio.run(flow.aclose())
 
 
+def test_worker_env_channel_round_trips():
+    code = block('ENV["solved"] = ENV["RLMFLOW_IS_ROOT"] == "1"\nsubmit(ENV["RLMFLOW_AGENT_ID"])')
+    flow = ScriptedFlow(StubLLM(lambda _messages: code))
+    g, root = agent_graph("q")
+    try:
+        assert run_result(flow, g, root) == "root"
+        published = flow.runtime.repl_for(root).env
+        assert published["solved"] is True
+        assert published["RLMFLOW_AGENT_ID"] == "root"
+    finally:
+        asyncio.run(flow.aclose())
 
-def test_minimal_repl_client_reads_back_published_env():
-    repl = RemoteRepl(
-        PopenConnection(
-            [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
-            label="test minimal remote REPL",
-            repl_timeout=5,
-        )
-    )
+
+def test_worker_executes_await_in_comprehensions(tmp_path):
+    runtime = LocalRuntime(working_directory=tmp_path)
+    repl = runtime.repl_for(bare_agent())
+
+    async def double(value):
+        await asyncio.sleep(0)
+        return value * 2
 
     async def run():
-        try:
-            repl.seed({}, {})
-            repl.update_env({"RLMFLOW_AGENT_ID": "root.child"})
-            await repl.run('assert ENV["RLMFLOW_AGENT_ID"] == "root.child"\nENV["solved"] = True')
-            return dict(repl.env)
-        finally:
-            repl.close()
+        repl.seed({"double": double})
+        return await repl.run(
+            "by_key = {str(i): await double(i) for i in range(3)}\n"
+            "values = [await double(i) for i in range(3)]"
+        )
 
-    env = asyncio.run(run())
-
-    assert env["solved"] is True
-    assert env["RLMFLOW_AGENT_ID"] == "root.child"
-
-
-
-def test_minimal_flow_get_var_reads_local_repl_variable():
-    # flow.get_var pulls a var the agent created out of its (in-process) REPL.
-    def reply(_messages):
-        return '```repl\nresult = {"n": 42}\ndone("ok")\n```'
-
-    flow = Flow(StubLLM(reply))
-    graph = Graph(query="q")
-
-    assert flow.run(graph=graph) == "ok"
-    assert flow.get_var(graph, "result") == {"n": 42}
+    try:
+        result = asyncio.run(run())
+        assert result.status is ReplStatus.OK
+        assert repl.get_var("by_key") == {"0": 0, "1": 2, "2": 4}
+        assert repl.get_var("values") == [0, 2, 4]
+    finally:
+        runtime.close()
 
 
-def test_minimal_subprocess_injects_and_retrieves_live_object_by_value():
-    import pytest
+def test_empty_iterator_reports_stopiteration_not_coroutine_wrapper():
+    runtime = LocalRuntime()
+    repl = runtime.repl_for(bare_agent())
 
-    pytest.importorskip("cloudpickle")
+    async def run():
+        repl.seed({})
+        return await repl.run("print(next(iter(())))")
 
-    # Defined locally so cloudpickle ships the CLASS by value too (the sandbox
-    # process can't import this test module).
+    try:
+        result = asyncio.run(run())
+        assert result.status is ReplStatus.ERROR
+        assert result.output == "StopIteration"
+        assert "coroutine raised StopIteration" not in result.output
+    finally:
+        runtime.close()
+
+
+def test_get_var_reads_a_variable_out_of_the_worker():
+    flow = ScriptedFlow(StubLLM(lambda _messages: block('result = {"n": 42}\nsubmit("ok")')))
+    g, root = agent_graph("q")
+    try:
+        assert run_result(flow, g, root) == "ok"
+        assert flow.runtime.get_var(root, "result") == {"n": 42}
+    finally:
+        asyncio.run(flow.aclose())
+
+
+def test_worker_inject_ships_a_live_object_by_value(tmp_path):
     class Counter:
         def __init__(self):
             self.n = 0
 
-        def bump(self, k=1):
-            self.n += k
-            return self.n
+        def bump(self, amount=1):
+            self.n += amount
 
-    repl = RemoteRepl(
-        PopenConnection(
-            [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
-            label="test minimal remote REPL",
-            repl_timeout=5,
-        )
-    )
+    runtime = LocalRuntime(working_directory=tmp_path)
+    repl = runtime.repl_for(bare_agent())
+    counter = Counter()
 
     async def run():
-        try:
-            repl.seed({}, {})
-            assert repl.capabilities().cloudpickle is True
-            repl.inject("counter", Counter())
-            await repl.run("counter.bump(5)\ncounter.bump()")
-            return repl.get_var("counter")
-        finally:
-            repl.close()
-
-    got = asyncio.run(run())
-
-    assert got.n == 6  # sandbox mutations round-tripped back by value
-    # By value: the host's original object is untouched (a copy was shipped).
-
-
-def test_minimal_repl_client_inject_rejects_unpicklable_without_capability():
-    # A JSON-unsafe value + a sandbox that can't cloudpickle -> a clear error,
-    # not a silent JSON coercion failure.
-    from rlmflow.runtime.protocol import CapabilityMap
-    from rlmflow.runtime.repl_client import RemoteRepl
-
-    class Dummy(RemoteRepl):
-        def __init__(self):
-            self.namespace = {}
-            self._request_id = 0
-            self._capabilities = CapabilityMap(cloudpickle=False)
-
-    client = Dummy()
-
-    class Obj:
-        pass
+        repl.seed({})
+        repl.inject("counter", counter)
+        await repl.run("counter.bump(6)\ncount = counter.n")
 
     try:
-        client.inject("x", Obj())
-    except RuntimeError as exc:
-        assert "cloudpickle" in str(exc)
-    else:  # pragma: no cover
-        raise AssertionError("expected a RuntimeError for unpicklable inject")
-
-
-def test_minimal_remote_protocol_models_round_trip():
-    run = parse_request(RunRequest(id="r1", code="print(1)").model_dump())
-    response = parse_client_message(ReplResponse(id="r1", output="1").model_dump())
-    proxy = parse_client_message(
-        ProxyCall(id="p1", proxy="done", args=["ok"]).model_dump()
-    )
-
-    assert isinstance(run, RunRequest)
-    assert run.code == "print(1)"
-    assert isinstance(response, ReplResponse)
-    assert response.output == "1"
-    assert isinstance(proxy, ProxyCall)
-    assert proxy.proxy == "done"
-
-
-
-def test_minimal_repl_server_supports_ping_and_capabilities():
-    repl = RemoteRepl(
-        PopenConnection(
-            [sys.executable, "-u", "-m", "rlmflow.runtime.repl_server"],
-            label="test minimal remote REPL",
-            repl_timeout=5,
-        )
-    )
-    try:
-        ping = repl.call(PingRequest(id="ping-test"))
-        capabilities = repl.call(CapabilitiesRequest(id="cap-test"))
+        asyncio.run(run())
+        assert repl.get_var("count") == 6
+        with pytest.raises(KeyError, match="valid JSON"):
+            repl.get_var("counter")
+        assert counter.n == 0
     finally:
-        repl.close()
-
-    assert ping.ok
-    assert capabilities.capabilities is not None
-    assert capabilities.capabilities.fork == "none"
+        runtime.close()
 
 
+def test_worker_preimports_core_modules(tmp_path):
+    # Models reach for these without importing; a NameError costs a turn to recover.
+    runtime = LocalRuntime(working_directory=tmp_path)
+    repl = runtime.repl_for(bare_agent())
 
-def test_minimal_subprocess_runtime_executes_agent_code():
-    flow = Flow(
-        StubLLM(lambda _messages: '```repl\nprint("subproc")\ndone("ok")\n```'),
-        runtime=SubprocessRuntime(),
-    )
-    graph = Graph(query="q")
+    async def run():
+        repl.seed({})
+        return await repl.run(
+            "sizes = json.loads('{\"a\": 1}')\n"
+            "digits = re.findall(r'\\d+', 'a1b22')\n"
+            "here = os.path.basename(os.getcwd())\n"
+            "rounded = math.floor(2.7)\n"
+            "rows = list(csv.reader(['x,y']))\n"
+            "counted = collections.Counter('aab')['a']"
+        )
 
-    assert flow.run(graph=graph) == "ok"
-    assert "subproc" in graph.nodes[-1].output
-
-
-
-def test_minimal_subprocess_runtime_uses_working_directory(tmp_path):
-    flow = Flow(
-        StubLLM(
-            lambda _messages: (
-                "```repl\n"
-                "from pathlib import Path\n"
-                'Path("note.txt").write_text("hello")\n'
-                'done(Path("note.txt").read_text())\n'
-                "```"
-            )
-        ),
-        runtime=SubprocessRuntime(working_directory=tmp_path),
-    )
-    graph = Graph(query="q")
-
-    assert flow.run(graph=graph) == "hello"
-    assert (tmp_path / "note.txt").read_text() == "hello"
+    try:
+        assert asyncio.run(run()).status is ReplStatus.OK
+        assert repl.get_var("sizes") == {"a": 1}
+        assert repl.get_var("digits") == ["1", "22"]
+        assert repl.get_var("here") == tmp_path.name
+        assert repl.get_var("rounded") == 2
+        assert repl.get_var("rows") == [["x", "y"]]
+        assert repl.get_var("counted") == 2
+    finally:
+        runtime.close()
 
 
+def test_preimports_are_configurable_per_runtime(tmp_path):
+    runtime = LocalRuntime(working_directory=tmp_path, preimports=["json"])
+    repl = runtime.repl_for(bare_agent())
 
-def test_minimal_docker_argv_uses_minimal_repl_server(tmp_path):
+    async def run(code):
+        repl.seed({})
+        return await repl.run(code)
+
+    try:
+        assert "--preimport" in runtime.worker_command()
+        assert asyncio.run(run("kept = json.dumps([1])")).status is ReplStatus.OK
+        assert repl.get_var("kept") == "[1]"
+
+        dropped = asyncio.run(run("re.findall('a', 'a')"))
+        assert dropped.status is ReplStatus.ERROR
+        assert "NameError" in dropped.output
+    finally:
+        runtime.close()
+
+
+def test_preimports_default_to_absent_flag_and_empty_binds_nothing():
+    assert "--preimport" not in LocalRuntime().worker_command()
+    assert SubprocessRuntime(preimports=()).worker_command()[-2:] == ["--preimport", ""]
+    assert base_namespace(()) == {"__builtins__": __builtins__}
+    assert set(base_namespace()) == {"__builtins__", *DEFAULT_PREIMPORTS}
+    with pytest.raises(ModuleNotFoundError):
+        base_namespace(["definitely_not_a_real_module"])
+
+
+def test_docker_argv_carries_configured_preimports(tmp_path):
+    argv = build_docker_argv("rlmflow:minimal", preimports=["json", "re"])
+
+    assert argv[-2:] == ["--preimport", "json,re"]
+    assert "rlmflow.runtime.repl_server" in argv
+
+
+def test_docker_argv_runs_worker(tmp_path):
     argv = build_docker_argv(
         "rlmflow:minimal",
         mounts={str(tmp_path): "/workspace"},
         workdir="/workspace",
-        network="none",
     )
 
-    assert "rlmflow.runtime.repl_server" in argv
+    assert argv[-4:] == ["python", "-u", "-m", "rlmflow.runtime.repl_server"]
     assert argv[:4] == ["docker", "run", "-i", "--rm"]
-
-
-
-def test_minimal_subprocess_runtime_supports_awaited_launch_subagents():
-    def reply(messages):
-        if first_user(messages) == "parent":
-            return (
-                "```repl\n"
-                'r = await launch_subagents([{"name": "c", "query": "child"}])\n'
-                "done(r[0])\n"
-                "```"
-            )
-        return '```repl\ndone("child-done")\n```'
-
-    flow = Flow(StubLLM(reply), runtime=SubprocessRuntime(), max_depth=1)
-
-    assert flow.run(graph=Graph(query="parent")) == "child-done"
-
+    assert not any(":50001" in part for part in argv)
+    assert ["--network", "none"] == argv[argv.index("--network") : argv.index("--network") + 2]
+    assert ["--user", "1000:1000"] == argv[argv.index("--user") : argv.index("--user") + 2]
+    assert "--read-only" in argv
+    assert ["--cap-drop", "ALL"] == argv[argv.index("--cap-drop") : argv.index("--cap-drop") + 2]

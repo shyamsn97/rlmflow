@@ -1,172 +1,189 @@
-"""Concurrency model: the worker pool bounds blocking leaf calls, agent
-scheduling is unbounded async, and deep delegation never deadlocks.
-
-Two kinds of LLM client exercise the two paths:
-
-- ``SyncBlockingLLM`` — a blocking ``chat`` that runs on the pool's threads, so
-  ``workers`` caps how many run at once.
-- ``AsyncBlockingLLM`` — an ``async`` ``chat`` that stays on the event loop and
-  bypasses the pool entirely, so ``workers`` does not bound it.
-"""
-
 import asyncio
 import threading
-import time
 
-from rlmflow import Flow, Graph
+import pytest
+from helpers import ScriptedFlow, agent_graph, first_user, run_result
+from helpers import repl as block
 
-from helpers import first_user
-
-
-class SyncBlockingLLM:
-    """Blocking client; records the peak number of concurrent ``chat`` threads."""
-
-    def __init__(self, reply):
-        self.reply = reply
-        self._lock = threading.Lock()
-        self.active = 0
-        self.peak = 0
-
-    def chat(self, messages, **_kwargs):
-        with self._lock:
-            self.active += 1
-            self.peak = max(self.peak, self.active)
-        try:
-            time.sleep(0.02)
-            return self.reply(messages)
-        finally:
-            with self._lock:
-                self.active -= 1
+from rlmflow import SubprocessRuntime
 
 
-class AsyncBlockingLLM:
-    """Async client; records the peak number of concurrent ``chat`` coroutines."""
-
-    def __init__(self, reply):
-        self.reply = reply
-        self.active = 0
-        self.peak = 0
-
-    async def chat(self, messages, **_kwargs):
-        self.active += 1
-        self.peak = max(self.peak, self.active)
-        try:
-            await asyncio.sleep(0.02)
-            return self.reply(messages)
-        finally:
-            self.active -= 1
-
-
-def _delegate(names, query, finish):
-    specs = ", ".join(f"{{'name': {n!r}, 'query': {query!r}}}" for n in names)
-    return (
-        "```repl\n"
-        f"results = await launch_subagents([{specs}])\n"
-        f"done({finish})\n"
-        "```"
+def fanout(*names):
+    calls = "\n".join(f"    launch_agent({name!r})," for name in names)
+    return block(
+        f"handles = [\n{calls}\n]\nanswers = [await h for h in handles]\nsubmit(','.join(answers))"
     )
 
 
-def _fanout_reply(child_names):
-    def reply(messages):
-        if first_user(messages) == "parent":
-            return _delegate(child_names, "child", "','.join(results)")
-        return "```repl\ndone('c')\n```"
-
-    return reply
+JOIN_CHILDREN = block("answers = [await c for c in AGENTS.children]\nsubmit(','.join(answers))")
 
 
-def test_children_execute_concurrently():
-    llm = SyncBlockingLLM(_fanout_reply(["a", "b"]))
-    flow = Flow(llm, max_depth=1, workers=4)
-    graph = Graph(query="parent")
+class BarrierLLM:
+    """A blocking client that holds each child until every sibling has called it."""
 
-    assert asyncio.run(flow.arun(graph=graph)) == "c,c"
-    # Both children reached their (blocking) LLM turn on separate threads.
-    assert llm.peak >= 2
+    def __init__(self, parties, parent=None):
+        self.barrier = threading.Barrier(parties)
+        self.parent = parent or fanout("a", "b")
 
-
-def test_workers_bounds_concurrent_blocking_calls():
-    llm = SyncBlockingLLM(_fanout_reply(["a", "b", "c", "d"]))
-    flow = Flow(llm, max_depth=1, workers=2)
-    graph = Graph(query="parent")
-
-    assert asyncio.run(flow.arun(graph=graph)) == "c,c,c,c"
-    # Four children, but the pool only lets two blocking calls run at a time.
-    assert llm.peak == 2
+    def chat(self, messages):
+        if first_user(messages).startswith("parent"):
+            return self.parent
+        self.barrier.wait(timeout=5)
+        return block("submit('c')")
 
 
-def test_async_client_is_not_bounded_by_workers():
-    llm = AsyncBlockingLLM(_fanout_reply(["a", "b", "c", "d"]))
-    # workers=1 would serialize *blocking* calls, but an async client bypasses the
-    # pool, so all four children run their turns concurrently on the loop.
-    flow = Flow(llm, max_depth=1, workers=1)
-    graph = Graph(query="parent")
-
-    assert asyncio.run(flow.arun(graph=graph)) == "c,c,c,c"
-    assert llm.peak == 4
+def test_blocking_children_get_a_thread_each():
+    g, root = agent_graph("parent")
+    # A pool that ran the children in turn would never clear the barrier, and the
+    # first child through would break it rather than hang the suite.
+    assert run_result(ScriptedFlow(BarrierLLM(2), workers=2), g, root) == "c,c"
 
 
-def test_deep_delegation_does_not_deadlock_under_bounded_pool():
-    def reply(messages):
-        task = first_user(messages)
-        if task == "root":
-            return _delegate(["m0", "m1"], "mid", "'|'.join(results)")
-        if task == "mid":
-            return _delegate(["l0", "l1"], "leaf", "'+'.join(results)")
-        return "```repl\ndone('leaf')\n```"
+def test_ten_subprocess_children_can_launch_concurrently():
+    names = tuple(f"search-{index}" for index in range(10))
 
-    # A three-deep tree (root -> 2 mids -> 4 leaves = 7 agents) under a pool that
-    # only allows 2 concurrent blocking calls. A parent's turn ends before its
-    # children run, so no thread is held across delegation and nothing starves.
-    llm = SyncBlockingLLM(reply)
-    flow = Flow(llm, max_depth=3, workers=2)
-    graph = Graph(query="root")
+    class LLM:
+        def chat(self, messages):
+            query = first_user(messages)
+            return fanout(*names) if query == "parent" else block(f"submit({query!r})")
 
-    result = asyncio.run(asyncio.wait_for(flow.arun(graph=graph), timeout=10))
-
-    assert result == "leaf+leaf|leaf+leaf"
-    assert llm.peak <= 2
-    assert flow.runs == {}
+    flow = ScriptedFlow(LLM(), runtime=SubprocessRuntime())
+    try:
+        g, root = agent_graph("parent")
+        assert run_result(flow, g, root) == ",".join(names)
+    finally:
+        asyncio.run(flow.aclose())
+    assert list(flow.runtime.repls) == []
 
 
-def test_per_repl_env_is_isolated_across_concurrent_local_agents():
-    # The parent reads its own RLMFLOW_AGENT_ID *after* awaiting delegation. With a
-    # process-global env this would be clobbered by a concurrent child; the
-    # per-REPL env keeps each agent's metadata isolated in one process.
-    def reply(messages):
-        if first_user(messages) == "parent":
-            return (
-                "```repl\n"
-                "results = await launch_subagents(["
-                "{'name': 'a', 'query': 'child'}, {'name': 'b', 'query': 'child'}])\n"
-                'done(ENV["RLMFLOW_AGENT_ID"] + "::" + ",".join(results))\n'
-                "```"
-            )
-        return '```repl\ndone(ENV["RLMFLOW_AGENT_ID"])\n```'
+def test_a_finished_child_keeps_its_repl():
+    """A child's namespace is the only record of what its code built, so a host
+    (or a meta-agent) can still read it after the child has answered."""
 
-    flow = Flow(SyncBlockingLLM(reply), max_depth=1, workers=4)
+    class LLM:
+        def chat(self, messages):
+            query = first_user(messages)
+            if query == "parent":
+                return fanout("a", "b")
+            return block(f"kept = {query!r}\nsubmit({query!r})")
 
-    assert asyncio.run(flow.arun(graph=Graph(query="parent"))) == "root::root.a,root.b"
+    flow = ScriptedFlow(LLM(), runtime=SubprocessRuntime())
+    try:
+        g, root = agent_graph("parent")
+        assert run_result(flow, g, root) == "a,b"
+        children = root.children()
+        assert [flow.runtime.get_var(child, "kept") for child in children] == ["a", "b"]
+        assert sorted(flow.runtime.repls) == sorted([root.id, *(c.id for c in children)])
+    finally:
+        asyncio.run(flow.aclose())
+    assert list(flow.runtime.repls) == []
 
 
-def test_launch_subagents_runs_children_without_an_active_run():
-    # Called directly (no run_streaming loop): the children still run to completion
-    # because each self-drives on a throwaway queue.
-    def reply(messages):
-        task = first_user(messages)
-        return f'```repl\ndone("{task} done")\n```'
+def test_host_spawned_subtrees_get_a_thread_each():
+    g, root = agent_graph("parent")
+    a = g.start("a", parent=root, name="a")
+    b = g.start("b", parent=root, name="b")
 
-    flow = Flow(SyncBlockingLLM(reply), max_depth=1)
-    graph = Graph(query="parent")
-    repl = flow.repl_for(graph)
-    launch_subagents = flow.launch_subagents(graph, repl)
-
-    results = asyncio.run(
-        launch_subagents(
-            [{"name": "a", "query": "task a"}, {"name": "b", "query": "task b"}]
-        )
+    assert (
+        run_result(ScriptedFlow(BarrierLLM(2, parent=JOIN_CHILDREN), workers=2), g, root) == "c,c"
     )
+    assert root.children() == [a, b]
 
-    assert results == ["task a done", "task b done"]
-    assert flow.runs == {}
+
+def test_host_spawned_children_with_queued_messages_step_once_each():
+    calls = 0
+
+    class LLM:
+        async def chat(self, messages):
+            nonlocal calls
+            if first_user(messages).startswith("parent"):
+                return JOIN_CHILDREN
+            calls += 1
+            assert messages[-1]["content"].startswith("recover")
+            await asyncio.sleep(0.05)
+            return block("submit('ok')")
+
+    g, root = agent_graph("parent")
+    first = g.start("first", parent=root, name="first")
+    second = g.start("second", parent=root, name="second")
+    g.send(first, "recover first")
+    g.send(second, "recover second")
+    flow = ScriptedFlow(LLM())
+
+    async def run():
+        try:
+            await asyncio.wait_for(flow.arun(g), timeout=5)
+            return root.final_result()
+        finally:
+            await flow.aclose()
+
+    assert asyncio.run(run()) == "ok,ok"
+    assert calls == 2
+
+
+def test_one_worker_is_not_held_while_parent_awaits_children():
+    class LLM:
+        def chat(self, messages):
+            query = first_user(messages)
+            if query == "parent":
+                return fanout("a", "b")
+            return block(f"submit({query!r})")
+
+    g, root = agent_graph("parent")
+    assert run_result(ScriptedFlow(LLM(), workers=1), g, root) == "a,b"
+
+
+def test_a_failing_child_does_not_cancel_its_sibling():
+    class HalfBrokenLLM:
+        async def chat(self, messages):
+            query = first_user(messages)
+            if query == "parent":
+                return fanout("good", "bad")
+            await asyncio.sleep(0)  # both children are in flight when one raises
+            if query == "bad":
+                raise RuntimeError("exploded")
+            return block("submit('good')")
+
+    g, root = agent_graph("parent")
+    failed = "[child failed: RuntimeError: exploded]"
+    assert run_result(ScriptedFlow(HalfBrokenLLM()), g, root) == f"good,{failed}"
+    assert [child.final_result() for child in root.children()] == ["good", failed]
+
+
+def test_cancelling_a_run_cancels_the_children_it_launched():
+    class Probe:
+        """Answers the parent, then parks every child until it is cancelled."""
+
+        def __init__(self):
+            self.started = set()
+            self.cancelled = set()
+            self.ready = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def chat(self, messages):
+            query = first_user(messages)
+            if query == "parent":
+                return fanout("a", "b")
+            self.started.add(query)
+            if len(self.started) == 2:
+                self.ready.set()
+            try:
+                await self.release.wait()
+            except asyncio.CancelledError:
+                self.cancelled.add(query)
+                raise
+            return block("submit('unexpected')")
+
+    async def main():
+        llm = Probe()
+        flow = ScriptedFlow(llm)
+        run = asyncio.create_task(flow.arun(agent_graph("parent")[0]))
+        await asyncio.wait_for(llm.ready.wait(), timeout=5)
+        run.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await run
+        return llm, flow
+
+    llm, flow = asyncio.run(main())
+    assert llm.cancelled == {"a", "b"}
+    assert flow.tasks == {}

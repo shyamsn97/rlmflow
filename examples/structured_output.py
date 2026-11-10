@@ -2,7 +2,8 @@
 
 This live example asks a real model to extract facts from a provided trip brief.
 The root launches child agents with JSON Schema output contracts, receives their
-typed dictionary results, then returns a Pydantic-validated root result.
+typed dictionary results, then returns a root result that validates against a
+Pydantic model.
 
 Run:
     export OPENAI_API_KEY=...
@@ -13,27 +14,20 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel
 
-from rlmflow.clients import OpenAIClient
-from rlmflow import (
-    ConsumerGroup,
-    Flow,
-    Graph,
-    GraphCheckpointer,
-    LiveTreeRenderer,
-    render_tree,
-)
+from rlmflow import AgentConfig, Flow, Graph, json_schema_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import example_run_dir  # noqa: E402
+from common import example_run_dir, print_run  # noqa: E402
 
 
 class CityForecast(BaseModel):
@@ -87,52 +81,40 @@ def main() -> None:
     args = parser.parse_args()
 
     flow = Flow(
-        OpenAIClient(args.model),
-        max_depth=args.max_depth,
-        max_iters=args.max_iters,
+        configs=[AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)]
     )
 
     query = (
         "Build a packing plan for my upcoming trip. The important weather info "
-        'is in `INPUTS["trip_brief"]`. Make sure to delegate each city to child '
+        "is in `trip_brief`. Make sure to delegate each city to child "
         "agents."
     )
 
-    graph = Graph(query=query)
+    g = Graph()
+    root = g.start(query, trip_brief=TRIP_BRIEF)
+    config = AgentConfig(
+        model=args.model,
+        max_depth=args.max_depth,
+        max_iters=args.max_iters,
+        output_schema=json_schema_for(PackingPlan),
+    )
+    out_dir = Path(args.out_dir)
+    asyncio.run(print_run(flow, g, out_dir, root_config=config))
 
-    consumers = ConsumerGroup([LiveTreeRenderer()])
-    if args.out_dir:
-        consumers.append(GraphCheckpointer(Path(args.out_dir)))
-
-    async def drive() -> None:
-        try:
-            async for event in flow.run_streaming(
-                graph=graph,
-                inputs={"trip_brief": TRIP_BRIEF},
-                output_schema=PackingPlan,
-            ):
-                consumers.handle(event, graph)
-        finally:
-            consumers.close()
-
-    asyncio.run(drive())
-
-    plan = PackingPlan.model_validate_json(graph.result())
+    # `submit(value)` parsed the answer against the schema, so the result is a
+    # dict; the Pydantic model is the typed view of that same value.
+    plan = PackingPlan.model_validate(root.final_result())
 
     print("Typed result:")
     print(type(plan).__name__)
     print(plan.model_dump_json(indent=2))
 
-    print("\nGraph result:")
-    print(graph.result())
+    print("\nRoot result:")
+    print(json.dumps(root.final_result(), indent=2))
 
-    print("\nTree:")
-    print(render_tree(graph))
+    print(f"\nRun saved to {out_dir}")
 
-    if args.out_dir:
-        print(f"\nGraph checkpointed to {Path(args.out_dir)}")
-
-    flow.close_repls(graph.graph_id)
+    flow.runtime.close_repls()
 
 
 if __name__ == "__main__":

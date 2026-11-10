@@ -1,0 +1,610 @@
+"""Draw a saved graph as SVG: one marker per node, coloured and shaped by type.
+
+This is the figure the old Plotly viewer drew, rebuilt on the current node model
+and without the dependency. The palette, the marker shapes, the tidy-tree layout
+and the dark ground are all carried over, so a figure here is recognisably the
+same figure. SVG is written by hand because it keeps the output reproducible from
+a bare checkout and embeds straight into the HTML stepper.
+
+Layout is computed in abstract units — x is a leaf slot, y is depth — then scaled
+into a pixel box, which is what stopped Plotly from turning a hundred-deep chain
+into a hundred-screen-tall image.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+from xml.sax.saxutils import escape
+
+from rlmflow.graph.graph import Graph
+from rlmflow.graph.nodes import RETURN, SPAWN, WRITE, Agent, LLMUsage, Node
+from rlmflow.view.text import kind
+from rlmflow.view.timeline import timeline
+
+BG = "#0d1117"
+INK = "#e6edf3"
+DIM = "#8b949e"
+EDGE = "#30363d"
+AGENT_LABEL = "#3fb950"
+
+# Hue per node kind (``rlmflow.view.text.kind``), from the original viewer.
+NODE_COLORS: dict[str, str] = {
+    "agent": "#58a6ff",  # sky blue   — an agent's root
+    "message": "#79c0ff",  # pale blue  — input handed to it
+    "model": "#bc8cff",  # lavender   — a model turn and the code it ran
+    "code": "#ff9e64",  # peach      — code a session ran and what it printed
+    "reply": "#bc8cff",  # lavender   — a session's text
+    "idle": "#ffd33d",  # gold       — a turn that waits for news
+    "done": "#56d364",  # emerald    — finished
+}
+
+# Shape pairs with colour so types stay separable when small, in greyscale, or
+# to someone who cannot tell gold from peach.
+NODE_SHAPES: dict[str, str] = {
+    "agent": "circle",
+    "message": "circle-open",
+    "model": "diamond",
+    "code": "square",
+    "reply": "diamond",
+    "idle": "star",
+    "done": "hexagon",
+}
+
+FALLBACK_COLOR = "#8b949e"
+FALLBACK_SHAPE = "circle"
+SANS = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif"
+MONO = "ui-monospace, SFMono-Regular, Menlo, monospace"
+
+MARGIN_X, MARGIN_TOP, MARGIN_BOTTOM = 16.0, 56.0, 16.0
+LABEL_SIZE = 10.5
+LABEL_ADVANCE = 0.6  # monospace glyph width as a share of font size
+BASE_DIAMETER = 14.0
+MAX_TOKEN_GROWTH = 22.0
+
+
+@dataclass
+class Placed:
+    """An agent or node and where it landed."""
+
+    node: Node
+    x: float
+    y: float
+    r: float
+    label: str = ""
+
+
+@dataclass
+class Layout:
+    placed: list[Placed] = field(default_factory=list)
+    edges: list[tuple[float, float, float, float]] = field(default_factory=list)
+    width: float = 0.0
+    height: float = 0.0
+    scale: float = 1.0
+
+
+def node_color(node: Node) -> str:
+    return NODE_COLORS.get(kind(node), FALLBACK_COLOR)
+
+
+def node_shape(node: Node) -> str:
+    return NODE_SHAPES.get(kind(node), FALLBACK_SHAPE)
+
+
+def node_label(node: Node) -> str:
+    """Agents get named; the rest are identified by colour and shape."""
+    return node.name if isinstance(node, Agent) else ""
+
+
+def parent_ids(g: Graph) -> dict[str, str]:
+    """Each item's drawn parent: the node that launched an agent, else the node before it."""
+    parents: dict[str, str] = {}
+    for agent in g.agents():
+        source = [e.source for e in g.edges(kind=SPAWN, target=agent.id)]
+        if source:
+            parents[agent.id] = source[0]
+        previous = agent.id
+        for node in agent.nodes()[1:]:
+            parents[node.id] = previous
+            previous = node.id
+    return parents
+
+
+def handoffs(g: Graph) -> list[tuple[str, str]]:
+    """``(source, receiver)`` pairs for what crossed between agents.
+
+    A ``return`` edge runs from a child's final node to the node that read its
+    result; a ``write`` edge from the sending node to the node it attached to
+    another agent.
+    """
+    return [(edge.source, edge.target) for edge in g.edges() if edge.kind in (RETURN, WRITE)]
+
+
+def node_tokens(node: Node) -> int:
+    """What this node cost, which is what sizes its marker."""
+    if isinstance(node, Agent):
+        return 0
+    usage = LLMUsage.of(node.data.get("usage"))
+    return int(usage.input_tokens) + int(usage.output_tokens)
+
+
+def marker_diameter(node: Node) -> float:
+    """``14 + min(22, sqrt(tokens) / 3.5)``, as the Plotly viewer sized them."""
+    return BASE_DIAMETER + min(MAX_TOKEN_GROWTH, math.sqrt(node_tokens(node)) / 3.5)
+
+
+def tidy_tree(nodes: list[Node], parents: dict[str, str]) -> dict[str, tuple[float, float]]:
+    """Give every subtree a horizontal slot by leaf count.
+
+    An agent's own chain is a straight column at the left of its slot; agents it
+    launches take the slots to its right.
+    """
+    present = {node.id for node in nodes}
+    by_id = {node.id: node for node in nodes}
+    children: dict[str, list[Node]] = {node.id: [] for node in nodes}
+    for node in nodes:
+        parent = parents.get(node.id)
+        if parent is not None and parent in present:
+            children[parent].append(node)
+
+    def continues(parent: Node, kid: Node) -> bool:
+        return not isinstance(kid, Agent) and kid.owner == parent.owner
+
+    for node_id, kids in children.items():
+        kids.sort(key=lambda kid: not continues(by_id[node_id], kid))
+    spine = {
+        node_id: kids[0].id
+        for node_id, kids in children.items()
+        if kids and continues(by_id[node_id], kids[0])
+    }
+
+    leaves: dict[str, int] = {}
+    for origin in nodes:
+        if origin.id in leaves:
+            continue
+        active: set[str] = set()
+        stack: list[tuple[Node, bool]] = [(origin, False)]
+        while stack:
+            node, expanded = stack.pop()
+            if node.id in leaves:
+                continue
+            if expanded:
+                active.discard(node.id)
+                leaves[node.id] = (
+                    sum(leaves.get(kid.id, 1) for kid in children[node.id])
+                    if children[node.id]
+                    else 1
+                )
+                continue
+            if node.id in active:
+                leaves[node.id] = 1
+                continue
+            active.add(node.id)
+            stack.append((node, True))
+            stack.extend(
+                (kid, False) for kid in reversed(children[node.id]) if kid.id not in leaves
+            )
+
+    slots: dict[str, tuple[float, float, int]] = {}
+
+    cursor = 0.0
+    for node in nodes:
+        parent = parents.get(node.id)
+        if parent is None or parent not in present:
+            width = float(max(leaves[node.id], 1))
+            pending: list[tuple[Node, float, float, int]] = [(node, cursor, cursor + width, 0)]
+            while pending:
+                current, left, right, depth = pending.pop()
+                if current.id in slots:
+                    continue
+                slots[current.id] = (left, right, depth)
+                kids = children[current.id]
+                total = sum(leaves[kid.id] for kid in kids) or 1
+                child_left = left
+                placements: list[tuple[Node, float, float, int]] = []
+                for kid in kids:
+                    child_width = (right - left) * (leaves[kid.id] / total)
+                    placements.append((kid, child_left, child_left + child_width, depth + 1))
+                    child_left += child_width
+                pending.extend(reversed(placements))
+            cursor += width + 1.0
+
+    pos: dict[str, tuple[float, float]] = {}
+    for node_id, (left, right, depth) in slots.items():
+        end, seen = node_id, {node_id}
+        while end in spine and spine[end] in slots and spine[end] not in seen:
+            end = spine[end]
+            seen.add(end)
+        end_left, end_right, _ = slots[end]
+        pos[node_id] = ((end_left + end_right) / 2, float(depth))
+    for node in nodes:  # cycles or broken edges, parked rather than dropped
+        if node.id not in pos:
+            cursor += 1.0
+            pos[node.id] = (cursor, 0.0)
+    return pos
+
+
+def legend_width() -> float:
+    """How wide the key needs to be, which is the floor on a figure's width."""
+    names = list(NODE_COLORS)
+    return sum(15 + len(name) * 10 * 0.56 for name in names) + 16 * (len(names) - 1)
+
+
+def layout_graph(
+    nodes: list[Node],
+    parents: dict[str, str],
+    *,
+    width: float = 1024.0,
+    height: float = 360.0,
+    legend: bool = True,
+) -> Layout:
+    """Scale the abstract tree into a pixel box that stays a sane size."""
+    layout = Layout()
+    if not nodes:
+        return layout
+
+    pos = tidy_tree(nodes, parents)
+    xs = [pos[node.id][0] for node in nodes]
+    ys = [pos[node.id][1] for node in nodes]
+    span_x = max(max(xs) - min(xs), 0.001)
+    span_y = max(max(ys) - min(ys), 0.0)
+
+    legend_h = 30.0 if legend else 0.0
+    usable_w = max(width - MARGIN_X * 2, 120.0)
+    usable_h = max(height - MARGIN_TOP - MARGIN_BOTTOM - legend_h, 80.0)
+
+    # Clamped so a two-node graph is not stretched across the page and a
+    # hundred-deep chain is dense instead of enormous.
+    col = min(max(usable_w / span_x, 26.0), 128.0)
+    row = min(max(usable_h / span_y, 9.0), 34.0) if span_y else 0.0
+    layout.scale = min(1.0, max(0.42, row / 26.0)) if span_y else 1.0
+
+    left, top = min(xs), min(ys)
+    for node in nodes:
+        ax, ay = pos[node.id]
+        layout.placed.append(
+            Placed(
+                node=node,
+                x=MARGIN_X + (ax - left) * col,
+                y=MARGIN_TOP + (ay - top) * row,
+                r=marker_diameter(node) / 2 * layout.scale,
+                label=node_label(node),
+            )
+        )
+
+    # An agent's name is wider than its marker, so the extents have to include it
+    # or the outermost column loses its label off the edge.
+    def half(placed: Placed) -> float:
+        label = len(placed.label) * LABEL_SIZE * layout.scale * LABEL_ADVANCE / 2
+        return max(placed.r, label)
+
+    overflow = MARGIN_X - min(p.x - half(p) for p in layout.placed)
+    if overflow > 0:
+        for placed in layout.placed:
+            placed.x += overflow
+
+    # A single chain has no width of its own, so the canvas floor is whatever the
+    # title and key need; content narrower than that gets centred in it.
+    content_w = max(p.x + half(p) for p in layout.placed) + MARGIN_X
+    floor = (legend_width() + MARGIN_X * 2) if legend else 260.0
+    layout.width = max(content_w, floor)
+    if layout.width > content_w:
+        shift = (layout.width - content_w) / 2
+        for placed in layout.placed:
+            placed.x += shift
+
+    at = {placed.node.id: placed for placed in layout.placed}
+    for placed in layout.placed:
+        parent = parents.get(placed.node.id)
+        if parent is not None and parent in at:
+            source = at[parent]
+            layout.edges.append((source.x, source.y, placed.x, placed.y))
+
+    layout.height = max(p.y + p.r for p in layout.placed) + MARGIN_BOTTOM + legend_h
+    return layout
+
+
+def marker(x: float, y: float, shape: str, color: str, r: float, *, ring: bool = True) -> str:
+    """One marker symbol, outlined in the background colour so overlaps read."""
+    stroke = f' stroke="{BG}" stroke-width="{1.5 if r > 4 else 1:.1f}"' if ring else ""
+    if shape == "circle":
+        return f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" fill="{color}"{stroke}/>'
+    if shape == "circle-open":
+        return (
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{max(r - 1.2, 1.4):.1f}" fill="{BG}" '
+            f'stroke="{color}" stroke-width="{max(1.6, r * 0.42):.1f}"/>'
+        )
+    if shape == "square":
+        return (
+            f'<rect x="{x - r:.1f}" y="{y - r:.1f}" width="{r * 2:.1f}" '
+            f'height="{r * 2:.1f}" rx="1.2" fill="{color}"{stroke}/>'
+        )
+    if shape == "diamond":
+        pts = f"{x:.1f},{y - r:.1f} {x + r:.1f},{y:.1f} {x:.1f},{y + r:.1f} {x - r:.1f},{y:.1f}"
+        return f'<polygon points="{pts}" fill="{color}"{stroke}/>'
+    if shape == "triangle-right":
+        pts = f"{x - r * 0.85:.1f},{y - r:.1f} {x + r:.1f},{y:.1f} {x - r * 0.85:.1f},{y + r:.1f}"
+        return f'<polygon points="{pts}" fill="{color}"{stroke}/>'
+    if shape == "star":
+        pts = []
+        for step in range(10):
+            radius = r * 1.35 if step % 2 == 0 else r * 0.54
+            angle = -math.pi / 2 + step * math.pi / 5
+            pts.append(f"{x + radius * math.cos(angle):.1f},{y + radius * math.sin(angle):.1f}")
+        return f'<polygon points="{" ".join(pts)}" fill="{color}"{stroke}/>'
+    if shape == "hexagon":
+        pts = []
+        for step in range(6):
+            angle = step * math.pi / 3
+            pts.append(f"{x + r * math.cos(angle):.1f},{y + r * math.sin(angle):.1f}")
+        return f'<polygon points="{" ".join(pts)}" fill="{color}"{stroke}/>'
+    if shape == "x":
+        d = r * 0.82
+        return (
+            f'<path d="M {x - d:.1f} {y - d:.1f} L {x + d:.1f} {y + d:.1f} '
+            f'M {x + d:.1f} {y - d:.1f} L {x - d:.1f} {y + d:.1f}" stroke="{color}" '
+            f'stroke-width="{max(1.8, r * 0.5):.1f}" fill="none" stroke-linecap="round"/>'
+        )
+    return f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{r:.1f}" fill="{color}"{stroke}/>'
+
+
+def hover_text(g: Graph, node: Node) -> str:
+    """Identity only — the detail panel carries the content."""
+    rows = [f"{node.agent.path()} · {kind(node)}"]
+    tokens = node_tokens(node)
+    if tokens:
+        usage = LLMUsage.of(node.data.get("usage"))
+        rows.append(f"tokens {tokens:,} (in {usage.input_tokens:,} / out {usage.output_tokens:,})")
+    return "\n".join(rows)
+
+
+def graph_svg(
+    g: Graph,
+    *,
+    title: str = "execution graph",
+    width: float = 1024.0,
+    height: float = 360.0,
+    dim_after: int | None = None,
+    order: list[Node] | None = None,
+    highlight: str = "",
+    legend: bool = True,
+    interactive: bool = False,
+) -> str:
+    """Render ``g`` as an SVG figure.
+
+    ``dim_after`` fades everything from that index on, which is how the stepper
+    shows a partly-built graph without markers moving between slides. Indexes
+    count along ``order`` (every agent and node of ``g``), which defaults to log order.
+    ``highlight`` rings one node id: the step you are on.
+
+    With ``interactive`` the markers carry their step index and geometry, and a
+    spare ring is parked in the drawing. That lets one figure be stepped through
+    by script instead of shipping a separate copy of it per step.
+    """
+    nodes = timeline(g) if order is None else order
+    parents = parent_ids(g)
+    layout = layout_graph(nodes, parents, width=width, height=height, legend=legend)
+    if not layout.placed:
+        return (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="420" height="80">'
+            f'<rect width="420" height="80" fill="{BG}"/>'
+            f'<text x="16" y="46" font-family="{SANS}" font-size="13" fill="{DIM}">'
+            f"(empty graph)</text></svg>"
+        )
+
+    shown = nodes[:dim_after] if dim_after is not None else nodes
+    ids = {node.id for node in shown}
+    edges_shown = sum(1 for node in shown if parents.get(node.id) in ids)
+    w, h = layout.width, layout.height
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.0f}" height="{h:.0f}" '
+        f'viewBox="0 0 {w:.0f} {h:.0f}">',
+        f'<rect width="{w:.0f}" height="{h:.0f}" fill="{BG}"/>',
+        f'<text x="{MARGIN_X:.0f}" y="22" font-family="{SANS}" font-size="12" fill="{INK}">'
+        f'<tspan font-weight="700">{escape(title)}</tspan>'
+        f'<tspan fill="{DIM}" id="rlm-counts"> · {len(shown)} nodes · '
+        f"{edges_shown} edges</tspan></text>",
+    ]
+
+    index_of = {placed.node.id: i for i, placed in enumerate(layout.placed)}
+    for x0, y0, x1, y1, child in _edges_with_child(layout, parents, index_of):
+        faded = dim_after is not None and child >= dim_after
+        tag = f' class="rlm-e" data-i="{child}"' if interactive else ""
+        parts.append(
+            f'<path d="M {x0:.1f} {y0:.1f} L {x1:.1f} {y1:.1f}" stroke="{EDGE}" '
+            f'stroke-width="1" fill="none" opacity="{0.2 if faded else 1}"{tag}/>'
+        )
+    at = {placed.node.id: placed for placed in layout.placed}
+    for sender, receiver in handoffs(g):
+        if sender not in at or receiver not in at:
+            continue
+        source, target, arrives = at[sender], at[receiver], index_of[receiver]
+        faded = dim_after is not None and arrives >= dim_after
+        tag = f' class="rlm-e" data-i="{arrives}"' if interactive else ""
+        parts.append(
+            f'<path d="M {source.x:.1f} {source.y:.1f} L {target.x:.1f} {target.y:.1f}" '
+            f'stroke="{NODE_COLORS["message"]}" stroke-width="1" stroke-dasharray="3 3" '
+            f'fill="none" opacity="{0.2 if faded else 0.6}"{tag}/>'
+        )
+
+    for placed in layout.placed:
+        node = placed.node
+        index = index_of[node.id]
+        faded = dim_after is not None and index >= dim_after
+        if interactive:
+            parts.append(
+                f'<g class="rlm-n" data-i="{index}" data-x="{placed.x:.1f}" '
+                f'data-y="{placed.y:.1f}" data-r="{placed.r + 5.5:.1f}">'
+            )
+        else:
+            parts.append(f'<g opacity="{0.17 if faded else 1}">')
+        if node.id == highlight:
+            parts.append(
+                f'<circle cx="{placed.x:.1f}" cy="{placed.y:.1f}" r="{placed.r + 5.5:.1f}" '
+                f'fill="none" stroke="{INK}" stroke-width="1.5" opacity="0.85"/>'
+            )
+        parts.append(f"<title>{escape(hover_text(g, node))}</title>")
+        parts.append(marker(placed.x, placed.y, node_shape(node), node_color(node), placed.r))
+        if placed.label:
+            size = max(8.5, LABEL_SIZE * layout.scale)
+            parts.append(
+                f'<text x="{placed.x:.1f}" y="{placed.y - placed.r - 5:.1f}" '
+                f'text-anchor="middle" font-family="{MONO}" font-size="{size:.1f}" '
+                f'fill="{AGENT_LABEL}">{escape(placed.label)}</text>'
+            )
+        parts.append("</g>")
+
+    if interactive:
+        parts.append(
+            f'<circle id="rlm-ring" cx="-99" cy="-99" r="0" fill="none" stroke="{INK}" '
+            f'stroke-width="1.5" opacity="0.85"/>'
+        )
+    if legend:
+        parts.append(_legend(w, h - 10))
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def _edges_with_child(
+    layout: Layout, parents: dict[str, str], index_of: dict[str, int]
+) -> list[tuple[float, float, float, float, int]]:
+    """Edges tagged with the step their child arrives on, so they can appear with it."""
+    at = {placed.node.id: placed for placed in layout.placed}
+    out = []
+    for placed in layout.placed:
+        parent = parents.get(placed.node.id)
+        if parent is not None and parent in at:
+            source = at[parent]
+            out.append((source.x, source.y, placed.x, placed.y, index_of[placed.node.id]))
+    return out
+
+
+def _legend(width: float, y: float) -> str:
+    """Horizontal key, centred under the figure."""
+    entries = [(t, c, NODE_SHAPES[t]) for t, c in NODE_COLORS.items()]
+    gap, text_size = 16.0, 10.0
+    widths = [11 + 4 + len(name) * text_size * 0.56 for name, _, _ in entries]
+    x = max((width - (sum(widths) + gap * (len(entries) - 1))) / 2, MARGIN_X)
+    out = []
+    for (name, color, shape), w in zip(entries, widths):
+        out.append(marker(x + 5, y - 3.5, shape, color, 5.0, ring=False))
+        out.append(
+            f'<text x="{x + 15:.1f}" y="{y:.1f}" font-family="{SANS}" '
+            f'font-size="{text_size:.1f}" fill="{DIM}">{escape(name)}</text>'
+        )
+        x += w + gap
+    return "".join(out)
+
+
+def run_title(g: Graph) -> str:
+    """The run's name: its top-level agents."""
+    tops = [a.name for a in g.roots()]
+    return ", ".join(tops) or "empty graph"
+
+
+def figure_title(g: Graph) -> str:
+    """The bold half of the title: ``root · done``."""
+    items = timeline(g)
+    last = kind(items[-1]) if items else "empty"
+    return f"{run_title(g)} · {last}"
+
+
+def step_svg(g: Graph, upto: int, **kwargs: object) -> str:
+    """The graph drawn in full, with everything after ``upto`` faded back."""
+    ordered = timeline(g)
+    return graph_svg(
+        g,
+        title=f"{run_title(g)} · {kind(ordered[upto])}",
+        dim_after=upto + 1,
+        highlight=ordered[upto].id,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+_MISSING = (
+    "PNG and GIF export need a rasteriser: pip install 'rlmflow[image]'. "
+    "rlmflow.view.save_svg and save_html need nothing."
+)
+
+
+def _rasterise() -> Any:
+    try:
+        import cairosvg
+    except ImportError as exc:  # pragma: no cover - depends on the extra
+        raise ImportError(_MISSING) from exc
+    return cairosvg
+
+
+def _image() -> Any:
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - depends on the extra
+        raise ImportError(_MISSING) from exc
+    return Image
+
+
+def save_frames(
+    g: Graph,
+    directory: str | Path,
+    *,
+    every: int = 1,
+    scale: float = 1.0,
+) -> list[Path]:
+    """Write one PNG per step into ``directory``, named by step number.
+
+    ``every`` thins a long run out — ``every=5`` keeps every fifth step.
+    """
+    cairosvg = _rasterise()
+    out = Path(directory)
+    out.mkdir(parents=True, exist_ok=True)
+    ordered = timeline(g)
+    width = len(str(len(ordered)))
+    written: list[Path] = []
+    for index in range(0, len(ordered), max(every, 1)):
+        path = out / f"step_{index + 1:0{width}d}.png"
+        cairosvg.svg2png(
+            bytestring=step_svg(g, index).encode("utf-8"),
+            write_to=str(path),
+            scale=scale,
+        )
+        written.append(path)
+    return written
+
+
+def save_gif(
+    g: Graph,
+    path: str | Path,
+    *,
+    every: int = 1,
+    ms_per_frame: int = 120,
+    hold_last_ms: int = 1600,
+    scale: float = 1.0,
+) -> Path:
+    """Animate the run into a GIF, holding on the finished graph at the end."""
+    cairosvg = _rasterise()
+    Image = _image()
+    import io
+
+    ordered = timeline(g)
+    frames = []
+    for index in range(0, len(ordered), max(every, 1)):
+        png = cairosvg.svg2png(bytestring=step_svg(g, index).encode("utf-8"), scale=scale)
+        frames.append(Image.open(io.BytesIO(png)).convert("P", palette=Image.ADAPTIVE))
+    if not frames:
+        raise ValueError("nothing to animate: that graph has no nodes")
+
+    out = Path(path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    durations = [ms_per_frame] * len(frames)
+    durations[-1] = max(hold_last_ms, ms_per_frame)
+    frames[0].save(
+        out,
+        save_all=True,
+        append_images=frames[1:],
+        duration=durations,
+        loop=0,
+        optimize=True,
+    )
+    return out

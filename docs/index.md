@@ -1,49 +1,31 @@
 # rlmflow docs
 
-Pick the doc that matches what you're trying to do.
+## Start here
 
-## Get oriented
+- [Usage](usage.md): run a task, configs, models, tools, runtimes, streaming, forks, Claude Code and pi, the CLI.
+- [Agents](agents.md): what an agent does in a run: its REPL tools, launching and waiting, messages, Claude Code sessions, forks.
+- [Command line](cli.md): every `rlmflow` command and flag, and how settings resolve.
 
-- [Blog post](https://shyamsn97.github.io/blog/rlmflow/) — long-form pitch.
-  Why recursive agents, why graphs over flat traces, and walkthroughs.
-- [Positioning](positioning.md) — when to use rlmflow vs
-  rlm-minimal, ypi, LangGraph, CrewAI, AutoGen, SWE-agent, Aider.
+## Guides
 
-## Use rlmflow
+- [Runtimes](runtimes.md): where agent code runs: Local, subprocess, Docker, Modal, or your own.
+- [Security](security.md): the trust model, Docker isolation, caps, proxied tools.
+- [Streaming and turns](streaming.md): `run_streaming(..., until=...)`, turns, boundaries, cancellation.
+- [Control](control.md): limits, multi-turn runs, save and resume, forks, custom tools.
+- [Node injection](injections.md): add messages and edits between streaming calls and continue the run.
+- [Observability](observability.md): querying the graph, consumers, reading a saved run.
+- [The graph](node_model.md): nodes, agents, edges, editing, and the saved format.
+- [Prompt customization](prompt_customization.md): each harness's prompt sections, and overriding them from a config or a harness subclass.
+- [Skills](skills.md): `SKILL.md` files in prompts.
 
-- [Control](control.md) — streaming loop, save/load resume, rewind,
-  forks, `INPUTS`, cold `launch_subagents` and warm `launch_subgraphs` /
-  `adopt`, custom tools.
-- [Streaming and scheduling](streaming.md) — detailed guide to
-  `run_streaming(..., until=...)`, per-agent queues, boundaries, and delegation.
-- [Skills](skills.md) — workspace `SKILL.md` files, always-on skills,
-  query-selected skills, child-only skills, run-memory skills.
-- [Node injection](injections.md) — append typed controller events to a
-  running graph, then continue with `agent.run(graph=graph)` / `agent.run_streaming(graph=graph)`.
-- [Observability](observability.md) — querying the `Graph`,
-  run layout, `LiveGraphTree` / `LiveTreeRenderer`, the Gradio viewer, and static
-  image/step exports.
-- [Node model](node_model.md) — typed graph state taxonomy, action /
-  observation alternation, delegation wait/resume flow.
-- [Runtimes](runtimes.md) — `Runtime` protocol, shipped runtimes
-  (Local / Docker / Modal / E2B / Daytona), writing your own.
-- [Prompt customization](prompt_customization.md) — `SystemPromptBuilder`
-  sections, `PromptProfile` / `prompt_profile` / `prompt_router`, full replacement.
-- [Security](security.md) — trust model, Docker isolation knobs,
-  engine-level caps, proxied tools, approval gates.
-- [Example smoke runner](../examples/run_examples.py) — run the offline
-  examples and opt into optional, live, sandbox, or manual checks.
+## Examples and context
 
-## Extend rlmflow
+- [Shepherd walkthrough](shepherd.md): a meta-agent rewinds a failed run and forks recovery plans.
+- [Needle](https://github.com/shyamsn97/rlmflow/tree/main/examples/needle) and [Boids coding](https://github.com/shyamsn97/rlmflow/tree/main/examples/coding): long-context search and a multi-file coding run.
+- [Example results](example_results.md): real runs of the examples, with tables, figures and caveats.
+- [Positioning](positioning.md): rlmflow next to other agent frameworks.
+- [Blog post](https://shyamsn97.github.io/blog/rlmflow/).
 
-- [**Internals**](internals.md) — the `Flow`/`Graph`/`Run` split, the two phases
-  of a run, the per-agent scheduler, exec turns, delegation, REPL lifecycle,
-  runtime backends, graph persistence, and extension seams.
+## How it's built
 
-## Research Notes
-
-- [RAO implementation plan](research/rao_implementation_plan.md) — how to
-  implement Recursive Agent Optimization as a first-class `rlmflow.rao` module
-  over `Flow` rollouts.
-- [DeLM vs. rlmflow](research/delm_vs_rlmflow.md) — how DeLM-style
-  coordination could sit on top of recursive execution graphs.
+- [Internals](internals.md): the Flow, replay, forks and persistence.

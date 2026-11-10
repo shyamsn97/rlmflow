@@ -16,8 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import traceback
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any
+
+from sokoban import BOX_GLYPHS, BOX_ON_GOAL_GLYPHS
 
 
 @dataclass
@@ -31,7 +35,7 @@ class Dashboard:
 
     status: str = "starting…"
     panels: list[tuple[str, str]] = field(default_factory=list)
-    proposals: list[tuple[int, str, str]] = field(default_factory=list)
+    proposals: list[tuple[int, str]] = field(default_factory=list)
     picked: str = ""
     log_lines: list[str] = field(default_factory=list)
     done: bool = False
@@ -46,7 +50,7 @@ class Dashboard:
         with self._lock:
             self.panels = list(panels)
 
-    def set_proposals(self, proposals: list[tuple[int, str, str]]) -> None:
+    def set_proposals(self, proposals: list[tuple[int, str]]) -> None:
         with self._lock:
             self.proposals = list(proposals)
 
@@ -105,34 +109,44 @@ def _board_html(board: str) -> str:
     return _PRE.format(body=safe)
 
 
+def _board_solved(board: str) -> bool:
+    """Read solved state from the identity glyphs in ``render(ids=True)``.
+
+    A box off-goal is drawn as 1..9 and one on a goal as A..I. Deriving this from
+    the exact frame being displayed keeps the live badge correct even when its
+    best-effort runtime status callback misses an update.
+    """
+    glyphs = set(board)
+    return bool(glyphs.intersection(BOX_ON_GOAL_GLYPHS)) and not glyphs.intersection(BOX_GLYPHS)
+
+
 def _panels_html(panels: list[tuple[str, str]], picked: str) -> str:
     if not panels:
         return "<em>waiting for the worker…</em>"
-    cells = []
+    blocks = []
     for label, board in panels:
         is_pick = bool(picked) and label.split()[:1] == [picked]
-        solved = "SOLVED" in label or "solved" in label
+        solved = "solved" in label.lower() or _board_solved(board)
+        if solved and "solved" not in label.lower():
+            label = f"{label} [SOLVED]"
         color = "#d29922" if is_pick else ("#2ea043" if solved else "#8b949e")
         ring = "outline:2px solid #d29922;outline-offset:3px;" if is_pick else ""
         badge = " ◀ picked" if is_pick else ""
-        cells.append(
+        blocks.append(
             f"<div style='display:inline-block;vertical-align:top;margin:8px;{ring}'>"
             f"<div style='color:{color};font-weight:600;margin-bottom:4px'>{label}{badge}</div>"
             f"{_board_html(board)}</div>"
         )
-    return "<div style='white-space:nowrap;overflow-x:auto'>" + "".join(cells) + "</div>"
+    return "<div style='white-space:nowrap;overflow-x:auto'>" + "".join(blocks) + "</div>"
 
 
-def _proposals_md(proposals: list[tuple[int, str, str]]) -> str:
+def _proposals_md(proposals: list[tuple[int, str]]) -> str:
     if not proposals:
         return "_the shepherd has not proposed yet…_"
-    blocks = []
-    for i, (rewind, description, strategy) in enumerate(proposals):
-        plan = strategy.replace("\n", "<br>")
-        blocks.append(
-            f"**branch {i}** · rewind {rewind}\n\n{description}\n\n"
-            f"<details><summary>plan</summary>\n\n{plan}\n\n</details>"
-        )
+    blocks = [
+        f"**branch {i}** · rewind {rewind}\n\n{order}"
+        for i, (rewind, order) in enumerate(proposals)
+    ]
     return "\n\n---\n\n".join(blocks)
 
 
@@ -153,7 +167,8 @@ def launch(
         import gradio as gr
     except ImportError as exc:  # pragma: no cover - optional extra.
         raise ImportError(
-            'The --gradio viewer needs the viewer extra: `pip install -e ".[viewer]"`.'
+            "The --gradio viewer needs gradio: `pip install gradio`. No extra ships it — "
+            "this example is the only thing in the repo that uses it."
         ) from exc
 
     dashboard = Dashboard()
@@ -161,7 +176,11 @@ def launch(
     def _run() -> None:
         try:
             asyncio.run(run_factory(dashboard))
-        except Exception as exc:  # surface crashes into the UI, don't die silently.
+        except Exception as exc:  # noqa: BLE001 - surface crashes into the UI, don't die silently
+            # Into the terminal as well: a browser tab that says "crashed" with one
+            # line of text is not enough to fix anything, and the traceback is the
+            # only place the failing frame is named.
+            traceback.print_exc()
             dashboard.finish("crashed", error=f"{type(exc).__name__}: {exc}")
 
     threading.Thread(target=_run, daemon=True).start()

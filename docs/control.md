@@ -1,269 +1,329 @@
 # Control
 
-`Graph` is the control surface. `Flow.run_streaming(graph=graph, until=...)` advances
-it in place and yields the `Event`s it emitted. Save/load, rewind, fork, inject,
-and resume are all graph operations.
+The graph is the control surface. A `Flow` steps whatever the graph says is ready, `run_streaming` yields each node as it lands, and between runs you can read and change the graph however you like.
 
-## Step Loop
+## Run and step
 
 ```python
 import asyncio
-from rlmflow import render_tree
+from rlmflow import AgentConfig, Flow, Graph
+from rlmflow.view.text import kind
 
-agent = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-5"), max_depth=2)
-graph = rlmflow.Graph(query=query)
+g = Graph()
+root = g.start("Audit this repository.")
+
+flow = Flow(configs=[AgentConfig(model="gpt-5", max_depth=2)])  # "default"
+
 
 async def drive():
-    async for _event in agent.run_streaming(graph=graph):
-        print(render_tree(graph))
+    async for step in flow.run_streaming(g):
+        print(step.agent.path(), kind(step.node))
+
 
 asyncio.run(drive())
+print(root.final_result())
 ```
 
-`agent.run(query=query)` drives the same loop synchronously and returns
-`graph.result()`; `await agent.arun(query=query)` is the async form. To use a
-flow anywhere an `LLMClient` is expected, wrap it in `FlowLLM(agent)` — its
-`chat(messages)` projects the messages to a query and runs the recursive loop
-under the hood (see the drop-in section in the README).
+`flow.run("query")` and `await flow.arun("query")` return the root's result; `flow.run(g)` runs a graph you built and returns it. With an `output_schema`, the result has been validated against the schema.
 
-`run`, `arun`, and `run_streaming` are keyword-only. Pass `query=` to start a
-fresh graph, or `graph=` to resume an existing one; passing both appends `query`
-as a new turn on that graph (see [Multi-turn runs](#multi-turn-runs)). `inputs=`
-and `output_schema=` are applied to the graph before driving (`inputs` merges by
-default; pass `merge_inputs=False` to replace).
+Pass `until="next"` for one of an agent's own nodes, `until="idle"` to stop at the next node that ran code or ended a turn, or a `(step) -> bool` callable. See [Streaming](streaming.md).
 
-`run_streaming` yields one typed `Event` per commit and mutates `graph` in place.
-Every model turn is an `LLMOutput` (the model's code) followed by exactly one
-observation: `ExecOutput`, `DoneOutput`, `ErrorOutput`, or `SupervisingOutput`.
-See [`node_model.md`](node_model.md) for the typed node flow.
+## Per-agent limits
 
-## Stream Boundaries
+Limits belong to a config, and the Flow owns the configs. Roots run with the run's `root_config`; everything else names one of `flow.configs`.
 
-`Flow.run_streaming(graph=graph, until=...)` streams until a boundary and **halts there**
-— the driver does not enqueue more work past what you observe, so edits you make
-between streaming calls are seen when the run resumes. Pass the graph on the first
-call; omit it on later calls to continue the active run.
+The `AgentConfig` defaults are:
 
-Two boundary families:
+- `max_depth=1`;
+- `max_iters=None` and `max_budget=None` (unbounded turns and tokens);
+- `keep_n_messages=None`, meaning prompts retain the full transcript;
+- `max_output_length=20_000` and `max_query_chars=20_000`.
 
-**Global steps** advance every active agent in parallel, then halt the whole
-frontier:
+`max_budget` is a soft threshold over recorded model usage for the whole run below the root. Once crossed, new launches stop and every unfinished agent gets one final turn. Calls already in flight plus one final turn per unfinished agent can exceed the threshold.
 
 ```python
-async for event in flow.run_streaming(graph=graph, until="next"):
-    ...
-async for event in flow.run_streaming(graph=graph, until="idle"):
-    ...
-```
-
-- `next` surfaces everything, including errors — it stops *on* an `error_output`.
-- `idle` runs each agent to a clean rest (`exec_output`/`done_output`), healing
-  errors on the way (an `error_output` is not a rest point, so the agent keeps
-  going and fixes it). A supervising parent with live children just no-ops.
-
-Other boundaries stop when that event is observed:
-
-```python
-async for event in flow.run_streaming(graph=graph, until="supervising"):
-    ...
-async for event in flow.run_streaming(graph=graph, until=lambda event, graph: graph.finished):
-    ...
-```
-
-Because the run halts at the boundary, reactive control is deterministic:
-
-```python
-async for _event in flow.run_streaming(graph=graph, until="idle"):
-    pass
-graph.inject("Finalize now with the best current evidence.")
-async for _event in flow.run_streaming(graph=graph, until="done"):
-    pass
-```
-
-See [`examples/control/controller_injection.py`](../examples/control/controller_injection.py)
-and [`examples/control/delegation/step_until.py`](../examples/control/delegation/step_until.py).
-For the full scheduler model, see [`streaming.md`](streaming.md).
-
-## Save And Resume
-
-A saved graph directory is the durable run:
-
-```python
-graph.save("runs/deep_research")
-
-resumed = rlmflow.Graph.load("runs/deep_research")
-agent.run(graph=resumed)   # or: async for _ in agent.run_streaming(graph=resumed): ...
-```
-
-For live checkpointing, call `graph.save(...)` inside the stream loop. The same
-path is overwritten with the latest complete graph/run layout.
-
-## Multi-turn Runs
-
-One graph can serve a long-running, multi-turn agent. When a run finishes,
-`graph.finished` is true; appending a new `UserQuery` flips it back to unfinished,
-so the next `run`/`run_streaming` re-drives the *same* agent with its full history
-and warm REPL (variables from earlier turns are still in scope).
-
-The ergonomic path is to pass `query=` alongside `graph=`:
-
-```python
-agent.run(query="Audit the repo.")                 # turn 1 (fresh graph)
-graph = ...  # keep a handle to the graph you drove
-
-agent.run(graph=graph, query="Now write the fixes.")   # turn 2, same graph
-agent.run(graph=graph, query="Summarize what changed.", # turn 3, new inputs/schema
-          inputs={"format": "markdown"}, output_schema=Report)
-```
-
-`inputs` merges into the graph's existing `INPUTS` (and is re-synced into the warm
-REPL) unless `merge_inputs=False` replaces it; a truthy `output_schema` becomes the
-contract for that turn's `done(...)`. The bare graph op is `graph.append_query(...)`
-(same keywords), for when you want to stage the next turn without driving yet.
-
-## Rewind And Branch
-
-`Graph` mutates in place, so keep restore points with `checkpoint()` /
-`revert(...)`, or drop everything after a node with `rewind(node_id)`:
-
-```python
-cp = graph.checkpoint()
-agent.run(graph=graph)
-graph.revert(cp)        # back to the checkpoint
-graph.rewind(node_id)   # or truncate history after a specific node
-```
-
-Fork an independent branch (deep copy with a fresh `graph_id`) and continue it
-somewhere else:
-
-```python
-branch = graph.fork(session="isolated")
-agent.run(branch)
-branch.save("runs/repair-branch")
-```
-
-## Node Injection
-
-Controllers can append a user-turn observation to any agent and continue the
-run. This is useful for budget nudges, human feedback, and forced finalization:
-
-```python
-graph.inject("Answer now with the best current evidence.", agent_id="root.worker")
-agent.run(graph=graph)   # or: async for _ in agent.run_streaming(graph=graph): ...
-```
-
-`inject`'s `mode`/`truncate` options (and the `append`/`prepend`/`replace`
-helpers), plus `rewind` and `remove_child`, rewrite existing history the same
-way. See [`injections.md`](injections.md) and
-[`examples/control/controller_injection.py`](../examples/control/controller_injection.py).
-
-## Delegation
-
-Agents delegate through one launcher, which must be awaited:
-
-```python
-# One child — still pass a one-item list of dict specs, and unpack the result.
-[answer] = await launch_subagents([
-    {"name": "single", "query": query, "inputs": {"data": data}},
-])
-
-# Many children in parallel — returns answers in spec order.
-results = await launch_subagents([
-    {"name": "a", "query": "...", "inputs": {"chunk": chunk_a}},
-    {"name": "b", "query": "...", "inputs": {"chunk": chunk_b}},
-])
-```
-
-- **Sequential dependent steps:** chain one-item `await launch_subagents([...])`
-  calls, feeding each result into the next child's `inputs`.
-- **Parallel independent work:** pass every spec in one call so the engine
-  schedules them concurrently.
-- **Child data:** put payloads in each spec's `inputs` dict. The child sees only
-  its query and its own `INPUTS`.
-- **Child prompt profile:** optional `prompt_profile` per spec selects a named
-  `PromptProfile` on the flow (see [`prompt_customization.md`](prompt_customization.md)).
-
-### Warm launch (host-side)
-
-`launch_subagents` is the model-facing tool (cold children from `query` strings).
-Host code that already has prepared graphs — typically `fork` / `flow.rewind`
-results — should use the warm counterpart:
-
-```python
-# Structural only: reparent a prepared graph under `parent` (remap ids, move its
-# REPL, emit AddChild). Does not run or await the child.
-child = flow.adopt(parent, fork, name="b0")
-
-# Run prepared graphs as children of `parent`, in parallel, and await results.
-# Thin wrapper over launch_subagents' warm path — the `graph` spec key stays
-# internal so example / model-facing code never has to write it.
-await flow.launch_subgraphs(
-    parent,
-    [fork_a, fork_b],
-    queries=["recover with plan A", "recover with plan B"],
-    names=["b0", "b1"],
+g = Graph()
+root = g.start("Audit this repository.", tree=listing)
+flow.run(
+    g,
+    root_config=AgentConfig(
+        model="gpt-5-mini", max_depth=2, max_iters=20, max_budget=200_000, output_schema=schema
+    ),
 )
 ```
 
-Use this for best-of-N / rewind-and-branch patterns (see
-[`examples/shepherd/`](../examples/shepherd/)): prepare forks on the host, then
-one `launch_subgraphs` call attaches and runs them as real children under the
-orchestrator.
-
-## Custom Runtime
-
-Subclass `Runtime` and implement `open(agent)` to mint a backend:
+`root_config` is an `AgentConfig`, the name of one of the Flow's configs, or `None` for `"default"`. It applies to that call only, so the same graph can continue with different settings:
 
 ```python
-class MyRuntime(rlmflow.Runtime):
-    def open(self, agent: rlmflow.Graph) -> rlmflow.ReplBackend:
-        return MyBackend(...)
+g = Graph.load("runs/audit")
+g.send(g.roots()[0], "Now check the tests too.")
+flow.run(g, root_config=AgentConfig(max_depth=2, max_iters=40))
 ```
 
-Most users should pass `LocalRuntime`, `DockerRuntime`, or a sandbox runtime.
-See [`runtimes.md`](runtimes.md).
+Each agent records the config it last ran with in `agent.config_record`. That copy is for viewers and is never read back to drive a run.
 
-## Custom Tools
+### Named configs
 
-Register tools on the runtime before constructing or stepping the flow:
+Named configs live on the Flow; the model picks one with `launch_agent(task, config=NAME)` and sees each config's `description`. `launch_agent` without `config=` uses `"default"`:
 
 ```python
-@rlmflow.tool("Search files for a regex.")
-def search(pattern: str, path: str = ".") -> str:
-    ...
-
-runtime = rlmflow.LocalRuntime(working_directory=".")
-runtime.register_tool(search)
-runtime.register_tools(rlmflow.FILE_TOOLS)
-agent = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-5"), runtime=runtime)
+flow = Flow(
+    configs=[
+        AgentConfig(model="gpt-5"),
+        AgentConfig(name="worker", model="gpt-5-mini", description="cheap and fast"),
+    ],
+)
+flow.run("Audit this repository.", root_config=AgentConfig(model="gpt-5", max_depth=2))
 ```
 
-## Custom Prompt
+`model` is a model name; the Flow builds and caches its client. Register a client in `llm_clients` only when a name can't describe it (a reasoning effort, a base URL), under the name configs use: `Flow(llm_clients={"fast": client_for("gpt-5-mini", reasoning_effort="low")})` and `AgentConfig(model="fast")`. `flow.add_config(config)` adds one later; an unknown name is a `KeyError` when the Flow reaches that agent. `g.start(task, config="worker")` puts a top-level agent on a named config.
 
-For a fuller guide, see [`prompt_customization.md`](prompt_customization.md).
+### Harnesses
+
+`AgentConfig.harness` names the step function that runs an agent: `"repl"`, the default, is rlmflow's model-and-REPL loop; `"claude_code"` and `"pi"` run one headless session turn per step. A harness config is just another named config:
 
 ```python
-from rlmflow import SystemPromptBuilder
-
-GUARDRAILS = """
-- Verify before `done()`. Empty/zero/surprising results -> one sanity check first.
-- Ask children for structured output when shape matters.
-"""
-
-prompt = SystemPromptBuilder()
-prompt.sections.update("role", "You are a security auditor.")
-prompt.sections.add("guardrails", GUARDRAILS, title="Guardrails", after="strategy")
-
-agent = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-5"), system_prompt=prompt)
+flow.add_config(AgentConfig(name="claude", harness="claude_code", harness_options={"mcp": True}))
 ```
 
-`agent.system_prompt` accepts a `SystemPromptBuilder`, a string, or a
-`(flow, graph) -> str` function; subclass `SystemPromptBuilder` (override
-`default_sections` or `__call__`) for reusable customization.
+External sessions reach the same agent tools from the shell through `rlmflow repl`, so all the code they run lands as their nodes. They keep their own tools and permissions.
 
-## Walkthroughs
+## Multi-turn runs
 
-- [`examples/showcase.py`](../examples/showcase.py) — stepping, snapshots,
-  save/load, and live terminal visualization.
-- [`examples/graph/`](../examples/graph/) — querying, mutating, saving, forking,
-  and rendering minimal graphs.
+A finished agent is one whose last turn submitted (`agent.status() == "done"`). Send it a message and it runs again, with its REPL and nodes intact:
+
+```python
+flow.run(g)
+g.send(root, "Now implement the fixes.")
+flow.run(g)
+```
+
+`max_iters` counts an agent's model turns across all its nodes, so a root you drive for several turns needs headroom for all of them.
+
+## Editing a run
+
+Between runs the graph is plain data. Each edit follows the edges to whatever depended on what it changed, and returns what it invalidated (`Invalidation(rewound, removed, dropped, rerun)`); `dry_run=True` reports without changing anything:
+
+```python
+node = next(n for n in root.nodes() if n.runs_code)
+
+g.edit(node, code="print(len(docs))")  # rewind root to the node, with new code
+g.delete(root.nodes()[-1])  # drop the last node; the agent redoes it
+g.remove(root.children()[0])  # an agent, its subtree, what they caused
+g.replace(node, 0, "cached")  # the node's first saved call returns this instead
+flow.run(g)
+```
+
+When a child's result changes, the node that awaited it is set ready. On the next run it runs again in place: its other calls return their saved values, so only the changed one is new. A results message built from a changed result is taken back and delivered again. The full rules are in [The graph](node_model.md#editing).
+
+To edit during a stream, either stop it first (`until="idle"` returns at a clean point) or go through the Flow, which stops the affected agents before it applies the edit: `await flow.edit(g, "edit", node, code=...)`.
+
+```python
+async for _ in flow.run_streaming(g, until="idle"):
+    pass
+g.send(root, "Finalize with current evidence.")
+async for _ in flow.run_streaming(g):
+    pass
+```
+
+## Fork
+
+`g.fork(node)` returns a new graph: a copy of the run with the same ids, cut right after `node`. The original is untouched.
+
+```python
+node = next(n for n in root.nodes() if n.runs_code)
+branch = g.fork(node)
+agent = branch.agent(root.id)
+agent.config_name = "worker"  # optional: run the copy on another config
+branch.send(agent, "Try a different approach.")
+flow.run(branch)
+```
+
+What the copy keeps and drops:
+
+- `node`'s agent ends at `node`. What came after it is gone, with what that caused: agents launched later are removed, messages sent later are taken back, and a result delivered to a parent from the dropped nodes is taken back too, so the code that awaited it runs again.
+- If `node`'s own code launched agents or sent messages, those are gone and `node` is set to run again. To keep the children, fork at a later node.
+- Every other agent is copied as it is, finished or not, including other top-level agents; running the copy runs them. To leave one out, remove it from the copy with `branch.remove(branch.agent(id))`.
+
+Each agent's REPL, workspace and Claude Code or pi session is named by its `repl_id`. By default (`repl="copy"`) the copy's agents get new ones: a REPL is rebuilt by running its nodes again, with launches and `llm_query` calls returning their recorded results, files come back from the latest workspace snapshot, and a resumed session is forked. `g.fork(node, repl="same")` keeps the live ones, so the copy carries on where the original is (agents the cut rewound still get new ones); don't run the original and that copy at once.
+
+There is no merge: run the copy you want, each on its own `Flow` if they run at the same time, and `branch.save(path)` keeps one.
+
+## Launching agents
+
+Agent code starts another agent with `launch_agent`, which returns a handle immediately:
+
+```python
+launch_agent(task: str, *, config: str | None = None, name: str | None = None, **args) -> AgentHandle
+```
+
+`config=` names one of the Flow's configs (default `"default"`), which sets the child's model, harness and limits; agent code can't override them. `name=` gives it a stable name (otherwise `<config>-<n>`). Keyword arguments become variables in the child's REPL. Launch every independent child before waiting for any:
+
+```python
+a = launch_agent("Find the magic number in `chunk`.", chunk=chunk_a)
+b = launch_agent("Find the magic number in `chunk`.", chunk=chunk_b)
+results = await asyncio.gather(a, b)
+```
+
+Use `Input(value, description=...)` when the caller already knows an argument's format or meaning. Only the description, name, type and size appear in the child's prompt; the value stays in its REPL:
+
+```python
+child = launch_agent(
+    "Compare labels by user.",
+    rows=Input(rows, description="List of records with user_id, label, and text fields."),
+)
+```
+
+To chain agents, await one and pass its result:
+
+```python
+requirements, constraints = await asyncio.gather(
+    launch_agent("Determine the requirements."),
+    launch_agent("Investigate the constraints."),
+)
+result = await launch_agent(
+    "Implement and test using `requirements` and `constraints`.",
+    requirements=requirements,
+    constraints=constraints,
+)
+```
+
+A child keeps running after the code that launched it ends. Wait for it in a later turn with `await child`, or don't: when it finishes, its result reaches its parent in a results message at the parent's next turn, bound as a variable named after the child, unless some code already awaited it. A parent that has finished stays finished; only a message reopens it.
+
+## Agent handles
+
+`launch_agent` returns an `AgentHandle`, and `AGENTS[selector]` looks one up by name, path or id. Both give the same object:
+
+```python
+agent = AGENTS["researcher"]
+await agent  # its result (only for agents you launched, or they did)
+await agent.send("Check 2019 too.")  # message it and wait for its reply (same rule)
+agent.send("FYI: schema changed.", rows=rows)  # message any agent; rows becomes a variable there
+agent.status  # "done" | "idle" | "running"
+agent.done(), agent.result()  # result() raises unless it had finished
+agent.parent, agent.children
+agent.name, agent.path, agent.config, agent.task
+```
+
+`AGENTS` is every agent in the run:
+
+```python
+AGENTS.self  # this agent
+AGENTS.parent, AGENTS.children
+AGENTS.edges(kind="peer")  # edges you added with g.link
+"researcher" in AGENTS, len(AGENTS), [a.name for a in AGENTS]
+AGENTS.print_graph(show_results=True)
+```
+
+Everything except `await` reads a snapshot taken when the code started, so it doesn't change while it runs, and an agent launched in this code appears in `AGENTS` from the next code it runs. Awaiting an agent that isn't your descendant raises `NotYourAgent`; message it and read its reply at your next turn.
+
+## Save and load
+
+```python
+g.save("runs/audit")
+g = Graph.load("runs/audit")
+flow.run(g)
+```
+
+Loading restores the graph, not the REPLs. The first time a Flow steps an agent whose REPL it doesn't hold, it rebuilds it by running the agent's nodes again: tool calls with saved results return them, launches resolve to the existing children, and `llm_query` doesn't repeat a request. Nothing is appended; `ENV["RLMFLOW_REPLAY"]` is `"1"` while it happens, so agent code can skip other work it shouldn't repeat.
+
+To checkpoint as a run goes, use the periodic consumer:
+
+```python
+from rlmflow import GraphCheckpointer
+
+checkpoint = GraphCheckpointer("runs/audit", interval_s=5, interval_nodes=25)
+async for step in flow.run_streaming(g):
+    checkpoint.handle(step, g)
+checkpoint.close()
+```
+
+## Tools
+
+Pass tools to the flow, which describes them in the system prompt and seeds them into each REPL. Visibility can depend on the agent: `@tool(..., when=at_leaf)` omits the tool from both. `FILE_TOOLS` writes are leaf-only; spawners keep reads.
+
+```python
+from rlmflow import FILE_TOOLS, Flow, LocalRuntime, at_leaf, tool
+
+
+@tool("Run a migration.", when=at_leaf)
+def migrate(sql: str) -> str: ...
+
+
+flow = Flow(
+    tools=[FILE_TOOLS, migrate],
+    runtime=LocalRuntime(working_directory="."),
+)
+```
+
+`at_leaf` is true when `can_spawn` is false (`depth >= max_depth`).
+
+A plain function is a tool too: its docstring describes it and its signature comes from its type hints. `@tool` adds a description, a name, `when=`, or `where=`. Tools run on the host by default (agent code calls them over the REPL protocol, so they can hold clients, locks, and connections); `where="repl"` copies a pure function into the agent's REPL instead. Group related tools in a tuple; `tools=` flattens one level:
+
+```python
+@tool("List available database tables.")
+def list_tables() -> list[str]: ...
+
+
+@tool("Execute read-only SQL and return rows. Call `list_tables()` first.")
+def query(sql: str) -> list[dict]: ...
+
+
+DATABASE_TOOLS = (list_tables, query)
+flow = Flow(tools=[DATABASE_TOOLS])
+```
+
+Tools described by JSON Schema become tools with `tool_from_schema`. `call` receives the arguments as a dict and may be async:
+
+```python
+from rlmflow import tool_from_schema
+
+forecast = tool_from_schema(
+    "forecast",
+    "Weather for a city.",
+    {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
+    call=lambda arguments: weather_api.get(arguments["city"]),
+)
+```
+
+Tools that need a live resource come as a `Toolkit`: any object with `async open() -> tools` and `async close()`. The Flow opens it when a run starts and closes it when the run ends. `MCPTools` exposes every tool on an MCP stdio server this way:
+
+```python
+from rlmflow.integrations.mcp import MCPTools
+
+flow = Flow(tools=[MCPTools("python", "weather_server.py")])
+```
+
+A host tool marked `@tool(cache=True)` has its JSON result saved on the node that called it, keyed by its arguments, and replay returns it instead of calling again. Other tools, and results over 64KB, run again on replay. A tool can also record metadata on the calling node:
+
+```python
+@tool("Fetch one remote record.", cache=True)
+def fetch_record(key: str) -> dict:
+    value = remote_fetch(key)
+    record_metadata("records.fetched", {"key": key, "source": "primary"}, append=True)
+    return value
+```
+
+Every saved call can be replaced from host code with `g.replace(node, index, value)`, where `index` is the call's position in `node.calls`.
+
+Add or remove tools later; both reach REPLs that are already open:
+
+```python
+flow.add_tool(my_tool)
+flow.inject("LOOKUP", {"a": 1})  # any object, not just callables
+flow.remove_tool("my_tool")
+```
+
+`submit`, `launch_agent`, `llm_query`, `Input`, `asyncio`, `ENV` and `AGENTS` are reserved.
+
+Fan out independent model calls with ordinary Python concurrency:
+
+```python
+answers = await asyncio.gather(*(llm_query(prompt) for prompt in prompts))
+```
+
+Host code can use the same with `flow.llm_query(...)`.
+
+## Cleanup
+
+A REPL lives until something closes it, and submitting does not close it: a finished agent keeps its namespace, because a message can reopen it. Close one with `flow.runtime.close_repl(agent)`, all of them with `flow.runtime.close_repls()`, and every Flow resource (turns in flight, model clients, REPLs) with `await flow.aclose()`.

@@ -1,193 +1,174 @@
-"""Shared stubs and fixtures for the rlmflow test suite."""
+"""Shared test doubles for the running-only core."""
 
 from __future__ import annotations
 
-import asyncio
+import inspect
+import time
 
-from rlmflow import ExecAction, ExecOutput, Flow, Graph, LLMOutput, LLMUsage, SupervisingOutput
+from rlmflow import AgentConfig, Flow, Node
+from rlmflow.graph import Graph
+from rlmflow.graph.nodes import Step, current_step, running_step
+from rlmflow.runtime.repl import (
+    AGENT_SEND_TOOL,
+    AGENT_WAIT_TOOL,
+    AGENTS_BINDING,
+    LocalRepl,
+    base_namespace,
+    get_tool_metadata,
+)
+from rlmflow.runtime.repl_client import invoke_tool_call
+from rlmflow.runtime.runtime import Runtime
+
+
+def agent_graph(task: str = "", *, args: dict | None = None) -> tuple[Graph, Node]:
+    """A fresh graph holding one root, bound to the default config as a Flow would before running it.
+
+    A Flow rebinds the root to its run's ``root_config``; pass ``root_config=`` to
+    ``flow.run`` for anything else.
+    """
+    g = Graph()
+    root = g.start(task, **(args or {}))
+    root.bind_config(AgentConfig())
+    return g, root
+
+
+def run_result(flow, g: Graph, agent: Node, **kwargs):
+    """Run the graph to quiescence and return ``agent``'s result."""
+    flow.run(g, **kwargs)
+    return agent.final_result()
+
+
+def stepping(g: Graph, agent: Node, node=None):
+    """Run engine code as if inside ``agent``'s turn at ``node`` (its last node by default)."""
+    return running_step(Step(g, agent, node) if node is not None else Step.latest(g, agent))
+
+
+def ran(code: str = "pass", output: str = "", *, result=None, error=False, **data) -> Node:
+    """An assistant node whose code already ran; keywords besides ``result`` and ``error`` are data."""
+    node = Node("assistant", code=code, output=output, result=result, error=error, data=data)
+    node.finished_at = time.time()
+    return node
+
+
+def finish(g: Graph, agent: Node, result=None, **data) -> Node:
+    """Append the turn that ends ``agent`` with ``result``."""
+    data = {"seen": len(agent.nodes()), "terminal": True, **data}
+    return g.append(agent, Node("assistant", result=result, data=data))
+
+
+def own(agent: Node) -> list[Node]:
+    """The agent's own nodes after its root."""
+    return agent.nodes()[1:]
+
+
+def code_nodes(g: Graph, agent: Node) -> list[Node]:
+    """The agent's nodes that ran code."""
+    return [node for node in agent.nodes() if node.runs_code]
+
+
+def turns(g: Graph, agent: Node) -> list[Node]:
+    """The nodes that ended the agent's turns."""
+    return [node for node in agent.nodes() if "seen" in node.data]
+
+
+def repl(code: str, *, preamble: str | None = None) -> str:
+    """Wrap executable test code in the model's strict REPL protocol."""
+    prefix = f"{preamble}\n" if preamble else ""
+    return f"{prefix}```repl\n{code}\n```"
+
+
+def reasoning_repl(code: str) -> str:
+    """Build the historical flow-test response with a prose preamble."""
+    return repl(code, preamble="thinking")
+
+
+def trailing_user_text(messages) -> str:
+    """Join the consecutive user messages at the end of a request."""
+    trailing = []
+    for message in reversed(messages):
+        if message["role"] != "user":
+            break
+        content = message["content"]
+        if isinstance(content, list):
+            content = "\n".join(part["text"] for part in content if part.get("type") == "text")
+        trailing.append(content)
+    return "\n\n".join(reversed(trailing))
+
+
+class TestRuntime(Runtime):
+    """Fast in-process runtime for tests that do not exercise worker transport."""
+
+    __test__ = False
+
+    def open(self, agent: Node) -> LocalRepl:
+        return LocalRepl(self.directory(agent), namespace=base_namespace(self.preimports))
+
+    async def execute(self, agent: Node, code: str, graph: Graph | None = None):
+        repl = self.repl_for(agent, graph)
+        step = current_step()
+
+        for name, original in tuple(repl.namespace.items()):
+            metadata = get_tool_metadata(original) if callable(original) else None
+            if metadata is None or not metadata.proxy:
+                continue
+
+            def invoke(*args, _fn=original, _name=name, **kwargs):
+                return invoke_tool_call(_fn, step, args, kwargs, name=_name)
+
+            if inspect.iscoroutinefunction(original):
+
+                async def async_invoke(*args, _invoke=invoke, **kwargs):
+                    result = _invoke(*args, **kwargs)
+                    return await result if inspect.isawaitable(result) else result
+
+                repl.namespace[name] = async_invoke
+            else:
+                repl.namespace[name] = invoke
+
+        binding = {"env": repl.env}
+        for source, target in (
+            (AGENTS_BINDING, "agents"),
+            (AGENT_WAIT_TOOL, "wait_agent"),
+            (AGENT_SEND_TOOL, "send_agent"),
+        ):
+            item = repl.namespace.get(source)
+            if item is not None:
+                binding[target] = item
+        return await repl.run(code, binding=binding)
+
+
+class ScriptedFlow(Flow):
+    """A Flow whose every model is ``llm``, unless ``llm_clients`` names that model."""
+
+    def __init__(self, llm, **kwargs):
+        super().__init__(**kwargs)
+        self.test_llm = llm
+        self.llms.setdefault("scripted", llm)
+
+    def llm(self, model):
+        return self.llms.get(model, self.test_llm)
 
 
 class StubLLM:
     def __init__(self, fn):
         self.fn = fn
+        self.calls = []
 
-    def chat(self, messages):
+    def chat(self, messages, **kwargs):
+        self.calls.append(kwargs)
         return self.fn(messages)
 
 
-class UsageLLM:
-    def __init__(self, reply, input_tokens=0, output_tokens=0):
-        self.reply = reply
-        self.last_usage = None
-        self.input_tokens = input_tokens
-        self.output_tokens = output_tokens
-
-    def chat(self, messages):
-        self.last_usage = LLMUsage(self.input_tokens, self.output_tokens)
-        return self.reply(messages) if callable(self.reply) else self.reply
-
-
 def first_user(messages):
-    return next(m["content"] for m in messages if m["role"] == "user")
-
-
-def assert_llm_outputs_are_followed_by_exec_actions(graph):
-    for agent in graph.walk():
-        for index, node in enumerate(agent.nodes):
-            if node.type == "llm_output":
-                assert index + 1 < len(agent.nodes)
-                assert agent.nodes[index + 1].type == "exec_action"
-
-
-def seed_exec_graph(*code_blocks):
-    """A graph shaped like a real trajectory: (llm_output, exec_action, exec_output)*."""
-    graph = Graph(query="q")
-    for code in code_blocks:
-        graph.commit(LLMOutput(content="turn", code=code))
-        graph.commit(ExecAction(code=code))
-        graph.commit(ExecOutput(content="", output=""))
-    return graph
-
-
-async def worker_step(flow, graph, code):
-    """Simulate one exec turn on a branch: record the action, then run it."""
-    graph.commit(ExecAction(code=code))
-    await flow.exec_turn(graph, code)
+    return next(message["content"] for message in messages if message["role"] == "user")
 
 
 def counting_replies(*replies):
-    """StubLLM callable returning ``replies`` in order, repeating the last."""
-    state = {"n": 0}
+    state = {"index": 0}
 
     def reply(_messages):
-        index = min(state["n"], len(replies) - 1)
-        state["n"] += 1
+        index = min(state["index"], len(replies) - 1)
+        state["index"] += 1
         return replies[index]
 
     return reply
-
-
-# Canonical deep tree for graph-surgery tests (see docs/internal/deep_tree_graph_ops_test_plan.md):
-#
-#   root
-#   ├── root.m0
-#   │   ├── root.m0.l0
-#   │   └── root.m0.l1
-#   └── root.m1
-#       └── root.m1.l0
-DEEP_TREE_AGENT_IDS = (
-    "root",
-    "root.m0",
-    "root.m0.l0",
-    "root.m0.l1",
-    "root.m1",
-    "root.m1.l0",
-)
-
-
-def deep_tree_reply(messages):
-    """StubLLM replies that build :data:`DEEP_TREE_AGENT_IDS` via launch_subagents."""
-    task = first_user(messages)
-    if task == "root":
-        return (
-            "```repl\n"
-            "root_var = 'root'\n"
-            "results = await launch_subagents(["
-            "{'name': 'm0', 'query': 'mid0'}, "
-            "{'name': 'm1', 'query': 'mid1'}])\n"
-            "done('|'.join(results))\n"
-            "```"
-        )
-    if task == "mid0":
-        return (
-            "```repl\n"
-            "mid_var = 'm0'\n"
-            "results = await launch_subagents(["
-            "{'name': 'l0', 'query': 'leaf'}, "
-            "{'name': 'l1', 'query': 'leaf'}])\n"
-            "done('+'.join(results))\n"
-            "```"
-        )
-    if task == "mid1":
-        return (
-            "```repl\n"
-            "mid_var = 'm1'\n"
-            "results = await launch_subagents(["
-            "{'name': 'l0', 'query': 'leaf'}])\n"
-            "done(results[0])\n"
-            "```"
-        )
-    return (
-        "```repl\n"
-        "leaf_var = ENV['RLMFLOW_AGENT_ID']\n"
-        "done('leaf')\n"
-        "```"
-    )
-
-
-def make_deep_flow(*, max_depth: int = 3, **kwargs) -> Flow:
-    """Flow wired with :func:`deep_tree_reply` (StubLLM)."""
-    return Flow(StubLLM(deep_tree_reply), max_depth=max_depth, **kwargs)
-
-
-async def build_deep_tree(flow: Flow | None = None) -> tuple[Flow, Graph]:
-    """Run a root→mid→leaf tree through ``launch_subagents``; return ``(flow, root)``.
-
-    Each agent sets a distinct REPL var (``root_var`` / ``mid_var`` / ``leaf_var``)
-    so fork/merge isolation is observable.
-    """
-    flow = flow or make_deep_flow()
-    root = Graph(query="root")
-    await flow.arun(graph=root)
-    return flow, root
-
-
-def first_supervising(agent: Graph) -> SupervisingOutput:
-    """First ``SupervisingOutput`` on ``agent`` (the launch that spawned children)."""
-    for node in agent.nodes:
-        if isinstance(node, SupervisingOutput):
-            return node
-    raise AssertionError(f"no SupervisingOutput on {agent.agent_id}")
-
-
-def run_deep_tree(flow: Flow | None = None) -> tuple[Flow, Graph]:
-    """Sync wrapper around :func:`build_deep_tree`."""
-    return asyncio.run(build_deep_tree(flow))
-
-
-# Depth-1 tree: root → root.a (fills the matrix's "Depth-1 child" column).
-DEPTH1_AGENT_IDS = ("root", "root.a")
-
-
-def depth1_reply(messages):
-    task = first_user(messages)
-    if task == "parent":
-        return (
-            "```repl\n"
-            "root_var = 'root'\n"
-            "results = await launch_subagents([{'name': 'a', 'query': 'child'}])\n"
-            "done(results[0])\n"
-            "```"
-        )
-    return (
-        "```repl\n"
-        "child_var = 'a'\n"
-        "done('child')\n"
-        "```"
-    )
-
-
-def make_depth1_flow(**kwargs) -> Flow:
-    return Flow(StubLLM(depth1_reply), max_depth=1, **kwargs)
-
-
-async def build_depth1_tree(flow: Flow | None = None) -> tuple[Flow, Graph]:
-    """Run a root→child tree; return ``(flow, root)``."""
-    flow = flow or make_depth1_flow()
-    root = Graph(query="parent")
-    await flow.arun(graph=root)
-    return flow, root
-
-
-def run_depth1_tree(flow: Flow | None = None) -> tuple[Flow, Graph]:
-    return asyncio.run(build_depth1_tree(flow))

@@ -1,115 +1,95 @@
 # Runtimes
 
-A `Runtime` is the user-facing object you pass to `Flow(runtime=...)`. It owns:
+A `Runtime` owns lightweight Python worker processes, agent placement, and cleanup. Every shipped backend uses the same worker and typed JSON-line protocol; only provisioning differs.
 
-- the `working_directory` where agent code runs;
-- tools registered with `register_tool(...)` / `register_tools(...)`;
-- the backend factory that mints one `ReplBackend` per agent.
-
-The old `repl_factory` pattern is gone. The runtime is the factory.
-
-## Protocol
-
-Subclass `Runtime` and implement `open(agent)`:
-
-```python
-class Runtime(ABC):
-    def __init__(self, working_directory: str | Path | None = None): ...
-
-    @abstractmethod
-    def open(self, agent: Graph) -> ReplBackend: ...
-```
-
-A `ReplBackend` supports `start(code)`, `resume(value)`, `close()`, and exposes
-its `namespace` / `env`. `LocalRuntime` returns an in-process `REPL`.
-`DockerRuntime` and sandbox runtimes return `RemoteRepl` backends that speak JSON
-with `python -m rlmflow.runtime.repl_server`.
+The core installation needs `cloudpickle` for value transfer. `ModalRuntime` additionally requires `rlmflow[modal]`.
 
 ## Shipped runtimes
 
-| Runtime | What it does |
-|---|---|
-| `LocalRuntime(working_directory=...)` | In-process Python REPL. Defaults to the current process cwd. |
-| `DockerRuntime(image, ...)` | Runs `python -m rlmflow.runtime.repl_server` in `docker run -i --rm` and talks over stdio. |
-| `ModalRuntime` | Runs the REPL inside a Modal sandbox. |
-| `E2BRuntime` | Runs the REPL inside an E2B sandbox. |
-| `DaytonaRuntime` | Runs the REPL inside a Daytona sandbox. |
+- `LocalRuntime(working_directory=...)` — a worker subprocess in the current Python environment. This is the default.
+- `SubprocessRuntime(python=..., env=...)` — a worker using a selected Python executable and environment.
+- `DockerRuntime(image, ...)` — a worker attached through `docker run -i`.
+- `ModalRuntime(...)` — a worker attached through Modal Sandbox stdin/stdout.
+
+Agent Python always crosses a process boundary. This provides fault and state isolation, but local subprocesses are not security sandboxes.
+
+## Isolated agents
+
+Each agent gets its own worker process and Python namespace. User code can use ordinary top-level `await` and `asyncio.gather(...)`.
+
+`Runtime.location` says where the REPL runs when that isn't this machine: `DockerRuntime` and `ModalRuntime` describe the container or sandbox and its working directory. Claude Code and pi sessions run their own tools on your machine, so their prompt includes that line and tells them to reach the REPL's files through `rlmflow repl`.
+
+A worker outlives the agent that answered in it: finishing does not close a REPL. A fan-out holds one worker per child until you close them. Close one with `flow.runtime.close_repl(agent)`, all of them with `flow.runtime.close_repls()`, or everything the Flow owns with `await flow.aclose()` — see [Control](control.md#cleanup).
 
 ## Working directory and tools
 
 ```python
-runtime = rlmflow.LocalRuntime(working_directory="./project")
-runtime.register_tools(rlmflow.FILE_TOOLS)
-
-agent = rlmflow.Flow(
-    rlmflow.OpenAIClient(model="gpt-5"),
-    runtime=runtime,
+flow = rlmflow.Flow(
+    runtime=rlmflow.LocalRuntime(working_directory="./project"),
+    tools=rlmflow.FILE_TOOLS,
 )
 ```
 
-Relative paths in agent code and in `FILE_TOOLS` resolve inside the runtime's
-working directory. The same shape works for Docker and cloud sandboxes.
+The working directory belongs to the worker.
+
+Tools execute on the host through the worker's private protocol stream unless marked `@tool(where="repl")`. Their arguments travel from worker to host as JSON data only. `where="repl"` tools and other values are copied in the trusted host-to-worker direction with `cloudpickle`.
+
+## Host and worker state
+
+Agent code runs in a worker process, so the host and the agent share no heap. Three rules follow, and a tool that ignores them either fails at injection with a pickling error or quietly updates a copy:
+
+- Tools run on the host by default, so they can mutate host state, drive the graph, or close over something unpicklable such as `Flow` or a client. A pure function that should run inside the worker (next to the agent's files, or in its sandbox) is marked `@tool(where="repl")` and copied in by value.
+- State the host reads back travels through `ENV`, which is per-agent and round-trips with every execution: whatever agent code writes there is readable afterwards with `flow.runtime.get_env_var(agent, name)`. `ENV` values must be JSON-compatible.
+- `flow.runtime.get_var(agent, name)` reads JSON-compatible worker state. Custom class instances and other executable Python objects never deserialize on the host; publish the plain fields the host needs through `ENV` or another variable.
+
+`examples/shepherd` follows all three: its recovery tools are proxies, the game publishes each reading and its frame trace to `ENV`, and the game object itself never leaves the worker.
+
+## Stdio and protocol safety
+
+Before user code starts, the worker duplicates stdin and stdout for its private protocol and makes those descriptors non-inheritable. User stdin is redirected to `/dev/null`; native writes and subprocess output are redirected to stderr. Normal Python output is captured per execution. User code therefore cannot read or corrupt protocol frames.
+
+## Timeouts
+
+User execution is unbounded by default, allowing agent code to wait for long-running subagents and tools. Pass `execution_timeout=<seconds>` to cap one execution:
+
+```python
+runtime = rlmflow.LocalRuntime(execution_timeout=3600)
+```
+
+A timeout terminates the entire worker because Python cannot safely kill an arbitrary running thread. `repl_timeout` only bounds startup and control requests; it does not limit user code.
+
+## Restore behavior
+
+Saved graphs remain the durable state; a worker's namespace is not saved. When a Flow is about to run code for an agent whose REPL it doesn't hold (a loaded run, a fork, an edit that cut its nodes), it opens a fresh worker and runs the agent's nodes again, with saved tool calls returning their results. `await flow.replay(g)` does this up front for every unfinished agent, and `await flow.replay(g, agent)` for one.
 
 ## Docker
-
-Build the local image once:
 
 ```bash
 docker build -t rlmflow:local .
 ```
 
-Then pass a Docker runtime:
-
 ```python
-from pathlib import Path
-
-import rlmflow
-
-host_project = Path("./project").resolve()
 runtime = rlmflow.DockerRuntime(
     "rlmflow:local",
-    mounts={host_project: "/workspace"},
+    mounts={"./project": "/workspace"},
     workdir="/workspace",
-    network="none",
-    cpus=1.0,
-    memory="512m",
 )
-runtime.register_tools(rlmflow.FILE_TOOLS)
-
-agent = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-5"), runtime=runtime)
 ```
 
-## Remote sandboxes
+The protocol uses stdin/stdout, so no ports or container-to-host network route are required. The default profile has no network, one CPU, 512 MiB of memory, non-root execution, a read-only root filesystem, dropped capabilities, `no-new-privileges`, and process and `/tmp` limits.
 
-Install provider extras as needed:
+## Modal
 
 ```bash
 pip install rlmflow[modal]
-pip install rlmflow[e2b]
-pip install rlmflow[daytona]
-pip install rlmflow[sandbox]   # all three
 ```
 
 ```python
-import rlmflow
-from rlmflow.runtime.sandbox.e2b import E2BRuntime
-
-runtime = E2BRuntime(remote_workdir="/workspace")
-runtime.register_tools(rlmflow.FILE_TOOLS)
-agent = rlmflow.Flow(rlmflow.OpenAIClient(model="gpt-5"), runtime=runtime)
+runtime = rlmflow.ModalRuntime(remote_workdir="/workspace")
 ```
 
-See [`examples/sandboxes/`](../examples/sandboxes/) for real-agent examples on
-Modal, E2B, and Daytona.
+Modal uses the same worker protocol over Sandbox stdin/stdout; no tunnel or sandbox-side bridge is involved.
 
-## Writing your own
+## Custom provisioning
 
-For in-process behavior, subclass `Runtime` and return a custom `ReplBackend`.
-For remote transports, subclass `RemoteRepl` and implement `send(msg)` /
-`recv()`; then wrap it in a `Runtime.open(agent)` method.
-
-```python
-class MyRuntime(rlmflow.Runtime):
-    def open(self, agent: rlmflow.Graph) -> rlmflow.ReplBackend:
-        return MyRepl(...)
-```
+A custom backend only needs a `ReplConnection` with `start`, `send`, `recv`, and `close`, then wraps it in `WorkerSession` and `WorkerRepl`. Execution, host-tool RPC, serialization, tenant routing, and sharing semantics stay common across backends.

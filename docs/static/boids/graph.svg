@@ -1,0 +1,387 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="559" height="368" viewBox="0 0 559 368">
+<rect width="559" height="368" fill="#0d1117"/>
+<text x="16" y="22" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#e6edf3"><tspan font-weight="700">peer1, peer2, peer3 · done</tspan><tspan fill="#8b949e" id="rlm-counts"> · 70 nodes · 67 edges</tspan></text>
+<path d="M 535.6 56.0 L 535.6 66.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 56.0 L 23.6 66.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 56.0 L 279.6 66.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 66.8 L 535.6 77.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 66.8 L 279.6 77.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 66.8 L 23.6 77.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 120.5 L 23.6 131.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 109.8 L 535.6 120.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 77.5 L 279.6 88.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 131.2 L 23.6 142.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 174.2 L 279.6 185.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 77.5 L 535.6 88.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 185.0 L 279.6 195.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 120.5 L 535.6 131.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 77.5 L 23.6 88.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 88.2 L 535.6 99.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 99.0 L 535.6 109.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 142.0 L 23.6 152.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 195.8 L 279.6 206.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 131.2 L 535.6 142.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 88.2 L 23.6 99.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 88.2 L 279.6 99.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 206.5 L 279.6 217.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 217.2 L 535.6 228.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 99.0 L 23.6 109.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 99.0 L 279.6 109.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 109.8 L 23.6 120.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 217.2 L 23.6 228.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 228.0 L 535.6 238.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 109.8 L 279.6 120.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 142.0 L 535.6 152.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 217.2 L 279.6 228.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 152.8 L 535.6 163.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 163.5 L 535.6 174.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 174.2 L 535.6 185.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 152.8 L 23.6 163.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 185.0 L 535.6 195.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 120.5 L 279.6 131.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 228.0 L 23.6 238.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 228.0 L 279.6 238.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 195.8 L 535.6 206.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 163.5 L 23.6 174.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 206.5 L 535.6 217.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 131.2 L 279.6 142.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 174.2 L 23.6 185.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 238.8 L 23.6 249.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 238.8 L 279.6 249.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 238.8 L 535.6 249.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 142.0 L 279.6 152.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 249.5 L 535.6 260.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 249.5 L 23.6 260.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 260.2 L 535.6 271.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 152.8 L 279.6 163.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 185.0 L 23.6 195.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 271.0 L 535.6 281.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 163.5 L 279.6 174.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 281.8 L 535.6 292.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 260.2 L 279.6 271.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 292.5 L 535.6 303.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 195.8 L 23.6 206.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 249.5 L 279.6 260.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 206.5 L 23.6 217.2" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 535.6 303.2 L 535.6 314.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 271.0 L 279.6 281.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 260.2 L 23.6 271.0" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 271.0 L 23.6 281.8" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 23.6 281.8 L 23.6 292.5" stroke="#30363d" stroke-width="1" fill="none" opacity="1"/>
+<path d="M 279.6 77.5 L 23.6 131.2" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 279.6 77.5 L 535.6 120.5" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 535.6 77.5 L 23.6 142.0" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 535.6 77.5 L 279.6 185.0" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 23.6 77.5 L 279.6 195.8" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 23.6 77.5 L 535.6 131.2" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 535.6 131.2 L 23.6 152.8" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 535.6 131.2 L 279.6 206.5" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 23.6 99.0 L 279.6 217.2" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 23.6 99.0 L 535.6 228.0" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 279.6 109.8 L 23.6 228.0" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 279.6 109.8 L 535.6 238.8" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 23.6 152.8 L 279.6 228.0" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 535.6 195.8 L 23.6 238.8" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 535.6 195.8 L 279.6 238.8" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 535.6 238.8 L 23.6 249.5" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 535.6 238.8 L 279.6 249.5" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 279.6 152.8 L 23.6 260.2" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 279.6 152.8 L 535.6 271.0" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 23.6 195.8 L 279.6 271.0" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<path d="M 23.6 195.8 L 535.6 303.2" stroke="#79c0ff" stroke-width="1" stroke-dasharray="3 3" fill="none" opacity="0.6"/>
+<g opacity="1">
+<title>peer1 · agent_start</title>
+<circle cx="23.6" cy="56.0" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="23.6" y="48.1" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">peer1</text>
+</g>
+<g opacity="1">
+<title>peer2 · agent_start</title>
+<circle cx="279.6" cy="56.0" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="279.6" y="48.1" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">peer2</text>
+</g>
+<g opacity="1">
+<title>peer3 · agent_start</title>
+<circle cx="535.6" cy="56.0" r="2.9" fill="#58a6ff" stroke="#0d1117" stroke-width="1.0"/>
+<text x="535.6" y="48.1" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="8.5" fill="#3fb950">peer3</text>
+</g>
+<g opacity="1">
+<title>peer3 · code</title>
+<rect x="532.6" y="63.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer1 · code</title>
+<rect x="20.6" y="63.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer2 · code</title>
+<rect x="276.6" y="63.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer3 · code</title>
+<rect x="532.6" y="74.6" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer2 · code</title>
+<rect x="276.6" y="74.6" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer1 · code</title>
+<rect x="20.6" y="74.6" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer1 · message</title>
+<circle cx="23.6" cy="131.2" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer3 · message</title>
+<circle cx="535.6" cy="120.5" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer2 · code</title>
+<rect x="276.6" y="85.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer1 · message</title>
+<circle cx="23.6" cy="142.0" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer2 · message</title>
+<circle cx="279.6" cy="185.0" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer3 · code</title>
+<rect x="532.6" y="85.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer2 · message</title>
+<circle cx="279.6" cy="195.8" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer3 · message</title>
+<circle cx="535.6" cy="131.2" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer1 · code</title>
+<rect x="20.6" y="85.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer3 · code</title>
+<rect x="532.6" y="96.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer3 · done
+tokens 130,457 (in 128,428 / out 2,029)</title>
+<polygon points="543.1,109.8 539.3,116.3 531.8,116.3 528.0,109.8 531.8,103.2 539.3,103.2" fill="#56d364" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>peer1 · message</title>
+<circle cx="23.6" cy="152.8" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer2 · message</title>
+<circle cx="279.6" cy="206.5" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer3 · code</title>
+<rect x="532.6" y="139.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer1 · code</title>
+<rect x="20.6" y="96.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer2 · code</title>
+<rect x="276.6" y="96.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer2 · message</title>
+<circle cx="279.6" cy="217.2" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer3 · message</title>
+<circle cx="535.6" cy="228.0" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer1 · code</title>
+<rect x="20.6" y="106.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer2 · code</title>
+<rect x="276.6" y="106.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer1 · done
+tokens 208,286 (in 200,770 / out 7,516)</title>
+<polygon points="31.1,120.5 27.3,127.0 19.8,127.0 16.0,120.5 19.8,114.0 27.3,114.0" fill="#56d364" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>peer1 · message</title>
+<circle cx="23.6" cy="228.0" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer3 · message</title>
+<circle cx="535.6" cy="238.8" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer2 · code</title>
+<rect x="276.6" y="117.6" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer3 · code</title>
+<rect x="532.6" y="149.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer2 · message</title>
+<circle cx="279.6" cy="228.0" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer3 · code</title>
+<rect x="532.6" y="160.6" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer3 · code</title>
+<rect x="532.6" y="171.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer3 · code</title>
+<rect x="532.6" y="182.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer1 · code</title>
+<rect x="20.6" y="160.6" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer3 · code</title>
+<rect x="532.6" y="192.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer2 · code</title>
+<rect x="276.6" y="128.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer1 · message</title>
+<circle cx="23.6" cy="238.8" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer2 · message</title>
+<circle cx="279.6" cy="238.8" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer3 · code</title>
+<rect x="532.6" y="203.6" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer1 · code</title>
+<rect x="20.6" y="171.3" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer3 · done
+tokens 400,900 (in 393,335 / out 7,565)</title>
+<polygon points="543.1,217.2 539.3,223.8 531.8,223.8 528.0,217.2 531.8,210.7 539.3,210.7" fill="#56d364" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>peer2 · code</title>
+<rect x="276.6" y="139.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer1 · code</title>
+<rect x="20.6" y="182.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer1 · message</title>
+<circle cx="23.6" cy="249.5" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer2 · message</title>
+<circle cx="279.6" cy="249.5" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer3 · code</title>
+<rect x="532.6" y="246.6" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer2 · code</title>
+<rect x="276.6" y="149.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer3 · done
+tokens 112,351 (in 111,573 / out 778)</title>
+<polygon points="543.1,260.2 539.3,266.8 531.8,266.8 528.0,260.2 531.8,253.7 539.3,253.7" fill="#56d364" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>peer1 · message</title>
+<circle cx="23.6" cy="260.2" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer3 · message</title>
+<circle cx="535.6" cy="271.0" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer2 · code</title>
+<rect x="276.6" y="160.6" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer1 · code</title>
+<rect x="20.6" y="192.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer3 · code</title>
+<rect x="532.6" y="278.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer2 · done
+tokens 480,565 (in 466,496 / out 14,069)</title>
+<polygon points="287.1,174.2 283.3,180.8 275.8,180.8 272.0,174.2 275.8,167.7 283.3,167.7" fill="#56d364" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>peer3 · done
+tokens 78,303 (in 77,784 / out 519)</title>
+<polygon points="543.1,292.5 539.3,299.0 531.8,299.0 528.0,292.5 531.8,286.0 539.3,286.0" fill="#56d364" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>peer2 · message</title>
+<circle cx="279.6" cy="271.0" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer3 · message</title>
+<circle cx="535.6" cy="303.2" r="1.7" fill="#0d1117" stroke="#79c0ff" stroke-width="1.6"/>
+</g>
+<g opacity="1">
+<title>peer1 · code</title>
+<rect x="20.6" y="203.6" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer2 · done
+tokens 88,987 (in 88,368 / out 619)</title>
+<polygon points="287.1,260.2 283.3,266.8 275.8,266.8 272.0,260.2 275.8,253.7 283.3,253.7" fill="#56d364" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>peer1 · done
+tokens 415,387 (in 409,464 / out 5,923)</title>
+<polygon points="31.1,217.2 27.3,223.8 19.8,223.8 16.0,217.2 19.8,210.7 27.3,210.7" fill="#56d364" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>peer3 · done
+tokens 79,672 (in 79,214 / out 458)</title>
+<polygon points="543.1,314.0 539.3,320.5 531.8,320.5 528.0,314.0 531.8,307.5 539.3,307.5" fill="#56d364" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>peer2 · done
+tokens 91,198 (in 90,746 / out 452)</title>
+<polygon points="287.1,281.8 283.3,288.3 275.8,288.3 272.0,281.8 275.8,275.2 283.3,275.2" fill="#56d364" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<g opacity="1">
+<title>peer1 · code</title>
+<rect x="20.6" y="268.1" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer1 · code</title>
+<rect x="20.6" y="278.8" width="5.9" height="5.9" rx="1.2" fill="#ff9e64" stroke="#0d1117" stroke-width="1.0"/>
+</g>
+<g opacity="1">
+<title>peer1 · done
+tokens 275,880 (in 272,913 / out 2,967)</title>
+<polygon points="31.1,292.5 27.3,299.0 19.8,299.0 16.0,292.5 19.8,286.0 27.3,286.0" fill="#56d364" stroke="#0d1117" stroke-width="1.5"/>
+</g>
+<circle cx="79.2" cy="354.1" r="5.0" fill="#58a6ff"/><text x="89.2" y="357.6" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.0" fill="#8b949e">agent_start</text><circle cx="171.8" cy="354.1" r="3.8" fill="#0d1117" stroke="#79c0ff" stroke-width="2.1"/><text x="181.8" y="357.6" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.0" fill="#8b949e">message</text><polygon points="242.0,349.1 247.0,354.1 242.0,359.1 237.0,354.1" fill="#bc8cff"/><text x="252.0" y="357.6" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.0" fill="#8b949e">llm_output</text><rect x="324.0" y="349.1" width="10.0" height="10.0" rx="1.2" fill="#ff9e64"/><text x="339.0" y="357.6" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.0" fill="#8b949e">code</text><polygon points="382.4,347.3 383.9,351.9 388.8,352.0 384.9,354.9 386.3,359.5 382.4,356.8 378.4,359.5 379.8,354.9 375.9,352.0 380.8,351.9" fill="#ffd33d"/><text x="392.4" y="357.6" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.0" fill="#8b949e">waiting</text><polygon points="457.6,354.1 455.1,358.4 450.1,358.4 447.6,354.1 450.1,349.7 455.1,349.7" fill="#56d364"/><text x="462.6" y="357.6" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="10.0" fill="#8b949e">done</text>
+</svg>

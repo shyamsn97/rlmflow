@@ -1,5 +1,6 @@
-"""``python -m rlmflow`` → :mod:`rlmflow.cli`."""
+"""Allow ``python -m rlmflow`` alongside the installed ``rlmflow`` script."""
 
 from rlmflow.cli import main
 
-raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())

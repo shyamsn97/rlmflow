@@ -13,21 +13,28 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 try:
-    from mcp.server.fastmcp import FastMCP  # type: ignore[reportMissingImports]
-except ImportError:  # pragma: no cover - optional dependency path
-    FastMCP = None  # type: ignore[assignment]
+    from mcp.server.mcpserver import MCPServer  # type: ignore[reportMissingImports]
+    from mcp.server.mcpserver.exceptions import ToolError  # type: ignore[reportMissingImports]
+except ImportError:
+    try:  # mcp 1.x
+        from mcp.server.fastmcp import FastMCP as MCPServer  # type: ignore[reportMissingImports]
+        from mcp.server.fastmcp.exceptions import ToolError  # type: ignore[reportMissingImports]
+    except ImportError:  # pragma: no cover - optional dependency path
+        MCPServer = None  # type: ignore[assignment]
+        ToolError = ValueError  # type: ignore[assignment,misc]
 
 
 GEOCODING_URL = "https://geocoding-api.open-meteo.com/v1/search"
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 
-mcp = FastMCP("rlmflow-weather", json_response=True) if FastMCP is not None else None
+mcp = MCPServer("rlmflow-weather") if MCPServer is not None else None
 
 
 def mcp_tool(fn):
     if mcp is None:
         return fn
     return mcp.tool()(fn)
+
 
 WEATHER_CODES = {
     0: "clear",
@@ -73,7 +80,7 @@ def _normalize_units(units: str) -> tuple[str, str, str, str]:
         return "fahrenheit", "mph", "temp_f", "wind_mph"
     if normalized in {"c", "celsius"}:
         return "celsius", "kmh", "temp_c", "wind_kmh"
-    raise ValueError("units must be 'fahrenheit' or 'celsius'")
+    raise ToolError("units must be 'fahrenheit' or 'celsius'")
 
 
 def _condition(code: int | None) -> str:
@@ -94,7 +101,7 @@ def _geocode_city(city: str) -> dict[str, Any]:
     )
     results = data.get("results") or []
     if not results:
-        raise ValueError(f"Could not find coordinates for city: {city}")
+        raise ToolError(f"Could not find coordinates for city: {city}")
     result = results[0]
     return {
         "name": result["name"],
@@ -134,10 +141,10 @@ def get_current_weather(city: str, units: str = "fahrenheit") -> dict[str, Any]:
 
 @mcp_tool
 def get_forecast(city: str, days: int = 3, units: str = "fahrenheit") -> list[dict[str, Any]]:
-    """Return a daily forecast for a city using Open-Meteo."""
+    """Return a daily forecast for a city using Open-Meteo, for 1 to 7 days from today."""
 
     if days < 1 or days > 7:
-        raise ValueError("days must be between 1 and 7")
+        raise ToolError("days must be between 1 and 7")
 
     temp_unit, wind_unit, temp_key, wind_key = _normalize_units(units)
     place = _geocode_city(city)

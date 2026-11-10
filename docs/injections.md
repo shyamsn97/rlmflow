@@ -1,97 +1,94 @@
-# Node Injection
+# Node injection
 
-Node injection lets an external controller edit a running agent graph by
-appending typed nodes, then continuing the run with `agent.run(graph=graph)` or
-`agent.run_streaming(graph=graph)`. It is useful for budget controls, human/controller
-feedback, forced finalization, and repair nudges that should be represented in
-the same trace as normal model and runtime events.
+Controllers change the graph while a run streams or between streaming calls, then continue the same run.
 
-The caller owns the `Graph`, so injection is just a graph mutation followed by
-more scheduling. `graph.inject(...)` is the base graph-edit op; `append`,
-`prepend`, and `replace` are thin helpers over it:
+## Send a message
+
+A message is how a controller gets a word in. It is a user node added to the agent, which the agent reads at its next turn:
 
 ```python
-graph.inject("controller note")                     # append a user-turn (default)
-graph.inject(node, at=anchor, mode="before")        # insert before a node
-graph.append(node)                                  # mode="after"   (sugar)
-graph.prepend(node)                                 # mode="before"  (sugar)
-graph.replace(anchor, node, truncate="descendants") # swap + re-route a branch
+g.send(root, "Controller stop request: finalize now.")
+flow.run(g)
 ```
 
-Those edit the graph value. To inject *while a run is streaming* (so the edit is
-emitted into the live event stream), go through the Flow instead:
+A finished agent that gets a message reopens. Keyword arguments become variables in the agent's REPL, and the text says what was set:
 
 ```python
-flow.append_node(graph, ExecOutput(...), injected=True)  # stamp + emit into the run
-flow.apply_action(graph, action)           # apply any GraphAction (e.g. add a child)
+g.send(root, "Use these thresholds.", limits={"p95_ms": 250})
 ```
 
-All three mutate `graph` in place. Nothing is committed to a live REPL session
-until the next `run_streaming`/`run`, which persists the appended nodes as ordinary graph
-rows, updates the message projection, and resumes normal scheduling.
+Messages from the host have producer `"user"` unless you pass `sender=`, and no `write` edge unless you pass `by=` the node they come from. They carry no timing, because no turn produced them.
 
-For a runnable offline demo, see
-[`examples/control/controller_injection.py`](../examples/control/controller_injection.py).
+## Edit the graph
 
-## Inject A Controller Observation
-
-Append an `ExecOutput` when you want the next LLM turn to see controller-authored
-feedback without pretending the model wrote a REPL block:
+Everything already in the graph can be edited; see [The graph](node_model.md#editing) for the rules.
 
 ```python
-import asyncio
-import rlmflow
-
-graph = rlmflow.Graph(query="Wait for a controller note, then finish.")
-
-agent.append_node(
-    graph,
-    rlmflow.ExecOutput(
-        output="Injected controller observation: submit your final answer now.",
-        content="Injected controller observation: submit your final answer now.",
-    ),
-    injected=True,
-)
-
-agent.run(graph=graph)  # persists the note, then continues
+node = next(n for n in root.nodes() if n.runs_code)
+print(g.edit(node, code="print(sorted(files)[:20])", dry_run=True))
+g.edit(node, code="print(sorted(files)[:20])")  # root rewinds to this node
+flow.run(g)
 ```
 
-Adjacent observations are coalesced into one user-role message by the message
-projection (`flow.messages(graph)`), so providers with strict role alternation
-still accept the prompt. `graph.inject(text, agent_id=...)` is the shorthand for
-appending a `UserQuery` observation to a specific agent (a string is wrapped as a
-`UserQuery`; pass a `Node` to inject any typed node).
-
-## Inject Mid-Run From The Stream
-
-Because `run_streaming` mutates the graph in place, a controller can watch the
-event stream and inject at a chosen boundary:
+To keep the original and try something else, fork instead. The copy is cut right after `node`, and the message is injected into it:
 
 ```python
-async def run_with_controller_stop():
-    injected = False
-    async for event in agent.run_streaming(graph=graph):
-        if not injected and event.type == "append_node" and event.node_type == "exec_output":
-            injected = True
-            agent.append_node(
-                graph,
-                rlmflow.UserQuery(content="Controller stop request: finalize now."),
-                injected=True,
-            )
+branch = g.fork(node)
+branch.send(branch.agent(node.owner), "Try a different approach.")
+flow.run(branch)
 ```
 
-The injected node becomes an ordinary graph row; the next model turn reads it and
-can `done(...)` cleanly.
+[`examples/graph/06_fork.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/graph/06_fork.py) forks one run twice and injects a different instruction into each copy.
 
-## Rules
+## Inject tools and values
 
-- `inject` covers append/insert/replace via `mode`; `replace(..., truncate=
-  "descendants")` also rewrites history and prunes orphaned children. `rewind`
-  and `remove_child` remain for pure removal.
-- Injected nodes are ordinary node rows with ``metadata["injected"] = True``.
-  ``Graph.inject`` / ``append`` / ``prepend`` / ``replace`` stamp this by
-  default; ``Flow.append_node`` does so when called with ``injected=True``
-  (organic scheduler commits leave it unset).
-- Do not inject into a finished agent.
-- Multiple adjacent observation nodes are allowed and coalesce in the message
-  projection.
+The other injection point is the REPL namespace, which reaches agents that are already running:
+
+```python
+flow.inject("BUDGET_REMAINING", 4)
+flow.add_tool(escalate)
+flow.remove_tool("escalate")
+```
+
+`inject` takes any object, not just callables; `add_tool` is the same thing with the name read off the function. Both write into every open REPL as well as the flow's namespace, so a tool added mid-run is visible on the next run of code.
+
+## Reactive control
+
+**Inside the loop.** Host code in the `async for` runs on the Flow's loop between steps, so `g.send` there is safe; the agent reads the message at its next turn.
+
+```python
+async for step in flow.run_streaming(g):
+    if step.agent is not root and step.node.runs_code:
+        g.send(step.agent, "Answer with the best evidence.")
+```
+
+This reaches a worker while its parent is still inside the code that launched it.
+
+**Edits during a stream.** `await flow.edit(g, op, node, ...)` stops the agents the edit touches, then applies it, so it is safe inside the loop too:
+
+```python
+async for step in flow.run_streaming(g):
+    if step.node.error:
+        await flow.edit(g, "delete", step.node)  # the agent redoes that turn
+```
+
+**Between streaming calls.** Or stop the stream first:
+
+```python
+async for _ in flow.run_streaming(g, until="idle"):
+    pass
+
+g.send(root, "Human feedback: verify the auth path.")
+
+async for _ in flow.run_streaming(g):
+    pass
+```
+
+A boundary that fires on a child's node stops the stream while the parent's code is still running. That node goes back to ready, keeping what it saved, so the next run runs it again in place: its launches return the same children and its finished awaits their saved results. To stop on the parent's own turns instead:
+
+```python
+def root_idle(step):
+    return step.agent is root and (step.node.runs_code or "seen" in step.node.data)
+```
+
+See [`examples/graph/08_streaming.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/graph/08_streaming.py) for stopping a run, sending a message and resuming, and [`examples/shepherd/`](../examples/shepherd/) for forking a run and steering each fork live, rewinding Sokoban workers.

@@ -3,7 +3,7 @@
 These 16x16 PNG tiles are vendored from **mpSchrader/gym-sokoban**
 (<https://github.com/mpSchrader/gym-sokoban>), path
 `gym_sokoban/envs/surface/`, and are used only to render our own board for the
-Gradio viewer. The game logic is our own (`shepherd.py`).
+Gradio viewer. The game logic is our own (`sokoban.py`).
 
 - Source: https://github.com/mpSchrader/gym-sokoban
 - License: MIT (Max-Philipp B. Schrader, 2018)

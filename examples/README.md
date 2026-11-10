@@ -1,131 +1,71 @@
 # Examples
 
-Single-file scripts live at the root. Multi-file tasks and API tours live in
-named folders. Generated runs go under [`_runs/`](_runs/).
+Single-file scripts live at the root. Multi-file tasks and API tours live in named folders. Generated runs go under [`_runs/`](_runs/).
 
-## Scripts
+## Flagship examples
 
-| Script | What it shows |
-|---|---|
-| [`showcase.py`](showcase.py) | End-to-end `Flow` run + live terminal viz |
-| [`drop_in_llm.py`](drop_in_llm.py) | Minimal `FlowLLM` as a drop-in LLM |
-| [`llm_query_batched.py`](llm_query_batched.py) | `llm_query_batched` in the REPL |
-| [`skills.py`](skills.py) | On-disk skills + dynamic prompt section |
-| [`structured_output.py`](structured_output.py) | Root + child `output_schema` validation |
-| [`view_demo.py`](view_demo.py) | Lightweight viewer on synthetic minimal graphs |
-| [`summarizer.py`](summarizer.py) | Recursive map-reduce summarization |
+The public story is focused:
+
+1. [Needle](needle/) proves recursive decomposition: a root agent divides a million-line in-memory value among fresh-context workers and combines their findings.
+1. [Shepherd](shepherd/) shows why retaining the execution graph matters: a meta-agent can inspect a failed run, rewind it, fork several recoveries, re-instruct them, and select the best result.
+1. [Boids](coding/) applies recursive execution to practical software construction: a coding agent chooses the architecture and graph for a dependency-free browser simulation from product-level constraints.
+
+All three are live examples:
 
 ```bash
-python examples/showcase.py --no-viz
-python examples/skills.py --model gpt-4o-mini
-python examples/summarizer.py --sections 10 --no-viz
+uv run --locked --python 3.12 --extra openai --extra image \
+  python examples/shepherd/shepherd.py \
+  --model gpt-5 --fast-model gpt-5-mini --branches 8 --time-budget 1800
+
+uv run --locked --python 3.12 --extra openai \
+  python examples/needle/haystack.py \
+  --num-lines 1000000 --model gpt-5-mini --fast-model gpt-5-nano
+
+uv run --locked --python 3.12 --extra openai --extra image \
+  python examples/coding/boids/boids.py
 ```
 
-## Tasks
+OOLONG is in [`benchmarks/`](../benchmarks/README.md), which compares Claude Code, Claude Code with rlmflow, and rlmflow's own harness on the same tasks.
 
-| Folder | What it shows |
-|---|---|
-| [`needle/`](needle/) | Needle-in-haystack (in-memory + filesystem variants) |
-| [`coding/`](coding/) | Interactive file-editing agent |
-| [`autoresearch/`](autoresearch/) | TinyStories autoresearch loop with Modal GPU trials |
-| [`shepherd/`](shepherd/) | Meta-agent recovers a jammed Sokoban worker via rewind + `launch_subgraphs` (warm children), with `LiveGraphTree` + board panels |
+## Everything else
 
-## Tours & integrations
+| Example | What it shows | Needs a key |
+| --- | --- | --- |
+| [`needle/`](needle/) | Fan-out: the million-line in-memory needle, and the file needle on any harness (`filesystem.py --all`) | yes |
+| [`architectures/`](architectures/) | One small run per graph shape (tree, pipeline, review loop), plus where every shape in the README grid comes from | yes |
+| [`autoresearch/`](autoresearch/) | A planner running TinyStories training trials on Modal GPUs | yes |
+| [`collaboration/`](collaboration/) | Peers with no manager: messaging (`decentralized_peers.py`) and a shared task board (`shared_board.py`) | yes |
+| [`showcase.py`](showcase.py) | One end-to-end tour: stepping a run, saving and loading it, replaying it, gym-style rewards | no |
+| [`graph/`](graph/) | The graph API on its own: query, navigate, edit, save and load, replay, fork, launch from host code, stop and resume a run, a deep tree | no |
+| [`skills.py`](skills.py) | Skills as files in a live prompt section, and an `add_skill` tool the agent extends itself with (`--scripted` runs offline) | optional |
+| [`structured_output.py`](structured_output.py) | `output_schema` on the root and its children | yes |
+| [`providers/mcp_weather.py`](providers/mcp_weather.py) | Every tool on an MCP server, as REPL tools | yes |
+| [`sandboxes/platformer.py`](sandboxes/platformer.py) | Every agent's code in a Docker container or a Modal sandbox (`--runtime docker\|modal`) | yes |
+| [`notebooks/coding_agent.ipynb`](notebooks/coding_agent.ipynb) | The coding agent as a notebook, step by step | yes |
 
-| Folder | What it shows |
-|---|---|
-| [`graph/`](graph/) | Offline Graph API (query, edit, save, fork, render) |
-| [`control/`](control/) | Delegation, branching, injection |
-| [`sandboxes/`](sandboxes/) | Docker and Modal remote execution |
-| [`providers/`](providers/) | DSPy, MCP, Tinker adapters |
+[`shepherd/README.md`](shepherd/README.md) has the canonical run and artifact commands. [`docs/shepherd.md`](../docs/shepherd.md) is the worked-run walkthrough: the jam, the plans the meta-agent wrote against it, what each recovery branch did, and forking a Claude Code worker. After a Shepherd run, `make showcase-shepherd-assets` redraws its figures and animations.
 
----
+Run `--help` on any script for its flags. Most take `--model`, `--max-iters`, `--out-dir`, and `--docker-image IMAGE` to run agent code in a container (`docker build -t rlmflow:local .` builds one with `rlmflow` installed).
 
-Most compute examples (`summarizer.py`, `needle/haystack.py`, `showcase.py`,
-`coding/agent.py`) share the same flags. Run `--help` on any script for defaults.
-
-| Flag | Default | Meaning |
-|---|---|---|
-| `--model MODEL` | varies | Main LLM. Prefix decides client (`claude*` → Anthropic, else OpenAI). |
-| `--fast-model MODEL` | varies | Optional cheap secondary model registered as `fast` for delegates. |
-| `--docker-image IMAGE` | unset | If set, run agent code inside this Docker image via a `DockerRuntime`. Must have `rlmflow` installed. Leaving this unset uses the in-process `LocalRuntime`. |
-| `--max-depth N` | `3` | Max delegation depth. |
-| `--max-iters N` | `15` | Max LLM turns per agent. |
-| `--no-viz` | off | Disable the live terminal visualization. |
-| `--out-dir PATH` | `_runs/<example-name>/` | Save the final run here. Defaults use flat example names under [`_runs/`](_runs/). |
-
-## Running under Docker
-
-Build the image once:
-
-```bash
-docker build -t rlmflow:local .
-```
-
-Then pass `--docker-image rlmflow:local` to any example that supports it:
-
-```bash
-python examples/summarizer.py                 --docker-image rlmflow:local
-python examples/needle/haystack.py            --docker-image rlmflow:local
-python examples/needle/filesystem.py          --docker-image rlmflow:local
-python examples/coding/agent.py --workdir ./proj --docker-image rlmflow:local
-```
-
-Examples that use file tools register them on the runtime
-(`runtime.register_tools(FILE_TOOLS)`) and set `working_directory`, so relative
-paths resolve into that directory the same way in local and Docker modes.
-
-Each agent reads its `RLMFLOW_*` metadata from its own per-REPL `ENV` mapping
-(e.g. `ENV["RLMFLOW_AGENT_ID"]`), so that metadata is isolated per agent in every
-runtime, including the in-process `LocalRuntime`. For true parallel local
-*code* execution prefer `SubprocessRuntime` (one process per agent, isolated
-cwd); `LocalRuntime` still serializes cwd changes inside the host process. Use
-`DockerRuntime` or a cloud sandbox runtime when you also need container-level
-isolation.
-
-A finished run is saved automatically under `_runs/`; reopen it with:
-
-```bash
-python examples/summarizer.py        # saves to examples/_runs/summarizer/
-```
+A finished run is saved under [`_runs/`](_runs/). The directory holds `graph.json`, the graph's nodes and edges (plus `blobs/` for large inputs). Read it back as the same graph the run held in memory:
 
 ```python
-from rlmflow import open_viewer, save_image
+from rlmflow import Graph
+from rlmflow.view.text import kind
 
-open_viewer("examples/_runs/summarizer")            # interactive Gradio app
-save_image("examples/_runs/summarizer", "run.png")  # static PNG (rlmflow[image])
+g = Graph.load("examples/_runs/showcase")
+for node in g.nodes():
+    print(node.agent.path(), kind(node))
 ```
 
-The saved directory holds `graph.json` plus per-agent logs under `agents/`.
-
-## Docker And Modal
-
-Remote sandbox examples live under [`sandboxes/`](sandboxes/). They run a small
-platformer-building task, so set `OPENAI_API_KEY` plus any provider credentials:
-
-```bash
-python examples/sandboxes/docker_agent.py --docker-image rlmflow:local --no-live
-python examples/sandboxes/modal_agent.py --model gpt-5 --no-live
-```
-
-Install the matching extra first: `rlmflow[modal]` or `rlmflow[sandbox]`.
-
-For fully locked-down local runs, pass a `DockerRuntime`:
-
-```python
-from rlmflow import DockerRuntime, Flow
-from rlmflow.clients import OpenAIClient
-
-runtime = DockerRuntime("rlmflow:local", working_directory="./proj")
-flow = Flow(OpenAIClient(model="gpt-4o"), runtime=runtime)
-```
+Each agent reads its `RLMFLOW_*` metadata from its own per-REPL `ENV` mapping (e.g. `ENV["RLMFLOW_AGENT_ID"]`), so that metadata is isolated per agent in every runtime. `LocalRuntime` runs each agent in a worker subprocess; use `SubprocessRuntime` when you also need a selected Python executable, and `DockerRuntime` or `ModalRuntime` when you need container-level isolation.
 
 ## Smoke runner
 
-`run_examples.py` is the manifest-driven smoke runner. By default it runs the
-deterministic/offline examples; use `--include-optional`, `--include-live`,
-`--include-sandbox`, `--include-manual`, or `--all --list` to expand or inspect
-the suite. Notebooks are documented separately and are not executed by this
-runner.
+`run_examples.py` is the manifest-driven smoke runner. By default it runs the deterministic/offline examples; use `--include-optional`, `--include-live`, `--include-sandbox`, `--include-manual`, or `--all --list` to expand or inspect the suite. Notebooks are documented separately and are not executed by this runner.
+
+`--all` covers every category except `slow`. Those examples (currently `shepherd`, which lets a meta-agent shepherd a worker through Sokoban) run for long enough that a full-suite run should not block on them, so they need an explicit `--include-slow` — `make examples-slow` or `make examples-list` to see them.
+
+Each run writes a markdown report to `examples/_runs/examples_report.md` (`--report PATH` to move it, `--no-report` to skip it) listing every example as pass/fail/skip, with the command and captured output of each failure — useful when a long live run scrolls its own summary off screen.
 
 See each subdirectory README for the examples in that group.
