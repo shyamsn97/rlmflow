@@ -69,7 +69,8 @@ jobs:
           ANTHROPIC_API_KEY: test
         run: |
           python - <<'PY'
-          from rlmflow.llm import AnthropicClient, OpenAIClient
+          from rlmflow.llm.anthropic import AnthropicClient
+          from rlmflow.llm.openai import OpenAIClient
 
           OpenAIClient("test")
           AnthropicClient("test")
