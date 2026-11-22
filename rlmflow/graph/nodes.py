@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 if TYPE_CHECKING:
+    from rlmflow.flow import Flow
     from rlmflow.graph.calls import CallLog
     from rlmflow.graph.config import AgentConfig
     from rlmflow.graph.graph import Graph
@@ -33,6 +34,19 @@ DONE = "done"
 
 #: ``data["producer"]`` of nodes an agent wrote itself; anything else is news to it.
 SELF = "self"
+
+#: The ``data`` keys the engine reads. ``seen`` marks the node that ended a turn
+#: (how many of the agent's nodes that turn had seen). The turn ended the agent
+#: (``terminal``) or left it waiting for news (``idle``). ``final`` marks rlmflow
+#: asking for the last turn, ``dead`` a node whose REPL died, ``stopped`` why an
+#: agent was stopped, and ``workspace`` the files' snapshot after the node.
+SEEN_KEY = "seen"
+TERMINAL_KEY = "terminal"
+IDLE_KEY = "idle"
+FINAL_KEY = "final"
+DEAD_KEY = "dead"
+STOPPED_KEY = "stopped"
+WORKSPACE_KEY = "workspace"
 
 #: The edge kinds the engine writes and reads; any other kind is the application's.
 SPAWN = "spawn"
@@ -148,6 +162,45 @@ class Node:
     def runs_code(self) -> bool:
         return self.code.strip() not in ("", PASS)
 
+    @property
+    def seen(self) -> int | None:
+        """How many of its agent's nodes the turn this node ended had seen; ``None`` if it ended none."""
+        return self.data.get(SEEN_KEY)
+
+    @property
+    def ends_turn(self) -> bool:
+        return SEEN_KEY in self.data
+
+    @property
+    def terminal(self) -> bool:
+        """It ended its agent."""
+        return bool(self.data.get(TERMINAL_KEY))
+
+    @property
+    def idle(self) -> bool:
+        """It left its agent waiting for news."""
+        return bool(self.data.get(IDLE_KEY))
+
+    @property
+    def final(self) -> bool:
+        """rlmflow asking for the agent's last turn."""
+        return bool(self.data.get(FINAL_KEY))
+
+    @property
+    def dead(self) -> bool:
+        """Its REPL died while running it."""
+        return bool(self.data.get(DEAD_KEY))
+
+    @property
+    def stopped(self) -> str | None:
+        """Why its agent was stopped here, if it was."""
+        return self.data.get(STOPPED_KEY)
+
+    @property
+    def workspace(self) -> Any:
+        """The files' snapshot after this node, if one was taken."""
+        return self.data.get(WORKSPACE_KEY)
+
     def _graph(self) -> Graph:
         if self.graph is None:
             raise LookupError(f"{self!r} is not in a graph")
@@ -164,12 +217,30 @@ class Node:
         return own[: own.index(self) + 1]
 
 
+def final_node(
+    result: Any,
+    seen: int,
+    *,
+    output: str = "",
+    error: bool = False,
+    data: dict[str, Any] | None = None,
+) -> Node:
+    """A turn that ends its agent with ``result``, after ``seen`` of its nodes."""
+    return Node(
+        "assistant",
+        result=result,
+        output=output,
+        error=error,
+        data={SEEN_KEY: seen, TERMINAL_KEY: True, **(data or {})},
+    )
+
+
 @dataclass(eq=False, repr=False, slots=True, kw_only=True)
 class Agent(Node):
     """An agent: its first node, plus what only an agent has.
 
-    ``config_name`` names the Flow config it runs with (``None`` for a
-    top-level agent, which gets the run's ``root_config``). ``repl_id`` names
+    ``config_name`` names the Flow config it runs with (``None`` runs with
+    ``"default"``). ``repl_id`` names
     the REPL, workspace and session it runs in: its own id, unless a fork gave
     it a new one. ``config_record`` is the JSON of the config it last ran
     with, for viewers; a Flow never reads it back to run the agent.
@@ -211,7 +282,7 @@ class Agent(Node):
     def last_turn(self) -> Node | None:
         """The node that ended its latest turn: the last one with ``seen``."""
         for node in reversed(self._graph()._own[self.id]):
-            if "seen" in node.data:
+            if node.ends_turn:
                 return node
         return None
 
@@ -228,11 +299,11 @@ class Agent(Node):
         turn = self.last_turn()
         if turn is None:
             return "running"
-        if any(node.producer != SELF for node in own[turn.data["seen"] :]):
+        if any(node.producer != SELF for node in own[turn.seen :]):
             return "running"
-        if turn.data.get("terminal"):
+        if turn.terminal:
             return "done"
-        if turn.data.get("idle"):
+        if turn.idle:
             return "idle"
         return "running"
 
@@ -300,6 +371,7 @@ class Step:
     Every node that finishes is streamed as a ``Step``; tools see the step of
     the node whose code is running. ``replaying`` marks code rerun to rebuild
     a REPL; ``calls`` is the running node's ``CallLog``, which tools save to.
+    ``flow`` is the Flow running it, so a consumer can steer (``step.flow.stop``).
     """
 
     graph: Graph
@@ -307,6 +379,7 @@ class Step:
     node: Node
     replaying: bool = False
     calls: CallLog | None = None
+    flow: Flow | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def latest(cls, graph: Graph, agent: Agent) -> Step:
@@ -387,15 +460,22 @@ def record_metadata(
 
 
 __all__ = [
+    "DEAD_KEY",
     "DONE",
     "EDGE_KINDS",
+    "FINAL_KEY",
+    "IDLE_KEY",
     "IMAGES_KEY",
     "PASS",
     "READY",
     "RETURN",
     "RUNNING",
+    "SEEN_KEY",
     "SELF",
     "SPAWN",
+    "STOPPED_KEY",
+    "TERMINAL_KEY",
+    "WORKSPACE_KEY",
     "WRITE",
     "Agent",
     "Edge",
@@ -404,6 +484,7 @@ __all__ = [
     "Step",
     "attach_image",
     "current_step",
+    "final_node",
     "new_id",
     "record_metadata",
     "running_step",

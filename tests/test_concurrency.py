@@ -186,4 +186,4 @@ def test_cancelling_a_run_cancels_the_children_it_launched():
 
     llm, flow = asyncio.run(main())
     assert llm.cancelled == {"a", "b"}
-    assert flow.tasks == {}
+    assert not flow.running()

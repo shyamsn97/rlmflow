@@ -14,6 +14,7 @@ from helpers import (
     code_nodes,
     counting_replies,
     first_user,
+    name_root,
     own,
     ran,
     run_result,
@@ -27,16 +28,20 @@ from rlmflow import (
     SPAWN,
     Agent,
     AgentConfig,
+    Budget,
+    Flow,
     Input,
     LLMChunk,
     LLMUsage,
     Node,
+    Stop,
     attach_image,
 )
 from rlmflow.agent_tools import tools as agent_tools
 from rlmflow.agent_tools.view import AgentHandle
+from rlmflow.flow.stream import Stream
 from rlmflow.graph import Graph, Step, calls
-from rlmflow.graph.nodes import READY
+from rlmflow.graph.nodes import READY, current_step
 from rlmflow.graph.persistence import FORMAT_VERSION, node_record
 from rlmflow.harnesses import repl
 from rlmflow.llm.anthropic import anthropic_content
@@ -196,10 +201,7 @@ def test_max_iters():
         ]
     )
     g, root = agent_graph("loop")
-    assert (
-        run_result(ScriptedFlow(llm), g, root, root_config=AgentConfig(max_iters=3))
-        == "best effort"
-    )
+    assert run_result(ScriptedFlow(llm), g, root, config=AgentConfig(max_iters=3)) == "best effort"
     assert len(model_turns(g.nodes())) == 3
 
 
@@ -207,12 +209,9 @@ def test_iters_and_budget_are_unbounded_unless_set():
     llm = ScriptedLLM([("loop", block("print('again')")), ("again", block("submit('ok')"))])
     g, root = agent_graph("loop")
     assert root.config.max_iters is None
-    assert root.config.max_budget is None
     assert root.config.max_output_length == 20_000
     assert root.config.max_query_chars == 20_000
-    bounded = AgentConfig(max_iters=30, max_budget=100_000)
-    assert bounded.max_iters == 30
-    assert bounded.max_budget == 100_000
+    assert AgentConfig(max_iters=30).max_iters == 30
     assert run_result(ScriptedFlow(llm), g, root) == "ok"
     assert root.config.max_iters is None
 
@@ -248,16 +247,23 @@ def test_described_large_argument_survives_save_and_load(tmp_path):
     assert len(list((run / "blobs").iterdir())) == 1
 
 
-def test_run_task_string_takes_a_root_config():
+def test_run_task_string_takes_a_config_name():
     flow = ScriptedFlow(
         ScriptedLLM([("dig in", block("submit(task)"))]),
         llm_clients={"fast": ScriptedLLM([("dig in", block("submit('fast ' + task)"))])},
+        configs=[AgentConfig(name="quick", max_depth=1, max_iters=5, model="fast")],
     )
 
-    assert (
-        flow.run("dig in", root_config=AgentConfig(max_depth=1, max_iters=5, model="fast"))
-        == "fast dig in"
-    )
+    assert flow.run("dig in", config="quick") == "fast dig in"
+
+
+def test_init_names_the_config_on_the_root_and_checks_it():
+    flow = Flow(configs=[AgentConfig(name="planner")])
+    g = flow.init("plan it", config="planner", budget=3)
+    assert g.root.config_name == "planner"
+    assert g.root.input == {"task": "plan it", "budget": 3}
+    with pytest.raises(KeyError, match="no config named 'nope'"):
+        flow.init("x", config="nope")
 
 
 def test_graph_spawn_stores_a_config_name_without_a_flow(tmp_path):
@@ -372,7 +378,7 @@ def test_keep_n_messages_keeps_the_tail_and_a_truncation_notice():
     g, root = agent_graph("loop")
     flow = ScriptedFlow(llm)
     assert (
-        run_result(flow, g, root, root_config=AgentConfig(max_iters=6, keep_n_messages=3))
+        run_result(flow, g, root, config=AgentConfig(max_iters=6, keep_n_messages=3))
         == "best effort"
     )
 
@@ -384,9 +390,10 @@ def test_keep_n_messages_keeps_the_tail_and_a_truncation_notice():
     assert all(len(sent) <= 5 for sent in llm.calls)
 
 
-async def stream(flow, g, until, **kwargs):
-    """The nodes a stream yields."""
-    return [step.node async for step in flow.run_streaming(g, until=until, **kwargs)]
+async def stream(flow, g, until, *, config=None):
+    """The nodes a stream yields; ``config`` is the root's."""
+    name_root(flow, g, config)
+    return [step.node async for step in flow.run_streaming(g, until=until)]
 
 
 def test_streaming_until_idle():
@@ -705,9 +712,9 @@ def test_structured_output_is_stored_parsed():
     schema = {"type": "object", "properties": {"n": {"type": "number"}}, "required": ["n"]}
     llm = ScriptedLLM([("count", block("submit({'n': 41})"))])
     g, root = agent_graph("count")
-    assert run_result(
-        ScriptedFlow(llm), g, root, root_config=AgentConfig(output_schema=schema)
-    ) == {"n": 41}
+    assert run_result(ScriptedFlow(llm), g, root, config=AgentConfig(output_schema=schema)) == {
+        "n": 41
+    }
     assert node_record(root.nodes()[-1])["result"] == {"n": 41}
 
 
@@ -716,9 +723,9 @@ def test_plain_text_json_reply_is_validated_against_the_schema():
     llm = ScriptedLLM([("count", '{"n": 41}')])
     g, root = agent_graph("count")
 
-    assert run_result(
-        ScriptedFlow(llm), g, root, root_config=AgentConfig(output_schema=schema)
-    ) == {"n": 41}
+    assert run_result(ScriptedFlow(llm), g, root, config=AgentConfig(output_schema=schema)) == {
+        "n": 41
+    }
     assert not any(node.runs_code for node in g.nodes())
 
 
@@ -732,9 +739,9 @@ def test_plain_text_reply_that_fails_the_schema_is_a_code_error():
     )
     g, root = agent_graph("count")
 
-    assert run_result(
-        ScriptedFlow(llm), g, root, root_config=AgentConfig(output_schema=schema)
-    ) == {"n": 41}
+    assert run_result(ScriptedFlow(llm), g, root, config=AgentConfig(output_schema=schema)) == {
+        "n": 41
+    }
     [rejected] = [n for n in g.nodes() if n.error]
     assert not rejected.runs_code
 
@@ -865,7 +872,7 @@ def test_plain_reply_on_final_turn_finishes_the_run():
 
     llm = ScriptedLLM([("last turn", "best supported answer"), ("answer now", block("x = 1"))])
     assert (
-        run_result(ScriptedFlow(llm), g, root, root_config=AgentConfig(max_iters=2))
+        run_result(ScriptedFlow(llm), g, root, config=AgentConfig(max_iters=2))
         == "best supported answer"
     )
 
@@ -875,7 +882,7 @@ def test_final_turn_without_submit_ends_at_max_iters():
 
     llm = ScriptedLLM([("last turn", block("y = 2")), ("answer now", block("x = 1"))])
     assert (
-        run_result(ScriptedFlow(llm), g, root, root_config=AgentConfig(max_iters=2))
+        run_result(ScriptedFlow(llm), g, root, config=AgentConfig(max_iters=2))
         == "[max_iters exceeded]"
     )
     assert len(llm.calls) == 2
@@ -979,14 +986,16 @@ def test_rebuild_reads_recorded_child_answers_instead_of_relaunching(tmp_path):
     def parent_turn_ended(step):
         return step.node.runs_code and step.agent is root
 
-    asyncio.run(
-        stream(ScriptedFlow(llm), g, parent_turn_ended, root_config=AgentConfig(max_depth=2))
-    )
+    asyncio.run(stream(ScriptedFlow(llm), g, parent_turn_ended, config=AgentConfig(max_depth=2)))
     loaded = reload(g, tmp_path / "run")
     loaded_root = loaded.agent(root.id)
 
     resumed = ScriptedLLM([("20", block("submit('parent saw ' + answer)"))])
-    assert run_result(ScriptedFlow(resumed), loaded, loaded_root) == "parent saw 20"
+    resumed_flow = ScriptedFlow(resumed)
+    assert (
+        run_result(resumed_flow, loaded, loaded_root, config=AgentConfig(max_depth=2))
+        == "parent saw 20"
+    )
     # The child ran once, when it was recorded: no second launch, no second model call.
     assert len(loaded_root.children()) == 1
     assert len(resumed.calls) == 1
@@ -1265,7 +1274,7 @@ def test_each_launch_call_in_one_turn_creates_a_distinct_child():
         ]
     )
     g, root = agent_graph("delegate")
-    assert run_result(ScriptedFlow(llm), g, root, root_config=AgentConfig(max_depth=2)) == "done"
+    assert run_result(ScriptedFlow(llm), g, root, config=AgentConfig(max_depth=2)) == "done"
     assert [child.name for child in root.children()] == ["default-0", "default-1"]
 
 
@@ -1318,7 +1327,7 @@ def test_max_depth_refusal():
     flow = ScriptedFlow(llm)
     with stepping(g, root):
         assert "launch_agent" not in repl_tools(flow, Step(g, root, root))
-    assert run_result(flow, g, root, root_config=shallow) == "stopped"
+    assert run_result(flow, g, root, config=shallow) == "stopped"
     assert root.children() == []
 
 
@@ -1518,7 +1527,7 @@ def test_break_cancels_the_run():
         async for _step in stream:
             break
         await stream.aclose()
-        assert not flow.tasks
+        assert not flow.running()
         await flow.aclose()
 
     asyncio.run(main())
@@ -1683,7 +1692,7 @@ def test_named_model_routes_to_another_client():
     fast = ScriptedLLM([("", block("submit('fast client')"))])
     g, root = agent_graph("who answers")
     flow = ScriptedFlow(default, llm_clients={"fast": fast})
-    assert run_result(flow, g, root, root_config=AgentConfig(model="fast")) == "fast client"
+    assert run_result(flow, g, root, config=AgentConfig(model="fast")) == "fast client"
     assert default.calls == []
 
 
@@ -1718,7 +1727,7 @@ def test_child_launch_uses_the_flow_default_config():
     flow = ScriptedFlow(llm, configs=[AgentConfig(max_iters=7)])
     g, root = agent_graph("delegate")
 
-    assert run_result(flow, g, root, root_config=AgentConfig(max_iters=5)) == "done"
+    assert run_result(flow, g, root, config=AgentConfig(max_iters=5)) == "done"
     child = root.children()[0]
     assert root.config.max_iters == 5
     assert child.config_name == "default"
@@ -1751,8 +1760,7 @@ def test_long_child_query_is_refused():
     )
     g, root = agent_graph("delegate this")
     assert (
-        run_result(ScriptedFlow(llm), g, root, root_config=AgentConfig(max_query_chars=4))
-        == "stopped"
+        run_result(ScriptedFlow(llm), g, root, config=AgentConfig(max_query_chars=4)) == "stopped"
     )
     assert root.children() == []
 
@@ -1772,10 +1780,7 @@ def test_a_nearly_spent_budget_asks_for_an_answer_instead_of_dropping_the_run():
     llm.last_usage = SimpleNamespace(input_tokens=4, output_tokens=4)
     g, root = agent_graph("spend most of it")
 
-    assert (
-        run_result(ScriptedFlow(llm), g, root, root_config=AgentConfig(max_budget=20))
-        == "best guess"
-    )
+    assert run_result(ScriptedFlow(llm), g, root, hooks=[Budget(tokens=20)]) == "best guess"
     [final] = final_messages(g, root)
     assert final.producer == "rlmflow"
 
@@ -1791,10 +1796,9 @@ def test_a_failed_final_turn_under_a_token_budget_ends_instead_of_looping():
     llm.last_usage = SimpleNamespace(input_tokens=4, output_tokens=4)
     g, root = agent_graph("spend most of it")
 
-    assert (
-        run_result(ScriptedFlow(llm), g, root, root_config=AgentConfig(max_budget=20))
-        == "[max_budget exceeded]"
-    )
+    assert run_result(ScriptedFlow(llm), g, root, hooks=[Budget(tokens=20)]) == {
+        "stopped": "budget spent"
+    }
     assert len(final_messages(g, root)) == 1
     assert len(llm.calls) == 3
 
@@ -1804,9 +1808,7 @@ def test_the_budget_gate_never_discards_an_answer_already_paid_for():
     llm.last_usage = SimpleNamespace(input_tokens=40, output_tokens=40)
     g, root = agent_graph("answer immediately")
 
-    assert (
-        run_result(ScriptedFlow(llm), g, root, root_config=AgentConfig(max_budget=10)) == "landed"
-    )
+    assert run_result(ScriptedFlow(llm), g, root, hooks=[Budget(tokens=10)]) == "landed"
 
 
 def test_exhausted_budget_finalizes_children_before_the_parent():
@@ -1838,13 +1840,11 @@ def test_exhausted_budget_finalizes_children_before_the_parent():
             yield LLMChunk(text=reply, usage=usage)
 
     g, root = agent_graph("parent")
-    flow = ScriptedFlow(
-        ConcurrentBudgetLLM(), configs=[AgentConfig(max_budget=10)], runtime=TestRuntime()
-    )
-    result = run_result(flow, g, root)
+    flow = ScriptedFlow(ConcurrentBudgetLLM(), runtime=TestRuntime())
+    result = run_result(flow, g, root, hooks=[Budget(tokens=10)])
 
     assert result == "root-final"
-    assert g.usage().total > root.config.max_budget
+    assert g.usage().total > 10
     assert len(root.children()) == 2
     for agent in (root, *root.children()):
         assert len(final_messages(g, agent)) == 1
@@ -1853,11 +1853,67 @@ def test_exhausted_budget_finalizes_children_before_the_parent():
 def test_exhausted_budget_rejects_new_children():
     flow = ScriptedFlow(ScriptedLLM([]))
     g, root = agent_graph("parent")
-    root.bind_config(AgentConfig(max_budget=1))
     turn = g.append(root, Node("assistant", data={"usage": {"output_tokens": 1}}))
 
-    with pytest.raises(RuntimeError, match="max_budget"):
-        agent_tools.spawn(flow, Step(g, root, turn), "too late")
+    async def spawn_after_spending():
+        flow._streams[g.id] = Stream(g, [Budget(tokens=1)])
+        with pytest.raises(RuntimeError, match="budget is spent"):
+            agent_tools.spawn(flow, Step(g, root, turn), "too late")
+
+    asyncio.run(spawn_after_spending())
+
+
+def test_model_calls_see_the_step_they_serve():
+    seen = []
+
+    class Watching(ScriptedFlow):
+        async def complete(self, messages, model, **kwargs):
+            step = current_step()
+            seen.append((step.agent.task, step.flow is self) if step else None)
+            return await super().complete(messages, model, **kwargs)
+
+    assert Watching(ScriptedLLM([("", block("submit('ok')"))])).run("watch me") == "ok"
+    assert seen == [("watch me", True)]
+
+
+def test_a_dollar_budget_counts_what_harnesses_report():
+    flow = ScriptedFlow(ScriptedLLM([]))
+    g, root = agent_graph("parent")
+    turn = g.append(root, Node("assistant", data={"cost_usd": 0.6, "usage": {"output_tokens": 9}}))
+
+    async def check():
+        budget = Budget(usd=1.0)
+        flow._streams[g.id] = Stream(g, [budget])
+        assert not budget.spent(flow, g) and budget.nearly_spent(flow, g)
+        g.append(root, Node("assistant", data={"cost_usd": 0.5}))
+        assert budget.spent(flow, g)
+        with pytest.raises(RuntimeError, match="budget is spent"):
+            agent_tools.spawn(flow, Step(g, root, turn), "too late")
+        assert not Budget(usd=5.0).nearly_spent(flow, g)
+
+    asyncio.run(check())
+    with pytest.raises(ValueError, match="usd"):
+        Budget(usd=0)
+
+
+def test_a_time_budget_asks_for_last_turns_then_stops_what_is_still_running():
+    class Slow:
+        def __init__(self):
+            self.final_turns = 0
+
+        async def chat(self, messages):
+            if "last turn" in messages[-1]["content"]:
+                self.final_turns += 1
+                await asyncio.sleep(10)
+            await asyncio.sleep(0.05)
+            return block("print('still going')")
+
+    llm = Slow()
+    g, root = agent_graph("keep going")
+    result = run_result(ScriptedFlow(llm), g, root, hooks=[Budget(seconds=0.5)])
+
+    assert llm.final_turns == 1
+    assert result == {"stopped": "time budget spent"}
 
 
 def test_child_failure_reaches_the_parent():
@@ -1892,24 +1948,54 @@ def test_aclose_drops_the_work_and_the_repls():
     asyncio.run(run_then_close())
     assert llm.closed
     assert not flow.runtime.repls
-    assert not flow.tasks
+    assert not flow.running()
 
 
-def test_one_flow_rejects_competing_stream_drivers():
+def test_one_flow_streams_several_graphs_at_once():
     llm = ScriptedLLM([("one", block("submit('first')")), ("two", block("submit('second')"))])
     flow = ScriptedFlow(llm)
-    (first, _), (second, _) = agent_graph("one"), agent_graph("two")
+    (first, a), (second, b) = agent_graph("one"), agent_graph("two")
 
     async def both():
-        left = flow.run_streaming(first)
-        right = flow.run_streaming(second)
-        await anext(left)
-        with pytest.raises(RuntimeError, match="already driving"):
-            await anext(right)
-        await left.aclose()
-        await right.aclose()
+        await asyncio.gather(flow.arun(first), flow.arun(second))
 
     asyncio.run(both())
+    assert (a.final_result(), b.final_result()) == ("first", "second")
+    assert not flow.running()
+
+
+def test_one_flow_refuses_to_stream_a_graph_twice():
+    llm = ScriptedLLM([("one", block("submit('first')"))])
+    flow = ScriptedFlow(llm)
+    g, _ = agent_graph("one")
+
+    async def twice():
+        left, right = flow.run_streaming(g), flow.run_streaming(g)
+        await anext(left)
+        with pytest.raises(RuntimeError, match="already streaming"):
+            await anext(right)
+        await left.aclose()
+
+    asyncio.run(twice())
+
+
+def test_a_fork_sharing_repls_cannot_stream_beside_its_original():
+    llm = ScriptedLLM([("one", block("submit('first')"))])
+    flow = ScriptedFlow(llm)
+    g, _ = agent_graph("one")
+
+    async def side_by_side():
+        left = flow.run_streaming(g)
+        step = await anext(left)
+        same = g.fork(step.node, repl="same")
+        with pytest.raises(RuntimeError, match="same REPLs"):
+            await anext(flow.run_streaming(same))
+        copied = g.fork(step.node)
+        async for _ in flow.run_streaming(copied):
+            pass
+        await left.aclose()
+
+    asyncio.run(side_by_side())
 
 
 def peaked(delay=0.02):
@@ -1963,3 +2049,180 @@ def test_a_client_request_timeout_is_handed_to_clients_that_take_one():
     lean = ScriptedLLM([("", block("submit('ok')"))])
     lean.request_timeout = 5
     assert ScriptedFlow(lean).run("go") == "ok"
+
+
+class Recorder:
+    """A hook that writes down every seam it sees."""
+
+    def __init__(self, name="", events=None):
+        self.name, self.events = name, events if events is not None else []
+        self.seen: list[str] = []
+
+    def start(self, flow, g):
+        self.events.append(f"{self.name}start")
+
+    def before_turn(self, flow, agent):
+        self.events.append(f"{self.name}before_turn")
+
+    def on_step(self, flow, step):
+        self.seen.append(step.node.id)
+
+    def end(self, flow, g):
+        self.events.append(f"{self.name}end")
+
+
+def test_hooks_see_every_seam_in_order_and_each_step_before_the_caller():
+    events: list[str] = []
+    first, second = Recorder("a.", events), Recorder("b.", events)
+    flow = ScriptedFlow(ScriptedLLM([("", block("submit('ok')"))]))
+    g, root = agent_graph("go")
+    name_root(flow, g, None)
+
+    async def stream():
+        async for step in flow.run_streaming(g, hooks=[first, second]):
+            assert step.node.id in first.seen and step.node.id in second.seen
+
+    asyncio.run(stream())
+    assert root.final_result() == "ok"
+    assert events == [
+        "a.start",
+        "b.start",
+        "a.before_turn",
+        "b.before_turn",
+        "b.end",
+        "a.end",
+    ]
+    assert (
+        first.seen
+        == second.seen
+        == [node.id for node in g.nodes() if node.state == "done"][-len(first.seen) :]
+    )
+
+
+def test_a_hook_note_reaches_the_turn_and_stop_ends_the_agent_instead():
+    class Note:
+        def before_turn(self, flow, agent):
+            if not any(node.producer == "note" for node in agent.nodes()):
+                return Node("user", "be brief", producer="note")
+
+    llm = ScriptedLLM([("be brief", block("submit('noted')"))])
+    assert ScriptedFlow(llm).run("go", hooks=[Note()]) == "noted"
+
+    class Refuse:
+        def before_turn(self, flow, agent):
+            return Stop("not today")
+
+    llm = ScriptedLLM([])
+    first, second = Refuse(), Recorder()
+    assert ScriptedFlow(llm).run("go", hooks=[first, second]) == {"stopped": "not today"}
+    assert llm.calls == []
+
+
+def test_a_hook_can_refuse_a_launch():
+    class NoLaunches:
+        def before_launch(self, flow, step, task, config):
+            return "no launches here"
+
+    llm = ScriptedLLM(
+        [
+            ("no launches here", block("submit('refused')")),
+            ("", block("launch_agent('child')")),
+        ]
+    )
+    g, root = agent_graph("delegate")
+    name_root(ScriptedFlow(llm), g, None)
+    flow = ScriptedFlow(llm)
+    flow.run(g, hooks=[NoLaunches()])
+    assert root.final_result() == "refused"
+    assert root.children() == []
+
+
+def test_steps_left_when_the_caller_breaks_still_reach_hooks_and_end_runs():
+    from contextlib import aclosing
+
+    hook = Recorder()
+    flow = ScriptedFlow(ScriptedLLM([("one", block("submit('ok')")), ("", block("print('one')"))]))
+    g, root = agent_graph("go")
+    name_root(flow, g, None)
+
+    async def first_step_only():
+        async with aclosing(flow.run_streaming(g, hooks=[hook])) as stream:
+            async for _step in stream:
+                break
+
+    asyncio.run(first_step_only())
+    assert hook.events == ["start", "before_turn", "end"]
+    assert hook.seen == [node.id for node in g.nodes() if node.state == "done"][-len(hook.seen) :]
+
+
+def test_a_failing_hook_fails_the_run_and_still_ends_the_others():
+    class Broken:
+        def on_step(self, flow, step):
+            raise RuntimeError("hook broke")
+
+    hook = Recorder()
+    flow = ScriptedFlow(ScriptedLLM([("", block("submit('ok')"))]))
+    with pytest.raises(RuntimeError, match="hook broke"):
+        flow.run("go", hooks=[hook, Broken()])
+    assert hook.events[-1] == "end"
+
+
+def test_a_removed_tool_is_gone_at_the_next_execution():
+    def shout(text: str) -> str:
+        """Upper-case text."""
+        return text.upper()
+
+    def drop() -> None:
+        """Remove shout."""
+        flow.remove_tool("shout")
+
+    llm = ScriptedLLM(
+        [
+            ("first", block("submit('shout' in globals())")),
+            ("", block("drop()\nprint(shout('a') + 'first')")),
+        ]
+    )
+    flow = ScriptedFlow(llm, tools=[shout, drop], runtime=TestRuntime())
+    assert flow.run("go") is False
+
+
+def test_each_stream_opens_its_own_copy_of_a_toolkit():
+    opened: list[int] = []
+
+    class Tagged:
+        async def open(self):
+            opened.append(id(self))
+
+            def tag() -> int:
+                """This copy's id."""
+                return id(self)
+
+            return [tag]
+
+        async def close(self):
+            pass
+
+    toolkit = Tagged()
+    flow = ScriptedFlow(ScriptedLLM([("", block("submit(tag())"))]), tools=[toolkit])
+
+    async def both():
+        return await asyncio.gather(flow.arun("one"), flow.arun("two"))
+
+    first, second = asyncio.run(both())
+    assert first != second and {first, second} == set(opened)
+    assert id(toolkit) not in opened
+
+
+def test_a_time_budget_stops_an_agent_stuck_in_a_long_tool():
+    async def wait_forever() -> None:
+        """Never return."""
+        await asyncio.sleep(60)
+
+    llm = ScriptedLLM([("", block("await wait_forever()"))])
+    g, root = agent_graph("wait")
+    flow = ScriptedFlow(llm, tools=[wait_forever])
+    started = time.monotonic()
+    assert run_result(flow, g, root, hooks=[Budget(seconds=0.3)]) == {
+        "stopped": "time budget spent"
+    }
+    assert time.monotonic() - started < 10

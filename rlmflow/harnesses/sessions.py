@@ -18,7 +18,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from rlmflow import schema
-from rlmflow.graph.nodes import SELF, Agent, Node, Step
+from rlmflow.graph.nodes import (
+    SELF,
+    Agent,
+    Node,
+    Step,
+)
 from rlmflow.graph.queries import unseen_results
 from rlmflow.harnesses.base import Harness
 from rlmflow.harnesses.prompts import (
@@ -29,7 +34,6 @@ from rlmflow.harnesses.prompts import (
     TOOLS_PROMPT,
     argument_manifest,
     arguments,
-    guidance,
     preview,
 )
 from rlmflow.runtime.runtime import repl_key
@@ -65,7 +69,7 @@ del _rlmflow_describe"""
 def turn_end(step: Step) -> Node | None:
     """The node that ended the latest session turn, if no code ran after it."""
     for node in reversed(step.agent.nodes()):
-        if node.data.get("session_id") and "seen" in node.data:
+        if node.data.get("session_id") and node.ends_turn:
             return node
         if node.runs_code:
             return None
@@ -162,13 +166,14 @@ async def resume_prompt(flow: Flow, step: Step) -> str:
 
 
 async def next_prompt(flow: Flow, step: Step, session: Session) -> str:
-    """The prompt that opens this turn."""
-    messages = pending_messages(step)
+    """The prompt that opens this turn, ending with the Flow's turn prompt."""
+    turn = flow.turn_prompt(step)
+    messages = [*pending_messages(step), turn]
     if session.resume:
-        return "\n\n".join(messages) or "Continue."
+        return "\n\n".join(part for part in messages if part) or "Continue."
     has_code = any(n.runs_code for n in step.agent.nodes())
     if not has_code and step.agent.last_turn() is None:
-        return first_prompt(step)
+        return "\n\n".join(part for part in (first_prompt(step), turn) if part)
     opening = await resume_prompt(flow, step) if has_code else ""
     return "\n\n".join(
         part for part in (f"Your task: {step.agent.task}", opening, *messages) if part
@@ -196,7 +201,7 @@ class SessionHarness(Harness):
             "tools": "Also in the REPL:\n" + "\n".join(own_tools) if own_tools else None,
             "location": LOCATION_PROMPT.format(location=location) if location is not None else None,
             "record": RECORD_PROMPT,
-            **guidance(step),
+            **flow.guidance(step),
             "schema": schema.contract(output_schema) if output_schema is not None else None,
         }
 

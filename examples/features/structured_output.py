@@ -7,7 +7,7 @@ Pydantic model.
 
 Run:
     export OPENAI_API_KEY=...
-    python examples/structured_output.py --model gpt-5-mini
+    python examples/features/structured_output.py --model gpt-5-mini
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rlmflow import AgentConfig, Flow, Graph, json_schema_for
+from rlmflow import AgentConfig, Flow, json_schema_for
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -90,16 +90,19 @@ def main() -> None:
         "agents."
     )
 
-    g = Graph()
-    root = g.start(query, trip_brief=TRIP_BRIEF)
-    config = AgentConfig(
-        model=args.model,
-        max_depth=args.max_depth,
-        max_iters=args.max_iters,
-        output_schema=json_schema_for(PackingPlan),
+    planner = flow.add_config(
+        AgentConfig(
+            name="planner",
+            model=args.model,
+            max_depth=args.max_depth,
+            max_iters=args.max_iters,
+            output_schema=json_schema_for(PackingPlan),
+        )
     )
+    g = flow.init(query, config=planner.name, trip_brief=TRIP_BRIEF)
+    root = g.root
     out_dir = Path(args.out_dir)
-    asyncio.run(print_run(flow, g, out_dir, root_config=config))
+    asyncio.run(print_run(flow, g, out_dir))
 
     # `submit(value)` parsed the answer against the schema, so the result is a
     # dict; the Pydantic model is the typed view of that same value.

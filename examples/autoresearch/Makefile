@@ -2,19 +2,15 @@ PYTHON ?= python
 UV ?= uv
 
 MODEL ?= gpt-5
-GPU ?= L4
+GPU ?= A10G
 PARALLEL ?= 12
 MAX_SUBMISSIONS ?= 48
-MAX_ITERS ?= 40
-MAX_DEPTH ?= 1
-CHILD_ITERS ?= 8
-CREATED_TRIAL_TIMEOUT_S ?= 1800
-SUBMITTED_TRIAL_TIMEOUT_S ?=
-AGENT_RUNTIME ?= docker
-DOCKER_IMAGE ?= rlmflow:local
+MINUTES ?=
+MAX_USD ?=
+PLANNER ?= claude_code
+IMPLEMENTER ?= claude_code
+CLAUDE_MODEL ?=
 OUT ?=
-SYNC_DIR ?=
-SYNC_EVERY_S ?= 2.0
 
 .PHONY: help sync prepare train run smoke lint
 
@@ -28,10 +24,8 @@ help:
 	@echo "  make lint        Lint runner files"
 	@echo ""
 	@echo "Common overrides:"
-	@echo "  MODEL=$(MODEL) GPU=$(GPU) PARALLEL=$(PARALLEL) MAX_SUBMISSIONS=$(MAX_SUBMISSIONS) MAX_DEPTH=$(MAX_DEPTH)"
-	@echo "  CREATED_TRIAL_TIMEOUT_S=$(CREATED_TRIAL_TIMEOUT_S) SUBMITTED_TRIAL_TIMEOUT_S=$(SUBMITTED_TRIAL_TIMEOUT_S)"
-	@echo "  OUT=/path/to/run SYNC_DIR=/path/to/local-copy"
-	@echo "  AGENT_RUNTIME=docker DOCKER_IMAGE=rlmflow:local"
+	@echo "  MODEL=$(MODEL) GPU=$(GPU) PARALLEL=$(PARALLEL) MAX_SUBMISSIONS=$(MAX_SUBMISSIONS)"
+	@echo "  MINUTES=120 MAX_USD=20 PLANNER=repl IMPLEMENTER=repl CLAUDE_MODEL=opus OUT=/path/to/run"
 
 sync:
 	$(UV) sync
@@ -48,14 +42,12 @@ run:
 		--gpu "$(GPU)" \
 		--parallel "$(PARALLEL)" \
 		--max-submissions "$(MAX_SUBMISSIONS)" \
-		--max-iters "$(MAX_ITERS)" \
-		--max-depth "$(MAX_DEPTH)" \
-		--created-trial-timeout-s "$(CREATED_TRIAL_TIMEOUT_S)" \
-		--agent-runtime "$(AGENT_RUNTIME)" \
-		--docker-image "$(DOCKER_IMAGE)" \
-		$(if $(SUBMITTED_TRIAL_TIMEOUT_S),--submitted-trial-timeout-s "$(SUBMITTED_TRIAL_TIMEOUT_S)",) \
-		$(if $(OUT),--out "$(OUT)",) \
-		$(if $(SYNC_DIR),--sync-dir "$(SYNC_DIR)" --sync-every-s "$(SYNC_EVERY_S)",)
+		--planner "$(PLANNER)" \
+		--implementer "$(IMPLEMENTER)" \
+		$(if $(CLAUDE_MODEL),--claude-model "$(CLAUDE_MODEL)",) \
+		$(if $(MINUTES),--minutes "$(MINUTES)",) \
+		$(if $(MAX_USD),--max-usd "$(MAX_USD)",) \
+		$(if $(OUT),--out "$(OUT)",)
 
 smoke:
 	$(MAKE) run MAX_SUBMISSIONS=1

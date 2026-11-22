@@ -1,8 +1,8 @@
 """Review loop: a root critiques a finished writer twice, reopening it to revise each time.
 
-    python examples/architectures/review.py --model gpt-5-mini
+    python examples/patterns/review.py --model gpt-5-mini
 
-The run is saved under ``examples/_runs/architectures/review``.
+The run is saved under ``examples/_runs/patterns/review``.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def main() -> None:
     flow = Flow(configs=[AgentConfig(model=args.model)])
     g = Graph()
     root = g.start(TASK)
-    out_dir = example_run_dir("architectures") / "review"
+    out_dir = example_run_dir("patterns") / "review"
     try:
         asyncio.run(print_run(flow, g, out_dir, width=12))
     finally:

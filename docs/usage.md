@@ -22,11 +22,11 @@ flow.run("Add a and b", a=2, b=3)  # 5; keyword arguments become REPL variables
 To keep the run, build the graph yourself:
 
 ```python
-from rlmflow import AgentConfig, Graph
+from rlmflow import Graph
 
 g = Graph()
 root = g.start("Count the x's in doc.", doc="xxaaxbxx")
-flow.run(g, root_config=AgentConfig(max_iters=10))  # returns the graph
+flow.run(g)  # returns the graph
 root.final_result()  # 5
 g.save("runs/count")
 ```
@@ -47,7 +47,8 @@ An `AgentConfig` is a kind of agent: its harness, model, limits and prompt. The 
 | `max_iters`       | `None`      | Model turns before it must finish.                                     |
 | `output_schema`   | `None`      | JSON schema or Pydantic model the result must match.                   |
 | `harness_options` | `{}`        | Harness settings, e.g. `{"mcp": True}`.                                |
-| `max_budget`      | `None`      | Whole-run token threshold; crossing it gives every agent a final turn. |
+
+A whole run's tokens, dollars and time are limited per call with `flow.run(g, hooks=[Budget(...)])`; see [Control](control.md#run-budgets).
 
 ```python
 from pydantic import BaseModel
@@ -65,11 +66,12 @@ searcher = AgentConfig(
     description="searches one batch of files",
     output_schema=Finding,
 )
-flow = Flow(configs=[searcher])  # or flow.add_config(searcher)
-flow.run("Find the magic number in haystack/.", root_config=AgentConfig(model="gpt-5", max_depth=1))
+lead = AgentConfig(name="lead", model="gpt-5", max_depth=1)
+flow = Flow(configs=[lead, searcher])  # or flow.add_config(searcher)
+flow.run("Find the magic number in haystack/.", config="lead")
 ```
 
-Roots (agents made with `g.start` and no `config=`) run with the run's `root_config`: an `AgentConfig`, a config name, or `None` for the Flow's `"default"`. Everything else names a Flow config. `launch_agent(...)` without `config=` uses `"default"`, not its parent's. To put a top-level agent on a named config, use `g.start(task, config="searcher")`. An unknown name is a `KeyError` when the Flow reaches the agent.
+Every agent names a Flow config; one that names none, such as a root made with `g.start` and no `config=`, runs `"default"`. `launch_agent(...)` without `config=` uses `"default"`, not its parent's. To put a top-level agent on a named config, use `g.start(task, config="searcher")`. An unknown name is a `KeyError` when the Flow reaches the agent.
 
 ## Models
 
@@ -147,16 +149,13 @@ async for step in flow.run_streaming(g, until="idle"):
 `until` is `"done"` (default), `"next"`, `"idle"` (the next node that ran code or ended a turn), or a function of the step. Stop, look or change the graph, then call `run_streaming` again. Consumers handle the stream for you:
 
 ```python
-from rlmflow import ConsumerGroup, GraphCheckpointer, LiveGraphTree
+from rlmflow import Checkpoint, LiveTree
 
-consumers = ConsumerGroup([LiveGraphTree(), GraphCheckpointer("runs/x")])
-consumers.init(flow)
-async for step in flow.run_streaming(g):
-    consumers.handle(step, g)
-consumers.close()
+async for step in flow.run_streaming(g, hooks=[LiveTree(), Checkpoint("runs/x")]):
+    ...
 ```
 
-More in [Streaming](streaming.md).
+Hooks see every node before you do and are closed when the stream ends, however it ends. More in [Streaming](streaming.md#hooks).
 
 ## Read the graph
 
@@ -205,7 +204,7 @@ claude = AgentConfig(
     harness_options={"sdk": {"permission_mode": "acceptEdits"}},
 )
 flow = Flow(configs=[claude])
-flow.run(task, root_config=AgentConfig(harness="claude_code", max_depth=1))
+flow.run(task, config="claude")
 ```
 
 Claude runs with your own Claude Code settings (permissions, `CLAUDE.md`, MCP servers, plugins); rlmflow only adds permission to run `rlmflow` commands. It reaches the agent tools through `rlmflow repl`, and the code it runs there is recorded in the graph. Changes it makes with its own tools are not recorded, but the workspace snapshot at the end of each turn still has the files.

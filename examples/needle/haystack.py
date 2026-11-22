@@ -15,14 +15,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import random
 import string
 import sys
 from pathlib import Path
 
 from rlmflow import AgentConfig, DockerRuntime, Flow, Graph
-from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
+from rlmflow.consumers import Checkpoint, LiveTree
 
 examples_dir = next(path for path in Path(__file__).resolve().parents if path.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -105,12 +104,14 @@ def main():
     flow = Flow(configs=configs, runtime=runtime)
     # Claude Code and pi pick their own model; --model is the REPL harness's.
     config = AgentConfig(
+        name="lead",
         harness=args.harness,
         model=args.model if args.harness == "repl" else None,
         max_depth=args.max_depth,
         max_iters=args.max_iters,
     )
 
+    flow.add_config(config)
     g = Graph()
     root = g.start(
         "I'm looking for a magic number buried somewhere in the haystack in "
@@ -119,20 +120,13 @@ def main():
         haystack=haystack,
     )
     out_dir = Path(args.out_dir)
-    consumers = ConsumerGroup()
+    consumers = []
     if not args.no_viz:
-        consumers.append(LiveGraphTree(title="Needle haystack search"))
+        consumers.append(LiveTree(title="Needle haystack search"))
     if args.out_dir:
-        consumers.append(GraphCheckpointer(out_dir))
+        consumers.append(Checkpoint(out_dir))
 
-    async def drive() -> None:
-        try:
-            async for item in flow.run_streaming(g, root_config=config):
-                consumers.handle(item, g)
-        finally:
-            consumers.close()
-
-    asyncio.run(drive())
+    flow.run(g, hooks=consumers)
 
     print(f"\n{'=' * 40}")
     result = root.final_result()

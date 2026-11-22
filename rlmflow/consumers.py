@@ -1,70 +1,45 @@
-"""Composable consumers for ``Flow.run_streaming``'s ``Step`` stream.
+"""Consumers for ``Flow.run_streaming``'s stream: things that see each ``Step``.
 
-``handle(item, graph)`` takes a streamed ``Step``, or a bare ``Node``.
+Pass them as hooks, and the run calls them on every step and closes them when it ends:
+
+    async for step in flow.run_streaming(g, hooks=[LiveTree(), Checkpoint("runs/x")]):
+        ...
+
+Or call them yourself in the loop, and ``close()`` them after it.
 """
 
 from __future__ import annotations
 
-import shutil
 import sys
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import Edge, Node, Step
-from rlmflow.view.text import _status, render_forest, render_tree
-
-if TYPE_CHECKING:
-    from rlmflow.flow import Flow
-    from rlmflow.graph.graph import Graph
+from rlmflow.graph.nodes import Node, Step
+from rlmflow.view.text import _status, render_tree
 
 
 class StreamConsumer:
-    """Base class for objects that react to streamed graph items."""
+    """Something you call on each streamed ``Step``. Subclass it, or use any ``callable(step)``."""
 
-    def init(self, flow: Flow) -> None:
-        """Hand this consumer the flow behind the stream.
-
-        A consumer that only displays never needs this. It exists for the
-        interactive ones, which have to start and step a run rather than watch
-        one, and only a flow can do that.
-        """
-
-    def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
+    def __call__(self, step: Step) -> Any:
         raise NotImplementedError
 
     def close(self) -> None:
-        """Release resources or flush final state."""
+        """Flush or release; call it after the loop."""
+
+    def on_step(self, flow: Any, step: Step) -> None:
+        self(step)
+
+    def end(self, flow: Any, g: Graph) -> None:
+        self.close()
 
 
-class ConsumerGroup(StreamConsumer):
-    """Fan out each item to a list of consumers."""
-
-    def __init__(self, consumers: Iterable[StreamConsumer] = ()) -> None:
-        self.consumers = list(consumers)
-
-    def append(self, consumer: StreamConsumer) -> None:
-        self.consumers.append(consumer)
-
-    def init(self, flow: Flow) -> None:
-        for consumer in self.consumers:
-            consumer.init(flow)
-
-    def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
-        for consumer in self.consumers:
-            consumer.handle(item, graph)
-
-    def close(self) -> None:
-        for consumer in reversed(self.consumers):
-            with suppress(Exception):
-                consumer.close()
-
-
-class GraphCheckpointer(StreamConsumer):
-    """Periodically save one streamed run, and save it once more on ``close``."""
+class Checkpoint(StreamConsumer):
+    """Save one streamed graph every so often, on every terminal node, and on ``close``."""
 
     def __init__(
         self,
@@ -84,13 +59,12 @@ class GraphCheckpointer(StreamConsumer):
         self.latest: Graph | None = None
         self.dirty_nodes = 0
 
-    def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
-        if self.latest is not None and graph is not self.latest:
-            raise ValueError("one GraphCheckpointer cannot write multiple runs")
-        self.latest = graph
+    def __call__(self, step: Step) -> None:
+        if self.latest is not None and step.graph is not self.latest:
+            raise ValueError("one Checkpoint cannot write multiple graphs")
+        self.latest = step.graph
         self.dirty_nodes += 1
-        node = item.node if isinstance(item, Step) else item
-        if (isinstance(node, Node) and node.data.get("terminal")) or self._due():
+        if step.node.terminal or self._due():
             self.flush()
 
     def _due(self) -> bool:
@@ -112,77 +86,8 @@ class GraphCheckpointer(StreamConsumer):
         self.flush()
 
 
-DEFAULT_IGNORE = (".venv", "__pycache__", ".pytest_cache", ".git")
-
-
-class WorkspaceSync(StreamConsumer):
-    """Mirror a run directory into a local workspace while items stream."""
-
-    def __init__(
-        self,
-        source_dir: str | Path,
-        target_dir: str | Path,
-        *,
-        every_s: float = 2.0,
-        ignore: tuple[str, ...] = DEFAULT_IGNORE,
-    ) -> None:
-        self.source_dir = Path(source_dir).resolve()
-        self.target_dir = Path(target_dir).resolve()
-        self.every_s = every_s
-        self.ignore = ignore
-        self.last = 0.0
-        if self.source_dir == self.target_dir:
-            raise ValueError("source_dir and target_dir must be different")
-        if _is_relative_to(self.target_dir, self.source_dir):
-            raise ValueError("target_dir must not be inside source_dir")
-
-    def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
-        now = time.monotonic()
-        if self.every_s and now - self.last < self.every_s:
-            return
-        self.sync()
-
-    def sync(self) -> None:
-        if not self.source_dir.exists():
-            return
-        shutil.copytree(
-            self.source_dir,
-            self.target_dir,
-            dirs_exist_ok=True,
-            ignore=shutil.ignore_patterns(*self.ignore),
-        )
-        self.last = time.monotonic()
-
-    def close(self) -> None:
-        self.sync()
-
-
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-        return True
-    except ValueError:
-        return False
-
-
-class LiveTreeRenderer(StreamConsumer):
-    """Redraw the live agent forest whenever a streamed node lands."""
-
-    def __init__(self, *, clear: bool = True) -> None:
-        self.clear = clear
-        self.graphs: dict[str, Graph] = {}
-
-    def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
-        if not isinstance(item, (Step, Node)):
-            return
-        self.graphs.setdefault(graph.id, graph)
-        if self.clear and sys.stdout.isatty():
-            print("\033[2J\033[H", end="")
-        print(render_forest(self.graphs.values()), flush=True)
-
-
-class LiveGraphTree(StreamConsumer):
-    """Rich live forest with per-agent status and optional spinners."""
+class LiveTree(StreamConsumer):
+    """A live agent tree for every graph it sees: Rich with spinners in a terminal, plain text otherwise."""
 
     def __init__(
         self,
@@ -217,10 +122,10 @@ class LiveGraphTree(StreamConsumer):
         """Change the heading for an already tracked graph."""
         self.labels[graph_id] = label
 
-    def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
+    def __call__(self, step: Step) -> None:
         if self.closed:
             return
-        self.track(graph)
+        self.track(step.graph)
         now = time.monotonic()
         if self.every_s and now - self.last_paint < self.every_s:
             return
@@ -336,10 +241,7 @@ def _rich_importable() -> bool:
 
 
 __all__ = [
-    "ConsumerGroup",
-    "GraphCheckpointer",
-    "LiveGraphTree",
-    "LiveTreeRenderer",
+    "Checkpoint",
+    "LiveTree",
     "StreamConsumer",
-    "WorkspaceSync",
 ]

@@ -59,7 +59,7 @@ def test_minimal_interface_end_to_end_reruns_without_work(tmp_path):
     ]
     flow = ScriptedFlow(StubLLM(reply), configs=configs, runtime=TestRuntime())
 
-    assert run_result(flow, g, root, root_config=AgentConfig(max_iters=8)) == "done"
+    assert run_result(flow, g, root, config=AgentConfig(max_iters=8)) == "done"
     children = root.subtree()[1:]
     assert [child.config.name for child in children] == ["value", "ok", "sum"]
     left, right, joined = children

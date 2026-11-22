@@ -1,4 +1,4 @@
-"""Showcase the graph-backed Flow API.
+"""A tour of the graph-backed Flow API, end to end.
 
 This walks through the pieces that matter in the engine:
 
@@ -10,7 +10,7 @@ This walks through the pieces that matter in the engine:
 6. Gym-style stepping with a scalar reward.
 
 Usage:
-    python examples/showcase.py
+    python examples/graph/09_tour.py
 """
 
 from __future__ import annotations
@@ -24,9 +24,9 @@ from pathlib import Path
 from rlmflow import (
     FILE_TOOLS,
     AgentConfig,
+    Checkpoint,
     Flow,
     Graph,
-    GraphCheckpointer,
     LLMUsage,
     LocalRuntime,
     Node,
@@ -38,7 +38,7 @@ examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "ex
 if str(examples_dir) not in sys.path:
     sys.path.insert(0, str(examples_dir))
 
-from common import checkpoint_stream, example_run_dir  # noqa: E402
+from common import example_run_dir  # noqa: E402
 
 BOLD = "\033[1m"
 DIM = "\033[2m"
@@ -96,24 +96,21 @@ def banner(msg: str) -> None:
 
 async def run(flow: Flow, g: Graph, out_dir: Path) -> None:
     """Stream the run, checkpointing periodically and printing every node as it lands."""
-    async for step in checkpoint_stream(flow.run_streaming(g), g, out_dir):
+    async for step in flow.run_streaming(g, hooks=[Checkpoint(out_dir)]):
         print(f"{step.agent.path()}  {kind(step.node)}")
 
 
 async def gym_loop(flow: Flow, g: Graph, root: Node, out_dir: Path) -> list[float]:
     rewards: list[float] = []
     step = 0
-    checkpoint = GraphCheckpointer(out_dir)
-    try:
-        while not root.status() == "done":
-            async for item in flow.run_streaming(g, until="next"):
-                checkpoint.handle(item, g)
-            step += 1
-            reward = 1.0 if root.status() == "done" else 0.0
-            rewards.append(reward)
-            print(f"step {step}: node={kind(root.nodes()[-1])} reward={reward}")
-    finally:
-        checkpoint.close()
+    checkpoint = Checkpoint(out_dir)
+    while not root.status() == "done":
+        async for _item in flow.run_streaming(g, until="next", hooks=[checkpoint]):
+            pass
+        step += 1
+        reward = 1.0 if root.status() == "done" else 0.0
+        rewards.append(reward)
+        print(f"step {step}: node={kind(root.nodes()[-1])} reward={reward}")
     return rewards
 
 
@@ -123,8 +120,8 @@ def main() -> None:
     parser.add_argument("--max-iters", type=int, default=8)
     parser.add_argument(
         "--out-dir",
-        default=str(example_run_dir("showcase")),
-        help="working dir + saved run (default: examples/_runs/showcase/)",
+        default=str(example_run_dir("tour")),
+        help="working dir + saved run (default: examples/_runs/tour/)",
     )
     args = parser.parse_args()
 

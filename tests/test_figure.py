@@ -5,6 +5,7 @@ from helpers import finish, ran
 from rlmflow import RETURN, AgentConfig, Flow, Graph, Node
 from rlmflow.graph import calls
 from rlmflow.view.figure import graph_svg, handoffs, parent_ids, tidy_tree
+from rlmflow.view.html import render_html
 from rlmflow.view.timeline import timeline
 
 
@@ -59,3 +60,14 @@ def test_results_and_messages_coming_back_are_drawn_from_their_source():
         [(dones[0].id, launch.id), (note_turn.id, note.id), (dones[1].id, results.id)]
     )
     assert graph_svg(g).count('stroke-dasharray="3 3"') == 3
+
+
+def test_the_html_viewer_shows_attached_images(tmp_path):
+    image = tmp_path / "render.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 16)
+    g = Graph()
+    a = g.start("draw")
+    node = g.append(a, Node("assistant", code="pass"))
+    node.data["images"] = [str(image), str(tmp_path / "gone.png")]
+    page = render_html(g)
+    assert page.count("data:image/png;base64,") == 1

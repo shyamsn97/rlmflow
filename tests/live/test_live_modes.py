@@ -168,7 +168,7 @@ def test_your_claude_session_as_the_root_finds_the_needle_and_forks(tmp_path):
     assert root.config.harness == INTERACTIVE and root.name == "root"
     assert root.children(), "the root should have launched workers"
     assert answer in str(root.final_result())
-    turn_ends = [n for n in root.nodes() if "seen" in n.data and n.data.get("session_id")]
+    turn_ends = [n for n in root.nodes() if n.ends_turn and n.data.get("session_id")]
     assert {n.data["session_id"] for n in turn_ends} == {result["session_id"]}
 
     nodes = root.nodes()

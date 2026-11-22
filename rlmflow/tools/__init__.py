@@ -45,6 +45,7 @@ from rlmflow.runtime.repl import (
     encode_agent_references,
     get_tool_metadata,
 )
+from rlmflow.workspaces import COMMIT
 
 if TYPE_CHECKING:
     from rlmflow.flow import Flow
@@ -306,10 +307,16 @@ second = launch_agent("Produce deliverable B.")
 print(await asyncio.gather(first, second))
 ```"""
 
+WORKSPACE_DESCRIPTION = """
+Files: your directory is your own; a launched agent works in a copy of your files as they \
+are at launch, and its edits don't reach yours. `workspace="shared"` makes it work in your \
+directory instead; `workspace=other_agent` or `workspace=agent.commit` starts it from \
+those files. `checkout(agent.commit)` makes your files that commit's."""
 
-def _on_flow_loop(flow: Flow, fn: Callable[[], Any]) -> Any:
-    """Run a graph write on the Flow's event loop thread."""
-    owner = flow.loop
+
+def _on_flow_loop(flow: Flow, g: Any, fn: Callable[[], Any]) -> Any:
+    """Run a write to ``g`` on the event loop thread streaming it."""
+    owner = flow.loop(g)
     try:
         current = asyncio.get_running_loop()
     except RuntimeError:
@@ -378,30 +385,48 @@ def launch_tool(flow: Flow, step: Step):
         for name, config in flow.configs.items()
     )
     description = LAUNCH_DESCRIPTION + (f"\nConfigs: {configs}" if configs else "")
+    if getattr(flow.workspaces, "isolates_launches", False):
+        description += "\n" + WORKSPACE_DESCRIPTION
 
     @tool(description, is_async=False)
     def launch_agent(
-        task: str, *, config: str | None = None, name: str | None = None, **args: Any
+        task: str,
+        *,
+        config: str | None = None,
+        name: str | None = None,
+        workspace: Any = None,
+        **args: Any,
     ) -> AgentHandle:
         def launch() -> AgentHandle:
             with lock:
                 child = agent_tools.spawn(
-                    flow, step, task, config=config, name=name, **check_args(args)
+                    flow,
+                    step,
+                    task,
+                    config=config,
+                    name=name,
+                    workspace=workspace,
+                    **check_args(args),
                 )
                 return agent_handle(g, child)
 
-        return _on_flow_loop(flow, launch)
+        return _on_flow_loop(flow, g, launch)
 
-    def key(task: Any, *, config: Any = None, name: Any = None, **args: Any) -> str:
+    def key(
+        task: Any, *, config: Any = None, name: Any = None, workspace: Any = None, **args: Any
+    ) -> str:
         resolved = flow.configs.get(config or "default")
-        return calls.key(
+        parts = [
             calls.LAUNCH,
             task,
             config,
             name,
             check_args(args),
             resolved.to_dict() if resolved is not None else None,
-        )
+        ]
+        if workspace is not None:
+            parts.append(workspace if isinstance(workspace, str) else _agent_id(g, workspace))
+        return calls.key(*parts)
 
     return _saves(
         launch_agent, key=key, receipt=_agent_saved, restore=functools.partial(_handle_for, g)
@@ -434,9 +459,9 @@ def await_tool(flow: Flow, step: Step):
                 "to read its reply."
             )
         if target.status() != "done":
-            if not flow.running:
+            if not flow.running(g):
                 raise RuntimeError("awaiting an agent requires a running Flow")
-            await flow.wait_for(lambda: target.id not in g or target.status() == "done")
+            await flow.wait_for(g, lambda: target.id not in g or target.status() == "done")
             if target.id not in g:
                 raise RuntimeError(f"agent {target.name!r} was removed")
         return returned(target.last_turn())
@@ -445,7 +470,7 @@ def await_tool(flow: Flow, step: Step):
         if "value" in entry:
             return entry["value"]
         final = g._nodes.get(entry.get("done", ""))
-        if final is not None and final.data.get("terminal"):
+        if final is not None and final.terminal:
             return returned(final)
         return result_of(entry.get("agent") or agent_id, check=False)
 
@@ -577,7 +602,7 @@ def send_tool(flow: Flow, step: Step):
             node = agent_tools.send(flow, step, agent, message, **inputs)
             return agent_handle(g, agent), node.id
 
-        handle, message_id = _on_flow_loop(flow, send)
+        handle, message_id = _on_flow_loop(flow, g, send)
         sent[id(handle)] = message_id
         return handle
 
@@ -593,13 +618,42 @@ def send_tool(flow: Flow, step: Step):
     return _saves(send_agent, key=key, receipt=receipt, restore=functools.partial(_handle_for, g))
 
 
+def checkout_tool(flow: Flow, step: Step):
+    g = step.graph
+
+    @tool(
+        "Replace your files with another agent's current files, or a commit's.",
+        is_async=False,
+    )
+    def checkout(source: Any) -> str:
+        def resolve() -> str:
+            workspaces = flow.workspaces
+            if isinstance(source, str) and COMMIT.fullmatch(source):
+                return source
+            return workspaces.commit(resolve_agent(g, source))
+
+        commit = _on_flow_loop(flow, g, resolve)
+        flow.workspaces.adopt(step.agent, commit)
+        return commit
+
+    return checkout
+
+
 def repl_tools(flow: Flow, step: Step) -> dict[str, Any]:
     """The model-visible tools for one agent at one step, built-ins first."""
     tools: dict[str, Any] = {"submit": submit_tool(flow, step)}
     if can_spawn(step.graph, step.agent):
         tools["launch_agent"] = launch_tool(flow, step)
     tools["llm_query"] = llm_query_tool(flow, step)
-    tools.update({name: fn for name, fn in flow.tools.items() if tool_allowed(fn, flow, step.node)})
+    if getattr(flow.workspaces, "isolates_launches", False):
+        tools["checkout"] = checkout_tool(flow, step)
+    tools.update(
+        {
+            name: fn
+            for name, fn in flow.tools_for(step.graph).items()
+            if tool_allowed(fn, flow, step.node)
+        }
+    )
     return tools
 
 

@@ -34,7 +34,7 @@ from rlmflow.view.figure import (
 from rlmflow.view.html import open_viewer, render_html, save_html, save_svg
 from rlmflow.view.text import render_forest, render_tree
 from rlmflow.view.timeline import (
-    Step,
+    TimelineEntry,
     as_graph,
     node_detail,
     render_steps,
@@ -45,7 +45,7 @@ from rlmflow.view.timeline import (
 )
 
 __all__ = [
-    "Step",
+    "TimelineEntry",
     "as_graph",
     "figure_title",
     "graph_svg",

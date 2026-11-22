@@ -8,7 +8,7 @@ Every agent has a persistent Python REPL. Its task is the variable `task`, and e
 
 With the default `repl` harness, each model turn is one fenced ```` ```repl ```` block, which runs as that turn's code. An agent finishes by calling `submit(value)`, or by replying in plain text with no `repl` block. A reply with several blocks, an empty block or an unclosed one runs nothing; the agent sees why and tries again.
 
-Limits come from its config: `max_iters` model turns, `max_depth` levels of agents below it, and `output_schema`, which the result is checked against. When the run crosses `max_budget` tokens, every agent gets one final turn.
+Limits come from its config: `max_iters` model turns, `max_depth` levels of agents below it, and `output_schema`, which the result is checked against. When a run's `Budget` is nearly spent, every agent gets one final turn.
 
 ## What's in the REPL
 

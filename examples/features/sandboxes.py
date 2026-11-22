@@ -11,8 +11,8 @@ Setup:
     pip install -e ".[openai,modal]"; modal setup  # for --runtime modal
 
 Run:
-    python examples/sandboxes/platformer.py --runtime docker --docker-image rlmflow:local
-    python examples/sandboxes/platformer.py --runtime modal --model gpt-5
+    python examples/features/sandboxes.py --runtime docker --docker-image rlmflow:local
+    python examples/features/sandboxes.py --runtime modal --model gpt-5
 """
 
 # pyright: reportMissingImports=false

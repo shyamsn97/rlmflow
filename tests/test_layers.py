@@ -11,8 +11,9 @@ LAYERS = {
     "rlmflow.utils": 0,
     "rlmflow.schema": 0,
     "rlmflow.results": 0,
-    "rlmflow.run": 2,
+    "rlmflow.hooks": 0,
     "rlmflow.graph": 1,
+    "rlmflow.budget": 2,
     "rlmflow.llm": 2,
     "rlmflow.runtime": 2,
     "rlmflow.integrations": 2,
@@ -29,8 +30,9 @@ LAYERS = {
 }
 
 # Modules that sit at a different layer from their package. Layer-0 modules
-# import nothing from rlmflow; the MCP toolkit builds tools.
-OVERRIDES: dict[str, int] = {"rlmflow.integrations.mcp": 4}
+# import nothing from rlmflow; the MCP toolkit builds tools; a Stream is a
+# record of graph state that never calls the Flow.
+OVERRIDES: dict[str, int] = {"rlmflow.integrations.mcp": 4, "rlmflow.flow.stream": 1}
 
 
 def module_name(path: Path) -> str:

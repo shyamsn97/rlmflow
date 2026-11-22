@@ -44,7 +44,7 @@ def main() -> None:
     flow = Flow(llm_clients={"scripted": ScriptedLLM()}, configs=[config])
     g = Graph()
     root = g.start("draft a release plan", name="root")
-    flow.run(g, root_config=config)
+    flow.run(g)
     audit = root.children()[0]
     print("first run:", root.final_result())
     print("root nodes:", chain(root))
@@ -61,7 +61,7 @@ def main() -> None:
     awaiting = g.node(invalidation.rerun[0])
     print("edit:", describe(g, invalidation))
     print("root status:", root.status(), "| node state:", awaiting.state)
-    flow.run(g, root_config=config)
+    flow.run(g)
     print("after edit:", root.final_result())
     assert root.final_result() == "plan: canary passed"
 
@@ -70,13 +70,13 @@ def main() -> None:
     print("\ncalls:", [entry["tool"] for entry in awaiting.calls])
     index = next(i for i, entry in enumerate(awaiting.calls) if entry["tool"] == "await")
     print("replace:", describe(g, g.replace(awaiting, index, "canary flaky")))
-    flow.run(g, root_config=config)
+    flow.run(g)
     print("after replace:", root.final_result())
     assert root.final_result() == "plan: canary flaky"
 
     # A message reopens a finished agent; its nodes and REPL carry on.
     g.send(root, "Account for the rollback window.")
-    flow.run(g, root_config=config)
+    flow.run(g)
     print("\nafter message:", root.final_result())
     print("root nodes:", chain(root))
     flow.runtime.close()

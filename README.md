@@ -10,45 +10,45 @@
 <table>
 <tr>
 <td width="50%" valign="top">
-<a href="examples/needle/"><img src="docs/static/graphs/needle.gif" alt="A root fans out to ten searchers and their results flow back" width="100%" /></a>
+<a href="examples/needle/"><img src="docs/static/graphs/needle.gif" alt="A lead fans out to five searchers and their results flow back" width="100%" /></a>
 <br /><b>Fan-out.</b> One agent splits an input into chunks, launches one agent per chunk, and waits for every result.
 <br /><a href="examples/needle/"><code>examples/needle/</code></a>
 </td>
 <td width="50%" valign="top">
-<a href="examples/architectures/tree.py"><img src="docs/static/graphs/tree.gif" alt="A root launches three section agents, each of which launches two agents of its own" width="100%" /></a>
+<a href="examples/patterns/tree.py"><img src="docs/static/graphs/tree.gif" alt="A root launches three section agents, each of which launches two agents of its own" width="100%" /></a>
 <br /><b>Recursive tree.</b> A worker launches workers of its own, and each of those can do the same, until the depth limit.
-<br /><a href="examples/architectures/tree.py"><code>examples/architectures/tree.py</code></a>
+<br /><a href="examples/patterns/tree.py"><code>examples/patterns/tree.py</code></a>
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
-<a href="examples/architectures/pipeline.py"><img src="docs/static/graphs/pipeline.gif" alt="A planner, a coder and a reviewer; each stage starts from the results of the ones before it" width="100%" /></a>
+<a href="examples/patterns/pipeline.py"><img src="docs/static/graphs/pipeline.gif" alt="A planner, a coder and a reviewer; each stage starts from the results of the ones before it" width="100%" /></a>
 <br /><b>Pipeline.</b> Each stage is launched with the results of the stages before it as variables.
-<br /><a href="examples/architectures/pipeline.py"><code>examples/architectures/pipeline.py</code></a>
+<br /><a href="examples/patterns/pipeline.py"><code>examples/patterns/pipeline.py</code></a>
 </td>
 <td width="50%" valign="top">
-<a href="examples/coding/boids/"><img src="docs/static/boids/graph.gif" alt="Three peers exchange messages while they build their parts" width="100%" /></a>
-<br /><b>Peers.</b> Top-level agents with no manager coordinate by messaging each other.
+<a href="examples/coding/boids/"><img src="docs/static/boids/graph.gif" alt="Three peers post, claim and finish tasks on a shared board, drawn as a lane beside them" width="100%" /></a>
+<br /><b>Peers on a task board.</b> Top-level agents with no manager post, claim and finish tasks on a shared <code>TaskBoard</code>.
 <br /><a href="examples/coding/boids/"><code>examples/coding/boids/</code></a>
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
-<a href="examples/architectures/review.py"><img src="docs/static/graphs/review.gif" alt="A root sends a finished writer two rounds of critique, and the writer reopens to revise each time" width="100%" /></a>
+<a href="examples/patterns/review.py"><img src="docs/static/graphs/review.gif" alt="A root sends a finished writer two rounds of critique, and the writer reopens to revise each time" width="100%" /></a>
 <br /><b>Review loop.</b> A message reopens a finished agent, and its next result is the reply.
-<br /><a href="examples/architectures/review.py"><code>examples/architectures/review.py</code></a>
+<br /><a href="examples/patterns/review.py"><code>examples/patterns/review.py</code></a>
 </td>
 <td width="50%" valign="top">
-<a href="examples/shepherd/"><img src="docs/static/graphs/shepherd.gif" alt="A shepherd previews eight rewind points of a stuck worker, then runs eight forked branches" width="100%" /></a>
+<a href="examples/shepherd/"><img src="docs/static/graphs/shepherd.gif" alt="A shepherd reads a jammed worker; eight forks branch off the worker at their rewind points, and their results flow back to the shepherd" width="100%" /></a>
 <br /><b>Rewind and fork.</b> Branch any agent from any earlier step; its REPL is rebuilt and the original is untouched.
 <br /><a href="examples/shepherd/"><code>examples/shepherd/</code></a>
 </td>
 </tr>
 </table>
 
-Every shape is a real run; [`examples/architectures/`](examples/architectures/) lists how to reproduce each one.
+Every shape is a real run; [`examples/patterns/`](examples/patterns/) lists how to reproduce each one.
 
-Read the blog post: [rlmflow](https://shyamsn97.github.io/blog/rlmflow/).
+Read the blog post: [rlmflow](https://shyamsn97.github.io/blog/rflow/).
 
 ## Install
 
@@ -75,7 +75,7 @@ A harness is what drives an agent: it takes the agent's next turn and lands the 
 | Your Claude Code session | You, in your own terminal: your session becomes the root agent                                             | `/rlmflow:run TASK` in Claude Code   | the `claude` CLI                         |
 | Your own                 | Anything that can take a turn: Codex, another CLI, a human, a script                                       | `AgentConfig(harness=MyHarness)`     | a `Harness` subclass                     |
 
-Every harness reaches the same agent tools (`launch_agent`, `AGENTS`, `agent.send`, `submit`) in the same per-agent REPL, so every launch, message and result lands in one graph, whatever drove it.
+Every harness reaches the same agent tools (`launch_agent`, `AGENTS`, `agent.send`, `submit`) in the same per-agent REPL, so every launch, message and result is recorded in the graph, whatever drove it.
 
 ### Your Claude Code session as the root agent
 
@@ -89,7 +89,7 @@ $ claude --plugin-dir "$(rlmflow plugin path)"
   the files in parallel.
 ```
 
-The plugin starts `rlmflow serve` for the project, and your session becomes the run's root agent. Here is what the session did in a real run (Nov 8 2026, Claude Code root, gpt-5-mini workers, 34 s):
+The plugin starts `rlmflow serve` for the project, and your session becomes the run's root agent. In a real run (Nov 8 2026, Claude Code root, gpt-5-mini workers, 34 s), the session went through three steps:
 
 1. It ran Python in its REPL through `rlmflow repl`, splitting the files and launching four workers:
 
@@ -131,6 +131,8 @@ The run is saved as it goes under `.rlmflow/runs/<timestamp>/`; `rlmflow view sh
     18  +  32.85s  root · done            done {'number': 2536600, 'file': 'haystack/file_0060.txt', 'line': 67}
 ```
 
+[`examples/needle/claude_plugin.py`](examples/needle/claude_plugin.py) runs this headless (`claude -p`) and checks the answer.
+
 Anything you type after the root finishes is a message to it, and reopens it. Workers use the coding Flow built from `rlmflow.toml`, or your own Flow if you set `flow = "mypkg.agents:build"` there. The plugin does nothing in sessions that didn't run `/rlmflow:run`.
 
 ### Claude Code or pi as workers
@@ -157,7 +159,7 @@ flow.run(
 )
 ```
 
-The root's code runs `launch_agent("Fix the TODOs in `path`.", config="claude", path=d)`. Each `claude` agent is a real Claude Code session in the working directory, with its own tools, permissions and `CLAUDE.md`. It reaches its REPL and the agent tools with `rlmflow repl`, as your own session does. To wait on workers of its own, it ends its turn, and the session is resumed with their results. To run the whole thing on Claude Code, pass it as the root: `flow.run(task, root_config=AgentConfig(harness="claude_code"))`.
+The root's code runs `launch_agent("Fix the TODOs in `path`.", config="claude", path=d)`. Each `claude` agent is a real Claude Code session in the working directory, with its own tools, permissions and `CLAUDE.md`. It reaches its REPL and the agent tools with `rlmflow repl`, as your own session does. To wait on workers of its own, it ends its turn, and the session is resumed with their results. To run the whole thing on Claude Code, start the root on that config: `flow.run(task, config="claude")`.
 
 Code a session runs through `rlmflow repl` is recorded in the graph. Edits it makes with its own tools are not recorded as nodes, but each turn's workspace snapshot has the files.
 
@@ -273,44 +275,23 @@ Settings come from flags, then `RLMFLOW_*` variables, then `./rlmflow.toml`, the
 
 ## Results
 
-Real runs of the examples below, Nov 2–4 2026. [Example results](docs/example_results.md) has the per-run tables, figures and caveats.
+Real runs of the examples below: Needle on Nov 18 2026, Autoresearch on Nov 19, Boids and Shepherd on Nov 20. [Example results](docs/example_results.md) has the per-run tables, figures and caveats.
 
 | Example                                                    | What it shows                                   | Result                                                                                                                                                                                                 |
 | ---------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [Shepherd](#shepherd-rewind-and-fork-a-failed-run)         | Rewind and fork a failed run                    | A worker jams a Sokoban puzzle after 8 pushes; 3 of 8 forked branches solve it. Every branch that rewound 6 or more pushes solved; every branch that kept 3 or more of the jammed pushes stayed stuck. |
-| [Needle](#needle-fan-out-on-any-harness)                   | Fan-out, with harnesses mixed per agent         | 4 of 4 root × worker combinations of the REPL harness and Claude Code find the needle, with the same graph shape.                                                                                      |
-| [Autoresearch](#autoresearch-a-planner-running-gpu-trials) | A planner running long GPU trials               | Validation bits per byte 1.155 → 0.920 with REPL implementers, → 0.866 with Claude Code implementers, in 8 trials each.                                                                                |
-| [Boids](#boids-peers-build-an-app-with-no-manager)         | Peers with no manager build an app by messaging | Claude Code peers: a working app, 21 messages in the graph. gpt-5 peers: 4 of 6 runs flock; 3 of 6 meet the whole spec.                                                                                |
+| [Needle](#needle-fan-out-on-any-harness)                   | Fan-out, with harnesses mixed per agent         | REPL root and workers, a Claude Code root, and Claude Code workers each find the needle, with the same graph shape.                                                                                      |
+| [Boids](#boids-peers-build-an-app-on-a-shared-task-board)  | Peers with no manager share a task board        | Claude Code peers: one claims the plan, the others claim its tasks; a working app, 30 board writes, 3.3 minutes.                                        |
+| [Autoresearch](#autoresearch-a-planner-running-gpu-trials) | A planner running long GPU trials               | Validation bits per byte 0.903 → 0.764 in 32 trials on A10G.                                                                                                                                           |
+| [Shepherd](#shepherd-rewind-and-fork-a-failed-run)         | Rewind and fork a failed run                    | A worker jams a Sokoban puzzle after 8 pushes; all 8 forked branches solve it, and the shepherd picks the 12-push solve. |
 
 ## Examples
-
-### Shepherd: rewind and fork a failed run
-
-A worker plays Sokoban and jams a box against a wall after 8 pushes. A gpt-5 shepherd reads the stuck transcript, previews the board at each rewind depth, and forks the worker at 8 different points in its run, each with its own plan. The forks run in parallel as gpt-5-mini agents, and the shepherd picks the best.
-
-<p align="center">
-  <img src="docs/static/shepherd_graph.svg" alt="The Shepherd run: one jammed worker, eight rewind branches, three solved, and the picked branch" width="900" />
-</p>
-
-<p align="center">
-  <img src="docs/static/shepherd/rewind.gif" alt="The jam, the rewind push by push, then the winning branch" width="420" />
-</p>
-
-The three branches that rewound six, seven and eight pushes solved it; the picked one restarted from the fresh board and solved in 9 pushes. A retry from the jam point alone would have failed.
-
-```bash
-pip install "rlmflow[openai,image]"
-python examples/shepherd/shepherd.py --trace
-```
-
-[Example](examples/shepherd/) · [Walkthrough](docs/shepherd.md)
 
 ### Needle: fan out on any harness
 
 The root splits 100 files into batches, launches a searcher per batch, and submits the number they find. `--all` runs every combination of root harness and worker harness. The graph has the same shape whichever harness runs which agent:
 
 <p align="center">
-  <img src="docs/static/results/needle-repl-repl.png" alt="Needle with a REPL-harness root and REPL-harness searchers: the same fan-out shape as the Claude Code run" width="820" />
+  <img src="docs/static/graphs/needle.gif" alt="Needle with a REPL-harness lead and five REPL-harness searchers" width="820" />
 </p>
 
 ```bash
@@ -322,45 +303,96 @@ python examples/needle/filesystem.py --all
 
 [Example](examples/needle/)
 
-### Autoresearch: a planner running GPU trials
+### Boids: peers build an app on a shared task board
 
-A gpt-5 planner proposes changes to a small GPT trained on TinyStories. Each trial is implemented by a child agent, on the REPL harness or as a Claude Code session, and trained for 5 minutes on a Modal GPU. The planner reads the scores and plans the next trials.
+Three top-level agents get the same product spec for a browser boids simulation and a shared task board, and are told there is no manager. One of them plans: each tries to post and claim a `plan` task, the first claim wins, and the winner publishes the interface and posts a task per file. The rest wait for `plan` to finish, then claim tasks, publish the interfaces they define, and finish what they claimed. Their other tools are generic: file tools, their REPL, and a headless browser that shows them screenshots of the page and returns its console output. Nothing grades the app for them.
 
-<p align="center">
-  <img src="docs/static/graphs/autoresearch.gif" alt="A planner launches trial agents in parallel; their scores flow back and it plans the next round" width="100%" />
-</p>
+```python
+from rlmflow import FILE_TOOLS, AgentConfig, Flow, Graph, TaskBoard
 
-<p align="center">
-  <img src="docs/static/results/autoresearch-claude-progress.png" alt="Validation bits per byte across eight trials with Claude Code implementers, falling from 1.155 to 0.866" width="700" />
-</p>
-
-```bash
-pip install "rlmflow[openai,claude,modal]"
-python examples/autoresearch/run.py --max-submissions 8 --parallel 4 --implementer-harness claude_code
+flow = Flow(
+    tools=[FILE_TOOLS, TaskBoard()],
+    configs=[AgentConfig(name="peer", harness="claude_code", max_depth=0)],
+    workers=3,
+)
+g = Graph()
+for name in ("peer1", "peer2", "peer3"):
+    g.start(f"You are {name}, one of three peers. Coordinate on the task board.", name=name, config="peer")
+flow.run(g)
+print(TaskBoard.state(g)["tasks"])
 ```
 
-[Example](examples/autoresearch/)
+Inside a run, the peers call the board from their REPL:
 
-### Boids: peers build an app with no manager
+```python
+board_read()                     # tasks, findings, and upto: the last write seen
+board_post("plan", "split the app into tasks and publish the interface")
+board_claim("plan")["ok"]        # False if another peer claimed it first
+board_publish("interface", "window.BOIDS; load order config, grid, sim, render, main")
+board_post("js/boids.js", "BOIDS.Flock: the simulation, using the grid")
+board_finish("plan", "interface published; 7 file tasks posted")
+```
 
-Three top-level agents get the same product spec for a browser boids simulation, plus one line: there are three of you and no manager, so split the work, agree on interfaces by messaging each other, and write only your own files. Their tools are generic: file tools, their REPL, and a headless browser that shows them screenshots of the page and returns its console output. Nothing grades the app for them.
+Every board call is saved on the node that made it, so the board is part of the graph: `TaskBoard.state(g)` replays it, it loads with a saved run, and a fork has the board as it was at the cut. The figure draws it as a lane beside the agents.
 
 <p align="center">
-  <img src="docs/static/boids/graph.gif" alt="Three peers exchange messages while they build their parts" width="100%" />
+  <img src="docs/static/boids/graph.gif" alt="Three peers post, claim and finish tasks on a shared board, drawn as a lane beside them" width="100%" />
 </p>
 
 <p align="center">
   <img src="docs/static/boids/simulation.gif" alt="2,000 boids in four species flocking over a dark canvas" width="820" />
 </p>
 
-The three Claude Code peers above each proposed a split at once, converged on one written into `INTERFACE.md`, and exchanged 21 messages in 3.5 minutes. gpt-5 peers on the REPL harness negotiate too, and 4 of 6 runs flock.
+In the Claude Code run above, all three peers went for `plan` at once and `peer2` won it: `peer1`'s post and claim and `peer3`'s post came back `ok: False`. `peer2` published the interface and posted seven file tasks while the others polled the board. Then `peer3` claimed the grid and the renderer a moment before `peer1` asked for the same two, so `peer1` took the loop and the stylesheet. They made 30 board writes, sent no direct messages, and finished a working app in 3.3 minutes. The spec asks for a calm look: muted colors on a slate background, no trails or glow. An earlier run without the `plan` task had two peers post rival plans at the same moment; one of them retired its own on the board ([results](docs/example_results.md#boids-peers-on-a-shared-task-board)).
 
 ```bash
 pip install "rlmflow[claude,image]"
 python examples/coding/boids/boids.py --harness claude_code
 ```
 
-[Example](examples/coding/) · More in the [examples guide](examples/README.md)
+[Example](examples/coding/)
+
+### Autoresearch: a planner running GPU trials
+
+A planner agent proposes changes to a small GPT trained on TinyStories. Each trial is implemented by a child agent, a Claude Code session by default or the REPL harness, in its own copy of the files, and trained for 3 minutes on a Modal A10G. The planner reads the scores and plans the next trials.
+
+<p align="center">
+  <img src="docs/static/graphs/autoresearch.gif" alt="A planner launches trial agents in parallel; their scores flow back and it plans the next round" width="100%" />
+</p>
+
+<p align="center">
+  <img src="docs/static/results/autoresearch-progress.png" alt="Recursive autoresearcher: validation bits per byte across 32 trials, falling from the 0.903 baseline to 0.764 over 7 kept improvements" width="900" />
+</p>
+
+In 32 trials the run went from the 0.903 baseline to 0.764. A higher learning rate, a modern block (RMSNorm, SwiGLU, RoPE), weight decay 0.5 and 8 layers each helped; dropout 0 at a high learning rate overfit the 2M-token training set.
+
+```bash
+pip install "rlmflow[claude,modal]"
+python examples/autoresearch/run.py --gpu A10G --parallel 8 --max-submissions 48 --max-usd 20 --minutes 120
+```
+
+[Example](examples/autoresearch/)
+
+### Shepherd: rewind and fork a failed run
+
+A worker plays Sokoban and jams a box against a wall after 8 pushes. A gpt-5 shepherd reads the stuck transcript, previews the board at each rewind depth, and forks the worker 8 times. Each fork rewinds the worker to an earlier point, from 1 push back to the fresh board, and gets its own plan. The forks run in parallel as gpt-5 agents. When they finish, the shepherd reads every branch's outcome and final board and picks the one to keep.
+
+<p align="center">
+  <img src="docs/static/graphs/shepherd.gif" alt="The Shepherd run drawn in one picture: eight forks branch off the jammed worker at their rewind points, and each returns its result to the shepherd's pick" width="100%" />
+</p>
+
+<p align="center">
+  <img src="docs/static/shepherd/fanout.gif" alt="The worker jams the board and shrinks into the root of a tree; eight branches spawn below it, each rewinds to its own depth, and all eight play at once until the pick" width="880" />
+</p>
+
+All eight branches solved it, in 12 to 36 pushes. The shepherd picked branch6, which rewound to the fresh board and solved in 12: "Picked branch6: solved with the fewest total pushes (12) among all solved branches." A retry from the jam point alone would have failed.
+
+```bash
+pip install "rlmflow[openai,image]"
+python examples/shepherd/shepherd.py --trace
+```
+
+[Example](examples/shepherd/) · [Walkthrough](docs/shepherd.md) · More in the [examples guide](examples/README.md)
 
 ## How the graph is built
 
@@ -415,7 +447,7 @@ flowchart LR
   b3 -. write .-> a2
 ```
 
-**`g.fork(node)`.** A fork is a new graph: a copy of the run with the same ids, cut right after `node`. What came after `node` is gone, including the agents it launched, and the original is untouched. Steer the copy with a message and run it on its own; its REPLs are rebuilt by running their agents' nodes again. Shepherd forks one jammed worker at eight different points:
+**`g.fork(node)`.** A fork is a new graph: a copy of the run with the same ids, with `node`'s agent cut right after `node`. What that agent did after `node` is gone, including the agents it launched, while every other agent is copied as it is, and the original is untouched. Steer the copy with a message and run it on its own; its REPLs are rebuilt by running their agents' nodes again. Shepherd forks one jammed worker eight times, each rewound to an earlier point:
 
 ```python
 branch = g.fork(node)
@@ -485,7 +517,7 @@ See [Observability](docs/observability.md) and the [command line](docs/cli.md).
 - [Usage](docs/usage.md): running, configs, models, tools, runtimes, streaming, forking, Claude Code and pi, the CLI.
 - [Agents](docs/agents.md): what an agent does in a run: its REPL tools, launching, waiting and messaging.
 - [Runtimes](docs/runtimes.md) · [Security](docs/security.md) · [Observability](docs/observability.md) · [Internals](docs/internals.md)
-- [Changelog](CHANGELOG.md) · [Upgrading](UPGRADING.md) · [All docs](docs/index.md)
+- [Changelog](CHANGELOG.md) · [All docs](docs/index.md)
 
 ## References
 
@@ -502,10 +534,10 @@ See [LICENSE](LICENSE).
 ## Citation
 
 ```bibtex
-@misc{sudhakaran2025rlmflow,
+@misc{sudhakaran2026rlmflow,
   author = {Sudhakaran, Shyam},
   title = {rlmflow},
-  year = {2025},
+  year = {2026},
   publisher = {GitHub},
   journal = {GitHub repository},
   howpublished = {\url{https://github.com/shyamsn97/rlmflow}},

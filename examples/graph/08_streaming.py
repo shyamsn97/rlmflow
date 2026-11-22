@@ -87,20 +87,22 @@ async def demo_next_idle_and_resume() -> None:
             return '```repl\nsubmit("stopped")\n```'
         return "```repl\nprint('working')\n```"
 
-    flow = Flow(llm_clients={"scripted": ScriptedLLM(reply)})
+    flow = Flow(
+        llm_clients={"scripted": ScriptedLLM(reply)},
+        configs=[AgentConfig(model="scripted", max_iters=8)],
+    )
     g = Graph()
     root = g.start("work until I inject a stop instruction")
-    config = AgentConfig(model="scripted", max_iters=8)
 
-    events = await collect(flow, g, until=after_appends(3), root_config=config)
+    events = await collect(flow, g, until=after_appends(3))
     print_nodes("callable boundary: exactly three appended nodes", events, g, root)
 
-    events = await collect(flow, g, until="idle", root_config=config)
+    events = await collect(flow, g, until="idle")
     print_nodes("until='idle': settle after a node ran code", events, g, root)
 
     # Injecting a turn is sending the agent a message; it lands at the next turn.
     g.send(root, "STOP NOW")
-    events = await collect(flow, g, until="done", root_config=config)
+    events = await collect(flow, g, until="done")
     print_nodes("resume after injection, until='done'", events, g, root)
     g.save(RUN_DIR / "next-idle-and-resume")
 

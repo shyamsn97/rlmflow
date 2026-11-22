@@ -16,9 +16,17 @@ from typing import TYPE_CHECKING, Any
 
 from rlmflow import schema
 from rlmflow.graph.config import DEFAULT_MAX_ITERS
-from rlmflow.graph.nodes import IMAGES_KEY, Agent, Node, Step
+from rlmflow.graph.nodes import (
+    IMAGES_KEY,
+    SEEN_KEY,
+    TERMINAL_KEY,
+    Agent,
+    Node,
+    Step,
+    final_node,
+)
 from rlmflow.harnesses.base import Harness
-from rlmflow.harnesses.prompts import argument_manifest, guidance
+from rlmflow.harnesses.prompts import argument_manifest
 from rlmflow.utils import find_repl_blocks, has_repl_fence
 
 if TYPE_CHECKING:
@@ -98,12 +106,15 @@ def node_messages(node: Node, *, first: bool = False) -> list[dict[str, Any]]:
 
 def turns(step: Step) -> int:
     """How many turns the agent has taken."""
-    return sum("seen" in node.data for node in step.node.transcript())
+    return sum(node.ends_turn for node in step.node.transcript())
 
 
-def transcript_messages(step: Step) -> list[dict[str, Any]]:
-    """The agent's transcript as chat messages; the last ``keep_n_messages`` when set."""
-    agent, config = step.agent, step.config
+def transcript_messages(step: Step, turn_prompt: str = "") -> list[dict[str, Any]]:
+    """The agent's transcript as chat messages, ending with ``turn_prompt``.
+
+    Only the last ``keep_n_messages`` are kept when set, and the final turn is announced.
+    """
+    config = step.config
     nodes = step.node.transcript()
     messages = [
         message
@@ -113,57 +124,29 @@ def transcript_messages(step: Step) -> list[dict[str, Any]]:
     keep = config.keep_n_messages
     if keep is not None and len(messages) > keep:
         messages = [{"role": "user", "content": TRUNCATION_TEXT}, *messages[-keep:]] if keep else []
-    notes = []
-    children = agent.children()
-    if children:
-        notes.append(
-            "\n".join(
-                [
-                    "Background agents:",
-                    *(
-                        f"- `{child.name}` ({child.path()}): "
-                        + ("result ready" if child.status() == "done" else child.status())
-                        for child in children
-                    ),
-                ]
-            )
-        )
+    parts = [turn_prompt] if turn_prompt else []
     if turns(step) == (config.max_iters or DEFAULT_MAX_ITERS) - 1 or final_turn(step):
-        notes.append(FINAL_TURN_TEXT)
-    if notes:
-        note = "\n\n".join(notes)
+        parts.append(FINAL_TURN_TEXT)
+    if parts:
+        text = "\n\n".join(parts)
         if messages and messages[-1]["role"] == "user":
-            messages[-1] = {"role": "user", "content": append_text(messages[-1]["content"], note)}
+            messages[-1] = {"role": "user", "content": append_text(messages[-1]["content"], text)}
         else:
-            messages.append({"role": "user", "content": note})
+            messages.append({"role": "user", "content": text})
     return messages
 
 
 def final_turn(step: Step) -> bool:
     """Whether rlmflow announced the final turn since the agent's last one."""
     for node in reversed(step.node.transcript()):
-        if "seen" in node.data:
+        if node.ends_turn:
             return False
-        if node.data.get("final"):
+        if node.final:
             return True
     return False
 
 
-def final_turn_spent(step: Step) -> bool:
-    """The agent already had its final turn and didn't finish."""
-    took_turn = False
-    for node in reversed(step.node.transcript()):
-        if node.data.get("final"):
-            return took_turn
-        if node.data.get("terminal") or node.data.get("idle"):
-            return False
-        if "seen" in node.data:
-            took_turn = True
-    return False
-
-
 MAX_ITERS_EXCEEDED = "[max_iters exceeded]"
-MAX_BUDGET_EXCEEDED = "[max_budget exceeded]"
 
 
 def protocol_error(reply: str) -> str:
@@ -200,26 +183,29 @@ class ReplHarness(Harness):
             "protocol": PROTOCOL_TEXT,
             "tools": format_tool_docs(repl_tools(flow, step)),
             "agents": AGENTS_TEXT,
-            **guidance(step),
+            **flow.guidance(step),
             "arguments": argument_manifest(step),
             "schema": schema.contract(output_schema) if output_schema is not None else None,
         }
 
     def messages(self, flow: Flow, step: Step) -> list[dict[str, Any]]:
-        """The system prompt, then the agent's transcript."""
-        return [{"role": "system", "content": self.prompt(flow, step)}, *transcript_messages(step)]
+        """The system prompt, then the agent's transcript, ending with the Flow's turn prompt."""
+        return [
+            {"role": "system", "content": self.prompt(flow, step)},
+            *transcript_messages(step, flow.turn_prompt(step)),
+        ]
 
     async def step(self, flow: Flow, step: Step) -> Node:
         g, agent, config = step.graph, step.agent, step.config
         seen = len(step.node.transcript())
-        if final_turn_spent(step):
-            return flow.append(g, agent, final_node(MAX_BUDGET_EXCEEDED, seen))
         if turns(step) >= (config.max_iters or DEFAULT_MAX_ITERS):
             return flow.append(g, agent, final_node(MAX_ITERS_EXCEEDED, seen))
         started = time.time()
         text, usage = await flow.complete(self.messages(flow, step), config.model)
         node = Node(
-            "assistant", text, data={"usage": usage.as_dict(), "model": config.model, "seen": seen}
+            "assistant",
+            text,
+            data={"usage": usage.as_dict(), "model": config.model, SEEN_KEY: seen},
         )
         node.started_at = started
         if text.strip() and not has_repl_fence(text):
@@ -244,16 +230,10 @@ class ReplHarness(Harness):
         except (schema.SchemaError, TypeError) as exc:
             node.output, node.error = f"Your reply is not a valid final answer.\n{exc}", True
             return
-        node.data["terminal"] = True
-
-
-def final_node(result: str, seen: int) -> Node:
-    """A turn that ends the agent without calling the model."""
-    return Node("assistant", result=result, data={"seen": seen, "terminal": True})
+        node.data[TERMINAL_KEY] = True
 
 
 __all__ = [
-    "MAX_BUDGET_EXCEEDED",
     "MAX_ITERS_EXCEEDED",
     "ReplHarness",
     "AGENTS_TEXT",
@@ -261,7 +241,6 @@ __all__ = [
     "PROTOCOL_TEXT",
     "TRUNCATION_TEXT",
     "final_turn",
-    "final_turn_spent",
     "final_node",
     "transcript_messages",
     "node_messages",

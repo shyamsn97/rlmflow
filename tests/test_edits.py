@@ -10,6 +10,7 @@ import pytest
 from helpers import TestRuntime, agent_graph, finish, own, ran
 
 from rlmflow import Flow, Node
+from rlmflow.flow.stream import Stream
 from rlmflow.graph import calls
 from rlmflow.graph.edits import RULES, GraphError, Invalidation
 from rlmflow.graph.graph import Graph
@@ -636,15 +637,16 @@ def test_flow_edit_cancels_the_affected_agents_task_before_applying():
 
     async def scenario():
         flow = Flow()
+        run = flow._streams[g.id] = Stream(g, [])
         running = asyncio.ensure_future(turn(d.worker, d.done))
         unaffected = asyncio.ensure_future(turn(d.other, d.other.nodes()[-1]))
-        flow.tasks.update({d.worker.id: running, d.other.id: unaffected})
+        run.tasks.update({d.worker.id: running, d.other.id: unaffected})
         await asyncio.sleep(0)
 
         inv = await flow.edit(g, "edit", d.done, result=2)
 
-        assert running.cancelled() and d.worker.id not in flow.tasks
-        assert not unaffected.done() and d.other.id in flow.tasks
+        assert running.cancelled() and d.worker.id not in run.tasks
+        assert not unaffected.done() and d.other.id in run.tasks
         assert d.worker.id in inv.rewound and d.done.result == 2
         unaffected.cancel()
 
@@ -753,3 +755,19 @@ def test_replay_works_on_agents_no_flow_has_stepped():
 
     assert [step.kind for step in steps(g)] == ["agent", "reply"]
     assert [len(s.nodes()) for s in replay(g)] == [1, 2]
+
+
+def test_a_delivered_result_never_takes_the_name_of_a_stream_toolkit_tool():
+    g, root = agent_graph("root")
+    code_node = g.append(root, ran("launch_agent('work')"))
+    worker = launch(g, code_node, "work")
+    finish(g, worker, 1)
+    flow = Flow()
+
+    async def deliver():
+        stream = flow._streams[g.id] = Stream(g, [])
+        stream.tools[worker.name] = lambda: None
+        return flow.deliver_results(g, root)
+
+    message = asyncio.run(deliver())
+    assert worker.name not in message.input and list(message.input.values()) == [1]

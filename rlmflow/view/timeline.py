@@ -24,7 +24,7 @@ DETAIL_LIMIT = 1600
 
 
 @dataclass
-class Step:
+class TimelineEntry:
     """One node, with what it was and where it sits in the run."""
 
     index: int
@@ -114,12 +114,12 @@ def _stringify(value: object) -> str:
     return value if isinstance(value, str) else repr(value)
 
 
-def steps(g: Graph) -> list[Step]:
+def steps(g: Graph) -> list[TimelineEntry]:
     """The run as a list of steps, ready to render."""
     ordered = timeline(g)
     start = ordered[0].created_at if ordered else 0.0
     return [
-        Step(
+        TimelineEntry(
             index=index,
             node=item,
             agent=item.agent.path(),
@@ -178,7 +178,7 @@ def render_steps(source: Graph | str | Path) -> Iterator[str]:
 
 
 __all__ = [
-    "Step",
+    "TimelineEntry",
     "as_graph",
     "node_detail",
     "render_steps",

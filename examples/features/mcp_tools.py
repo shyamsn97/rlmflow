@@ -4,7 +4,7 @@ Requires MCP and a live LLM client:
 
     export OPENAI_API_KEY=...
     pip install -e ".[openai,mcp]"
-    python examples/providers/mcp_weather.py
+    python examples/features/mcp_tools.py
 """
 
 from __future__ import annotations

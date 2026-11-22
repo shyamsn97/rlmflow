@@ -99,6 +99,14 @@ class Graph:
         """Agents nobody launched, in creation order."""
         return [root for root in self._roots.values() if root.id not in self._parent]
 
+    @property
+    def root(self) -> Agent:
+        """The one agent nobody launched; raises if there are none or several."""
+        roots = self.roots()
+        if len(roots) != 1:
+            raise LookupError(f"this graph has {len(roots)} top-level agents, not one")
+        return roots[0]
+
     def nodes(self) -> list[Node]:
         """Every node, in creation order."""
         return sorted(self._nodes.values(), key=lambda node: node.seq)
@@ -156,8 +164,7 @@ class Graph:
         along with ``task``; wrap one in ``Input(value, description=...)`` to
         explain it. ``parent`` is the node that launched it, which gets a
         ``spawn`` edge; without one it is top-level. ``config`` names one of the
-        Flow's configs: ``"default"`` for a child, while a top-level agent with
-        none runs with the run's ``root_config``.
+        Flow's configs; an agent that names none runs with ``"default"``.
         """
         if parent is not None:
             if parent.id not in self._nodes:
@@ -207,7 +214,7 @@ class Graph:
             raise GraphError("an agent is added with start, not append")
         if node.id in self._nodes:
             raise GraphError(f"node {node.id!r} is already in the graph")
-        if node.data.get("terminal") and root.status() == "done":
+        if node.terminal and root.status() == "done":
             raise GraphError(
                 f"agent {root.name!r} already finished; send it a message to reopen it"
             )

@@ -94,17 +94,15 @@ def fork_run(
 
 def _run_headless(graph: Any, agent: Any, out_dir: Path, project: str) -> None:
     from rlmflow.cli.run import build_flow
-    from rlmflow.consumers import GraphCheckpointer
+    from rlmflow.consumers import Checkpoint
 
     project_dir = Path(project).expanduser().resolve()
     options, _ = resolve_options({"workdir": str(project_dir)}, cwd=project_dir)
     flow = build_flow(options, workdir=project_dir)
-    checkpointer = GraphCheckpointer(out_dir)
 
     async def drive() -> None:
         try:
-            async for step in flow.run_streaming(graph):
-                checkpointer.handle(step, graph)
+            await flow.arun(graph, hooks=[Checkpoint(out_dir)])
         finally:
             await flow.aclose()
 

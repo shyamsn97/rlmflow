@@ -22,9 +22,12 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rlmflow.graph.nodes import Node
+
+if TYPE_CHECKING:
+    from rlmflow.graph.graph import Graph
 
 #: The built-in calls whose entries name an agent.
 LAUNCH = "launch_agent"
@@ -105,6 +108,23 @@ def launched(node: Node) -> list[str]:
     return [entry["agent"] for entry in node.calls if entry["tool"] == LAUNCH and "agent" in entry]
 
 
+def undo_calls(g: Graph, entries: list[dict[str, Any]]) -> None:
+    """Undo saved calls a rerun didn't make again: remove the agents, take back the messages."""
+    from rlmflow.graph.edits import GraphError
+
+    for entry in entries:
+        target = entry.get("agent") if entry["tool"] == LAUNCH else entry.get("message")
+        if entry["tool"] not in (LAUNCH, SEND) or target not in g:
+            continue
+        try:
+            if entry["tool"] == LAUNCH:
+                g.remove(g.agent(target))
+            else:
+                g.delete(g.node(target))
+        except (GraphError, KeyError):
+            continue
+
+
 def rebind(node: Node, old: str, new: str) -> None:
     """Point every entry that names agent ``old`` at ``new``, forgetting what an await got."""
     for entry in node.calls:
@@ -125,4 +145,5 @@ __all__ = [
     "launched",
     "rebind",
     "record",
+    "undo_calls",
 ]

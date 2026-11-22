@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import time
+from dataclasses import replace
 
 from rlmflow import AgentConfig, Flow, Node
 from rlmflow.graph import Graph
@@ -23,8 +24,7 @@ from rlmflow.runtime.runtime import Runtime
 def agent_graph(task: str = "", *, args: dict | None = None) -> tuple[Graph, Node]:
     """A fresh graph holding one root, bound to the default config as a Flow would before running it.
 
-    A Flow rebinds the root to its run's ``root_config``; pass ``root_config=`` to
-    ``flow.run`` for anything else.
+    Pass ``config=`` to ``run_result`` (or call ``name_root``) to run the root with another config.
     """
     g = Graph()
     root = g.start(task, **(args or {}))
@@ -32,9 +32,20 @@ def agent_graph(task: str = "", *, args: dict | None = None) -> tuple[Graph, Nod
     return g, root
 
 
-def run_result(flow, g: Graph, agent: Node, **kwargs):
-    """Run the graph to quiescence and return ``agent``'s result."""
-    flow.run(g, **kwargs)
+def name_root(flow, g: Graph, config: AgentConfig | None) -> None:
+    """Register ``config`` on ``flow`` as ``"root"``; top-level agents naming no config run it."""
+    if config is None:
+        return
+    flow.add_config(replace(config, name="root"))
+    for root in g.roots():
+        if root.config_name is None:
+            root.config_name = "root"
+
+
+def run_result(flow, g: Graph, agent: Node, *, config: AgentConfig | None = None, hooks=()):
+    """Run the graph to quiescence and return ``agent``'s result; ``config`` is the root's."""
+    name_root(flow, g, config)
+    flow.run(g, hooks=hooks)
     return agent.final_result()
 
 

@@ -50,7 +50,7 @@ uv run --locked --python 3.12 --extra image \
   --run-dir "$RUN" --out docs/static/needle-haystack.gif
 ```
 
-Both Needle variants render the live agent tree and checkpoint through a `ConsumerGroup`; pass `--no-viz` to disable terminal redraws. Pass `--docker-image rlmflow:local` to either variant to run agent code in the repository's Docker sandbox.
+Both Needle variants render the live agent tree and checkpoint by calling a `LiveTree` and a `Checkpoint` on each step; pass `--no-viz` to disable terminal redraws. Pass `--docker-image rlmflow:local` to either variant to run agent code in the repository's Docker sandbox.
 
 ## On any harness
 
@@ -91,4 +91,12 @@ Each run is saved in `examples/_runs/needle-filesystem/<root>-<workers>/`. Look 
 
 A config's `model` means whatever its harness takes: for `repl`, the model behind rlmflow's own loop (`--model` for the root, `--worker-model` for searchers); for `claude_code`, Claude's `--model` (`--claude-model`); for `pi`, pi's `--model` (`--pi-model`, with `--pi-provider`). If `pi` isn't on your PATH, pass the binary: `--pi-command /path/to/node_modules/.bin/pi`.
 
-Your own Claude Code session can be the root too, through the plugin; the main [README](../../README.md#your-claude-code-session-as-the-root-agent) has a recorded run on this haystack.
+Your own Claude Code session can be the root too, through the plugin; the main [README](../../README.md#your-claude-code-session-as-the-root-agent) has a recorded run on this haystack. [`claude_plugin.py`](claude_plugin.py) scripts that run: it builds the haystack, runs `claude -p "/rlmflow:run ..."` with the plugin loaded, then loads the saved run and checks the answer.
+
+```bash
+python examples/needle/claude_plugin.py                         # REPL searchers (OPENAI_API_KEY)
+python examples/needle/claude_plugin.py --workers claude_code   # Claude Code searchers
+python examples/needle/claude_plugin.py --gif                   # also render the run (rlmflow[image])
+```
+
+It exits non-zero when the answer is wrong or every searcher failed, since the root can grep the haystack itself. The run is saved in `examples/_runs/needle-plugin/run/`.

@@ -5,7 +5,7 @@ import os
 import shlex
 
 import pytest
-from helpers import ScriptedFlow, StubLLM, code_nodes, turns
+from helpers import ScriptedFlow, StubLLM, code_nodes, name_root, turns
 from helpers import repl as block
 
 from rlmflow import WRITE, AgentConfig, Flow, Graph
@@ -72,8 +72,10 @@ def test_repl_code_nodes_land_code_nodes_and_keep_state():
     )
     flow = Flow()
 
+    name_root(flow, g, config)
+
     async def run():
-        return [shape(step.node) async for step in flow.run_streaming(g, root_config=config)]
+        return [shape(step.node) async for step in flow.run_streaming(g)]
 
     streamed = asyncio.run(run())
     asyncio.run(flow.aclose())
@@ -108,7 +110,8 @@ def test_ending_a_turn_with_running_children_waits_then_resumes():
         StubLLM(lambda messages: "```repl\nawait asyncio.sleep(1)\nsubmit(x + 3)\n```"),
         configs=[AgentConfig(name="worker", description="adds")],
     )
-    asyncio.run(flow.arun(g, root_config=config))
+    name_root(flow, g, config)
+    asyncio.run(flow.arun(g))
     asyncio.run(flow.aclose())
 
     assert root.final_result() == {"total": 5}
@@ -156,7 +159,7 @@ def delegating_reply(messages):
 
 
 def test_server_code_nodes_write_the_same_edges_as_in_process_code_nodes():
-    def run(root_config):
+    def run(config):
         g = Graph()
         root = g.start("delegate", name="lead")
         g.start("listen", name="peer", config="listener")
@@ -164,7 +167,8 @@ def test_server_code_nodes_write_the_same_edges_as_in_process_code_nodes():
             StubLLM(delegating_reply),
             configs=[AgentConfig(name="worker"), AgentConfig(name="listener")],
         )
-        asyncio.run(flow.arun(g, root_config=root_config))
+        name_root(flow, g, config)
+        asyncio.run(flow.arun(g))
         asyncio.run(flow.aclose())
         return g, root
 

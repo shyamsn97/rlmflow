@@ -13,10 +13,8 @@ from rlmflow.graph.config import RECURSE, transform_argument
 from rlmflow.graph.graph import Graph, GraphError
 from rlmflow.graph.nodes import DONE, READY, RUNNING, Agent, Edge, Node, strict_json
 
-#: Bumped on any incompatible change. Format 6 is read too: its agents' ``history``
-#: lists are ignored (``owner`` and ``seq`` give the same order).
+#: Bumped on any incompatible change; only the current format is read.
 FORMAT_VERSION = 7
-READS = (6, 7)
 BLOB_THRESHOLD_BYTES = 64 * 1024
 BLOB_REF_KEY = "$rlmflow_blob"
 
@@ -111,7 +109,7 @@ def from_records(document: dict[str, Any]) -> Graph:
             state=READY if state == RUNNING else state,
             calls=list(raw.get("calls") or []),
             data=data,
-            producer=str(raw.get("producer") or data.pop("producer", "")),
+            producer=str(raw.get("producer") or ""),
             metadata=_dict(raw.get("metadata"), "node metadata"),
             id=node_id,
             owner=_text(raw.get("owner"), f"node {node_id} owner"),
@@ -123,15 +121,11 @@ def from_records(document: dict[str, Any]) -> Graph:
         )
         if created := _epoch(raw.get("created_at")):
             fields["created_at"] = created
-        agent = raw.get("agent", raw.get("root"))
+        agent = raw.get("agent")
         if agent is None:
             node: Node = Node(**fields)
         else:
             agent = _dict(agent, "agent")
-            # Format 6 kept the agent's own metadata, and its config record, apart.
-            older = _dict(agent.get("metadata"), "agent metadata")
-            recorded = agent.get("config_record", older.pop("config", None))
-            fields["metadata"] = {**older, **fields["metadata"]}
             node = Agent(
                 **fields,
                 name=_text(agent.get("name"), "agent name"),
@@ -139,7 +133,7 @@ def from_records(document: dict[str, Any]) -> Graph:
                 config_name=agent.get("config"),
                 arg_descriptions=_dict(agent.get("arg_descriptions"), "argument descriptions"),
                 repl_id=str(agent.get("repl") or node_id),
-                config_record=recorded,
+                config_record=agent.get("config_record"),
             )
         if nodes.setdefault(node.id, node) is not node:
             raise GraphError(f"node {node.id!r} appears twice")
@@ -159,11 +153,6 @@ def from_records(document: dict[str, Any]) -> Graph:
         own.append(node)
     graph._nodes = {node.id: node for node in ordered}
     for raw in _list(document, "edges"):
-        if raw.get("kind") == "fork":
-            raise GraphError(
-                "this run has a fork edge, saved before forks became copies of the graph; "
-                "an older rlmflow can still read it"
-            )
         edge = Edge(
             _text(raw.get("kind"), "edge kind"),
             _text(raw.get("source"), "edge source"),
@@ -247,10 +236,10 @@ def load_graph(path: str | Path) -> Graph:
     if not isinstance(document, dict):
         raise TypeError(f"{run / 'graph.json'} must contain a JSON object")
     version = document.get("format")
-    if version not in READS:
+    if version != FORMAT_VERSION:
         raise ValueError(
             f"{run} was saved in run format {version or 1}, and this rlmflow reads only "
-            f"formats {', '.join(map(str, READS))}; rerun it with this version."
+            f"format {FORMAT_VERSION}; rerun it with this version."
         )
     for record in _list(document, "nodes"):
         record["input"] = _resolve_blobs(_dict(record.get("input"), "node input"), run / "blobs")

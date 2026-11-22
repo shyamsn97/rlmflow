@@ -41,8 +41,17 @@ from rlmflow.runtime.repl_server import (
 from rlmflow.utils import encode_host_value
 
 _NO_ANSWER = object()
+_UNSET = object()
 
 logger = logging.getLogger("rlmflow")
+
+
+def _proxy_kind(name: str, value: Any) -> tuple[bool, bool] | None:
+    """``(proxied, async)`` for a value the worker reaches through the host; ``None`` otherwise."""
+    metadata = get_tool_metadata(value) if callable(value) else None
+    if name == "submit" or (metadata is not None and metadata.proxy):
+        return True, bool(metadata and metadata.is_async)
+    return None
 
 
 def invoke_tool_call(
@@ -371,14 +380,35 @@ class WorkerRepl(Repl):
         self.env: dict[str, Any] = {}
         self.proxied: dict[str, Callable[..., object]] = {}
         self.closed = False
+        self.last_ran: tuple[str, int] | None = None
+        #: What the last seed bound in the worker, by name.
+        self._seeded: dict[str, Any] = {}
         self._run_lock = threading.Lock()
         self.session.add_tenant(self)
 
     def seed(self, tools: dict[str, Callable[..., object]]) -> None:
+        """Bind ``tools``, sending the worker only what changed since the last seed.
+
+        A proxied tool lives host-side, so a new callable of the same kind
+        replaces it without a request.
+        """
         self.namespace = dict(tools)
+        for name in self._seeded.keys() - tools.keys():
+            self.remove_tool(name)
+        seeded: dict[str, Any] = {}
         for name, value in tools.items():
-            if name not in {"ENV", "AGENTS", AGENTS_BINDING}:
-                self.inject(name, value)
+            if name in {"ENV", "AGENTS", AGENTS_BINDING}:
+                continue
+            seeded[name] = value
+            before = self._seeded.get(name, _UNSET)
+            if before is value:
+                continue
+            kind = _proxy_kind(name, value)
+            if kind is not None and name in self.proxied and _proxy_kind(name, before) == kind:
+                self.proxied[name] = value
+                continue
+            self.inject(name, value)
+        self._seeded = seeded
 
     def inject(self, name: str, value: Any) -> None:
         self.namespace[name] = value
@@ -419,6 +449,7 @@ class WorkerRepl(Repl):
     def remove_tool(self, name: str) -> None:
         self.namespace.pop(name, None)
         self.proxied.pop(name, None)
+        self._seeded.pop(name, None)
         self.session.request(
             RemoveRequest(
                 id=self.session._next_id("remove"),

@@ -38,7 +38,7 @@ rlmflow run --flow mypkg.agents:build print "add a test"        # your own Flow
 | `--resume DIR`               | Continue a saved run instead of starting a new one.                                                                           |
 | `--flow module:factory`      | A zero-argument callable returning a `Flow`, from the project or an installed package. Also `flow = "..."` in `rlmflow.toml`. |
 
-It works in a pipe, a CI job, or anywhere without a terminal: it streams the nodes through `LiveTreeRenderer` and exits with `0` on success, `1` on a handled error, `2` on bad usage.
+It works in a pipe, a CI job, or anywhere without a terminal: it streams the nodes through a plain-text `LiveTree` and exits with `0` on success, `1` on a handled error, `2` on bad usage.
 
 Anything the flags cannot say stays in Python: write a factory that returns the `Flow` you want — custom prompts, tools, runtimes, profiles — and point `--flow` at it. Set `flow` in `rlmflow.toml` instead and `rlmflow serve` (so `/rlmflow:run` in your own Claude Code session) uses it too.
 

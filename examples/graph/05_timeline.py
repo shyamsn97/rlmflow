@@ -28,10 +28,10 @@ def print_nodes(agent: Node) -> None:
 
 
 def main() -> None:
-    flow = Flow(llm_clients={"scripted": ScriptedLLM()})
+    flow = Flow(llm_clients={"scripted": ScriptedLLM()}, configs=[AgentConfig(model="scripted")])
     g = Graph()
     root = g.start("write hello.py")
-    flow.run(g, root_config=AgentConfig(model="scripted"))
+    flow.run(g)
     flow.runtime.close()
 
     # Agents and nodes carry the order they were added in, so the graph cut after

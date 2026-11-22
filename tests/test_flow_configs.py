@@ -1,7 +1,7 @@
 """The Flow owns configs; the graph only records which one ran."""
 
 import pytest
-from helpers import ScriptedFlow, StubLLM, TestRuntime, counting_replies
+from helpers import ScriptedFlow, StubLLM, TestRuntime, counting_replies, name_root
 from helpers import reasoning_repl as block
 
 from rlmflow import AgentConfig, Flow, Graph
@@ -26,18 +26,18 @@ def test_resuming_runs_the_root_with_this_runs_config_not_the_recorded_one(tmp_p
     llm = RecordingLLM(block("submit('one')"), block("submit('two')"))
     g = Graph()
     root = g.start("answer")
-    ScriptedFlow(llm, runtime=TestRuntime()).run(
-        g, root_config=AgentConfig(prompt={"rules": "FIRST RULES"})
-    )
+    first = ScriptedFlow(llm, runtime=TestRuntime())
+    name_root(first, g, AgentConfig(prompt={"rules": "FIRST RULES"}))
+    first.run(g)
     assert root.config_record["prompt"]["rules"] == "FIRST RULES"
     g.save(tmp_path)
 
     loaded = Graph.load(tmp_path)
     again = loaded.agent(root.id)
     loaded.send(again, "and again")
-    ScriptedFlow(llm, runtime=TestRuntime()).run(
-        loaded, root_config=AgentConfig(prompt={"rules": "SECOND RULES"})
-    )
+    second = ScriptedFlow(llm, runtime=TestRuntime())
+    second.add_config(AgentConfig(name="root", prompt={"rules": "SECOND RULES"}))
+    second.run(loaded)
 
     assert "SECOND RULES" in system_message(llm.calls[-1])
     assert "FIRST RULES" not in system_message(llm.calls[-1])
@@ -81,7 +81,8 @@ def test_launch_agent_without_a_config_uses_default_not_the_roots():
     g = Graph()
     root = g.start("delegate")
 
-    flow.run(g, root_config=AgentConfig(prompt={"rules": "ROOT ONLY"}, max_depth=1))
+    name_root(flow, g, AgentConfig(prompt={"rules": "ROOT ONLY"}, max_depth=1))
+    flow.run(g)
 
     [child] = root.children()
     assert child.config_name == "default"
@@ -99,10 +100,10 @@ def test_a_config_model_is_a_model_name(monkeypatch):
         built.append(model)
         return named
 
-    monkeypatch.setattr("rlmflow.flow.client_for", client_for)
-    flow = Flow(runtime=TestRuntime())
+    monkeypatch.setattr("rlmflow.flow.flow.client_for", client_for)
+    flow = Flow(runtime=TestRuntime(), configs=[AgentConfig(name="x", model="gpt-x")])
 
-    assert flow.run("which model", root_config=AgentConfig(model="gpt-x")) == "from gpt-x"
+    assert flow.run("which model", config="x") == "from gpt-x"
     flow.llm("gpt-x")
     assert built == ["gpt-x"]
 

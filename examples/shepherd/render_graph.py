@@ -394,7 +394,8 @@ def build_svg(
     y_branch = y_shepherd + shepherd_h + 52
     y_picked = y_branch + branch_h + 52
     picked_h = 46.0
-    height = y_picked + picked_h + margin
+    y_legend = y_picked + picked_h + 24
+    height = y_legend + margin
 
     c = Canvas(width, height)
     c.text(
@@ -431,14 +432,14 @@ def build_svg(
     c.arrow(centre, y_jam + jam_h + 4, y_shepherd - 6, label="stuck transcript", dashed=True)
 
     # The shepherd.
-    shepherd_w = 430.0
-    previews = f"previewed {max_rewind} rewind depths, " if max_rewind else "previewed the board, "
+    shepherd_w = 480.0
+    depths = f"previewed rewinds up to {max_rewind}, " if max_rewind else "previewed the board, "
     c.box(centre - shepherd_w / 2, y_shepherd, shepherd_w, shepherd_h, SHEPHERD_FILL, SHEPHERD_LINE)
     c.text(centre, y_shepherd + 25, "shepherd", size=13, weight="600")
     c.fitted_text(
         centre,
         y_shepherd + 44,
-        f"{previews}wrote {len(branches)} plans · {shepherd_turns} turns",
+        f"{depths}wrote {len(branches)} plans, picked one · {shepherd_turns} turns",
         max_w=shepherd_w - pad * 2,
         size=11.5,
         fill=MUTED,
@@ -502,7 +503,7 @@ def build_svg(
     )
     c.legend(
         margin,
-        y_picked + 15,
+        y_legend,
         [("A", "box on a goal, locked"), ("1", "box still loose"), (".", "empty goal")],
     )
     return c.render()

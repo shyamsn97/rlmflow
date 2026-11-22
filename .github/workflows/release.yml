@@ -112,7 +112,7 @@ jobs:
       - name: Validate public docs
         run: |
           python -m pip install -e ".[docs]"
-          python -m mdformat --wrap no --check README.md CHANGELOG.md UPGRADING.md docs/*.md
+          python -m mdformat --wrap no --check README.md CHANGELOG.md docs/*.md
           mkdocs build --strict
       - name: Build sdist and wheel once
         run: |

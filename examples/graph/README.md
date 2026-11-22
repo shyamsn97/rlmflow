@@ -22,6 +22,7 @@ continues an agent, `g.start(parent=node)` launches one from a node,
 | `06_fork.py` | `g.fork(node)`: copies cut after a node, each steered with a message and run on its own |
 | `07_host_spawn.py` | finished agents written from host code, and `g.start(parent=...)` to launch a child |
 | `08_streaming.py` | `flow.run_streaming(g, until=...)`: stop after N nodes, at `"idle"`, or on a predicate; send a message; resume |
+| `09_tour.py` | one run end to end: stepping, saving and loading, replaying, a gym-style reward |
 | `deep_tree.py` | build a deep agent tree with `g.start(parent=...)`, print it, plot it |
 
 Run any of them directly:

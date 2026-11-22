@@ -49,7 +49,6 @@ def test_persistence_preserves_full_config_without_sharing_values(tmp_path):
             model="fast",
             max_depth=4,
             max_iters=7,
-            max_budget=123,
             keep_n_messages=5,
             max_output_length=999,
             max_query_chars=888,

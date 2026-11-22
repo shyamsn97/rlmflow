@@ -1,6 +1,6 @@
 # Examples
 
-Single-file scripts live at the root. Multi-file tasks and API tours live in named folders. Generated runs go under [`_runs/`](_runs/).
+Every example lives in a folder; [`common.py`](common.py) holds the helpers they share. Generated runs go under [`_runs/`](_runs/).
 
 ## Flagship examples
 
@@ -15,7 +15,7 @@ All three are live examples:
 ```bash
 uv run --locked --python 3.12 --extra openai --extra image \
   python examples/shepherd/shepherd.py \
-  --model gpt-5 --fast-model gpt-5-mini --branches 8 --time-budget 1800
+  --model gpt-5 --fast-model gpt-5 --branches 8 --time-budget 1800
 
 uv run --locked --python 3.12 --extra openai \
   python examples/needle/haystack.py \
@@ -32,16 +32,10 @@ OOLONG is in [`benchmarks/`](../benchmarks/README.md), which compares Claude Cod
 | Example | What it shows | Needs a key |
 | --- | --- | --- |
 | [`needle/`](needle/) | Fan-out: the million-line in-memory needle, and the file needle on any harness (`filesystem.py --all`) | yes |
-| [`architectures/`](architectures/) | One small run per graph shape (tree, pipeline, review loop), plus where every shape in the README grid comes from | yes |
-| [`autoresearch/`](autoresearch/) | A planner running TinyStories training trials on Modal GPUs | yes |
-| [`collaboration/`](collaboration/) | Peers with no manager: messaging (`decentralized_peers.py`) and a shared task board (`shared_board.py`) | yes |
-| [`showcase.py`](showcase.py) | One end-to-end tour: stepping a run, saving and loading it, replaying it, gym-style rewards | no |
-| [`graph/`](graph/) | The graph API on its own: query, navigate, edit, save and load, replay, fork, launch from host code, stop and resume a run, a deep tree | no |
-| [`skills.py`](skills.py) | Skills as files in a live prompt section, and an `add_skill` tool the agent extends itself with (`--scripted` runs offline) | optional |
-| [`structured_output.py`](structured_output.py) | `output_schema` on the root and its children | yes |
-| [`providers/mcp_weather.py`](providers/mcp_weather.py) | Every tool on an MCP server, as REPL tools | yes |
-| [`sandboxes/platformer.py`](sandboxes/platformer.py) | Every agent's code in a Docker container or a Modal sandbox (`--runtime docker\|modal`) | yes |
-| [`notebooks/coding_agent.ipynb`](notebooks/coding_agent.ipynb) | The coding agent as a notebook, step by step | yes |
+| [`autoresearch/`](autoresearch/) | A planner launching implementers that each train a variant on Modal GPUs, each in its own copy of the files | yes |
+| [`graph/`](graph/) | The graph API on its own: query, navigate, edit, save and load, replay, fork, launch from host code, streaming, and a full tour (`09_tour.py`) | no |
+| [`patterns/`](patterns/) | One small run per shape: tree, pipeline, review loop, and peers with no manager (messaging, a shared task board) | yes |
+| [`features/`](features/) | One script per feature: skills, structured output, MCP tools, Docker and Modal sandboxes | mostly |
 
 [`shepherd/README.md`](shepherd/README.md) has the canonical run and artifact commands. [`docs/shepherd.md`](../docs/shepherd.md) is the worked-run walkthrough: the jam, the plans the meta-agent wrote against it, what each recovery branch did, and forking a Claude Code worker. After a Shepherd run, `make showcase-shepherd-assets` redraws its figures and animations.
 
@@ -53,12 +47,37 @@ A finished run is saved under [`_runs/`](_runs/). The directory holds `graph.jso
 from rlmflow import Graph
 from rlmflow.view.text import kind
 
-g = Graph.load("examples/_runs/showcase")
+g = Graph.load("examples/_runs/tour")
 for node in g.nodes():
     print(node.agent.path(), kind(node))
 ```
 
 Each agent reads its `RLMFLOW_*` metadata from its own per-REPL `ENV` mapping (e.g. `ENV["RLMFLOW_AGENT_ID"]`), so that metadata is isolated per agent in every runtime. `LocalRuntime` runs each agent in a worker subprocess; use `SubprocessRuntime` when you also need a selected Python executable, and `DockerRuntime` or `ModalRuntime` when you need container-level isolation.
+
+## Last verified run
+
+Every example, run live on 2026-11-19 with each script's default models (`make examples` flags for the manifest rows). Claude Code used its own default model.
+
+| Example | Models | Result | Time |
+| --- | --- | --- | --- |
+| `graph/` (11 scripts), `skills` | scripted, no model | pass | under 3s each |
+| `skills-live` | gpt-4o-mini | pass | 12s |
+| `structured-output` | gpt-5-mini | pass | 78s |
+| `mcp-weather` | gpt-5-mini | pass | 48s |
+| `sandbox-docker` | gpt-5, gpt-5-mini children | pass | 2m03s |
+| `sandbox-modal` | gpt-5, gpt-5-mini children | pass | 3m59s |
+| `patterns/peers` | gpt-5-mini | pass | 32s |
+| `patterns/board` | gpt-5-mini | pass | 20s |
+| `patterns/tree` | gpt-5-mini | pass | 59s |
+| `patterns/review` | gpt-5-mini | pass | 34s |
+| `patterns/pipeline` | gpt-5-mini | pass | 1m30s |
+| `needle/haystack` (2,000 lines) | gpt-5-mini root, gpt-5-nano workers | pass | 65s |
+| `needle/filesystem` (50 files) | gpt-5-mini root, gpt-5-nano workers | pass | 50s |
+| `needle/claude_plugin` (20 files) | Claude Code root and searchers | pass | 30s |
+| `shepherd` | gpt-5 meta-agent and workers | pass, 6 of 8 branches solved | 16m41s |
+| `coding/boids` | gpt-5 peers | pass, all 5 checks | 5m40s |
+| `autoresearch` (A10G, 8 parallel, 48 submissions, $20) | Claude Code planner and implementers | 32 trials, best val_bpb 0.764 (baseline 0.903) | 31m |
+| Live tests (`RLMFLOW_LIVE=1 uv run pytest tests/live`) | gpt-5-mini, gpt-5-nano, Claude Code | 26 passed | 2m53s |
 
 ## Smoke runner
 

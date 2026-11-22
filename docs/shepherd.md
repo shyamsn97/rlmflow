@@ -3,7 +3,7 @@
 <p align="center">
   <img
     src="static/shepherd/rewind.gif"
-    alt="The selected live Shepherd trajectory: deliberate Sokoban jam, graph rewind, and recovery"
+    alt="The picked live Shepherd trajectory: deliberate Sokoban jam, graph rewind, and recovery"
     width="620"
   />
 </p>
@@ -14,7 +14,7 @@
 
 Only the revert itself works differently. The paper checkpoints the worker's process and filesystem, so any program comes back byte-identical. `rlmflow` already tracks every action as a node, so the cheap route is to fork the graph and replay those actions — no snapshot to take, and exactly as faithful whenever the environment is deterministic.
 
-This example is a live model recovery run. The initial eight-push jam is scripted so every attempt starts from the same failed trace. GPT-5 plans the recovery branches, GPT-5-mini plays them, the host selects the highest score, and the local deterministic Sokoban environment makes retained actions exactly replayable.
+This example is a live model recovery run. The initial eight-push jam is scripted so every attempt starts from the same failed trace. A GPT-5 shepherd plans the recovery branches, GPT-5 workers play them, and the shepherd then reads every branch's outcome and board and picks the one to keep. The local deterministic Sokoban environment makes retained actions exactly replayable.
 
 #### Irreversible Sokoban
 
@@ -45,7 +45,7 @@ pushed B1 up: (3, 3)->(2, 3)
 
 #### Live board context in each request
 
-The worker's system prompt is only its Sokoban rules: its config uses a `ReplHarness` subclass whose `prompt_sections` are empty, with the rules as the config's `prompt`. The current board changes every turn and lives in the worker's REPL rather than in the graph, so `ShepherdFlow.complete` appends it to the latest user message of each request:
+The worker's system prompt is only its Sokoban rules: its config uses a `ReplHarness` subclass whose `prompt_sections` are empty, with the rules as the config's `prompt`. The current board changes every turn and lives in the worker's REPL rather than in the graph, so `ShepherdFlow` makes it part of each [turn prompt](prompt_customization.md#turn-prompt):
 
 ```python
 class WorkerHarness(ReplHarness):
@@ -54,12 +54,9 @@ class WorkerHarness(ReplHarness):
 
 
 class ShepherdFlow(Flow):
-    async def complete(self, messages, model, **kwargs):
-        step = current_step()
-        if step is not None and messages and messages[0]["role"] == "system":
-            board_text = board_prompt(self, step, simple=self.simple_moves)
-            ...  # appended to the last user message
-        return await super().complete(messages, model, **kwargs)
+    def turn_prompt(self, step):
+        board = board_prompt(self, step, simple=self.simple_moves)
+        return "\n\n".join(part for part in (super().turn_prompt(step), board) if part)
 ```
 
 `board_prompt` reads the live REPL `ENV` for the agent being stepped. `board_prompt` also stamps the upcoming turn in `ENV` so the game's one-push guard applies to the next live action; replay does not need that live-turn guard.
@@ -76,6 +73,7 @@ This run starts jammed on purpose: the worker shoves `B1` right eight times unti
 
 The meta agent can now come up with distinct new pathways to explore and pick any of those eight spots to revert to, leading to some pretty diverse trajectories. This is done by giving the shepherd agent access to the following tools:
 
+
 ```python
 @tool("Inspect the worker after rewinding pushes, without playing.")
 async def preview(rewind: int) -> dict:
@@ -87,58 +85,70 @@ def branch(specs: list[Plan]) -> str:
     """Each plan is one revert depth plus the box-to-goal order for that worker."""
 ```
 
-`preview(k)` forks the graph at `k` pushes ago, rebuilds the copy's REPL there and returns that state, then drops the copy; the failed run is untouched, so the shepherd can look at every earlier board for free. `branch(plans)` takes one `{rewind, order}` per attempt and ends the shepherd's turn: each plan becomes a fork of its own, rewound to that depth and carrying that order.
+`preview(k)` forks the graph at `k` pushes ago, rebuilds the copy's REPL there and returns that state, then drops the copy; the failed run is untouched, so the shepherd can look at every earlier board for free. `branch(plans)` takes one `{rewind, order}` per attempt and ends the shepherd's planning: each plan becomes a fork of its own, rewound to that depth and carrying that order. Once every fork has played, the host sends the shepherd each one's plan, outcome and final board, and the shepherd submits the branch it keeps.
 
 #### Step 1 — observe: `preview(k)`
 
-The shepherd's first turn swept every depth — its own code, trimmed:
+The shepherd's first turn previewed the shallowest, middle and deepest rewinds — its own code, trimmed:
 
 ```repl
-for k in range(1, max_k + 1):
-    state = await preview(k)
-    print(f"===== Preview k={k} =====")
-    print(state["board"], state["boxes"], state["legal_pushes"][:10])
+async def show(k):
+    p = await preview(k)
+    print(f"\n=== Preview {k} pushes ago ===")
+    print(p["board"])
+    print("Boxes:", json.dumps(p["boxes"], sort_keys=True))
+    ...
+
+mids = sorted(set([1, (MR+1)//2, MR]))
+res = []
+for k in mids:
+    res.append(await show(k))
 ```
 
 ```text
-===== Preview k=3 =====
+=== Preview 4 pushes ago ===
             11
   012345678901
 0 ############
 1 #  .   .  ##
 2 ### # # # ##
-3 #     @$   #
+3 #    @$    #
 4 #   # # # .#
 5 #  $     $ #
 6 #  ## # #  #
 7 # .     .  #
 8 ############
-boxes (3): {'B1': [3, 7], 'B2': [5, 3], 'B3': [5, 9]}
-legal_pushes (10): ['B1 up from (4,7)', 'B1 down from (2,7)', 'B1 left from (3,8)', ...]
+Boxes: {"B1": [3, 6], "B2": [5, 3], "B3": [5, 9]}
+Goals: {"G1": [1, 3], "G2": [1, 7], "G3": [4, 10], "G4": [7, 2], "G5": [7, 8]}
+Legal pushes (count): 8
 ```
 
 #### Step 2 — re-instruct: `branch(plans)`
 
-After previewing all eight depths and checking candidate goal entrances against the board, the shepherd submitted eight distinct box-to-goal pairings. This is the plan list from the current run:
+From those boards the shepherd worked out each goal's entrances and submitted eight distinct box-to-goal pairings. This is the plan list from the current run:
 
 ```repl
+notes = """Prepared 8 distinct two-step plans with valid approach squares counted from the printed board.
+Entrances verified:
+- G1: from (2,3), (1,2), (1,4)
+- G2: from (2,7), (1,6), (1,8)
+- G3: from (5,10) only
+- G4: from (6,2), (7,3)
+- G5: from (7,7), (7,9)
+..."""
+
 plans = [
-    {"rewind": 6, "order": ["B2->G4 entering from (6,2)", "B3->G5 entering from (7,9)"]},
-    {"rewind": 8, "order": ["B2->G4 entering from (7,3)", "B3->G3 entering from (5,10)"]},
-    {"rewind": 7, "order": ["B1->G1 entering from (2,3)", "B3->G5 entering from (7,7)"]},
-    {"rewind": 6, "order": ["B1->G2 entering from (2,7)", "B2->G4 entering from (6,2)"]},
-    {"rewind": 5, "order": ["B1->G2 entering from (1,6)", "B3->G3 entering from (5,10)"]},
-    {"rewind": 4, "order": ["B1->G1 entering from (1,4)", "B2->G5 entering from (7,7)"]},
-    {"rewind": 8, "order": ["B3->G2 entering from (1,8)", "B2->G4 entering from (6,2)"]},
-    {"rewind": 5, "order": ["B1->G3 entering from (5,10)", "B2->G4 entering from (7,3)"]},
+  {"rewind": 1, "order": ["B3->G3 entering from (5,10)", "B1->G2 entering from (2,7)"]},
+  {"rewind": 1, "order": ["B3->G3 entering from (5,10)", "B2->G4 entering from (6,2)"]},
+  {"rewind": 2, "order": ["B1->G2 entering from (2,7)", "B2->G4 entering from (7,3)"]},
+  {"rewind": 4, "order": ["B1->G1 entering from (2,3)", "B3->G5 entering from (7,9)"]},
+  {"rewind": 4, "order": ["B2->G1 entering from (2,3)", "B3->G3 entering from (5,10)"]},
+  {"rewind": 6, "order": ["B3->G2 entering from (2,7)", "B1->G5 entering from (7,7)"]},
+  {"rewind": 8, "order": ["B1->G1 entering from (1,2)", "B2->G5 entering from (7,7)"]},
+  {"rewind": 3, "order": ["B2->G2 entering from (1,6)", "B3->G5 entering from (7,7)"]},
 ]
+
 branch(plans)
-```
-
-After the host forked the run for each plan and ran the forks, their outcomes were:
-
-```text
-['stuck', 'solved', 'solved', 'solved', 'solved', 'solved', 'stuck', 'solved']
 ```
 
 A plan is two decisions: where to revert back to, and what strategy to hand the worker instead. It contains no moves — those stay the worker's job.
@@ -151,14 +161,14 @@ The host takes each plan's revert depth and forks the run there:
 cut, depth = rewind_point(g, worker, plan["rewind"])  # the turn before that push
 branch = g.fork(cut)  # a new graph: the run cut right after cut
 copy = branch.agent(worker.id)
-await branch_flow.replay(branch, copy)
+await flow.replay(branch, copy)
 ```
 
 `cut` is the worker's turn just before the push `depth` pushes back. `g.fork(cut)` returns a new graph, a copy of the run with the same ids, holding the worker with its nodes ending at `cut`. The shepherd runs on a graph of its own and only reads and forks the worker's run, so no branch carries a copy of it. The original run is untouched. `replay` runs the copy's nodes again in a REPL of its own, so its board is the one the worker had at that point.
 
 #### Step 4 — resume: inject the order and run each fork
 
-Each fork gets its instruction as a message, then runs on its own Flow, all eight at once:
+Each fork gets its instruction as a message, then all eight stream on the same Flow at once. Each fork has its own REPLs, so nothing they run collides:
 
 ```python
 branch.send(
@@ -170,14 +180,14 @@ await asyncio.gather(*(play(branch) for branch in branches))
 Each copy wakes in a rewound REPL with its instruction appended:
 
 ```text
-Rewound 7 pushes. This is a fresh recovery attempt, so abandon the plan you
+Rewound 8 pushes. This is a fresh recovery attempt, so abandon the plan you
 were following.
 ...
-Lock the boxes in this order: B1->G1 entering from (2,3), then B3->G5 entering
+Lock the boxes in this order: B1->G1 entering from (1,2), then B2->G5 entering
 from (7,7). The routes are yours to work out.
 ```
 
-From there the forks make their moves:
+From there the forks make their moves. All eight solved the board this time; pushes count every push the fork's board has seen, including the ones it kept from the worker:
 
 <table class="branch-grid" style="width:100%;table-layout:fixed;border-collapse:separate;border-spacing:12px 16px">
   <colgroup>
@@ -187,18 +197,36 @@ From there the forks make their moves:
     <col style="width:25%" />
   </colgroup>
   <tr>
-    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch0.gif" alt="branch0 reverted 6 pushes and got stuck" style="width:100%;height:auto" /><br /><sub>branch0 · reverted 6 · stuck, 14 pushes</sub></td>
-    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch1.gif" alt="branch1 reverted all 8 pushes and solved the board" style="width:100%;height:auto" /><br /><sub>branch1 · reverted 8 · solved, 14 pushes</sub></td>
-    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch2.gif" alt="branch2 reverted 7 pushes and solved the board in 11 pushes" style="width:100%;height:auto" /><br /><sub>branch2 · reverted 7 · <b>selected, solved in 11 pushes</b></sub></td>
-    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch3.gif" alt="branch3 reverted 6 pushes and solved the board" style="width:100%;height:auto" /><br /><sub>branch3 · reverted 6 · solved, 12 pushes</sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch0.gif" alt="branch0 reverted 1 push and solved the board" style="width:100%;height:auto" /><br /><sub>branch0 · reverted 1 · solved, 20 pushes</sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch1.gif" alt="branch1 reverted 1 push and solved the board" style="width:100%;height:auto" /><br /><sub>branch1 · reverted 1 · solved, 17 pushes</sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch2.gif" alt="branch2 reverted 2 pushes and solved the board" style="width:100%;height:auto" /><br /><sub>branch2 · reverted 2 · solved, 20 pushes</sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch3.gif" alt="branch3 reverted 4 pushes and solved the board" style="width:100%;height:auto" /><br /><sub>branch3 · reverted 4 · solved, 20 pushes</sub></td>
   </tr>
   <tr>
-    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch4.gif" alt="branch4 reverted 5 pushes and solved the board" style="width:100%;height:auto" /><br /><sub>branch4 · reverted 5 · solved, 12 pushes</sub></td>
-    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch5.gif" alt="branch5 reverted 4 pushes and solved the board" style="width:100%;height:auto" /><br /><sub>branch5 · reverted 4 · solved, 34 pushes</sub></td>
-    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch6.gif" alt="branch6 reverted all 8 pushes and got stuck" style="width:100%;height:auto" /><br /><sub>branch6 · reverted 8 · stuck, 8 pushes</sub></td>
-    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch7.gif" alt="branch7 reverted 5 pushes and solved the board" style="width:100%;height:auto" /><br /><sub>branch7 · reverted 5 · solved, 23 pushes</sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch4.gif" alt="branch4 reverted 4 pushes and solved the board" style="width:100%;height:auto" /><br /><sub>branch4 · reverted 4 · solved, 15 pushes</sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch5.gif" alt="branch5 reverted 6 pushes and solved the board" style="width:100%;height:auto" /><br /><sub>branch5 · reverted 6 · solved, 19 pushes</sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch6.gif" alt="branch6 reverted all 8 pushes and solved the board in 12 pushes" style="width:100%;height:auto" /><br /><sub>branch6 · reverted 8 · <b>picked, solved in 12 pushes</b></sub></td>
+    <td style="width:25%;vertical-align:top;text-align:center"><img src="static/shepherd/branch7.gif" alt="branch7 reverted 3 pushes and solved the board" style="width:100%;height:auto" /><br /><sub>branch7 · reverted 3 · solved, 36 pushes</sub></td>
   </tr>
 </table>
+
+#### Step 5 — pick: the shepherd chooses a branch
+
+When every fork has finished, the host sends the shepherd one message with each branch's plan, outcome, push count and final board:
+
+```text
+All 8 branches have played. Each one's plan, outcome and final board:
+
+branch0: rewound 1, order B3->G3 entering from (5,10), then B1->G2 entering from (2,7)
+  solved; 20 pushes in total (7 kept from the worker); 3/3 boxes locked; 0 to go
+...
+```
+
+The shepherd reads them and submits its choice, which is the run's result:
+
+```repl
+submit("Picked branch6: solved with the fewest total pushes (12) among all solved branches.")
+```
 
 #### Forking a Claude Code worker
 
@@ -211,7 +239,7 @@ Searchers a worker launched before the fork point are copied with it, and launch
 
 #### Overall Results
 
-Six of the eight branches solved the board. The shepherd selected `branch2`, which rewound seven pushes and solved in 11 total pushes for a score of 989. That run, saved before forks became copies, held 585 graph nodes in one tree; the selected path is the fresh `rewind.gif` at the top of this page.
+All eight branches solved the board, in 12 to 36 pushes. The shepherd picked `branch6`, which rewound all eight pushes to the fresh board and solved it in 12. The run held 157 nodes across the worker, the shepherd and its eight forks; the picked path is the `rewind.gif` at the top of this page.
 
 <p align="center">
   <img
@@ -228,7 +256,7 @@ export OPENAI_API_KEY=...
 uv run --locked --python 3.12 --extra openai --extra image \
   python examples/shepherd/shepherd.py \
   --model gpt-5 \
-  --fast-model gpt-5-mini \
+  --fast-model gpt-5 \
   --branches 8 \
   --time-budget 1800 \
   --out-dir examples/_runs/shepherd

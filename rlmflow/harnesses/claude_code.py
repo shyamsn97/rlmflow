@@ -58,6 +58,10 @@ class ClaudeCodeOptions(SessionOptions):
         return [*self.sdk.get("disallowed_tools", []), *NATIVE_MESSAGING_TOOLS]
 
 
+#: The SDK's default (1 MB) is less than one screenshot or large file read in a message.
+MAX_MESSAGE_BYTES = 64 * 1024 * 1024
+
+
 class ClaudeCodeHarness(SessionHarness):
     name = "claude_code"
     Options = ClaudeCodeOptions
@@ -100,6 +104,7 @@ class ClaudeCodeHarness(SessionHarness):
             "cwd": flow.workspaces.path(step.agent),
             "env": env,
             "cli_path": options.command,
+            "max_buffer_size": MAX_MESSAGE_BYTES,
             **options.sdk,
             "allowed_tools": options.allowed_tools(),
             "disallowed_tools": options.disallowed_tools(),

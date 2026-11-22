@@ -7,7 +7,7 @@ replies arrive as messages and reopen her. Once she has both, she sends them the
 total. Every message is a node of the receiver's with a ``write`` edge
 from the node whose code sent it, so the saved graph records who told whom what.
 
-    python examples/collaboration/decentralized_peers.py --model gpt-5-mini
+    python examples/patterns/peers.py --model gpt-5-mini
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import WRITE, AgentConfig, Flow, Graph, GraphCheckpointer
+from rlmflow import WRITE, AgentConfig, Checkpoint, Flow, Graph
 from rlmflow.view.text import kind
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -51,15 +51,12 @@ Submit your number now with submit(value). Peers may message you later:
 - told the total: submit the string "{name} knows the total is N"."""
 
 
-async def run(flow: Flow, g: Graph, out_dir: str, config: AgentConfig) -> None:
+async def run(flow: Flow, g: Graph, out_dir: str) -> None:
     """Drive every peer in ``g`` until none can step, checkpointing as items land."""
-    checkpointer = GraphCheckpointer(out_dir)
     try:
-        async for step in flow.run_streaming(g, root_config=config):
-            checkpointer.handle(step, g)
+        async for step in flow.run_streaming(g, hooks=[Checkpoint(out_dir)]):
             print(f"{step.agent.name:<6}  {kind(step.node)}")
     finally:
-        checkpointer.close()
         flow.runtime.close_repls()
 
 
@@ -86,16 +83,9 @@ def main() -> None:
     parser.add_argument("--out-dir", default=str(example_run_dir("decentralized-peers")))
     args = parser.parse_args()
 
-    flow = Flow()
+    flow = Flow(configs=[AgentConfig(model=args.model, max_depth=0, max_iters=args.max_iters)])
     g = build_graph()
-    asyncio.run(
-        run(
-            flow,
-            g,
-            args.out_dir,
-            AgentConfig(model=args.model, max_depth=0, max_iters=args.max_iters),
-        )
-    )
+    asyncio.run(run(flow, g, args.out_dir))
 
     print("\nresults:")
     results = {peer.name: peer.final_result() for peer in g.agents()}

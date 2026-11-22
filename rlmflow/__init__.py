@@ -3,6 +3,7 @@
 from importlib import import_module
 from typing import Any
 
+from rlmflow.budget import Budget
 from rlmflow.graph import persistence
 from rlmflow.graph.config import (
     DEFAULT_MAX_QUERY_CHARS,
@@ -28,6 +29,7 @@ from rlmflow.graph.nodes import (
     record_metadata,
     running_step,
 )
+from rlmflow.hooks import Hook, Stop
 from rlmflow.llm import (
     LLMChunk,
     LLMClient,
@@ -45,6 +47,7 @@ from rlmflow.schema import SchemaError, json_schema_for
 _LAZY = {
     "Flow": "rlmflow.flow",
     "StepUntil": "rlmflow.flow",
+    "Copies": "rlmflow.workspaces",
     "GitWorktrees": "rlmflow.workspaces",
     "LocalWorkspace": "rlmflow.workspaces",
     "AgentDirectory": "rlmflow.agent_tools.view",
@@ -58,6 +61,7 @@ _LAZY = {
     "ReplHarness": "rlmflow.harnesses.repl",
     "SessionHarness": "rlmflow.harnesses.sessions",
     "TurnResult": "rlmflow.harnesses.sessions",
+    "TaskBoard": "rlmflow.tools.board",
     "CODING_HANDOFF_SCHEMA": "rlmflow.tools.files",
     "FILE_TOOLS": "rlmflow.tools.files",
     "MCPTools": "rlmflow.integrations.mcp",
@@ -78,12 +82,9 @@ _LAZY = {
     "SubprocessRuntime": "rlmflow.runtime",
     "WorkerRepl": "rlmflow.runtime",
     "WorkerSession": "rlmflow.runtime",
-    "ConsumerGroup": "rlmflow.consumers",
-    "GraphCheckpointer": "rlmflow.consumers",
-    "LiveGraphTree": "rlmflow.consumers",
-    "LiveTreeRenderer": "rlmflow.consumers",
+    "Checkpoint": "rlmflow.consumers",
+    "LiveTree": "rlmflow.consumers",
     "StreamConsumer": "rlmflow.consumers",
-    "WorkspaceSync": "rlmflow.consumers",
     "code_block": "rlmflow.utils",
     "find_code_blocks": "rlmflow.utils",
     "render_forest": "rlmflow.view.text",
@@ -121,9 +122,11 @@ __all__ = [
     "WRITE",
     "AgentConfig",
     "AnthropicClient",
+    "Budget",
     "Edge",
     "Graph",
     "GraphError",
+    "Hook",
     "Input",
     "Invalidation",
     "LLMChunk",
@@ -134,6 +137,7 @@ __all__ = [
     "OpenAIClient",
     "SchemaError",
     "Step",
+    "Stop",
     "at_leaf",
     "attach_image",
     "can_spawn",

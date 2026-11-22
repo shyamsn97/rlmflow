@@ -50,7 +50,7 @@ flow.add_tool(escalate)
 flow.remove_tool("escalate")
 ```
 
-`inject` takes any object, not just callables; `add_tool` is the same thing with the name read off the function. Both write into every open REPL as well as the flow's namespace, so a tool added mid-run is visible on the next run of code.
+`inject` takes any object, not just callables; `add_tool` is the same thing with the name read off the function. Each REPL binds exactly the flow's tools whenever it runs code, so a tool added mid-run is there on the next run of code and a removed one is gone.
 
 ## Reactive control
 

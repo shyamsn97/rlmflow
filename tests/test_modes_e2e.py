@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from helpers import ScriptedFlow, StubLLM, code_nodes, own
+from helpers import ScriptedFlow, StubLLM, code_nodes, name_root, own
 from helpers import reasoning_repl as block
 
 from rlmflow import AgentConfig, Flow, Graph
@@ -143,12 +143,12 @@ def test_same_conversation_same_graph_in_both_modes(env, tmp_path, monkeypatch):
     async def as_harness():
         flow = worker_flow()
         try:
-            await flow.arun(
+            name_root(
+                flow,
                 headless,
-                root_config=AgentConfig(
-                    harness="claude_code", harness_options={"command": "claude"}
-                ),
+                AgentConfig(harness="claude_code", harness_options={"command": "claude"}),
             )
+            await flow.arun(headless)
         finally:
             await flow.aclose()
 

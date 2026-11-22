@@ -4,7 +4,7 @@ Real runs of the flagship examples, Nov 2 2026, on this machine. Run outputs (gr
 
 | Example            | Shows                                                                   | Harnesses                                      | Result                                                                                                                                |
 | ------------------ | ----------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Shepherd (Sokoban) | Rewind, fork, parallel recovery                                         | REPL, gpt-5 + gpt-5-mini                       | Worker jammed. 3 of 8 forked branches solved; picked one in 9 pushes                                                                  |
+| Shepherd (Sokoban) | Rewind, fork, parallel recovery, the shepherd picks                     | REPL, gpt-5 shepherd + gpt-5 workers           | Worker jammed. 8 of 8 forked branches solved; the shepherd picked the 12-push solve                                                   |
 | Needle             | Recursive fan-out; harnesses mixed per agent                            | REPL and Claude Code, root × workers           | 4 of 4 combinations correct                                                                                                           |
 | Autoresearch       | Planner plus long-running GPU jobs                                      | REPL planner; REPL or Claude Code implementers | val_bpb 1.155 → 0.920 (REPL), → 0.866 (Claude Code)                                                                                   |
 | Peers              | Agents messaging each other with `send_agent`                           | REPL, gpt-5-mini                               | Correct total (6); both peers acknowledged it                                                                                         |
@@ -12,28 +12,31 @@ Real runs of the flagship examples, Nov 2 2026, on this machine. Run outputs (gr
 
 ## Shepherd: rewind and fork
 
+Nov 20 2026, gpt-5 shepherd and gpt-5 workers:
+
 ```bash
-python examples/shepherd/shepherd.py --trace --out-dir examples/_runs/results/shepherd
-python examples/shepherd/render_rewind.py --run-dir examples/_runs/results/shepherd
-python examples/shepherd/render_graph.py --run-dir examples/_runs/results/shepherd
+python examples/shepherd/shepherd.py --fast-model gpt-5 --trace --out-dir examples/_runs/shepherd-1120-pick
+make showcase-shepherd-assets SHEPHERD_RUN=examples/_runs/shepherd-1120-pick
 ```
 
-A worker plays Sokoban and jams a box against a wall after 8 pushes. The shepherd reads the stuck transcript, previews the board at each rewind depth, and forks 8 branches from 8 different points in the worker's run, each with its own plan.
+A worker plays Sokoban and jams a box against a wall after 8 pushes. The shepherd reads the stuck transcript, previews the board at three rewind depths, and forks 8 branches, each rewound to an earlier point in the worker's run, with its own plan. When the branches finish, the shepherd reads each one's outcome and final board and picks the one to keep.
 
 ![Shepherd graph](static/results/shepherd-graph.png)
 
-| Branch           |   Pushes undone | Outcome          | Turns |
-| ---------------- | --------------: | ---------------- | ----: |
-| branch1 (picked) | 8 (fresh board) | solved, 9 pushes |    11 |
-| branch0          |               7 | solved           |    22 |
-| branch2          |               6 | solved           |    24 |
-| branch3–7        |             1–5 | stuck            | 10–29 |
+| Branch           |   Pushes undone | Outcome                     | Turns |
+| ---------------- | --------------: | --------------------------- | ----: |
+| branch6 (picked) | 8 (fresh board) | solved, 12 pushes           |    15 |
+| branch4          |               4 | solved, 15 pushes           |    17 |
+| branch1          |               1 | solved, 17 pushes           |    19 |
+| branch5          |               6 | solved, 19 pushes           |    21 |
+| branch0, 2, 3    |         1, 2, 4 | solved, 20 pushes each      |    22 |
+| branch7          |               3 | solved, 36 pushes           |    38 |
 
-The rewind depth is what decided the outcome. Every branch that undid 6 or more pushes solved the puzzle; every branch that kept 3 or more of the jammed pushes stayed stuck. A single retry from the jam point would have failed. The run took about 8 minutes, 293 nodes and 288k input / 101k output tokens.
+Every branch solved the puzzle, so the pick came down to push count, and the shepherd submitted "Picked branch6: solved with the fewest total pushes (12) among all solved branches." Push counts include the pushes a branch kept from the worker. A single retry from the jam point would have failed. The run took about 9 minutes and held 157 nodes across the worker, the shepherd and the eight forks.
 
 ![Rewind animation](static/results/shepherd-rewind.gif)
 
-The animation plays the jam, undoes it push by push to the chosen depth, then replays the winning branch.
+The animation plays the jam, undoes it push by push to the picked branch's depth, then replays that branch.
 
 ## Needle: harnesses mixed per agent
 
@@ -64,9 +67,10 @@ The graph has the same shape whichever harness runs which agent: the dashed line
 ## Autoresearch: planner plus GPU jobs
 
 ```bash
-python examples/autoresearch/run.py --max-submissions 8 --parallel 4            # REPL implementers
 python examples/autoresearch/run.py --max-submissions 8 --parallel 4 \
-  --implementer-harness claude_code                                             # Claude Code implementers
+  --planner repl --implementer repl                                             # REPL implementers
+python examples/autoresearch/run.py --max-submissions 8 --parallel 4 \
+  --planner repl                                                                # Claude Code implementers
 ```
 
 A gpt-5 planner proposes changes to a small GPT trained on TinyStories. Each trial is implemented by a child agent and trained for 5 minutes on a Modal L4. The score is validation bits per byte (lower is better). These two runs are from Oct 30; they spend real GPU time, and nothing they use changed since.
@@ -86,14 +90,32 @@ Both runs found the same lesson: the baseline is under-trained, and a larger lea
 ## Peers: `send_agent`
 
 ```bash
-python examples/collaboration/decentralized_peers.py --model gpt-5-mini
+python examples/patterns/peers.py --model gpt-5-mini
 ```
 
 Three top-level agents with no manager. Alice asks bob and carol for their numbers with `await asyncio.gather(send_agent("bob", ...), send_agent("carol", ...))`, adds them, and sends the total back without waiting. Result: alice submitted 6 (correct), and bob and carol each answered "knows the total is 6". 21 nodes, 6k tokens.
 
 ![Peers graph](static/results/peers-graph.png)
 
-## Boids: peers building components
+## Boids: peers on a shared task board
+
+```bash
+python examples/coding/boids/boids.py --harness claude_code --out-dir examples/_runs/coding/boids-board
+```
+
+The same spec and three Claude Code peers, now coordinating on a `TaskBoard` (Nov 20 2026). The prompt has one peer plan: each posts and claims a `plan` task before posting anything else, and whoever loses waits for `plan` to finish. The spec asks for a calm look: the canvas cleared every frame with no trails, glow or flashing, a slate background, and four muted colors of similar brightness.
+
+`peer2` posted and claimed `plan` first (writes 1 and 2). `peer1`'s post and claim of `plan` came back `ok: False` (3 and 4), and so did `peer3`'s post (5); both then polled the board until `plan` was done. `peer2` published the interface (`window.BOIDS`; `config.js`, `grid.js`, `sim.js`, `render.js`, `main.js`, the page and the stylesheet), posted seven file tasks, finished `plan` (write 14), and claimed the simulation, the config and the page. `peer3` claimed the grid and the renderer (18 and 19) just before `peer1` asked for the same two (20 and 21, `ok: False`), so `peer1` took the loop and the stylesheet. 30 board writes, no direct messages, 3.3 minutes, 1.65M input and 35k output tokens ($1.60). The app loads with no console errors and passes every validation check; headless Chrome on this machine caps it at 30 FPS, which is the recording's readout.
+
+![Boids, built by three Claude Code peers on a task board](static/boids/simulation.gif)
+
+![The peers' graph with the board lane](static/boids/graph.gif)
+
+**The run with trails** (`examples/_runs/coding/boids-board-trails`). The same board and `plan` rule, with the earlier spec's fading trails and bright species. `peer1` won `plan`, `peer2` and `peer3` waited for it, and `peer3` lost two claims to `peer2`; 32 board writes, 3 direct messages about the page's key hint, 3.6 minutes ($2.84).
+
+**The run before the `plan` task** (`examples/_runs/coding/boids-board-collision`). `peer3` published an interface (`window.Boids`, `js/config.js`, `grid.js`, `sim.js`, `render.js`, `main.js`) and posted one task per file; at the same time `peer1` published and posted its own plan. `peer1` read the board, published "IGNORE peer1 interface… peer3's interface (window.Boids, js/*.js) is canonical", finished its five tasks as "superseded by peer3 js/* tasks; no file written", and claimed `config.js`, `main.js` and the page. `peer3` took the grid and simulation, `peer2` the renderer, then posted and finished a `verify` task. 39 board writes, no direct messages, 2.8 minutes, 1.77M input and 37k output tokens ($2.09). The app ran with 2,000 boids and no console errors, and passed every validation check. Both peers had read an empty board before either wrote, which is the race the `plan` task closes. Validation after that run hit a headless-Chrome screenshot timeout in validation; it passes on a rerun, and the validator now records a timeout as a failed check.
+
+## Boids: peers building components by messaging
 
 ```bash
 python examples/coding/boids/boids.py --harness claude_code --out-dir examples/_runs/results/boids-v5-claude

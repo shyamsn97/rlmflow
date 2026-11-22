@@ -44,14 +44,13 @@ def main() -> None:
     parser.add_argument("--out-dir", type=Path, default=None)
     args = parser.parse_args()
 
-    config = AgentConfig(model="scripted")
     flow = Flow(
         llm_clients={"scripted": ScriptedLLM()},
         configs=[AgentConfig(name="default", model="scripted")],
     )
     g = Graph()
     root = g.start("choose a release plan", name="planner")
-    flow.run(g, root_config=config)
+    flow.run(g)
     show("original", g, root)
 
     branches = {"original": g}
@@ -60,7 +59,7 @@ def main() -> None:
         branch = g.fork(root)
         copy = branch.agent(root.id)
         branch.send(copy, steer)
-        flow.run(branch, root_config=config)
+        flow.run(branch)
         show(name, branch, copy)
         branches[name] = branch
     flow.runtime.close()

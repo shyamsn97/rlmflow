@@ -56,14 +56,19 @@ class ReplRun:
 
 
 class Repl(ABC):
-    """One agent tenant in a Python worker."""
+    """One agent tenant in a Python worker.
+
+    ``last_ran`` is the ``(node id, version)`` the namespace reflects, or
+    ``None`` when it is behind; it dies with the REPL.
+    """
 
     namespace: dict[str, Any]
     env: dict[str, Any]
+    last_ran: tuple[str, int] | None = None
 
     @abstractmethod
     def seed(self, tools: dict[str, Callable[..., object]]) -> None:
-        """Bind ``tools`` before a run."""
+        """Bind exactly ``tools`` before a run: names a previous seed bound and ``tools`` lacks go."""
 
     @abstractmethod
     def inject(self, name: str, fn: Any) -> None: ...
@@ -231,7 +236,9 @@ class LocalRepl:
     ) -> None:
         self.namespace = namespace if namespace is not None else base_namespace()
         self._base: frozenset[str] = frozenset(self.namespace)
+        self._seeded: frozenset[str] = frozenset()
         self.env: dict[str, Any] = {}
+        self.last_ran: tuple[str, int] | None = None
         self.working_directory = (
             Path(working_directory).resolve() if working_directory is not None else None
         )
@@ -244,7 +251,10 @@ class LocalRepl:
             sys.stderr = _ContextStream(sys.stderr)
 
     def seed(self, tools: dict[str, Callable[..., object]]) -> None:
+        for name in self._seeded - tools.keys():
+            self.namespace.pop(name, None)
         self.namespace.update(tools)
+        self._seeded = frozenset(tools)
 
     def inject(self, name: str, value: Any) -> None:
         self.namespace[name] = value

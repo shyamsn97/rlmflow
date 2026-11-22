@@ -15,7 +15,7 @@ That is the self-extending pattern: give the model a tool that writes skills,
 and the prompt teaches it those skills one turn later.
 
     export OPENAI_API_KEY=...
-    python examples/skills.py --model gpt-4o-mini --print-prompt
+    python examples/features/skills.py --model gpt-4o-mini --print-prompt
 
 Runs against a real model by default. Pass ``--scripted`` to use ``ScriptedLLM``:
 a deterministic offline client that drives the *same* agent loop, installing the
@@ -30,7 +30,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from rlmflow import AgentConfig, Flow, Graph, LLMUsage
+from rlmflow import AgentConfig, Flow, LLMUsage
 from rlmflow.harnesses.repl import ReplHarness
 from rlmflow.tools import tool
 
@@ -188,20 +188,22 @@ def main() -> None:
         model = args.model
         print(f"Using live client ({args.model}).")
     config = AgentConfig(
+        name="skilled",
         harness=SkillsHarness,
         model=model,
         max_iters=args.max_iters,
         harness_options={"directory": str(library.directory)},
     )
 
-    g = Graph()
-    root = g.start(QUERY)
+    flow.add_config(config)
+    g = flow.init(QUERY, config="skilled")
+    root = g.root
     if args.print_prompt:
         print("\n--- Skills section BEFORE run (empty) ---\n")
         print(library.render())
 
     print("\n--- run ---\n")
-    flow.run(g, root_config=config)
+    flow.run(g)
 
     print(f"\nagent installed skills: {library.names()}")
     if args.print_prompt:

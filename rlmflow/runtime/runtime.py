@@ -196,6 +196,7 @@ class Runtime:
         self.working_directory = Path(working_directory) if working_directory is not None else None
         self.preimports = preimports
         self.repls: dict[str, Repl] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
         #: Each agent's directory, when a ``Flow`` has workspaces; else ``working_directory``.
         self.directory_for: Callable[[Node], Path] | None = None
 
@@ -237,6 +238,10 @@ class Runtime:
 
     def get(self, agent: Node | str) -> Repl | None:
         return self.repls.get(repl_key(agent))
+
+    def lock(self, agent: Node) -> asyncio.Lock:
+        """Held while code runs in the agent's REPL, so two runs never interleave there."""
+        return self._locks.setdefault(repl_key(agent), asyncio.Lock())
 
     def repl_for(self, agent: Node, graph: Graph | None = None) -> Repl:
         """The agent's live REPL, opened on first use; ``graph`` places it in the run."""
@@ -291,14 +296,6 @@ class Runtime:
             return "(no live REPL)"
         describe = getattr(repl, "describe", None)
         return describe() if describe is not None else "(not available for this REPL)"
-
-    def inject_live(self, name: str, obj: Any) -> None:
-        for repl in self.repls.values():
-            repl.inject(name, obj)
-
-    def remove_live(self, name: str) -> None:
-        for repl in self.repls.values():
-            repl.remove_tool(name)
 
 
 def agent_env(agent: Node, graph: Graph | None = None) -> dict[str, str]:

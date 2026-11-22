@@ -7,8 +7,6 @@ from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from rlmflow.graph.config import can_spawn
-
 if TYPE_CHECKING:
     from rlmflow.graph.nodes import Step
 
@@ -81,18 +79,6 @@ def skill(name: str) -> str:
     return text.strip()
 
 
-def guidance(step: Step) -> dict[str, str | None]:
-    """How to work well, the same on every harness; each harness adds its own mechanics.
-
-    The orchestration skill goes only to agents that can launch agents.
-    """
-    return {
-        "verify": VERIFY_PROMPT,
-        "state": STATE_PROMPT,
-        "orchestration": skill("orchestrate") if can_spawn(step.graph, step.agent) else None,
-    }
-
-
 def arguments(step: Step) -> dict[str, Any]:
     """The agent's arguments: its first root's inputs, apart from ``task``."""
     origin = step.agent.nodes()[0]
@@ -138,7 +124,6 @@ __all__ = [
     "VERIFY_PROMPT",
     "argument_manifest",
     "arguments",
-    "guidance",
     "preview",
     "skill",
 ]

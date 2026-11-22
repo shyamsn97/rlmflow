@@ -49,15 +49,15 @@ The node that ends a turn carries `seen` (how many of the agent's nodes its prom
 
 An agent is an `Agent`, a `Node` subclass: its first node, plus fields only an agent has:
 
-| Field              | Meaning                                                                                            |
-| ------------------ | -------------------------------------------------------------------------------------------------- |
-| `name`             | Unique among its siblings. `agent.path()` is `root.worker-0`.                                      |
-| `task`             | What it was asked; `agent.input` is `{"task": ..., **args}`.                                       |
-| `arg_descriptions` | From `Input(value, description=...)` arguments.                                                    |
-| `config_name`      | The `AgentConfig` it runs with (`None` for a top-level agent, which uses the run's `root_config`). |
-| `repl_id`          | The REPL, workspace and session it runs in: its own id, unless a fork gave it a new one.           |
-| `config`           | The config a Flow bound to it (`agent.bind_config(...)`).                                          |
-| `config_record`    | JSON of the config it last ran with, for viewers; never read back to run.                          |
+| Field              | Meaning                                                                                  |
+| ------------------ | ---------------------------------------------------------------------------------------- |
+| `name`             | Unique among its siblings. `agent.path()` is `root.worker-0`.                            |
+| `task`             | What it was asked; `agent.input` is `{"task": ..., **args}`.                             |
+| `arg_descriptions` | From `Input(value, description=...)` arguments.                                          |
+| `config_name`      | The name of the Flow config it runs with (`None` runs `"default"`).                      |
+| `repl_id`          | The REPL, workspace and session it runs in: its own id, unless a fork gave it a new one. |
+| `config`           | The config a Flow bound to it (`agent.bind_config(...)`).                                |
+| `config_record`    | JSON of the config it last ran with, for viewers; never read back to run.                |
 
 `agent.metadata` is the node's own application JSON. Every node has `owner` (its agent's id) and `seq`; the graph keeps an unsaved index from them, so there is no stored list of an agent's nodes. `agent.nodes()` returns them, the agent first, and `node.transcript()` returns its agent's nodes up to and including `node`: what the agent had seen there. `Step.latest(g, agent)` is the agent at its last node.
 

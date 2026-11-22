@@ -2,7 +2,7 @@
 
 Run directly to serve tools over MCP stdio:
 
-    python examples/providers/mcp_weather_server.py
+    python examples/features/mcp_weather_server.py
 """
 
 from __future__ import annotations

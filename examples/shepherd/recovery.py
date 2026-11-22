@@ -98,7 +98,7 @@ async def replayed_fork(
     branch = g.fork(cut)
     copy = branch.agent(worker.id)
     if extra_turns is not None:
-        turns = sum("seen" in node.data for node in cut.transcript())
+        turns = sum(node.ends_turn for node in cut.transcript())
         capped = replace(
             flow.config(worker.config_name),
             name=f"worker-{turns + extra_turns}-turns",

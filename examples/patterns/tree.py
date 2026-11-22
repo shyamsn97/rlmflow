@@ -1,9 +1,9 @@
 """Recursive tree: a root launches section agents, and each section launches two of its own.
 
-    python examples/architectures/tree.py --model gpt-5-mini
+    python examples/patterns/tree.py --model gpt-5-mini
 
-The run is saved under ``examples/_runs/architectures/tree``; render it with
-``rlmflow render gif examples/_runs/architectures/tree tree.gif``.
+The run is saved under ``examples/_runs/patterns/tree``; render it with
+``rlmflow render gif examples/_runs/patterns/tree tree.gif``.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def main() -> None:
     flow = Flow(configs=[AgentConfig(model=args.model, max_depth=2)])
     g = Graph()
     root = g.start(TASK)
-    out_dir = example_run_dir("architectures") / "tree"
+    out_dir = example_run_dir("patterns") / "tree"
     try:
         asyncio.run(print_run(flow, g, out_dir, width=28))
     finally:

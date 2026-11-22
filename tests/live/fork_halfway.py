@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "examples" / "needl
 from filesystem import NEEDLE_FILE_TOOLS, generate_haystack
 
 from rlmflow import AgentConfig, Flow, Graph, Node, SubprocessRuntime
-from rlmflow.consumers import GraphCheckpointer
+from rlmflow.consumers import Checkpoint
 from rlmflow.view.text import kind
 
 
@@ -52,40 +52,37 @@ def main() -> None:
                     description="cheap model for searching one batch of files",
                     max_depth=0,
                     max_iters=15,
-                )
+                ),
+                AgentConfig(name="lead", harness="claude_code"),
             ],
             runtime=SubprocessRuntime(working_directory=workdir),
             tools=NEEDLE_FILE_TOOLS,
         )
-        config = AgentConfig(harness="claude_code")
         g = Graph()
         root = g.start(
             f"There are {args.num_files} text files in haystack/. Exactly one line "
             "in one file matches `The magic number is <number>`. Find and return "
             "the number. Split the files into batches and give each batch to a "
             "searcher.",
+            config="lead",
         )
 
         def launched(step) -> bool:
             return step.agent.id == root.id and step.node.runs_code and bool(root.children())
 
         async def drive() -> None:
-            checkpointer = GraphCheckpointer(args.out_dir)
             try:
-                async for step in flow.run_streaming(g, until=launched, root_config=config):
-                    checkpointer.handle(step, g)
+                hooks = [Checkpoint(args.out_dir)]
+                async for step in flow.run_streaming(g, until=launched, hooks=hooks):
                     print(f"{step.agent.path():<20} {kind(step.node)}")
-                checkpointer.close()
                 launch = root.nodes()[-1]
                 workers = root.children()
                 print(f"\n--- forking at {launch.id} after {len(workers)} workers launched ---\n")
                 branch = g.fork(launch)
-                checkpointer = GraphCheckpointer(f"{args.out_dir}-fork")
-                async for step in flow.run_streaming(branch, root_config=config):
-                    checkpointer.handle(step, branch)
+                hooks = [Checkpoint(f"{args.out_dir}-fork")]
+                async for step in flow.run_streaming(branch, hooks=hooks):
                     print(f"{step.agent.path():<20} {kind(step.node)}")
             finally:
-                checkpointer.close()
                 await flow.aclose()
             report(g, branch, root, workers, answer)
 

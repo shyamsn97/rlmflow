@@ -159,8 +159,6 @@ class AgentConfig:
     output_schema: dict[str, Any] | None = None
     #: Harness-specific settings, e.g. Claude Code's ``{"mcp": True}``.
     harness_options: dict[str, Any] = field(default_factory=dict)
-    #: Whole-run soft token threshold. Crossing it gives every agent a final turn.
-    max_budget: int | None = None
     #: How many of the agent's own transcript turns a prompt carries; ``None`` keeps all.
     keep_n_messages: int | None = None
     max_output_length: int = DEFAULT_MAX_OUTPUT_CHARS

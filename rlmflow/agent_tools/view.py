@@ -8,6 +8,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
+from rlmflow.graph.queries import last_workspace
 from rlmflow.runtime.repl import AGENT_REF_KEY, AgentReference
 
 if TYPE_CHECKING:
@@ -92,6 +93,12 @@ class AgentHandle(AgentReference):
         return record.task if record is not None else None
 
     @property
+    def commit(self) -> str | None:
+        """A commit of this agent's files after its last code ran; ``None`` if it has no copy."""
+        record = self._record()
+        return record.commit if record is not None else None
+
+    @property
     def parent(self) -> AgentHandle | None:
         record = self._record()
         found = self._agents((record.parent_id,) if record and record.parent_id else ())
@@ -138,6 +145,7 @@ class AgentRecord:
     child_ids: tuple[str, ...]
     status: AgentStatus
     result: object | None = field(default=None, repr=False)
+    commit: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,13 +276,14 @@ def build_agent_directory(graph: Graph, viewer: Node) -> AgentDirectory:
             AgentRecord(
                 agent_id=agent.id,
                 name=agent.name,
-                config=agent.config_name or "root",
+                config=agent.config_name or "default",
                 path=agent.path(),
                 task=agent.task,
                 parent_id=parent.id if parent is not None else None,
                 child_ids=tuple(child.id for child in agent.children()),
                 status=status,  # type: ignore[arg-type]
                 result=_json_safe(agent.final_result()) if status == "done" else None,
+                commit=last_workspace(agent.nodes()),
             )
         )
     links = tuple(

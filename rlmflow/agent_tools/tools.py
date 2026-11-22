@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from rlmflow.graph.config import can_spawn
 from rlmflow.graph.nodes import Node, Step
+from rlmflow.workspaces import COMMIT
 
 if TYPE_CHECKING:
     from rlmflow.flow import Flow
@@ -24,9 +25,14 @@ def spawn(
     *,
     config: str | None = None,
     name: str | None = None,
+    workspace: Any = None,
     **args: Any,
 ) -> Node:
-    """Start an agent launched by the caller's running node."""
+    """Start an agent launched by the caller's running node.
+
+    ``workspace``: ``None`` (a copy of the caller's files), ``"shared"``, an
+    agent reference, or a commit.
+    """
     g, parent = step.graph, step.agent
     limits = step.config
     if not isinstance(task, str):
@@ -35,11 +41,20 @@ def spawn(
         raise ValueError(f"cannot start agents beyond max depth {limits.max_depth}")
     if len(task) > limits.max_query_chars:
         raise ValueError(f"task exceeds {limits.max_query_chars} characters")
-    if flow.budget_exhausted(g, parent):
-        raise RuntimeError("cannot start an agent after max_budget is exhausted")
     if config is not None and not isinstance(config, str):
         raise TypeError("agents started by an agent take a config name, not an AgentConfig")
-    return flow.spawn(step, task, config=config or "default", name=name, **args)
+    if workspace is not None and not (isinstance(workspace, str) and _plain(workspace)):
+        from rlmflow.agent_tools.view import resolve_agent
+
+        workspace = resolve_agent(g, workspace)
+    return flow.spawn(
+        step, task, config=config or "default", name=name, workspace=workspace, **args
+    )
+
+
+def _plain(workspace: str) -> bool:
+    """``"shared"`` or something shaped like a commit, rather than an agent's name."""
+    return workspace == "shared" or COMMIT.fullmatch(workspace) is not None
 
 
 def send(flow: Flow, step: Step, target: object, text: str, **inputs: Any) -> Node:
@@ -51,7 +66,7 @@ def send(flow: Flow, step: Step, target: object, text: str, **inputs: Any) -> No
     g = step.graph
     agent = resolve_agent(g, target)
     message = g.send(agent, f"From {step.agent.path()}: {text}", by=step.node, **inputs)
-    flow._land(message)
+    flow.land(message)
     return message
 
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 from helpers import finish, own, ran
@@ -20,8 +19,6 @@ from rlmflow.graph.nodes import (
     Node,
     record_metadata,
 )
-
-FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 def test_writes_assign_consecutive_seq():
@@ -362,7 +359,7 @@ def test_a_return_edge_marks_a_childs_result_as_seen():
 def test_save_and_load_round_trip_nodes_edges_histories_and_blobs(tmp_path):
     g = Graph()
     root = g.start("task", doc="x" * 70_000)
-    root.bind_config(AgentConfig(max_budget=500))
+    root.bind_config(AgentConfig(max_iters=500))
     record_metadata("experiment", "a", node=root)
     peer = g.start("peer", name="peer", config="worker")
     gone = g.link("peer", root, peer, w=1)
@@ -398,7 +395,7 @@ def test_save_and_load_round_trip_nodes_edges_histories_and_blobs(tmp_path):
     loaded_root = loaded.agent(root.id)
     assert loaded_root.input == {"task": "task", "doc": "x" * 70_000}
     assert loaded_root.config_name is None
-    assert loaded_root.config.max_budget == 500
+    assert loaded_root.config.max_iters == 500
     assert loaded_root.metadata == {"experiment": "a"}
     assert loaded.agent(peer.id).config_name == "worker"
     with pytest.raises(AttributeError, match="until a Flow runs it"):
@@ -472,30 +469,6 @@ def test_load_validates_that_every_node_belongs_to_an_agent(tmp_path):
         load(dangle)
 
 
-def test_load_reads_format_6_with_its_history_lists(tmp_path):
-    g = Graph()
-    root = g.start("task")
-    reply = g.append(root, Node("assistant", "hi"))
-    root.metadata["experiment"] = "a"
-    run = g.save(tmp_path / "run")
-    document = json.loads((run / "graph.json").read_text())
-    document["format"] = 6
-    for record in document["nodes"]:
-        record["data"]["producer"] = record.pop("producer")
-        if "agent" in record:
-            record["root"] = record.pop("agent")
-            record["root"]["history"] = [root.id, reply.id]
-            record["root"]["metadata"] = {"config": {"model": "old"}, "tag": "t"}
-    (run / "graph.json").write_text(json.dumps(document))
-
-    loaded = Graph.load(run)
-    agent = loaded.agent(root.id)
-    assert [n.id for n in agent.nodes()] == [root.id, reply.id]
-    assert agent.metadata == {"tag": "t", "experiment": "a"}
-    assert agent.config_record == {"model": "old"}
-    assert loaded.node(reply.id).producer == "self" and "producer" not in loaded.node(reply.id).data
-
-
 def test_a_saved_fork_keeps_where_it_came_from_and_its_repls(tmp_path):
     g = Graph()
     root = g.start("task")
@@ -508,44 +481,15 @@ def test_a_saved_fork_keeps_where_it_came_from_and_its_repls(tmp_path):
     assert repl == branch.agent(root.id).repl_id != root.id
 
 
-def test_load_refuses_a_run_with_fork_edges(tmp_path):
-    g = Graph()
-    root = g.start("task")
-    peer = g.start("peer", name="peer")
-    g.link("note", root, peer)
-    run = g.save(tmp_path / "run")
-    document = json.loads((run / "graph.json").read_text())
-    document["edges"][0]["kind"] = "fork"
-    (run / "graph.json").write_text(json.dumps(document))
-    with pytest.raises(GraphError, match="fork edge"):
-        Graph.load(run)
-
-
 def test_load_refuses_older_formats(tmp_path):
     g = Graph()
     g.start("task")
     run = g.save(tmp_path / "run")
     document = json.loads((run / "graph.json").read_text())
-    document["format"] = 3
+    document["format"] = 6
     (run / "graph.json").write_text(json.dumps(document))
-    with pytest.raises(ValueError, match="run format 3"):
+    with pytest.raises(ValueError, match="run format 6, and this rlmflow reads only format 7"):
         Graph.load(run)
-
-
-def test_load_refuses_a_format_5_run_with_agents_and_typed_nodes(tmp_path):
-    run = tmp_path / "run"
-    run.mkdir()
-    agent = {"id": "agent_a", "name": "root", "task": "t", "args": {}, "nodes": ["node_a"]}
-    node = {"id": "node_a", "type": "llm", "seq": 1, "data": {"text": "hi"}}
-    document = {"format": 5, "id": "graph_a", "agents": [agent], "nodes": [node], "edges": []}
-    (run / "graph.json").write_text(json.dumps(document))
-    with pytest.raises(ValueError, match="run format 5, and this rlmflow reads only formats 6, 7"):
-        Graph.load(run)
-
-
-def test_load_refuses_runs_saved_before_the_harness_refactor():
-    with pytest.raises(ValueError, match="run format 1"):
-        Graph.load(FIXTURES / "v1_tree_run")
 
 
 def test_copy_is_independent_and_keeps_ids():

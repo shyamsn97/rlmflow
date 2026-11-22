@@ -49,37 +49,33 @@ The directory holds `graph.json` (nodes and edges; see [The graph](node_model.md
 
 ## Live consumers
 
-`run_streaming` hands you each finished node as a `Step`, which is all a consumer needs. `rlmflow.consumers` is the small protocol for fanning that out:
+`run_streaming` hands you each finished node as a `Step`, which is all a consumer needs. Subclass `StreamConsumer` (`__call__(step)` and `close()`) and pass consumers as hooks: the stream calls each on every node before yielding it, including nodes you never saw because you stopped early, and closes them when it ends:
 
 ```python
-from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveTreeRenderer, StreamConsumer
+from rlmflow import Checkpoint, LiveTree, StreamConsumer
 from rlmflow.view.text import kind
 
 
 class Progress(StreamConsumer):
-    def handle(self, step, graph):
+    def __call__(self, step):
         print(step.agent.path(), kind(step.node), step.node.finished_at)
 
     def close(self):
         print("done")
 
 
-consumers = ConsumerGroup([LiveTreeRenderer(), Progress(), GraphCheckpointer("runs/shepherd")])
-try:
-    async for step in flow.run_streaming(g):
-        consumers.handle(step, g)
-finally:
-    consumers.close()
+async for step in flow.run_streaming(
+    g, hooks=[LiveTree(), Progress(), Checkpoint("runs/shepherd")]
+):
+    ...
 ```
 
-`handle(step, graph)` is the whole contract; `close()` is optional. `ConsumerGroup` fans a step out to each consumer in turn and closes them in reverse, suppressing errors from a close so one failing consumer cannot strand the others.
+Calling them yourself in the loop works too; then `close()` them after it.
 
 The shipped consumers are:
 
-- `LiveTreeRenderer`: clears and redraws a compact agent tree;
-- `LiveGraphTree`: a Rich live forest with status colors and spinners (falls back to the plain renderer without Rich or a terminal);
-- `GraphCheckpointer`: saves after two seconds or 50 nodes by default, and on every terminal node and on close; configure `interval_s` and `interval_nodes`, or call `flush()`;
-- `WorkspaceSync`: mirrors a sandbox working directory into a local copy.
+- `LiveTree`: a live agent tree, Rich with spinners in a terminal and plain text otherwise (`rich=False` forces plain text; `every_s=0` redraws on every node);
+- `Checkpoint`: saves after two seconds or 50 nodes by default, and on every terminal node and on close; configure `interval_s` and `interval_nodes`, or call `flush()`.
 
 ```text
 Find the needle across 500 files.

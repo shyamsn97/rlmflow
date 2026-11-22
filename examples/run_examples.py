@@ -25,6 +25,7 @@ import importlib.util
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -49,6 +50,8 @@ class Example:
     args: tuple[str, ...] = ()
     env: tuple[str, ...] = ()
     modules: tuple[str, ...] = ()
+    #: Executables that must be on PATH.
+    commands: tuple[str, ...] = ()
     timeout: int = 120
     stdin: str | None = None
     note: str = ""
@@ -65,7 +68,7 @@ class Example:
 EXAMPLES: list[Example] = [
     Example(
         "decentralized-peers",
-        "examples/collaboration/decentralized_peers.py",
+        "examples/patterns/peers.py",
         category="live",
         args=("--out-dir", "{tmp}/decentralized-peers"),
         env=("OPENAI_API_KEY",),
@@ -75,7 +78,7 @@ EXAMPLES: list[Example] = [
     ),
     Example(
         "shared-board-collaboration",
-        "examples/collaboration/shared_board.py",
+        "examples/patterns/board.py",
         category="live",
         args=(
             "--model",
@@ -96,7 +99,7 @@ EXAMPLES: list[Example] = [
     ),
     Example(
         "structured-output",
-        "examples/structured_output.py",
+        "examples/features/structured_output.py",
         category="live",
         args=("--max-iters", "8", "--out-dir", "{tmp}/structured-output"),
         env=("OPENAI_API_KEY",),
@@ -105,9 +108,9 @@ EXAMPLES: list[Example] = [
         note="uses a live model to validate root and child structured outputs",
     ),
     Example(
-        "showcase",
-        "examples/showcase.py",
-        args=("--out-dir", "{tmp}/showcase"),
+        "graph-tour",
+        "examples/graph/09_tour.py",
+        args=("--out-dir", "{tmp}/graph-tour"),
     ),
     Example("graph-query", "examples/graph/01_query.py"),
     Example("graph-navigate", "examples/graph/02_navigate.py"),
@@ -134,13 +137,13 @@ EXAMPLES: list[Example] = [
     Example("autoresearch-help", "examples/autoresearch/run.py", args=("--help",)),
     Example(
         "skills",
-        "examples/skills.py",
+        "examples/features/skills.py",
         args=("--scripted", "--print-prompt", "--out-dir", "{tmp}/skills"),
         note="agent installs a skill mid-run via add_skill; prompt grows next turn",
     ),
     Example(
         "skills-live",
-        "examples/skills.py",
+        "examples/features/skills.py",
         category="live",
         args=("--out-dir", "{tmp}/skills-live"),
         env=("OPENAI_API_KEY",),
@@ -193,8 +196,25 @@ EXAMPLES: list[Example] = [
         timeout=300,
     ),
     Example(
+        "needle-claude-plugin",
+        "examples/needle/claude_plugin.py",
+        category="live",
+        args=(
+            "--workers",
+            "claude_code",
+            "--num-files",
+            "20",
+            "--out-dir",
+            "{tmp}/needle-plugin",
+        ),
+        modules=("claude_agent_sdk",),
+        commands=("claude",),
+        timeout=600,
+        note="your Claude Code session as the root, through the plugin, with Claude Code searchers",
+    ),
+    Example(
         "mcp-weather",
-        "examples/providers/mcp_weather.py",
+        "examples/features/mcp_tools.py",
         category="live",
         args=("--max-iters", "8", "--out-dir", "{tmp}/mcp-weather"),
         env=("OPENAI_API_KEY",),
@@ -204,7 +224,7 @@ EXAMPLES: list[Example] = [
     ),
     Example(
         "sandbox-docker",
-        "examples/sandboxes/platformer.py",
+        "examples/features/sandboxes.py",
         category="sandbox",
         args=("--runtime", "docker", "--max-iters", "2", "--out-dir", "{tmp}/sandbox-docker"),
         env=("OPENAI_API_KEY",),
@@ -213,7 +233,7 @@ EXAMPLES: list[Example] = [
     ),
     Example(
         "sandbox-modal",
-        "examples/sandboxes/platformer.py",
+        "examples/features/sandboxes.py",
         category="sandbox",
         args=("--runtime", "modal", "--max-iters", "2", "--out-dir", "{tmp}/sandbox-modal"),
         env=("OPENAI_API_KEY",),
@@ -266,6 +286,9 @@ def skip_reason(example: Example) -> str | None:
     missing_modules = [name for name in example.modules if not module_exists(name)]
     if missing_modules:
         return "missing modules: " + ", ".join(missing_modules)
+    missing_commands = [name for name in example.commands if shutil.which(name) is None]
+    if missing_commands:
+        return "not on PATH: " + ", ".join(missing_commands)
     if not (REPO_ROOT / example.path).exists():
         return "missing path"
     return None

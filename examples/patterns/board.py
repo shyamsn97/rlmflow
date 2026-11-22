@@ -10,7 +10,7 @@ made it: the saved run records what every worker saw, and a rebuilt REPL replays
 it instead of calling the board again.
 
 Example:
-    python examples/collaboration/shared_board.py \
+    python examples/patterns/board.py \
       --model gpt-5-mini --workers 3 \
       --task "API::Propose the public API and its invariants." \
       --task "Tests::Design concurrency and termination tests."
@@ -25,7 +25,7 @@ import sys
 import threading
 from pathlib import Path
 
-from rlmflow import AgentConfig, Flow, Graph, GraphCheckpointer, tool
+from rlmflow import AgentConfig, Checkpoint, Flow, Graph, tool
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -106,13 +106,10 @@ def task_id(subject: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", subject.casefold()).strip("_") or "task"
 
 
-async def run(flow: Flow, g: Graph, out_dir: str, config: AgentConfig) -> None:
-    checkpointer = GraphCheckpointer(out_dir)
+async def run(flow: Flow, g: Graph, out_dir: str) -> None:
     try:
-        async for item in flow.run_streaming(g, root_config=config):
-            checkpointer.handle(item, g)
+        await flow.arun(g, hooks=[Checkpoint(out_dir)])
     finally:
-        checkpointer.close()
         flow.runtime.close_repls()
 
 
@@ -140,8 +137,12 @@ def main() -> None:
     for i in range(args.workers):
         g.start(WORKER, name=f"worker_{i}")
 
-    flow = Flow(workers=args.workers, tools=board.tools())
-    asyncio.run(run(flow, g, args.out_dir, AgentConfig(model=args.model, max_iters=args.max_iters)))
+    flow = Flow(
+        workers=args.workers,
+        tools=board.tools(),
+        configs=[AgentConfig(model=args.model, max_iters=args.max_iters)],
+    )
+    asyncio.run(run(flow, g, args.out_dir))
 
     print("board:")
     for tid, task in board.tasks.items():

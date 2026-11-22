@@ -58,7 +58,7 @@ def main() -> None:
 
     config = AgentConfig(model="scripted", max_iters=6)
     flow = Flow(llm_clients={"scripted": ScriptedLLM()}, configs=[config])
-    flow.run(g, root_config=config)
+    flow.run(g)
     flow.runtime.close()
 
     print()

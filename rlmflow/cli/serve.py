@@ -71,7 +71,7 @@ class Serve:
         root_config: AgentConfig | None = None,
         session_id: str | None = None,
     ) -> None:
-        from rlmflow.consumers import GraphCheckpointer
+        from rlmflow.consumers import Checkpoint
 
         self.flow, self.graph = flow, graph
         self.graph_dir = Path(graph_dir)
@@ -80,8 +80,10 @@ class Serve:
         self.root_config = flow.add_config(
             interactive_config(root_config or flow.configs["default"])
         )
+        if self.root is not None and self.root.config_name is None:
+            self.root.config_name = self.root_config.name
         self.session_id = session_id or (last_session(graph, self.root) if self.root else None)
-        self.checkpointer = GraphCheckpointer(self.graph_dir)
+        self.checkpointer = Checkpoint(self.graph_dir)
         self.wakeup = asyncio.Event()
         self.stopping = asyncio.Event()
         self.draining = False
@@ -163,8 +165,7 @@ class Serve:
 
     async def _stream(self) -> None:
         try:
-            async for step in self.flow.run_streaming(self.graph, root_config=self.root_config):
-                self.checkpointer.handle(step, self.graph)
+            await self.flow.arun(self.graph, hooks=[self.checkpointer])
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - serve outlives a failed run
@@ -174,7 +175,7 @@ class Serve:
     def kick(self) -> None:
         """New work: wake the running loop, or start the next one."""
         self.wakeup.set()
-        self.flow.wake()
+        self.flow.wake(self.graph)
 
     # -- the hooks' routes --------------------------------------------------
 
@@ -189,7 +190,7 @@ class Serve:
             return {"bound": False}
         if self.root is None:
             task = text.removeprefix(RUN_COMMAND).strip() if text.startswith(RUN_COMMAND) else text
-            self.root = self.graph.start(task, name="root")
+            self.root = self.graph.start(task, name="root", config=self.root_config.name)
             self.agent_token = self.flow.agent_tools.attach(self.root)
         elif self.flow.agent_tools.open_turn(self.root) is None:
             self.graph.send(self.root, text, sender="user")
@@ -242,7 +243,7 @@ class Serve:
         landed = await until(lambda: self._turn_end_since(mark), LAND_TIMEOUT)
         if landed is None:
             raise RuntimeError(f"the root's turn did not land: {self.error or 'timed out'}")
-        ended = "idle" if landed.data.get("idle") else "done"
+        ended = "idle" if landed.idle else "done"
         reply: dict[str, Any] = {"bound": True, "landed": ended}
         if ended == "idle":
             timeout = float(body.get("timeout", STOP_WAIT))
@@ -255,10 +256,11 @@ class Serve:
     async def shutdown(self, body: dict[str, Any]) -> dict[str, Any]:
         if body.get("session_id") != self.session_id:
             return {"bound": False}
-        if self.root is not None and self.root.status() == "done" and self.flow.tasks:
+        stream = self.flow._streams.get(self.graph.id)
+        if self.root is not None and self.root.status() == "done" and stream and stream.tasks:
             self.draining = True
             self.release_serve_file()
-            return {"bound": True, "stopping": True, "draining": len(self.flow.tasks)}
+            return {"bound": True, "stopping": True, "draining": len(stream.tasks)}
         asyncio.get_running_loop().call_later(0.05, self.stopping.set)
         return {"bound": True, "stopping": True}
 
@@ -266,7 +268,7 @@ class Serve:
         for node in reversed(self.root.nodes()):
             if node.seq < mark:
                 return None
-            if "seen" in node.data and node.data.get("session_id"):
+            if node.ends_turn and node.data.get("session_id"):
                 return node
         return None
 
@@ -326,7 +328,7 @@ def last_session(graph: Graph, agent: Node) -> str | None:
     """
     repl = repl_key(agent)
     for node in reversed(agent.nodes()):
-        if "seen" in node.data and node.data.get("session_id"):
+        if node.ends_turn and node.data.get("session_id"):
             return node.data["session_id"] if node.data.get("repl", node.owner) == repl else None
     return None
 

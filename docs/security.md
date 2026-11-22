@@ -33,7 +33,7 @@ Independent of the runtime:
 
 - `max_depth=1` — recursion limit.
 - `max_iters=None` — LLM calls per agent (set a number to cap).
-- `max_budget=None` — soft whole-run token threshold; exhaustion allows in-flight calls and one bottom-up final turn per unfinished agent.
+- `flow.run(g, hooks=[Budget(tokens=..., usd=..., seconds=...)])` — a soft whole-run limit; turns in flight and one final turn per unfinished agent can go over.
 - `max_output_length=20_000` — truncate oversized stdout (official RLM's per-block cap).
 - `Flow(workers=n)` — cap concurrent model calls.
 

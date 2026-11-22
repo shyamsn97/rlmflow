@@ -82,9 +82,9 @@ class MCPTools:
     def _tool(self, session: Any, spec: Any) -> Any:
         async def call(arguments: dict[str, Any]) -> Any:
             result = await session.call_tool(spec.name, arguments)
-            if _field(result, "is_error", "isError"):
+            if result.is_error:
                 raise RuntimeError(_text(result) or f"MCP tool {spec.name} failed")
-            structured = _field(result, "structured_content", "structuredContent")
+            structured = result.structured_content
             if structured is not None:
                 return structured
             text = _text(result)
@@ -96,14 +96,9 @@ class MCPTools:
         return tool_from_schema(
             self.prefix + spec.name,
             spec.description or f"Call MCP tool {spec.name}.",
-            _field(spec, "input_schema", "inputSchema"),
+            spec.input_schema,
             call,
         )
-
-
-def _field(value: Any, name: str, legacy: str) -> Any:
-    # mcp 2.x renamed the 1.x camelCase fields.
-    return getattr(value, name, getattr(value, legacy, None))
 
 
 def _text(result: Any) -> str:

@@ -30,35 +30,41 @@ Pass `until="next"` for one of an agent's own nodes, `until="idle"` to stop at t
 
 ## Per-agent limits
 
-Limits belong to a config, and the Flow owns the configs. Roots run with the run's `root_config`; everything else names one of `flow.configs`.
+Limits belong to a config, and the Flow owns the configs. Every agent names one of `flow.configs`; an agent that names none runs `"default"`.
 
 The `AgentConfig` defaults are:
 
 - `max_depth=1`;
-- `max_iters=None` and `max_budget=None` (unbounded turns and tokens);
+- `max_iters=None` (unbounded turns);
 - `keep_n_messages=None`, meaning prompts retain the full transcript;
 - `max_output_length=20_000` and `max_query_chars=20_000`.
 
-`max_budget` is a soft threshold over recorded model usage for the whole run below the root. Once crossed, new launches stop and every unfinished agent gets one final turn. Calls already in flight plus one final turn per unfinished agent can exceed the threshold.
-
 ```python
-g = Graph()
-root = g.start("Audit this repository.", tree=listing)
-flow.run(
-    g,
-    root_config=AgentConfig(
-        model="gpt-5-mini", max_depth=2, max_iters=20, max_budget=200_000, output_schema=schema
-    ),
+flow = Flow(
+    configs=[
+        AgentConfig(model="gpt-5-mini", max_depth=2, max_iters=20, output_schema=schema),
+    ]
 )
+g = Graph()
+g.start("Audit this repository.", tree=listing)
+flow.run(g)
 ```
 
-`root_config` is an `AgentConfig`, the name of one of the Flow's configs, or `None` for `"default"`. It applies to that call only, so the same graph can continue with different settings:
+A config can't change for one call. To run the same graph on different settings, give the Flow another config and point the agent at it with `g.start(task, config=NAME)`, or use a different Flow.
+
+### Run budgets
+
+A `Budget` limits one run as a whole: tokens and dollars across the graph, and seconds.
 
 ```python
-g = Graph.load("runs/audit")
-g.send(g.roots()[0], "Now check the tests too.")
-flow.run(g, root_config=AgentConfig(max_depth=2, max_iters=40))
+from rlmflow import Budget
+
+flow.run(g, hooks=[Budget(tokens=200_000, seconds=600)])
 ```
+
+Near the limit, new launches fail and every unfinished agent gets one final turn to give its best answer. At the limit, a token or dollar budget ends each agent after that turn with the result `{"stopped": "budget spent"}`, and a time budget stops whatever is still running, even mid-tool. Spend is recorded when a turn ends, so turns already in flight can go over.
+
+`Budget` is a hook like any other; write your own policy the same way (see [Streaming](streaming.md#hooks)).
 
 Each agent records the config it last ran with in `agent.config_record`. That copy is for viewers and is never read back to drive a run.
 
@@ -73,7 +79,7 @@ flow = Flow(
         AgentConfig(name="worker", model="gpt-5-mini", description="cheap and fast"),
     ],
 )
-flow.run("Audit this repository.", root_config=AgentConfig(model="gpt-5", max_depth=2))
+flow.run("Audit this repository.", config="worker")
 ```
 
 `model` is a model name; the Flow builds and caches its client. Register a client in `llm_clients` only when a name can't describe it (a reasoning effort, a base URL), under the name configs use: `Flow(llm_clients={"fast": client_for("gpt-5-mini", reasoning_effort="low")})` and `AgentConfig(model="fast")`. `flow.add_config(config)` adds one later; an unknown name is a `KeyError` when the Flow reaches that agent. `g.start(task, config="worker")` puts a top-level agent on a named config.
@@ -227,15 +233,12 @@ flow.run(g)
 
 Loading restores the graph, not the REPLs. The first time a Flow steps an agent whose REPL it doesn't hold, it rebuilds it by running the agent's nodes again: tool calls with saved results return them, launches resolve to the existing children, and `llm_query` doesn't repeat a request. Nothing is appended; `ENV["RLMFLOW_REPLAY"]` is `"1"` while it happens, so agent code can skip other work it shouldn't repeat.
 
-To checkpoint as a run goes, use the periodic consumer:
+To checkpoint as a run goes, pass a `Checkpoint` hook:
 
 ```python
-from rlmflow import GraphCheckpointer
+from rlmflow import Checkpoint
 
-checkpoint = GraphCheckpointer("runs/audit", interval_s=5, interval_nodes=25)
-async for step in flow.run_streaming(g):
-    checkpoint.handle(step, g)
-checkpoint.close()
+flow.run(g, hooks=[Checkpoint("runs/audit", interval_s=5, interval_nodes=25)])
 ```
 
 ## Tools
@@ -286,7 +289,7 @@ forecast = tool_from_schema(
 )
 ```
 
-Tools that need a live resource come as a `Toolkit`: any object with `async open() -> tools` and `async close()`. The Flow opens it when a run starts and closes it when the run ends. `MCPTools` exposes every tool on an MCP stdio server this way:
+Tools that need a live resource come as a `Toolkit`: any object with `async open() -> tools` and `async close()`. Each stream opens its own copy when it starts and closes it when it ends, so two graphs streaming at once never share a connection. `MCPTools` exposes every tool on an MCP stdio server this way:
 
 ```python
 from rlmflow.integrations.mcp import MCPTools
@@ -306,7 +309,7 @@ def fetch_record(key: str) -> dict:
 
 Every saved call can be replaced from host code with `g.replace(node, index, value)`, where `index` is the call's position in `node.calls`.
 
-Add or remove tools later; both reach REPLs that are already open:
+Add or remove tools later; each REPL binds exactly the current tools whenever it runs code, so both reach REPLs that are already open:
 
 ```python
 flow.add_tool(my_tool)

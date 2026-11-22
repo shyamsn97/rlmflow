@@ -90,8 +90,9 @@ class AgentToolsServer:
         self.url: str | None = None
         self._server: asyncio.Server | None = None
         self._turns: dict[str, Turn] = {}
-        self._agent_tokens: dict[str, str] = {}
-        self._open: dict[str, Turn] = {}
+        #: Attach tokens, and open turns, by (graph id, agent id): forks keep agent ids.
+        self._agent_tokens: dict[str, tuple[str, str]] = {}
+        self._open: dict[tuple[str, str], Turn] = {}
         self.host: Host | None = None
         self.host_token: str | None = None
 
@@ -123,25 +124,26 @@ class AgentToolsServer:
             # `rlmflow` on the session's PATH runs this Python, installed or not.
             "PATH": f"{self._bin.name}{os.pathsep}{os.environ.get('PATH', '')}",
         }
+        key = (step.graph.id, step.agent.id)
         self._turns[token] = turn
-        self._open[step.agent.id] = turn
+        self._open[key] = turn
         try:
             yield turn
         finally:
             self._turns.pop(token, None)
-            if self._open.get(step.agent.id) is turn:
-                del self._open[step.agent.id]
+            if self._open.get(key) is turn:
+                del self._open[key]
             if not turn.ended.done():
                 turn.ended.cancel()
 
-    def open_turn(self, agent: Node | str) -> Turn | None:
-        """The turn ``agent`` has open, if any."""
-        return self._open.get(agent if isinstance(agent, str) else agent.id)
+    def open_turn(self, agent: Node) -> Turn | None:
+        """The turn ``agent`` has open in its graph, if any."""
+        return self._open.get((agent.graph.id, agent.id))
 
     def attach(self, agent: Node) -> str:
         """A token that acts for whichever turn of ``agent`` is open."""
         token = secrets.token_urlsafe(24)
-        self._agent_tokens[token] = agent.id
+        self._agent_tokens[token] = (agent.graph.id, agent.id)
         return token
 
     def serve(self, host: Host) -> str:

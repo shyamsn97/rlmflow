@@ -7,7 +7,6 @@ prints the answer.
 
 from __future__ import annotations
 
-import asyncio
 import importlib
 import os
 import sys
@@ -194,12 +193,11 @@ def require_api_key(model: str, environ: dict[str, str] | None = None) -> None:
 def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> None:
     """Stream one query, printing the tree as it grows."""
     from rlmflow import Graph
-    from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveTreeRenderer
+    from rlmflow.consumers import Checkpoint, LiveTree
 
     if graph is None and not query:
         raise CliError("nothing to run: pass a query, or --resume a saved run")
-    consumers = ConsumerGroup([LiveTreeRenderer(), GraphCheckpointer(graph_dir)])
-    consumers.init(flow)
+    hooks = [LiveTree(rich=False, every_s=0), Checkpoint(graph_dir)]
     if graph is None:
         graph = Graph()
         agent = graph.start(query or "")
@@ -208,14 +206,9 @@ def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> 
         if query:
             _ask(graph, query)
 
-    async def stream() -> None:
-        async for item in flow.run_streaming(graph):
-            consumers.handle(item, graph)
-
     try:
-        asyncio.run(stream())
+        flow.run(graph, hooks=hooks)
     finally:
-        consumers.close()
         flow.runtime.close_repls()
     print(f"\n{agent.final_result() or '(no result)'}\n")
 

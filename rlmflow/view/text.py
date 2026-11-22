@@ -15,9 +15,9 @@ def kind(node: Node) -> str:
         return "agent"
     if node.role == "user":
         return "message"
-    if node.data.get("terminal"):
+    if node.terminal:
         return "done"
-    if node.data.get("idle"):
+    if node.idle:
         return "idle"
     if "model" in node.data:
         return "model"
@@ -51,7 +51,7 @@ def _append_agent(graph: Graph, lines: list[str], agent: Node, *, prefix: str, l
 
 def _status(graph: Graph, agent: Node) -> str:
     frontier = agent.nodes()[-1]
-    turns = sum("seen" in node.data for node in agent.nodes())
+    turns = sum(node.ends_turn for node in agent.nodes())
     suffix = f" ({turns} turns)" if turns else ""
     path = agent.path()
     status = agent.status()

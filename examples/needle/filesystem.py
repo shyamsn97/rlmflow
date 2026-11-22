@@ -31,7 +31,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from rlmflow import AgentConfig, DockerRuntime, Flow, Graph, SubprocessRuntime
-from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
+from rlmflow.consumers import Checkpoint, LiveTree
 from rlmflow.tools.files import (
     append_file,
     edit_file,
@@ -136,22 +136,22 @@ def run_one(root_harness: str, worker_harness: str, args: argparse.Namespace) ->
             else SubprocessRuntime(working_directory=workdir),
             tools=NEEDLE_FILE_TOOLS,
         )
-        root_config = config(root_harness, args, max_depth=1, max_iters=args.max_iters)
+        flow.add_config(
+            config(root_harness, args, name="lead", max_depth=1, max_iters=args.max_iters)
+        )
 
         g = Graph()
-        root = g.start(TASK.format(n=args.num_files))
-        consumers = ConsumerGroup([GraphCheckpointer(saved)])
+        root = g.start(TASK.format(n=args.num_files), config="lead")
+        consumers = [Checkpoint(saved)]
         if not args.no_viz:
             consumers.append(
-                LiveGraphTree(title=f"needle: {root_harness} root, {worker_harness} workers")
+                LiveTree(title=f"needle: {root_harness} root, {worker_harness} workers")
             )
 
         async def drive() -> None:
             try:
-                async for step in flow.run_streaming(g, root_config=root_config):
-                    consumers.handle(step, g)
+                await flow.arun(g, hooks=consumers)
             finally:
-                consumers.close()
                 await flow.aclose()
 
         started = time.monotonic()

@@ -74,7 +74,10 @@ def label_for(trial: dict, by_slug: dict[str, dict] | None = None) -> str:
 
     Each hop is a change stacked on the previous solution, so the label traces
     the whole path back to the baseline rather than showing one parent hop.
+    A trial's own short ``change`` description wins when it has one.
     """
+    if trial.get("change"):
+        return str(trial["change"])
     if by_slug is None:
         return _slug_words(_trial_slug(trial))
     chain = lineage_for(trial, by_slug)
@@ -111,12 +114,19 @@ def compute_kept(
     return discarded, kept, steps
 
 
+def counts(trials: list[dict], kept: list[dict], baseline: float | None) -> str:
+    """``"32 Experiments, 7 Kept Improvements"``, not counting the baseline itself."""
+    extra = 1 if baseline is not None else 0
+    return f"{len(trials) - extra} Experiments, {len(kept) - extra} Kept Improvements"
+
+
 def plot_matplotlib(
     trials: list[dict],
     *,
     title: str,
     out: Path,
     skip_slugs: set[str] | None = None,
+    baseline: float | None = None,
 ) -> None:
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
@@ -161,9 +171,23 @@ def plot_matplotlib(
         step_y.append(steps[-1][1])
         ax.plot(step_x, step_y, color="#16a34a", linewidth=2.2, zorder=3)
 
-    for trial in kept:
+    if baseline is not None:
+        ax.axhline(baseline, color="#6b7280", linestyle="--", linewidth=1.2, zorder=1)
         ax.annotate(
-            "\n".join(wrap_label(label_for(trial, by_slug))),
+            f"baseline {baseline:.3f}",
+            xy=(xs[-1], baseline),
+            xytext=(0, 4),
+            textcoords="offset points",
+            fontsize=8,
+            color="#4b5563",
+            ha="right",
+            va="bottom",
+        )
+
+    for trial in kept:
+        label = label_for(trial, by_slug)
+        ax.annotate(
+            label if trial.get("change") else "\n".join(wrap_label(label)),
             xy=(int(trial["experiment"]), float(trial["val_bpb"])),
             xytext=(6, 8),
             textcoords="offset points",
@@ -177,7 +201,7 @@ def plot_matplotlib(
         )
 
     ax.set_title(
-        f"{title}\n{len(trials)} Experiments, {len(kept)} Kept Improvements",
+        f"{title}\n{counts(trials, kept, baseline)}",
         fontsize=14,
         fontweight="bold",
         pad=12,
@@ -208,13 +232,18 @@ def plot_matplotlib(
                 label="Kept",
             ),
             Line2D([0], [0], color="#16a34a", linewidth=2.2, label="Running best"),
+            *(
+                [Line2D([0], [0], color="#6b7280", linestyle="--", linewidth=1.2, label="Baseline")]
+                if baseline is not None
+                else []
+            ),
         ],
         loc="upper right",
         framealpha=0.95,
     )
     fig.tight_layout()
     out.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out)
+    fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -224,6 +253,7 @@ def plot_svg(
     title: str,
     out: Path,
     skip_slugs: set[str] | None = None,
+    baseline: float | None = None,
 ) -> None:
     import html
 
@@ -256,8 +286,7 @@ def plot_svg(
         f'<text x="{width / 2}" y="28" text-anchor="middle" font-family="sans-serif" '
         f'font-size="20" font-weight="bold">{html.escape(title)}</text>',
         f'<text x="{width / 2}" y="50" text-anchor="middle" font-family="sans-serif" '
-        f'font-size="13" fill="#374151">{len(trials)} Experiments, '
-        f"{len(kept)} Kept Improvements</text>",
+        f'font-size="13" fill="#374151">{counts(trials, kept, baseline)}</text>',
     ]
     for tick in range(5):
         value = y0 + tick * (y1 - y0) / 4
@@ -278,6 +307,17 @@ def plot_svg(
         f'<text x="{left + plot_w / 2}" y="{height - 18}" text-anchor="middle" '
         'font-family="sans-serif" font-size="13">Experiment #</text>'
     )
+
+    if baseline is not None:
+        by = y_at(baseline)
+        parts.append(
+            f'<line x1="{left}" y1="{by:.1f}" x2="{left + plot_w}" y2="{by:.1f}" '
+            'stroke="#6b7280" stroke-width="1.2" stroke-dasharray="6 4"/>'
+        )
+        parts.append(
+            f'<text x="{left + plot_w - 4}" y="{by - 5:.1f}" text-anchor="end" '
+            f'font-family="sans-serif" font-size="11" fill="#4b5563">baseline {baseline:.3f}</text>'
+        )
 
     if steps:
         poly = [f"{x_at(steps[0][0]):.1f},{y_at(steps[0][1]):.1f}"]
@@ -456,13 +496,24 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument(
         "--title",
-        default="Tiny Autoresearch - (TinyStories + GPT2)",
+        default="Recursive Autoresearcher",
     )
     parser.add_argument(
         "--skip",
         nargs="*",
         default=["bigger_micro_batch_x2", "lr_up_3x"],
         help="Slugs to omit from kept/running-best (still shown as discarded).",
+    )
+    parser.add_argument(
+        "--gpu",
+        default=None,
+        help="Start from baselines/<gpu>.json: a baseline point and a dashed baseline line.",
+    )
+    parser.add_argument(
+        "--labels",
+        type=Path,
+        default=None,
+        help='JSON {slug: label} for kept points, for runs whose rows have no "change".',
     )
     args = parser.parse_args()
     run_dir = args.run_dir.resolve()
@@ -474,14 +525,28 @@ def main() -> None:
     if not trials:
         raise SystemExit("no succeeded trials with val_bpb in ledger")
 
+    if args.labels:
+        labels = json.loads(args.labels.read_text())
+        for trial in trials:
+            trial["change"] = labels.get(_trial_slug(trial), trial.get("change"))
+    baseline = None
+    if args.gpu:
+        seed = Path(__file__).resolve().parent / "baselines" / f"{args.gpu}.json"
+        baseline = float(json.loads(seed.read_text())["val_bpb"])
+        for trial in trials:
+            trial["experiment"] += 1
+        trials.insert(
+            0, {"slug": "baseline", "change": "baseline", "val_bpb": baseline, "experiment": 0}
+        )
+
     skip_slugs = set(args.skip or [])
     out = (args.out or (run_dir / "progress.png")).resolve()
     try:
-        plot_matplotlib(trials, title=args.title, out=out, skip_slugs=skip_slugs)
+        plot_matplotlib(trials, title=args.title, out=out, skip_slugs=skip_slugs, baseline=baseline)
         print(f"wrote {out}")
     except Exception as exc:  # noqa: BLE001
         svg_out = out.with_suffix(".svg") if out.suffix.lower() != ".svg" else out
-        plot_svg(trials, title=args.title, out=svg_out, skip_slugs=skip_slugs)
+        plot_svg(trials, title=args.title, out=svg_out, skip_slugs=skip_slugs, baseline=baseline)
         print(f"matplotlib unavailable ({type(exc).__name__}: {exc})")
         print(f"wrote {svg_out}")
 

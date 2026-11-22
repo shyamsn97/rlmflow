@@ -43,7 +43,7 @@ def claude_code_workers() -> Flow:
     )
 
 
-def repl_workers(workdir: Path, *, max_budget: int | None = None) -> Flow:
+def repl_workers(workdir: Path) -> Flow:
     return Flow(
         configs=[
             AgentConfig(
@@ -51,7 +51,6 @@ def repl_workers(workdir: Path, *, max_budget: int | None = None) -> Flow:
                 model=model(),
                 description="An agent with a Python REPL and file tools, in the same directory.",
                 max_iters=40,
-                max_budget=max_budget,
             )
         ],
         tools=[FILE_TOOLS],

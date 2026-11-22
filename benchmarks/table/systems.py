@@ -152,19 +152,18 @@ def claude_rlmflow(task: str, workdir: Path, limits: Limits, model: str) -> Outc
 def rlmflow(task: str, workdir: Path, limits: Limits, model: str) -> Outcome:
     """rlmflow's REPL harness as the root, billed to ``ANTHROPIC_API_KEY``."""
     from benchmarks.table.flows import repl_workers
-    from rlmflow import Graph, GraphCheckpointer
+    from rlmflow import Budget, Checkpoint, Graph
 
     os.environ["RLMFLOW_BENCH_MODEL"] = model
-    flow = repl_workers(workdir, max_budget=tokens_for(limits.budget_usd, model))
+    flow = repl_workers(workdir)
+    budget = Budget(tokens=tokens_for(limits.budget_usd, model))
     g = Graph()
     root = g.start(task)
     run_dir = workdir / ".rlmflow" / "runs" / "repl"
-    checkpointer = GraphCheckpointer(str(run_dir))
     error = None
 
     async def drive() -> None:
-        async for item in flow.run_streaming(g):
-            checkpointer.handle(item, g)
+        await flow.arun(g, hooks=[budget, Checkpoint(str(run_dir))])
 
     start = time.monotonic()
     try:
@@ -172,7 +171,6 @@ def rlmflow(task: str, workdir: Path, limits: Limits, model: str) -> Outcome:
     except TimeoutError:
         error = "timeout"
     finally:
-        checkpointer.close()
         flow.runtime.close_repls()
     result = root.final_result()
     return Outcome(

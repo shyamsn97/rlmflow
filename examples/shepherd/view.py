@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from rlmflow import Edge, Flow, Graph, Node, Step
+from rlmflow import Flow, Graph, Node, Step
 from rlmflow.consumers import StreamConsumer
 from rlmflow.view.text import kind
 
@@ -184,9 +184,9 @@ class PanelViewer(StreamConsumer):
         if key in self._labels:
             self._labels[key] = label
 
-    def handle(self, item: Step | Node | Edge, graph: Graph) -> None:
-        item = item.node if isinstance(item, Step) else item
-        if self._closed or not isinstance(item, Node):
+    def __call__(self, step: Step) -> None:
+        graph, item = step.graph, step.node
+        if self._closed:
             return
         agents = [a for a in graph.agents() if lane_key(graph, a) in self._root_labels]
         for agent in agents:

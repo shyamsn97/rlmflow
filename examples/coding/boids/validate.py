@@ -78,24 +78,27 @@ def _browser_smoke(entrypoint: Path, screenshot: Path | None) -> tuple[bool, str
     target = screenshot or entrypoint.parent / "boids-smoke.png"
     target = target.resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(
-        [
-            chrome,
-            "--headless=new",
-            "--disable-gpu",
-            "--hide-scrollbars",
-            "--allow-file-access-from-files",
-            "--enable-logging=stderr",
-            "--v=1",
-            "--virtual-time-budget=3000",
-            "--window-size=1280,720",
-            f"--screenshot={target}",
-            entrypoint.resolve().as_uri(),
-        ],
-        text=True,
-        capture_output=True,
-        timeout=30,
-    )
+    try:
+        proc = subprocess.run(
+            [
+                chrome,
+                "--headless=new",
+                "--disable-gpu",
+                "--hide-scrollbars",
+                "--allow-file-access-from-files",
+                "--enable-logging=stderr",
+                "--v=1",
+                "--virtual-time-budget=3000",
+                "--window-size=1280,720",
+                f"--screenshot={target}",
+                entrypoint.resolve().as_uri(),
+            ],
+            text=True,
+            capture_output=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "Chrome did not finish loading the page within 30s"
     console_errors = [
         line
         for line in proc.stderr.splitlines()

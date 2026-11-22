@@ -12,16 +12,18 @@ and keyboard nav — so it works with no server and no network.
 
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import Agent, Node
+from rlmflow.graph.nodes import IMAGES_KEY, Agent, Node
 from rlmflow.view.figure import BG, DIM, INK, graph_svg, node_color, run_title, step_svg
 from rlmflow.view.text import kind
-from rlmflow.view.timeline import Step, as_graph, node_detail, steps, timeline
+from rlmflow.view.timeline import TimelineEntry, as_graph, node_detail, steps, timeline
 
 _CSS = (
     """
@@ -103,7 +105,8 @@ function show(i) {
   }
   counts.textContent = ' \\u00b7 ' + (at + 1) + ' nodes \\u00b7 ' + edges + ' edges';
   panel.innerHTML = '<div class="kind" style="color:' + f.color + '">' + f.kind + '</div>'
-    + '<div class="meta">' + f.meta + '</div><pre>' + f.detail + '</pre>';
+    + '<div class="meta">' + f.meta + '</div><pre>' + f.detail + '</pre>'
+    + (f.images || []).map(src => '<img src="' + src + '" style="max-width:100%;margin-top:8px"/>').join('');
   count.textContent = 'step ' + (at + 1) + ' of ' + frames.length;
   prev.disabled = at === 0;
   next.disabled = at === frames.length - 1;
@@ -138,11 +141,14 @@ if (dots) {
 show(at);
 """
 
+#: Larger images are left out of the page.
+MAX_IMAGE_BYTES = 2_000_000
+
 # Past this many steps the dot strip is more wall than navigation.
 DOT_LIMIT = 120
 
 
-def _meta(step: Step) -> str:
+def _meta(step: TimelineEntry) -> str:
     bits = [step.agent, f"+{step.elapsed:.2f}s"]
     started, finished = (getattr(step.node, key, None) for key in ("started_at", "finished_at"))
     if started and finished:
@@ -160,6 +166,7 @@ def render_html(g: Graph, *, title: str = "") -> str:
             "color": node_color(step.node),
             "meta": _meta(step),
             "detail": escape(step.detail or step.summary or "(no content)"),
+            "images": _images(step.node),
         }
         for step in walked
     ]
@@ -250,7 +257,21 @@ def figure_html(
     return f'<div style="{_FRAME}">{svg}</div>'
 
 
-def _panel(step: Step) -> str:
+def _images(node: Node) -> list[str]:
+    """The node's attached images that still exist, as data URIs so the page stays one file."""
+    found = []
+    for path in node.data.get(IMAGES_KEY) or []:
+        file = Path(path)
+        kind = mimetypes.guess_type(file.name)[0]
+        if not (kind and kind.startswith("image/") and file.is_file()):
+            continue
+        if file.stat().st_size > MAX_IMAGE_BYTES:
+            continue
+        found.append(f"data:{kind};base64,{base64.b64encode(file.read_bytes()).decode()}")
+    return found
+
+
+def _panel(step: TimelineEntry) -> str:
     """The node reached, as a titled block of its own content."""
     ran = ""
     if step.node.started_at and step.node.finished_at:
@@ -262,7 +283,12 @@ def _panel(step: Step) -> str:
         f'<div style="color:{DIM};font-size:11.5px;margin:2px 0 8px">'
         f"{escape(step.agent)} · +{step.elapsed:.2f}s{ran}</div>"
         f'<pre style="white-space:pre-wrap;word-break:break-word;color:{INK};margin:0">'
-        f"{body}</pre></div>"
+        f"{body}</pre>"
+        + "".join(
+            f'<img src="{src}" style="max-width:100%;margin-top:8px"/>'
+            for src in _images(step.node)
+        )
+        + "</div>"
     )
 
 

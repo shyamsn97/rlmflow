@@ -1,10 +1,10 @@
 """Pipeline: a planner, a coder and a reviewer, each starting from the results before it.
 
-    python examples/architectures/pipeline.py --model gpt-5-mini
+    python examples/patterns/pipeline.py --model gpt-5-mini
 
 A root runs the stages in order: it awaits each agent and passes its result to the
 next one as an argument, where it lands as a REPL variable. The run is saved under
-``examples/_runs/architectures/pipeline``.
+``examples/_runs/patterns/pipeline``.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def main() -> None:
     )
     g = Graph()
     root = g.start(TASK, name="pipeline")
-    out_dir = example_run_dir("architectures") / "pipeline"
+    out_dir = example_run_dir("patterns") / "pipeline"
     try:
         asyncio.run(print_run(flow, g, out_dir, width=20))
     finally:

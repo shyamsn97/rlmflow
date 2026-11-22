@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from helpers import ScriptedFlow, StubLLM, code_nodes
+from helpers import ScriptedFlow, StubLLM, code_nodes, name_root
 from helpers import reasoning_repl as block
 
 from rlmflow import FILE_TOOLS, AgentConfig, Flow, Graph, LocalRuntime, Node, tool
@@ -14,7 +14,7 @@ from rlmflow.graph import calls
 from rlmflow.graph.nodes import Step
 from rlmflow.harnesses.claude_code import ClaudeCodeHarness, ClaudeCodeOptions
 from rlmflow.harnesses.pi import PiHarness
-from rlmflow.harnesses.sessions import Session
+from rlmflow.harnesses.sessions import Session, next_prompt
 
 FAKE_CLAUDE = Path(__file__).parent / "fixtures" / "fake_claude.py"
 
@@ -51,10 +51,12 @@ def flag(argv, name):
     return argv[argv.index(name) + 1] if name in argv else None
 
 
-def run(flow, g, root_config=None):
+def run(flow, g, config=None):
+    name_root(flow, g, config)
+
     async def go():
         try:
-            await flow.arun(g, root_config=root_config)
+            await flow.arun(g)
         finally:
             await flow.aclose()
 
@@ -269,18 +271,44 @@ def test_config_prompt_replaces_drops_and_adds_sections():
 
 
 def test_every_harness_gets_the_same_guidance():
-    from rlmflow.harnesses.prompts import guidance
     from rlmflow.harnesses.repl import ReplHarness
 
     g = Graph()
     agent = g.start("t")
     agent.bind_config(AgentConfig())
     step = Step(g, agent, agent)
-    shared = guidance(step)
+    shared = Flow().guidance(step)
     assert shared["orchestration"]
     for harness in (ReplHarness(), PiHarness(), ClaudeCodeHarness()):
         sections = harness.prompt_sections(Flow(), step)
         assert {key: sections[key] for key in shared} == shared
+
+
+def test_a_flow_owns_guidance_and_the_turn_prompt_on_every_harness():
+    from rlmflow.harnesses.repl import ReplHarness
+
+    class Custom(Flow):
+        def guidance(self, step):
+            return {**super().guidance(step), "state": None, "style": "BE TERSE."}
+
+        def turn_prompt(self, step):
+            return "BOARD: #@$."
+
+    flow = Custom()
+    g = Graph()
+    agent = g.start("t")
+    agent.bind_config(AgentConfig())
+    step = Step(g, agent, agent)
+    for harness in (ReplHarness(), PiHarness(), ClaudeCodeHarness()):
+        prompt = harness.prompt(flow, step)
+        assert "BE TERSE." in prompt and "REPL variables, not only" not in prompt
+
+    messages = ReplHarness().messages(flow, step)
+    assert messages[-1] == {"role": "user", "content": "t\n\nBOARD: #@$."}
+    opening = asyncio.run(next_prompt(flow, step, Session("s")))
+    assert opening == "t\n\nBOARD: #@$."
+    resumed = asyncio.run(next_prompt(flow, step, Session("s", resume=True)))
+    assert resumed == "BOARD: #@$."
 
 
 def test_a_session_starts_fresh_resumes_or_forks():

@@ -21,7 +21,7 @@ from rlmflow.runtime import (
     build_docker_argv,
 )
 from rlmflow.runtime.repl_client import invoke_tool_call
-from rlmflow.tools import tool
+from rlmflow.tools import as_tool, tool
 
 
 def bare_agent() -> Node:
@@ -198,7 +198,7 @@ def test_subprocess_runtime_exposes_the_agents_tree():
         runtime=SubprocessRuntime(),
     )
     try:
-        assert flow.run("q") == "root|0|running|1|True|root (root) [running] (you)"
+        assert flow.run("q") == "root|0|running|1|True|root (default) [running] (you)"
     finally:
         asyncio.run(flow.aclose())
 
@@ -385,3 +385,43 @@ def test_docker_argv_runs_worker(tmp_path):
     assert ["--user", "1000:1000"] == argv[argv.index("--user") : argv.index("--user") + 2]
     assert "--read-only" in argv
     assert ["--cap-drop", "ALL"] == argv[argv.index("--cap-drop") : argv.index("--cap-drop") + 2]
+
+
+def test_worker_seed_sends_nothing_for_tools_already_bound(tmp_path):
+    def double(n: int) -> int:
+        """Double n."""
+        return 2 * n
+
+    def triple(n: int) -> int:
+        """Triple n."""
+        return 3 * n
+
+    double, triple = as_tool(double), as_tool(triple)
+    runtime = LocalRuntime(working_directory=tmp_path)
+    repl = runtime.repl_for(bare_agent())
+    sent: list[str] = []
+    inject = repl.inject
+
+    def counting(name, value):
+        sent.append(name)
+        return inject(name, value)
+
+    repl.inject = counting
+
+    async def run():
+        repl.seed({"f": double, "LIMIT": 3})
+        first = list(sent)
+        repl.seed({"f": double, "LIMIT": 3})
+        assert sent == first
+        repl.seed({"f": triple, "LIMIT": 3})
+        assert sent == first
+        await repl.run("out = f(LIMIT)")
+        repl.seed({"f": triple})
+        await repl.run("gone = 'LIMIT' not in globals()")
+
+    try:
+        asyncio.run(run())
+        assert repl.get_var("out") == 9
+        assert repl.get_var("gone") is True
+    finally:
+        runtime.close()
