@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rlmflow"
-version = "0.7.0"
+version = "0.8.0"
 description = "Build recursive agents as inspectable execution graphs."
 readme = "README.md"
 license = "MIT"

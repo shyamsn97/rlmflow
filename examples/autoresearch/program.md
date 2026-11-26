@@ -71,23 +71,8 @@ depth:            4
 
 The host runner parses `val_bpb`.
 
-## Logging Results
+## Results
 
-The host runner writes an append-only `ledger.jsonl`.
-
-Important fields:
-
-```text
-n
-slug
-hypothesis
-parent_slug
-status
-val_bpb
-trial_dir
-source_path
-log_path
-```
-
-Use `list_runs()` for a compact best-first view, `best_run()` to find the
-current keeper, and `get_run(n)` for full log tails.
+`trials()` lists every submitted trial best first, with `val_bpb`, `status`,
+`hypothesis`, `commit` (to start a new trial from those files) and the tail of
+its log, plus how many submissions are left.

@@ -10,13 +10,13 @@ import sys
 from pathlib import Path
 
 import pytest
-from helpers import ScriptedFlow, StubLLM, code_nodes, own
+from helpers import ScriptedFlow, StubLLM, code_nodes, name_root, own
 from helpers import reasoning_repl as block
 
-from rlmflow import AgentConfig, Flow, Graph
+from rlmflow import Agent, ClaudeCode, Flow, Graph
 from rlmflow.agent_tools import hooks
 from rlmflow.cli.fork import resume_command
-from rlmflow.cli.serve import INTERACTIVE, Serve, until
+from rlmflow.cli.serve import PERSON, Serve, until
 
 pytestmark = pytest.mark.timeout(120)
 
@@ -28,7 +28,7 @@ COUNT = (
     "Count the x's",
     [
         "rlmflow repl \"doc = 'xxaaxbxx'\nchunks = [doc[:4], doc[4:]]\nnotes = 'split doc in two'\nprint(len(doc))\"",
-        "rlmflow repl \"handles = [launch_agent('count', config='worker', chunk=c) for c in chunks]\"",
+        "rlmflow repl \"handles = [launch_agent('count', agent='worker', chunk=c) for c in chunks]\"",
     ],
     "Launched the counters. {outputs}",
 )
@@ -38,7 +38,7 @@ SUM = (
     "Done.",
 )
 FROM_NOTES = (
-    "You are continuing an earlier session",
+    "[you]",
     ["rlmflow repl 'submit(notes + \"!\")'"],
     "From notes.",
 )
@@ -75,7 +75,7 @@ def env(tmp_path, monkeypatch):
 def worker_flow() -> Flow:
     return ScriptedFlow(
         StubLLM(lambda messages: WORKER),
-        configs=[AgentConfig(name="worker", description="Counts x's in one chunk.")],
+        agents={"default": Agent(), "worker": Agent(description="Counts x's in one chunk.")},
     )
 
 
@@ -83,7 +83,7 @@ def shapes(g):
     """Each agent's node shapes and result, by path."""
     return {
         a.path(): ([(n.role, n.runs_code, _flags(n)) for n in own(a)], a.final_result())
-        for a in g.agents()
+        for a in g.agent_roots()
     }
 
 
@@ -143,12 +143,12 @@ def test_same_conversation_same_graph_in_both_modes(env, tmp_path, monkeypatch):
     async def as_harness():
         flow = worker_flow()
         try:
-            await flow.arun(
+            name_root(
+                flow,
                 headless,
-                root_config=AgentConfig(
-                    harness="claude_code", harness_options={"command": "claude"}
-                ),
+                ClaudeCode(options={"cli_path": "claude"}),
             )
+            await flow.arun(headless)
         finally:
             await flow.aclose()
 
@@ -161,12 +161,10 @@ def test_same_conversation_same_graph_in_both_modes(env, tmp_path, monkeypatch):
 
     assert shapes(headless) == shapes(interactive)
     assert root.final_result() == 5
-    [iroot] = [a for a in interactive.agents() if a.name == "root"]
-    assert iroot.config.harness == INTERACTIVE
+    [iroot] = [a for a in interactive.agent_roots() if a.name == "root"]
+    assert iroot.agent == PERSON
     idle = idle_turn(interactive, iroot)
-    assert idle.data["session_id"] == session_id and idle.text.startswith(
-        "Launched the counters. 8"
-    )
+    assert idle.data["session"] == session_id and idle.text.startswith("Launched the counters. 8")
     assert interactive.usage([iroot]).input_tokens == 20
     harness_calls = [argv for argv in calls() if "-p" in argv]
     assert len(harness_calls) == 2 and "--resume" in harness_calls[1]
@@ -178,32 +176,32 @@ def test_forking_an_interactive_graph_resumes_at_turn_ends_and_restarts_mid_turn
     project = tmp_path / "proj"
     project.mkdir()
     g, session_id = interactive_run(project)
-    [root] = [a for a in g.agents() if a.name == "root"]
+    [root] = [a for a in g.agent_roots() if a.name == "root"]
     idle = idle_turn(g, root)
     first_code = code_nodes(g, root)[0]
 
     # The copy's children already delivered their results, so its resumed turn opens on the prompt alone.
     script(FROM_NOTES, SUM, ("Continue the task", SUM[1], SUM[2]))
     at_turn_end = g.fork(idle)
-    command = resume_command(at_turn_end, at_turn_end.agent(root.id), hooks.PLUGIN_DIR)
+    command = resume_command(at_turn_end, at_turn_end.agent_root(root.id), hooks.PLUGIN_DIR)
     assert f"--resume {session_id} --fork-session" in command
 
     async def continue_fork(branch, argv):
-        serve, task = await serve_in_process(project, branch, root=branch.agent(root.id))
+        serve, task = await serve_in_process(project, branch, root=branch.agent_root(root.id))
         await claude(project, *argv)
         await asyncio.wait_for(task, 10)
 
     asyncio.run(continue_fork(at_turn_end, shlex.split(command)[1:]))
-    assert at_turn_end.agent(root.id).final_result() == 5
+    assert at_turn_end.agent_root(root.id).final_result() == 5
     resumed = calls()[-1]
     assert resumed[resumed.index("--resume") + 1] == session_id and "--fork-session" in resumed
 
     mid_turn = g.fork(first_code)
-    command = resume_command(mid_turn, mid_turn.agent(root.id), hooks.PLUGIN_DIR)
+    command = resume_command(mid_turn, mid_turn.agent_root(root.id), hooks.PLUGIN_DIR)
     assert "--resume" not in command
     asyncio.run(continue_fork(mid_turn, shlex.split(command)[1:]))
-    assert mid_turn.agent(root.id).final_result() == "split doc in two!"
-    assert mid_turn.agent(root.id).children() == []
+    assert mid_turn.agent_root(root.id).final_result() == "split doc in two!"
+    assert mid_turn.agent_root(root.id).children() == []
     assert len(root.children()) == 2
 
 
@@ -224,14 +222,14 @@ def test_rlmflow_run_starts_serve_and_a_restarted_serve_continues_the_session(en
     assert until_gone(project / ".rlmflow" / "serve.json")
     [graph_dir] = list((project / ".rlmflow" / "runs").iterdir())
     g = Graph.load(graph_dir)
-    [root] = g.agents()
-    assert root.config.harness == INTERACTIVE and root.final_result() == 1
+    [root] = g.agent_roots()
+    assert root.agent == PERSON and root.final_result() == 1
 
     hooks.start_serve(project, ["--graph", str(graph_dir)])
     asyncio.run(claude(project, "--resume", session, "what are your notes?"))
     assert until_gone(project / ".rlmflow" / "serve.json")
     g = Graph.load(graph_dir)
-    assert g.agent(root.id).final_result() == "kept"
+    assert g.agent_root(root.id).final_result() == "kept"
 
 
 def until_gone(path: Path, timeout: float = 15) -> bool:
@@ -244,7 +242,7 @@ def test_rlmflow_fork_interactive_prints_the_resume_command_and_serves_the_fork(
     project = tmp_path / "proj"
     project.mkdir()
     g, session_id = interactive_run(project)
-    [root] = [a for a in g.agents() if a.name == "root"]
+    [root] = [a for a in g.agent_roots() if a.name == "root"]
     idle = idle_turn(g, root)
 
     done = run_cli(
@@ -273,4 +271,4 @@ def test_rlmflow_fork_interactive_prints_the_resume_command_and_serves_the_fork(
     assert until_gone(serve_file)
 
     headless = run_cli("fork", str(project / "run"), idle.id, cwd=project)
-    assert headless.returncode == 1 and "was interactive; pass --config" in headless.stderr
+    assert headless.returncode == 1 and "a person ran this run; pass --agent" in headless.stderr

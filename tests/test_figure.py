@@ -2,9 +2,10 @@
 
 from helpers import finish, ran
 
-from rlmflow import RETURN, AgentConfig, Flow, Graph, Node
-from rlmflow.graph import calls
+from rlmflow import Flow, Graph, Node
+from rlmflow.graph import RETURN, calls
 from rlmflow.view.figure import graph_svg, handoffs, parent_ids, tidy_tree
+from rlmflow.view.html import render_html
 from rlmflow.view.timeline import timeline
 
 
@@ -43,11 +44,8 @@ def test_a_launch_from_the_agent_itself_keeps_the_chain_under_the_agent():
 def test_results_and_messages_coming_back_are_drawn_from_their_source():
     g = Graph()
     root = g.start("lead")
-    root.bind_config(AgentConfig())
     launch = g.append(root, ran("launch"))
     kids = [g.start(f"part {i}", parent=launch) for i in range(2)]
-    for kid in kids:
-        kid.bind_config(AgentConfig())
     note_turn = g.append(kids[1], ran("send"))
     note = g.send(root, "heads up", by=note_turn)
     dones = [finish(g, kid, i) for i, kid in enumerate(kids)]
@@ -59,3 +57,14 @@ def test_results_and_messages_coming_back_are_drawn_from_their_source():
         [(dones[0].id, launch.id), (note_turn.id, note.id), (dones[1].id, results.id)]
     )
     assert graph_svg(g).count('stroke-dasharray="3 3"') == 3
+
+
+def test_the_html_viewer_shows_attached_images(tmp_path):
+    image = tmp_path / "render.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 16)
+    g = Graph()
+    a = g.start("draw")
+    node = g.append(a, Node("assistant", code="pass"))
+    node.data["images"] = [str(image), str(tmp_path / "gone.png")]
+    page = render_html(g)
+    assert page.count("data:image/png;base64,") == 1

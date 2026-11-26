@@ -116,8 +116,8 @@ def load_run(run_dir: Path) -> tuple[Graph, Node, Graph, Node]:
     if not (run_dir / "shepherd").exists():
         raise SystemExit(f"{run_dir} holds no shepherd graph")
     g, meta = Graph.load(run_dir / "graph"), Graph.load(run_dir / "shepherd")
-    workers = [a for a in g.roots() if a.name == "worker"]
-    shepherds = [a for a in meta.roots() if a.name == "shepherd"]
+    workers = [a for a in g.top_level_roots() if a.name == "worker"]
+    shepherds = [a for a in meta.top_level_roots() if a.name == "shepherd"]
     if not workers or not shepherds:
         raise SystemExit(f"{run_dir} holds no shepherd run")
     return g, workers[0], meta, shepherds[0]
@@ -129,7 +129,11 @@ def load_branches(run_dir: Path, worker: Node) -> list[tuple[str, Graph, Node]]:
     for path in sorted((run_dir / "branches").glob("branch*"), key=lambda p: int(p.name[6:])):
         branch = Graph.load(path)
         found.append(
-            (branch.metadata.get("shepherd_branch", path.name), branch, branch.agent(worker.id))
+            (
+                branch.metadata.get("shepherd_branch", path.name),
+                branch,
+                branch.agent_root(worker.id),
+            )
         )
     return found
 
@@ -186,7 +190,7 @@ def read_branches(
             outcome=str(agent.final_result() or "unfinished"),
             turns=model_turns(g, agent),
             nodes=len(agent.nodes()),
-            plan=str(agent.metadata.get("shepherd_order", "")),
+            plan=str(agent.data.get("shepherd_order", "")),
             won=name == winner,
             board=boards.get(name, ""),
         )
@@ -394,7 +398,8 @@ def build_svg(
     y_branch = y_shepherd + shepherd_h + 52
     y_picked = y_branch + branch_h + 52
     picked_h = 46.0
-    height = y_picked + picked_h + margin
+    y_legend = y_picked + picked_h + 24
+    height = y_legend + margin
 
     c = Canvas(width, height)
     c.text(
@@ -431,14 +436,14 @@ def build_svg(
     c.arrow(centre, y_jam + jam_h + 4, y_shepherd - 6, label="stuck transcript", dashed=True)
 
     # The shepherd.
-    shepherd_w = 430.0
-    previews = f"previewed {max_rewind} rewind depths, " if max_rewind else "previewed the board, "
+    shepherd_w = 480.0
+    depths = f"previewed rewinds up to {max_rewind}, " if max_rewind else "previewed the board, "
     c.box(centre - shepherd_w / 2, y_shepherd, shepherd_w, shepherd_h, SHEPHERD_FILL, SHEPHERD_LINE)
     c.text(centre, y_shepherd + 25, "shepherd", size=13, weight="600")
     c.fitted_text(
         centre,
         y_shepherd + 44,
-        f"{previews}wrote {len(branches)} plans · {shepherd_turns} turns",
+        f"{depths}wrote {len(branches)} plans, picked one · {shepherd_turns} turns",
         max_w=shepherd_w - pad * 2,
         size=11.5,
         fill=MUTED,
@@ -502,7 +507,7 @@ def build_svg(
     )
     c.legend(
         margin,
-        y_picked + 15,
+        y_legend,
         [("A", "box on a goal, locked"), ("1", "box still loose"), (".", "empty goal")],
     )
     return c.render()

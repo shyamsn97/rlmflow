@@ -5,8 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from rlmflow.graph.config import at_leaf
-from rlmflow.tools import tool
+from rlmflow.tools.declare import at_leaf, tool
 
 
 def _display_path(path: Path, *, absolute: bool) -> str:

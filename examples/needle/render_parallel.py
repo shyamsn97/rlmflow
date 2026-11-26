@@ -14,7 +14,8 @@ import io
 from collections.abc import Sequence
 from pathlib import Path
 
-from rlmflow import SPAWN, Graph, Node
+from rlmflow import Graph, Node
+from rlmflow.graph import SPAWN
 from rlmflow.view.figure import graph_svg, parent_ids
 
 
@@ -60,7 +61,7 @@ def _parallel_order(g: Graph, root: Node) -> tuple[list[Node], list[tuple[int, s
         ordered.append(node)
         label = (
             f"root combines worker results · answer {root.final_result()}"
-            if node.data.get("terminal")
+            if node.terminal
             else "root combines completed worker results"
         )
         frames.append((len(ordered), label))
@@ -92,7 +93,7 @@ def render(
         raise SystemExit("rendering needs CairoSVG and Pillow: install rlmflow[image]") from exc
 
     g = Graph.load(run_dir)
-    root = g.roots()[0]
+    root = g.root
     ordered, reveal_frames = _parallel_order(g, root)
     frames = []
     for revealed, label in reveal_frames:

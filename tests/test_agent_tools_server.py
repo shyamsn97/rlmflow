@@ -5,13 +5,13 @@ import os
 import shlex
 
 import pytest
-from helpers import ScriptedFlow, StubLLM, code_nodes, turns
+from helpers import ScriptedFlow, StubLLM, code_nodes, name_root
 from helpers import repl as block
 
-from rlmflow import WRITE, AgentConfig, Flow, Graph
-from rlmflow.graph import calls
-from rlmflow.graph.nodes import Agent, Step
-from rlmflow.harnesses.sessions import SessionHarness, TurnResult
+from rlmflow import Agent, Flow, Graph
+from rlmflow.agents import steps
+from rlmflow.agents.prompts import USE_RLMFLOW_REPL
+from rlmflow.graph import WRITE, AgentRoot, Node, calls
 
 
 async def sh(command: str, env: dict[str, str]) -> tuple[int, str, str]:
@@ -25,30 +25,31 @@ async def sh(command: str, env: dict[str, str]) -> tuple[int, str, str]:
     return process.returncode, out.decode(), err.decode()
 
 
-class Shell(SessionHarness):
-    """A stand-in for Claude Code: each turn runs its scripted shell commands."""
+class Shell(Agent):
+    """A stand-in for Claude Code: each step runs that step's scripted shell commands."""
 
-    name = "shell"
+    protocol = USE_RLMFLOW_REPL
 
-    async def run_turn(self, flow, step, turn):
-        commands = step.config.harness_options["turns"][len(turns(step.graph, step.agent))]
-        transcript = [await sh(command, turn.env) for command in commands]
-        self.exits = [code for code, _, _ in transcript]
-        return TurnResult("shell", "\n".join(out + err for _, out, err in transcript))
+    def __init__(self, *turns, **shared):
+        super().__init__(None, **shared)
+        self.turns = [list(t) for t in turns]
 
-    async def step(self, flow, step):
-        node = await super().step(flow, step)
-        node.data["exits"] = self.exits
-        return node
+    async def run_commands(self, commands, env):
+        return [await sh(command, env) for command in commands]
 
-
-def shell_config(*turns, **config):
-    return AgentConfig(harness=Shell, harness_options={"turns": [list(t) for t in turns]}, **config)
+    async def step(self, node, llm, repl):
+        transcript = await self.run_commands(self.turns[steps(node)], repl.environ)
+        out = Node(
+            "assistant",
+            "\n".join(out + err for _, out, err in transcript),
+            data={"exits": [code for code, _, _ in transcript]},
+        )
+        return self.done(out, out.text, repl, since=node)
 
 
 def shape(node):
     """What a node is: the root, a code_node, a turn end, or a node from someone else."""
-    if isinstance(node, Agent):
+    if isinstance(node, AgentRoot):
         return "root"
     if node.runs_code:
         return "code_node"
@@ -62,7 +63,7 @@ def shape(node):
 def test_repl_code_nodes_land_code_nodes_and_keep_state():
     g = Graph()
     root = g.start("count", doc="one two three")
-    config = shell_config(
+    shell = Shell(
         [
             "rlmflow repl 'n = len(doc)'",
             "rlmflow repl <<'EOF'\nwords = doc.split()\nprint(n, len(words))\nEOF",
@@ -70,10 +71,10 @@ def test_repl_code_nodes_land_code_nodes_and_keep_state():
             "rlmflow repl 'submit(n * 2)'",
         ],
     )
-    flow = Flow()
+    flow = Flow(agents={"default": shell})
 
     async def run():
-        return [shape(step.node) async for step in flow.run_streaming(g, root_config=config)]
+        return [shape(node) async for node in flow.stream(g)]
 
     streamed = asyncio.run(run())
     asyncio.run(flow.aclose())
@@ -97,23 +98,24 @@ def test_repl_code_nodes_land_code_nodes_and_keep_state():
 def test_ending_a_turn_with_running_children_waits_then_resumes():
     g = Graph()
     root = g.start("delegate")
-    config = shell_config(
+    shell = Shell(
         [
-            "rlmflow repl \"h = launch_agent('add', config='worker', x=2)\"",
+            "rlmflow repl \"h = launch_agent('add', agent='worker', x=2)\"",
             "rlmflow repl 'AGENTS.print_graph()'",
         ],
         ["rlmflow repl 'print(h.result())'", "rlmflow repl 'submit({\"total\": 5})'"],
     )
     flow = ScriptedFlow(
-        StubLLM(lambda messages: "```repl\nawait asyncio.sleep(1)\nsubmit(x + 3)\n```"),
-        configs=[AgentConfig(name="worker", description="adds")],
+        StubLLM(lambda messages: block("await asyncio.sleep(1)\nsubmit(x + 3)")),
+        agents={"default": Agent(), "worker": Agent(description="adds")},
     )
-    asyncio.run(flow.arun(g, root_config=config))
+    name_root(flow, g, shell)
+    asyncio.run(flow.arun(g))
     asyncio.run(flow.aclose())
 
     assert root.final_result() == {"total": 5}
     [child] = root.children()
-    assert child.config.name == "worker" and child.final_result() == 5
+    assert child.agent == "worker" and child.final_result() == 5
     nodes = root.nodes()
     assert [shape(n) for n in nodes] == [
         "root",
@@ -132,7 +134,7 @@ def test_ending_a_turn_with_running_children_waits_then_resumes():
     assert delivered.source == child.nodes()[-1].id
 
 
-DELEGATE = "h = launch_agent('add', config='worker', x=2)\nAGENTS['peer'].send('hi')\nprint('ok')"
+DELEGATE = "h = launch_agent('add', agent='worker', x=2)\nAGENTS['peer'].send('hi')\nprint('ok')"
 
 
 def edge_shapes(g):
@@ -140,7 +142,7 @@ def edge_shapes(g):
 
     def end(item_id):
         node = g.node(item_id)
-        return node.agent.name, shape(node)
+        return node.root.name, shape(node)
 
     return sorted((e.kind, end(e.source), end(e.target)) for e in g.edges())
 
@@ -156,28 +158,22 @@ def delegating_reply(messages):
 
 
 def test_server_code_nodes_write_the_same_edges_as_in_process_code_nodes():
-    def run(root_config):
+    def run(lead):
         g = Graph()
         root = g.start("delegate", name="lead")
-        g.start("listen", name="peer", config="listener")
+        g.start("listen", name="peer", agent="listener")
         flow = ScriptedFlow(
             StubLLM(delegating_reply),
-            configs=[AgentConfig(name="worker"), AgentConfig(name="listener")],
+            agents={"default": Agent(), "worker": Agent(), "listener": Agent()},
         )
-        asyncio.run(flow.arun(g, root_config=root_config))
+        name_root(flow, g, lead)
+        asyncio.run(flow.arun(g))
         asyncio.run(flow.aclose())
         return g, root
 
     native, native_root = run(None)
     served, served_root = run(
-        AgentConfig(
-            harness=Shell,
-            harness_options={
-                "turns": [
-                    [f"rlmflow repl {shlex.quote(DELEGATE)}", "rlmflow repl 'submit(await h)'"]
-                ]
-            },
-        )
+        Shell([f"rlmflow repl {shlex.quote(DELEGATE)}", "rlmflow repl 'submit(await h)'"])
     )
     assert native_root.final_result() == 5
     assert served_root.final_result() == 5
@@ -185,57 +181,57 @@ def test_server_code_nodes_write_the_same_edges_as_in_process_code_nodes():
     for g, root in ((native, native_root), (served, served_root)):
         [child] = root.children()
         [spawn] = g.edges(kind="spawn", target=child.id)
-        assert g.node(spawn.source).agent is root
+        assert g.node(spawn.source).root is root
         [message] = g.edges(kind=WRITE)
         assert g.node(message.source) is g.node(spawn.source)
         assert g.node(message.target).text == "From lead: hi"
 
 
-def test_a_token_stops_working_when_its_turn_ends():
-    g = Graph()
-    root = g.start("x")
-    root.bind_config(AgentConfig())
-    flow = Flow()
+def test_a_token_stops_working_when_its_step_ends():
     seen = {}
 
+    class Once(Shell):
+        async def step(self, node, llm, repl):
+            seen["env"] = repl.environ
+            return await super().step(node, llm, repl)
+
+    g = Graph()
+    root = g.start("x")
+    flow = Flow(agents={"default": Once(["rlmflow repl 'print(1)'", "rlmflow repl 'submit(1)'"])})
+
     async def run():
-        async with flow.agent_tools.turn(Step(g, root, root)) as turn:
-            seen["inside"] = await sh("rlmflow repl 'print(1)'", turn.env)
-        seen["after"] = await sh("rlmflow repl 'print(2)'", turn.env)
-        outside = {**turn.env, "RLMFLOW_URL": "", "RLMFLOW_TOKEN": ""}
+        await flow.arun(g)
+        seen["after"] = await sh("rlmflow repl 'print(2)'", seen["env"])
+        outside = {**seen["env"], "RLMFLOW_URL": "", "RLMFLOW_TOKEN": ""}
         seen["outside"] = await sh("rlmflow repl 'print(3)'", outside)
         await flow.aclose()
 
     asyncio.run(run())
 
-    assert seen["inside"][:2] == (0, "1\n")
+    assert [n.output.strip() for n in code_nodes(g, root)] == ["1", ""]
     assert seen["after"][0] == 1 and "turn has ended" in seen["after"][2]
     assert seen["outside"][0] == 1 and "not inside an rlmflow agent turn" in seen["outside"][2]
-    assert [n.code for n in code_nodes(g, root)] == ["print(1)"]
+    assert [n.code for n in code_nodes(g, root)] == ["print(1)", "submit(1)"]
 
 
-def test_concurrent_code_nodes_from_one_agent_run_one_at_a_time():
+def test_concurrent_code_nodes_from_one_run_run_one_at_a_time():
+    class Race(Shell):
+        async def run_commands(self, commands, env):
+            return await asyncio.gather(*(sh(command, env) for command in commands))
+
+    race = Race(
+        [f"rlmflow repl 'import time; time.sleep(0.2); seen = {i}; print(seen)'" for i in range(3)]
+    )
     g = Graph()
     root = g.start("race")
-    root.bind_config(shell_config([]))
-    flow = Flow()
+    flow = Flow(agents={"default": race})
 
     async def run():
-        async with flow.agent_tools.turn(Step(g, root, root)) as turn:
-            results = await asyncio.gather(
-                *(
-                    sh(
-                        f"rlmflow repl 'import time; time.sleep(0.2); seen = {i}; print(seen)'",
-                        turn.env,
-                    )
-                    for i in range(3)
-                )
-            )
+        await flow.arun(g)
         await flow.aclose()
-        return results
 
-    results = asyncio.run(run())
-    assert sorted(out for _, out, _ in results) == ["0\n", "1\n", "2\n"]
+    asyncio.run(run())
+    assert sorted(n.output.strip() for n in code_nodes(g, root)) == ["0", "1", "2"]
     assert len(code_nodes(g, root)) == 3
 
 

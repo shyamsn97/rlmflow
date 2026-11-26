@@ -41,13 +41,13 @@ def result_marker(path: str) -> str:
 
 
 def render_results(items: list[tuple[str, str, Any]], limit: int) -> str:
-    """``(path, config name, result)`` per finished agent, as one message."""
+    """``(path, agent name, result)`` per finished run, as one message."""
     parts = ["Agents you started have finished. Each block is that agent's result."]
-    for path, config_name, result in items:
+    for path, agent, result in items:
         body = _result_body(result)
         if len(body) > limit:
             body = body[: max(limit - 3, 0)] + "..."
-        parts.append(f"{result_marker(path)}\nconfig: {config_name}\n{body}")
+        parts.append(f"{result_marker(path)}\nagent: {agent}\n{body}")
     return "\n\n".join(parts)
 
 

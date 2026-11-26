@@ -12,7 +12,8 @@ import argparse
 import time
 from pathlib import Path
 
-from rlmflow import SPAWN, Agent, Graph, LLMUsage, Node
+from rlmflow import Graph, Node
+from rlmflow.graph import SPAWN, AgentRoot, LLMUsage
 from rlmflow.view.text import kind
 
 EXAMPLES_DIR = Path(__file__).resolve().parents[1]
@@ -63,12 +64,12 @@ def grow(g: Graph, agent: Node, *, depth: int, branch: int) -> None:
 def tree_children(g: Graph) -> dict[str, list[Node]]:
     """Each node's successors: the next node of its agent, and the agents it launched."""
     kids: dict[str, list[Node]] = {node.id: [] for node in g.nodes()}
-    for agent in g.agents():
+    for agent in g.agent_roots():
         nodes = agent.nodes()
         for before, after in zip(nodes, nodes[1:]):
             kids[before.id].append(after)
     for edge in g.edges(kind=SPAWN):
-        kids[edge.source].append(g.agent(edge.target))
+        kids[edge.source].append(g.agent_root(edge.target))
     return kids
 
 
@@ -107,7 +108,7 @@ def render_agents(g: Graph, agent: Node, *, prefix: str = "", is_last: bool = Tr
 
 
 def _label(node: Node) -> str:
-    if isinstance(node, Agent):
+    if isinstance(node, AgentRoot):
         return f"agent:{node.name}"
     text = str(node.text or node.output or node.result or "").replace("\n", " ")
     if len(text) > 40:
@@ -243,7 +244,7 @@ def _color(node: Node) -> str:
 
 
 def _short(node: Node) -> str:
-    return node.name if isinstance(node, Agent) else kind(node)
+    return node.name if isinstance(node, AgentRoot) else kind(node)
 
 
 def main() -> None:
@@ -258,7 +259,7 @@ def main() -> None:
     root = g.start("deep tree root")
     grow(g, root, depth=args.depth, branch=args.branch)
 
-    print(f"agents={len(g.agents())}  nodes={len(g.nodes())}")
+    print(f"agents={len(g.agent_roots())}  nodes={len(g.nodes())}")
     print()
     print("=== agent tree ===")
     print("\n".join(render_agents(g, root)))

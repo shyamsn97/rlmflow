@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import time
 
-from rlmflow import RETURN, Graph, LLMUsage, Node
+from rlmflow import Graph, Node
+from rlmflow.graph import RETURN, LLMUsage
 from rlmflow.view.text import kind
 
 
@@ -39,7 +40,7 @@ def build_graph() -> tuple[Graph, Node]:
     launch = turn(
         g,
         root,
-        f"splitting into two children\n```repl\n{code}\n```",
+        "splitting into two children",
         code=code,
         output="wrote pkg/__init__.py 3 passed",
         usage=LLMUsage(input_tokens=120, output_tokens=40).as_dict(),
@@ -69,14 +70,16 @@ def main() -> None:
     g, root = build_graph()
 
     banner("agents / nodes / edges")
-    print("agents:", [agent.path() for agent in g.agents()])
+    print("agents:", [agent.path() for agent in g.agent_roots()])
     print("node kinds:", [kind(node) for node in g.nodes()])
-    print("edges:", [(edge.kind, g.agent(edge.target).path()) for edge in g.edges(kind="spawn")])
-    print("errors:", [(node.agent.path(), node.output) for node in g.nodes() if node.error])
+    print(
+        "edges:", [(edge.kind, g.agent_root(edge.target).path()) for edge in g.edges(kind="spawn")]
+    )
+    print("errors:", [(node.root.path(), node.output) for node in g.nodes() if node.error])
 
     banner("tail / status / result / tokens")
     print("root tail:", kind(root.nodes()[-1]))
-    print("statuses:", {agent.name: agent.status() for agent in g.agents()})
+    print("statuses:", {agent.name: agent.status() for agent in g.agent_roots()})
     print("result:", root.final_result())
     print("tokens:", g.usage())
 

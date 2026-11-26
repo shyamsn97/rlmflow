@@ -5,7 +5,7 @@ training file, submits GPU trials through Modal, and tries to lower validation
 bits per byte on TinyStories.
 
 This example is meant to be easy to understand and cheap enough to iterate on.
-It keeps the rlmflow hierarchy/ledger/Modal wrapper, but the ML task is just:
+The ML task is just:
 
 - Hugging Face TinyStories dataset.
 - GPT-2 tokenizer.
@@ -19,11 +19,16 @@ It keeps the rlmflow hierarchy/ledger/Modal wrapper, but the ML task is just:
   and validation BPB. Agents should not edit this.
 - `train.py` — the only file agents edit.
 - `program.md` — task-only instructions given to agents.
-- `run.py` — rlmflow coordinator that creates trial directories and launches the
-  hierarchy. The tree is flat (`--max-depth 1`): root is the planner and each
-  turn fans out a parallel wave of implementer children (one per trial), reads
-  their results, then plans the next wave. Exploration is wide rather than a long
-  serial chain of single batches.
+- `baselines/<GPU>.json` — the unmodified train.py's result on each GPU. Training
+  is fixed-time, so a faster GPU scores better (L4 1.155, A10G 0.903); `--gpu`
+  needs one here.
+- `dashboard.py` — a live Gradio view of a run: `python dashboard.py <run dir>`.
+- `run.py` — the rlmflow side, about 200 lines. A planner launches waves of
+  implementers; both are Claude Code sessions by default (`--planner repl` /
+  `--implementer repl` for gpt-6-sol REPL agents). Each implementer works in its own copy of the task files
+  (rlmflow's default workspaces), edits `train.py`, and calls `submit_trial`.
+  That trains the copy on Modal and returns the trial's row. The planner can start
+  a new implementer from any earlier trial with `workspace=row["commit"]`.
 - `modal_runner.py` — Modal execution for each trial directory.
 - `pyproject.toml` — dependencies.
 
@@ -42,15 +47,17 @@ uv run train.py
 ## Run With rlmflow + Modal
 
 ```bash
-make run MODEL=gpt-5 GPU=L4 PARALLEL=4 MAX_SUBMISSIONS=16
+make run GPU=A10G PARALLEL=4 MAX_SUBMISSIONS=16
+make run PLANNER=repl MODEL=gpt-6-sol    # a gpt-6-sol REPL planner over Claude Code implementers
 ```
 
+Claude Code needs `rlmflow[claude]` and a `claude` login (or `ANTHROPIC_API_KEY`).
 Or from the repo root:
 
 ```bash
 python examples/autoresearch/run.py \
-  --model gpt-5 \
-  --gpu L4 \
+  --planner claude_code --implementer claude_code \
+  --gpu A10G \
   --parallel 4 \
   --max-submissions 16
 ```
@@ -61,23 +68,28 @@ Runs are written under:
 examples/_runs/autoresearch/<timestamp>/
 ```
 
-Each run contains `upstream_base/`, copied `trials/`, `ledger.jsonl`, `graph/`,
-and a live report:
+Each run contains:
 
-- `report.json` — only `name`, `hypothesis`, `time_elapsed`, `n`, and `score`
-  for each solution, plus the current `best`.
-- `summary.md` — the current best solution, a table of all solutions, and plots.
-- `scores.svg` and `elapsed.svg` — plots embedded by the Markdown summary.
+- `files/` — the task files the agents start from. Each implementer's copy is
+  under `files/.rlmflow/worktrees/`, and every trial's files are a commit there.
+- `graph/` — the run's graph, checkpointed as it goes. The graph is the ledger:
+  each trial's row is the saved return value of its `submit_trial` call. View it
+  with `rlmflow view <out>/graph`.
+- `ledger.jsonl` — an export of those rows for `plot_progress.py`, rewritten as
+  the run goes.
 
-These report files refresh after every ledger update, so they remain useful
-while a run is still in progress or if the coordinator exits early.
+A run ends when the planner finishes. If it takes a turn with no submissions
+left and doesn't finish, the host loop stops it (`flow.stop`). `--minutes` puts
+a time budget on the whole run.
 
 Karpathy-style progress plot (kept vs discarded + running best):
 
 ```bash
-python plot_progress.py ../_runs/autoresearch/<timestamp>
+python plot_progress.py ../_runs/autoresearch/<timestamp> --gpu A10G
 # writes progress.png (or progress.svg if matplotlib is unavailable)
 ```
+
+`--gpu` starts the plot at that GPU's baseline and draws it as a dashed line. Kept points are labelled with each trial's `change`, the few words its implementer passed to `submit_trial`; `--labels labels.json` (`{slug: label}`) labels a run that predates it.
 
 ## Metric
 
@@ -95,8 +107,7 @@ num_params_M:     12.7
 depth:            4
 ```
 
-The host runner parses `val_bpb`, records it in `ledger.jsonl`, and ranks
-successful trials by lowest BPB.
+The host runner parses `val_bpb` and ranks trials by lowest BPB.
 
 ## Design
 

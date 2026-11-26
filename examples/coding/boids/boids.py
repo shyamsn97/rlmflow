@@ -2,9 +2,12 @@
 
 ``peer1``, ``peer2`` and ``peer3`` are top-level agents in one graph, writing
 into one directory. Each gets the same product spec and is told only that the
-other two exist: they split the work, agree on interfaces and report bugs to
-each other with ``AGENTS[name].send(...)``, and each writes only the files it took on.
-Their tools are generic: the file tools, their own Python REPL, and
+other two exist. They coordinate on a shared ``TaskBoard``: they post tasks,
+claim them (the first claim wins), publish the interfaces they define, and
+finish what they claimed; they report bugs to each other with
+``AGENTS[name].send(...)``. Each board call is saved on the node that made it,
+so the board is part of the graph and its figure draws it as a lane.
+Their other tools are generic: the file tools, their own Python REPL, and
 ``open_page``, which opens a page in headless Chrome, shows them screenshots of
 it over a few seconds, and returns its console output. Nothing checks the app
 for them.
@@ -37,29 +40,47 @@ if str(examples_dir) not in sys.path:
 
 from common import print_run  # noqa: E402
 
-from rlmflow import (  # noqa: E402
-    FILE_TOOLS,
-    AgentConfig,
-    Flow,
-    Graph,
-    LocalRuntime,
-    attach_image,
-)
+from rlmflow import Agent, ClaudeCode, Flow, Graph, LocalRuntime, attach_image  # noqa: E402
+from rlmflow.tools.board import TaskBoard  # noqa: E402
+from rlmflow.tools.files import FILE_TOOLS  # noqa: E402
 
 PEERS = ("peer1", "peer2", "peer3")
 
 SPEC = """\
 Create a polished browser-based boids simulation in plain HTML, CSS, and
 JavaScript, written into the current directory. Use no build tools or external
-libraries. Render 2000 boids on a full-viewport 2D canvas over a dark
-background, at 60fps. Use spatial partitioning rather than all-pairs scanning,
-four visually distinct species, fading trails, orientation-aware shapes, and an
-on-canvas FPS readout."""
+libraries. Render 2000 boids on a full-viewport 2D canvas, at 60fps. Use
+spatial partitioning rather than all-pairs scanning, four species, small
+orientation-aware shapes, and an on-canvas FPS readout.
+
+Keep it calm and easy on the eyes: clear the canvas every frame, with no trails,
+glow, additive blending or flashing. Use a soft dark background (a deep slate,
+not pure black) and four muted, harmonious colors of similar brightness, so the
+species read apart without any of them glaring. Motion should be smooth and
+unhurried."""
 
 TEAM = """\
 You are {name}, one of three peers ({peers}) building this together in one
-shared directory. There is no manager. Split the work between you, agree on
-interfaces by messaging each other, and write only the files you took on.
+shared directory. There is no manager: you coordinate through a shared task
+board, from your REPL.
+
+- `board_read()` shows every task (status, owner, result) and every finding.
+  Read it first, and again before you decide what to do next.
+- One peer plans. Before you post any other task, call
+  `board_post("plan", "split the app into tasks and publish the interface")`
+  and `board_claim("plan")`. If either returns `ok: False`, someone else is
+  planning: read the board until `plan` is done, then claim tasks from it.
+  If you won `plan`, publish the interface, post the tasks, and finish `plan`.
+- `board_post(id, task)` adds a task anyone can take; post what the app needs
+  that nobody has posted yet, one task per file.
+- `board_claim(id)` takes an open task. Its `ok` is False if another peer got
+  it first; pick another. Write only the files of tasks you claimed.
+- `board_publish(topic, text)` shares an interface the others build against:
+  globals, function signatures, data layout. Publish before you rely on it.
+- `board_finish(id, result)` marks your task done, with a one-line result.
+
+You can also message a peer directly with `AGENTS[name].send(...)`, for a bug
+in their file. Finish when every task on the board is done and the app runs.
 
 {spec}"""
 
@@ -86,22 +107,27 @@ def open_page_tool(run_dir: Path):
     return open_page
 
 
-def peer_config(args: argparse.Namespace) -> AgentConfig:
+def peer_agent(args: argparse.Namespace) -> Agent:
     if args.harness == "claude_code":
-        return AgentConfig(
-            harness="claude_code",
-            model=args.claude_model,
+        return ClaudeCode(
+            args.claude_model,
             max_depth=0,
             max_iters=args.max_iters,
-            harness_options={"sdk": {"permission_mode": "acceptEdits"}},
+            options={"permission_mode": "acceptEdits"},
         )
-    return AgentConfig(model=args.model, max_depth=0, max_iters=args.max_iters)
+    return Agent(
+        args.model,
+        max_depth=0,
+        max_iters=args.max_iters,
+        reasoning_effort=args.effort,
+    )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--harness", choices=("repl", "claude_code"), default="repl")
-    parser.add_argument("--model", default="gpt-5", help="the peers' model with --harness repl")
+    parser.add_argument("--model", default="gpt-6-sol", help="the peers' model with --harness repl")
+    parser.add_argument("--effort", default="low", help="repl peers' reasoning effort")
     parser.add_argument("--claude-model", default=None, help="Claude Code's model")
     parser.add_argument("--max-iters", type=int, default=30)
     parser.add_argument("--out-dir", type=Path, default=examples_dir / "_runs" / "coding" / "boids")
@@ -114,23 +140,24 @@ def main() -> None:
 
     flow = Flow(
         runtime=LocalRuntime(working_directory=run_dir),
-        tools=[FILE_TOOLS, open_page_tool(run_dir)],
+        tools=[FILE_TOOLS, TaskBoard(), open_page_tool(run_dir)],
+        agents={"peer": peer_agent(args)},
         workers=len(PEERS),
     )
     g = Graph()
     for name in PEERS:
         others = ", ".join(peer for peer in PEERS if peer != name)
-        g.start(TEAM.format(name=name, peers=others, spec=SPEC), name=name)
+        g.start(TEAM.format(name=name, peers=others, spec=SPEC), name=name, agent="peer")
 
     started = time.perf_counter()
     try:
-        asyncio.run(print_run(flow, g, run_dir / "graph", width=8, root_config=peer_config(args)))
+        asyncio.run(print_run(flow, g, run_dir / "graph", width=8))
     finally:
-        flow.runtime.close_repls()
+        flow.close()
 
     validation = validate_project(run_dir, browser=True, screenshot=run_dir / "boids-smoke.png")
     write_report(validation, run_dir / "validation.json")
-    peers = {peer.id: peer for peer in g.agents()}
+    peers = {peer.id: peer for peer in g.agent_roots()}
     results = {peer.name: peer.final_result() for peer in peers.values()}
     (run_dir / "run-metadata.json").write_text(
         json.dumps(
@@ -156,7 +183,14 @@ def main() -> None:
         sender = peers.get(message.producer)
         if sender is not None and message.role == "user":
             text = " ".join(message.text.split())[:160]
-            print(f"  {sender.name} -> {message.agent.name}: {text}")
+            print(f"  {sender.name} -> {message.root.name}: {text}")
+    board = TaskBoard.state(g)
+    print(f"\nboard ({board['upto']} writes):")
+    for task_id, task in board["tasks"].items():
+        print(f"  {task_id}: {task['status']} by {task['owner']}: {task['result']}")
+    for finding in board["findings"]:
+        print(f"  {finding['by']} published {finding['topic']!r}")
+    (run_dir / "board.json").write_text(json.dumps(board, indent=2) + "\n")
     print("\nvalidation:")
     for name, check in validation["checks"].items():
         print(f"  {'PASS' if check['passed'] else 'FAIL'} {name}: {str(check['detail'])[:200]}")

@@ -12,8 +12,8 @@ export OPENAI_API_KEY=...
 uv run --locked --python 3.12 --extra openai \
   python examples/needle/haystack.py \
   --num-lines 1000000 \
-  --model gpt-5-mini \
-  --fast-model gpt-5-nano \
+  --model gpt-6.1-terra \
+  --fast-model gpt-6-luna \
   --out-dir examples/_runs/needle-haystack
 ```
 
@@ -50,7 +50,7 @@ uv run --locked --python 3.12 --extra image \
   --run-dir "$RUN" --out docs/static/needle-haystack.gif
 ```
 
-Both Needle variants render the live agent tree and checkpoint through a `ConsumerGroup`; pass `--no-viz` to disable terminal redraws. Pass `--docker-image rlmflow:local` to either variant to run agent code in the repository's Docker sandbox.
+Both Needle variants render the live agent tree and checkpoint by calling a `LiveTree` and a `Checkpoint` on each step; pass `--no-viz` to disable terminal redraws. Pass `--docker-image rlmflow:local` to either variant to run agent code in the repository's Docker sandbox.
 
 ## On any harness
 
@@ -66,7 +66,7 @@ Both Needle variants render the live agent tree and checkpoint through a `Consum
 python examples/needle/filesystem.py                                   # repl root, repl workers
 python examples/needle/filesystem.py --root claude_code                # Claude Code root, repl workers
 python examples/needle/filesystem.py --root repl --workers claude_code
-python examples/needle/filesystem.py --root pi --workers pi --pi-provider openai --pi-model gpt-5-mini
+python examples/needle/filesystem.py --root pi --workers pi --pi-provider openai --pi-model gpt-6.1-terra
 python examples/needle/filesystem.py --all --num-files 40 --no-viz     # every combination this machine can run
 ```
 
@@ -89,6 +89,24 @@ With `--docker-image`, Claude Code and pi still run on your machine, so their pr
 
 Each run is saved in `examples/_runs/needle-filesystem/<root>-<workers>/`. Look at one with `rlmflow view show examples/_runs/needle-filesystem/claude_code-repl`.
 
-A config's `model` means whatever its harness takes: for `repl`, the model behind rlmflow's own loop (`--model` for the root, `--worker-model` for searchers); for `claude_code`, Claude's `--model` (`--claude-model`); for `pi`, pi's `--model` (`--pi-model`, with `--pi-provider`). If `pi` isn't on your PATH, pass the binary: `--pi-command /path/to/node_modules/.bin/pi`.
+An agent's `model` means whatever its harness takes: for `repl`, the model behind rlmflow's own loop (`--model` for the root, `--worker-model` for searchers); for `claude_code`, Claude's `--model` (`--claude-model`); for `pi`, pi's `--model` (`--pi-model`, with `--pi-provider`). If `pi` isn't on your PATH, pass the binary: `--pi-command /path/to/node_modules/.bin/pi`.
 
-Your own Claude Code session can be the root too, through the plugin; the main [README](../../README.md#your-claude-code-session-as-the-root-agent) has a recorded run on this haystack.
+Your own Claude Code session can be the root too, through the plugin; the main [README](../../README.md#your-claude-code-session-as-the-root-agent) has a recorded run on this haystack. [`claude_plugin.py`](claude_plugin.py) scripts that run: it builds the haystack, runs `claude -p "/rlmflow:run ..."` with the plugin loaded, then loads the saved run and checks the answer.
+
+```bash
+python examples/needle/claude_plugin.py                         # REPL searchers (OPENAI_API_KEY)
+python examples/needle/claude_plugin.py --workers claude_code   # Claude Code searchers
+python examples/needle/claude_plugin.py --gif                   # also render the run (rlmflow[image])
+```
+
+It exits non-zero when the answer is wrong or every searcher failed, since the root can grep the haystack itself. The run is saved in `examples/_runs/needle-plugin/run/`.
+
+[`claude_plugin.sh`](claude_plugin.sh) is the same run with only the commands you'd type in a terminal: it makes a project with a haystack and an `rlmflow.toml`, runs `claude -p "/rlmflow:run ..." --plugin-dir "$(rlmflow plugin path)"`, then `rlmflow view show` on the run the plugin saved under `.rlmflow/runs/`. With `--interactive` it opens `claude` for you to paste the `/rlmflow:run` line yourself.
+
+```bash
+examples/needle/claude_plugin.sh                  # headless, then checks the answer (OPENAI_API_KEY)
+NUM_FILES=20 BUDGET=1 examples/needle/claude_plugin.sh
+examples/needle/claude_plugin.sh --interactive    # you type in Claude Code
+```
+
+On 2026-11-25, with 20 files and gpt-5-mini workers, it took 42s: four searchers, the right number, and the run's tree and timeline printed at the end.

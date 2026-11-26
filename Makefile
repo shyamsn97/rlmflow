@@ -83,7 +83,7 @@ lint: ## Check Python style with Ruff, matching CI.
 # ── Markdown ─────────────────────────────────────────────────────────
 # Scoped to public-facing docs only.
 # Install once:  pip install mdformat mdformat-gfm
-MD_FILES := README.md CHANGELOG.md UPGRADING.md $(wildcard docs/*.md)
+MD_FILES := README.md CHANGELOG.md $(wildcard docs/*.md)
 
 format-md: ## Auto-format public markdown (one paragraph per line, no hard wrap).
 	python -m mdformat --wrap no $(MD_FILES)
@@ -143,6 +143,12 @@ showcase-shepherd-assets: ## Publish Shepherd SVGs and GIFs from SHEPHERD_RUN.
 	uv run --locked --python 3.12 --extra image python examples/shepherd/render_rewind.py \
 		--run-dir $(SHEPHERD_RUN) \
 		--out $(SHEPHERD_DOC_ASSETS)/rewind.gif
+	uv run --locked --python 3.12 --extra image python examples/shepherd/render_fanout.py \
+		--run-dir $(SHEPHERD_RUN) \
+		--out $(SHEPHERD_DOC_ASSETS)/fanout.gif
+	uv run --locked --python 3.12 python examples/shepherd/combine_graph.py $(SHEPHERD_RUN)
+	uv run --locked --python 3.12 --extra image rlmflow render gif \
+		$(SHEPHERD_RUN)/combined docs/static/graphs/shepherd.gif --every 2
 	cp "$(SHEPHERD_RUN)/traces/worker.gif" "$(SHEPHERD_DOC_ASSETS)/jam.gif"
 	rm -f $(SHEPHERD_DOC_ASSETS)/branch*.gif
 	cp "$(SHEPHERD_RUN)"/traces/branch*.gif $(SHEPHERD_DOC_ASSETS)/

@@ -17,14 +17,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import Agent, Node
+from rlmflow.graph.nodes import AgentRoot, Node
 from rlmflow.view.text import kind, render_tree
 
 DETAIL_LIMIT = 1600
 
 
 @dataclass
-class Step:
+class TimelineEntry:
     """One node, with what it was and where it sits in the run."""
 
     index: int
@@ -47,21 +47,8 @@ def timeline(g: Graph) -> list[Node]:
 
 def summarize(item: Node, limit: int = 96) -> str:
     """A single line describing what this node did."""
-    if isinstance(item, Agent):
-        root = item
-        config = root._config
-        recorded = root.config_record or {}
-        harness = getattr(config, "harness", None) or recorded.get("harness") or "?"
-        if not isinstance(harness, str):
-            harness = getattr(harness, "name", None) or getattr(harness, "__name__", str(harness))
-        elif harness.startswith("rlmflow.harnesses."):
-            harness = harness.split(":")[0].rsplit(".", 1)[-1]
-        text = f"start {root.name} · {root.config_name or 'root'} · {harness}"
-        # A person's own session drives an interactive agent; its config's model only serves llm_query.
-        if harness != "interactive":
-            model = getattr(config, "model", None) or recorded.get("model") or "?"
-            text += f" · model {model}"
-        return _clip(text, limit)
+    if isinstance(item, AgentRoot):
+        return _clip(f"start {item.name} · {item.agent}", limit)
     match kind(item):
         case "message":
             text = f"from {item.producer}: {item.text}"
@@ -79,7 +66,7 @@ def summarize(item: Node, limit: int = 96) -> str:
 def node_detail(item: Node, limit: int = DETAIL_LIMIT) -> str:
     """The content worth reading for this node, trimmed."""
     blocks: list[str] = []
-    if isinstance(item, Agent):
+    if isinstance(item, AgentRoot):
         blocks.append(f"task:\n{item.task}")
         args = [name for name in item.input if name != "task"]
         if args:
@@ -114,15 +101,15 @@ def _stringify(value: object) -> str:
     return value if isinstance(value, str) else repr(value)
 
 
-def steps(g: Graph) -> list[Step]:
+def steps(g: Graph) -> list[TimelineEntry]:
     """The run as a list of steps, ready to render."""
     ordered = timeline(g)
     start = ordered[0].created_at if ordered else 0.0
     return [
-        Step(
+        TimelineEntry(
             index=index,
             node=item,
-            agent=item.agent.path(),
+            agent=item.root.path(),
             kind=kind(item),
             summary=summarize(item),
             detail=node_detail(item),
@@ -178,7 +165,7 @@ def render_steps(source: Graph | str | Path) -> Iterator[str]:
 
 
 __all__ = [
-    "Step",
+    "TimelineEntry",
     "as_graph",
     "node_detail",
     "render_steps",

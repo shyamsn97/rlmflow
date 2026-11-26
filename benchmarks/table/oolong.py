@@ -1,6 +1,6 @@
 """Long-document QA: OOLONG ``trec_coarse`` at 128K tokens.
 
-The first 15 rows of the fixed, seeded 25-row set the RLM authors evaluate on
+The fixed, seeded 25-row set the RLM authors evaluate on
 (``OolongTrecCoarse128KDataset``), scored with their scorer. The document is a
 file in the work directory, the same for every system. It's the text without
 labels: with them, every question is a grep.
@@ -18,8 +18,8 @@ from typing import Any
 from benchmarks.table.systems import Limits, Outcome
 
 NAME = "oolong"
-SIZE = 15
-CACHE = Path.home() / ".cache" / "rlmflow-bench" / "oolong-trec-coarse-128k.json"
+SIZE = 25
+CACHE = Path.home() / ".cache" / "rlmflow-bench" / f"oolong-trec-coarse-128k-{SIZE}.json"
 DATASET = "oolongbench/oolong-synth"
 REVISION = "f0d59eaf0febf130664cfceb710436c8e3216b2b"
 CONTEXT_LEN = 131_072

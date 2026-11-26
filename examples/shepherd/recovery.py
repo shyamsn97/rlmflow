@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import copy as copying
+from dataclasses import dataclass
 from typing import TypedDict
 
 from rlmflow import Flow, Graph, Node, tool
+from rlmflow.agents import steps
 
 
 class Plan(TypedDict):
@@ -66,7 +68,7 @@ def snapshot(flow: Flow, agent: Node, rewind: int = 0) -> dict:
     every runtime but the in-process one, so ``Sokoban._publish`` posts each
     reading the host needs to ``env`` and the host never touches the object.
     """
-    env = flow.runtime.repl_for(agent).env
+    env = flow.repl(agent).env
     return {
         "rewind": rewind,
         # Ruled, because ``board`` is the only description of the walls a reader
@@ -96,16 +98,14 @@ async def replayed_fork(
     """
     cut, depth = rewind_point(g, worker, rewind)
     branch = g.fork(cut)
-    copy = branch.agent(worker.id)
+    copy = branch.agent_root(worker.id)
     if extra_turns is not None:
-        turns = sum("seen" in node.data for node in cut.transcript())
-        capped = replace(
-            flow.config(worker.config_name),
-            name=f"worker-{turns + extra_turns}-turns",
-            max_iters=turns + extra_turns,
-        )
-        copy.config_name = flow.add_config(capped).name
-    await flow.replay(branch, copy)
+        turns = steps(cut)
+        capped = copying.copy(flow.agent(worker))
+        capped.max_iters = turns + extra_turns
+        copy.agent = f"worker-{capped.max_iters}-turns"
+        flow.agents[copy.agent] = capped
+    await flow.repl(copy).catch_up()
     return branch, copy, depth
 
 
@@ -124,7 +124,7 @@ class Branch:
 
     @property
     def env(self) -> dict:
-        return self.flow.runtime.repl_for(self.agent).env
+        return self.flow.repl(self.agent).env
 
     @property
     def result(self):
@@ -229,7 +229,7 @@ async def prepare_branch(
     order = plan["order"]
     order_text = ", then ".join(order)
     branch.metadata["shepherd_branch"] = f"branch{index}"
-    copy.metadata["shepherd_order"] = order_text
+    copy.data["shepherd_order"] = order_text
     branch.send(
         copy,
         f"Rewound {depth} pushes. This is a fresh recovery attempt, so "

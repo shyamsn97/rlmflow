@@ -9,6 +9,8 @@ way. All three get the same task text and the same model:
   plugin; its workers are Claude Code sessions (``flows.claude_code_workers``).
 - ``rlmflow``: rlmflow's REPL harness as the root, and its workers
   (``flows.repl_workers``).
+- ``direct``: one model call with ``context.txt`` pasted into the prompt, no
+  tools; the reply is the answer.
 """
 
 from __future__ import annotations
@@ -24,11 +26,12 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 MODEL = "claude-sonnet-5-5"
-SYSTEMS = ("claude_code", "claude_code_rlmflow", "rlmflow")
+SYSTEMS = ("claude_code", "claude_code_rlmflow", "rlmflow", "direct")
 
 #: Dollars per million tokens: Sonnet 5.5 list prices, from ALE-Bench's ``calc_cost.py``.
 PRICES = {
     "claude-sonnet-5-5": {"input": 2.0, "output": 10.0, "cache_read": 0.2, "cache_write": 2.5},
+    "gpt-5": {"input": 1.25, "output": 10.0, "cache_read": 0.125},
 }
 
 
@@ -54,13 +57,18 @@ class Outcome:
         return asdict(self)
 
 
-def run(system: str, task: str, workdir: Path, limits: Limits, model: str = MODEL) -> Outcome:
+def run(
+    system: str, task: str, workdir: Path, limits: Limits, model: str = MODEL, depth: int = 1
+) -> Outcome:
+    """``depth`` is the rlmflow systems' ``max_depth``; plain Claude Code ignores it."""
     if system == "claude_code":
         return claude(system, task, workdir, limits, model)
     if system == "claude_code_rlmflow":
-        return claude_rlmflow(task, workdir, limits, model)
+        return claude_rlmflow(task, workdir, limits, model, depth)
     if system == "rlmflow":
-        return rlmflow(task, workdir, limits, model)
+        return rlmflow(task, workdir, limits, model, depth)
+    if system == "direct":
+        return direct(task, workdir, limits, model)
     raise ValueError(f"unknown system {system!r}; known: {', '.join(SYSTEMS)}")
 
 
@@ -119,7 +127,7 @@ def claude(
     )
 
 
-def claude_rlmflow(task: str, workdir: Path, limits: Limits, model: str) -> Outcome:
+def claude_rlmflow(task: str, workdir: Path, limits: Limits, model: str, depth: int) -> Outcome:
     """Claude Code as the root of an rlmflow run; the cost adds the workers' sessions."""
     from rlmflow import Graph
 
@@ -134,6 +142,7 @@ def claude_rlmflow(task: str, workdir: Path, limits: Limits, model: str) -> Outc
         env={
             "RLMFLOW_FLOW": "benchmarks.table.flows:claude_code_workers",
             "RLMFLOW_BENCH_MODEL": model,
+            "RLMFLOW_BENCH_DEPTH": str(depth),
             "RLMFLOW_BENCH_CLAUDE_TOKEN": os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", ""),
             "PYTHONPATH": os.pathsep.join(filter(None, [str(REPO), os.environ.get("PYTHONPATH")])),
             "PATH": os.pathsep.join([str(REPO / ".venv" / "bin"), os.environ["PATH"]]),
@@ -149,22 +158,22 @@ def claude_rlmflow(task: str, workdir: Path, limits: Limits, model: str) -> Outc
     return outcome
 
 
-def rlmflow(task: str, workdir: Path, limits: Limits, model: str) -> Outcome:
+def rlmflow(task: str, workdir: Path, limits: Limits, model: str, depth: int) -> Outcome:
     """rlmflow's REPL harness as the root, billed to ``ANTHROPIC_API_KEY``."""
     from benchmarks.table.flows import repl_workers
-    from rlmflow import Graph, GraphCheckpointer
+    from rlmflow import Budget, Checkpoint, Graph
 
     os.environ["RLMFLOW_BENCH_MODEL"] = model
-    flow = repl_workers(workdir, max_budget=tokens_for(limits.budget_usd, model))
+    os.environ["RLMFLOW_BENCH_DEPTH"] = str(depth)
+    flow = repl_workers(workdir)
+    budget = Budget(tokens=tokens_for(limits.budget_usd, model))
     g = Graph()
     root = g.start(task)
     run_dir = workdir / ".rlmflow" / "runs" / "repl"
-    checkpointer = GraphCheckpointer(str(run_dir))
     error = None
 
     async def drive() -> None:
-        async for item in flow.run_streaming(g):
-            checkpointer.handle(item, g)
+        await flow.arun(g, hooks=[budget, Checkpoint(str(run_dir))])
 
     start = time.monotonic()
     try:
@@ -172,7 +181,6 @@ def rlmflow(task: str, workdir: Path, limits: Limits, model: str) -> Outcome:
     except TimeoutError:
         error = "timeout"
     finally:
-        checkpointer.close()
         flow.runtime.close_repls()
     result = root.final_result()
     return Outcome(
@@ -184,6 +192,29 @@ def rlmflow(task: str, workdir: Path, limits: Limits, model: str) -> Outcome:
         error=error,
         run_dir=str(run_dir),
     )
+
+
+def direct(task: str, workdir: Path, limits: Limits, model: str) -> Outcome:
+    """The whole document in one prompt; the reply is written to ``answer.txt``."""
+    from rlmflow.llm import client_for
+
+    prompt = (
+        f"{task}\n\nInstead of writing a file, reply with only the answer. "
+        f"The full contents of `context.txt`:\n\n{(workdir / 'context.txt').read_text()}"
+    )
+    client = client_for(model)
+    start = time.monotonic()
+    try:
+        text, usage = asyncio.run(
+            asyncio.wait_for(
+                client.completion([{"role": "user", "content": prompt}]),
+                timeout=limits.minutes * 60,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - recorded on the row, not raised
+        return Outcome("direct", time.monotonic() - start, 0.0, error=repr(exc)[-2000:])
+    (workdir / "answer.txt").write_text(text.strip())
+    return Outcome("direct", time.monotonic() - start, cost(usage, model), text=text)
 
 
 def cost(usage, model: str) -> float:

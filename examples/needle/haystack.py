@@ -15,14 +15,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import asyncio
 import random
 import string
 import sys
 from pathlib import Path
 
-from rlmflow import AgentConfig, DockerRuntime, Flow, Graph
-from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
+from rlmflow import Agent, Checkpoint, ClaudeCode, DockerRuntime, Flow, Graph, Pi
+from rlmflow.view import LiveTree
 
 examples_dir = next(path for path in Path(__file__).resolve().parents if path.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -59,8 +58,8 @@ def generate_massive_context(
 def main():
     parser = argparse.ArgumentParser(description="Needle in a massive haystack input")
     parser.add_argument("--num-lines", type=int, default=1_000_000)
-    parser.add_argument("--model", default="gpt-5-mini")
-    parser.add_argument("--fast-model", default="gpt-5-nano")
+    parser.add_argument("--model", default="gpt-6.1-terra")
+    parser.add_argument("--fast-model", default="gpt-6-luna")
     parser.add_argument(
         "--docker-image",
         default=None,
@@ -91,48 +90,37 @@ def main():
 
     runtime = DockerRuntime(args.docker_image) if args.docker_image else None
 
-    configs = [AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)]
+    agents = {"default": Agent(args.model, max_depth=args.max_depth, max_iters=args.max_iters)}
     if args.fast_model:
-        configs.append(
-            AgentConfig(
-                name="searcher",
-                model=args.fast_model,
-                description="cheap model for searching one chunk",
-                max_iters=args.max_iters,
-                max_depth=0,
-            )
+        agents["searcher"] = Agent(
+            args.fast_model,
+            description="cheap model for searching one chunk",
+            max_iters=args.max_iters,
+            max_depth=0,
         )
-    flow = Flow(configs=configs, runtime=runtime)
-    # Claude Code and pi pick their own model; --model is the REPL harness's.
-    config = AgentConfig(
-        harness=args.harness,
-        model=args.model if args.harness == "repl" else None,
-        max_depth=args.max_depth,
-        max_iters=args.max_iters,
-    )
-
+    if args.harness != "repl":
+        # Claude Code and pi pick their own model; --model is the REPL agent's.
+        harness = {"claude_code": ClaudeCode, "pi": Pi}[args.harness]
+        agents[args.harness] = harness(max_depth=args.max_depth, max_iters=args.max_iters)
+    flow = Flow(agents=agents, runtime=runtime)
     g = Graph()
     root = g.start(
-        "I'm looking for a magic number buried somewhere in the haystack in "
-        "`haystack`. What is it? Chunk the string and search the "
-        "pieces in parallel.",
+        agent="default" if args.harness == "repl" else args.harness,
+        task=(
+            "I'm looking for a magic number buried somewhere in the haystack in "
+            "`haystack`. What is it? Chunk the string and search the "
+            "pieces in parallel."
+        ),
         haystack=haystack,
     )
     out_dir = Path(args.out_dir)
-    consumers = ConsumerGroup()
+    consumers = []
     if not args.no_viz:
-        consumers.append(LiveGraphTree(title="Needle haystack search"))
+        consumers.append(LiveTree(title="Needle haystack search"))
     if args.out_dir:
-        consumers.append(GraphCheckpointer(out_dir))
+        consumers.append(Checkpoint(out_dir))
 
-    async def drive() -> None:
-        try:
-            async for item in flow.run_streaming(g, root_config=config):
-                consumers.handle(item, g)
-        finally:
-            consumers.close()
-
-    asyncio.run(drive())
+    flow.run(g, hooks=consumers)
 
     print(f"\n{'=' * 40}")
     result = root.final_result()
@@ -141,7 +129,7 @@ def main():
     print(f"Correct:        {answer in str(result)}")
     print(f"Run saved to    {out_dir}")
 
-    flow.runtime.close_repls()
+    flow.close()
 
 
 if __name__ == "__main__":

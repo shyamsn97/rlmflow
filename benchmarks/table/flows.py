@@ -1,5 +1,8 @@
 """The Flows the two rlmflow systems run: one model, workers of the root's own kind.
 
+``RLMFLOW_BENCH_DEPTH`` sets ``max_depth`` on the one config, which the root
+shares: 1 lets the root launch workers, 2 lets those workers launch their own.
+
 ``claude_code_workers`` is what the plugin's serve loads (``RLMFLOW_FLOW``), so a
 Claude Code root launches Claude Code workers. Claude Code keeps its login token
 (``CLAUDE_CODE_OAUTH_TOKEN``) out of the hooks that start the serve, so the
@@ -22,6 +25,10 @@ def model() -> str:
     return os.environ.get("RLMFLOW_BENCH_MODEL", MODEL)
 
 
+def depth() -> int:
+    return int(os.environ.get("RLMFLOW_BENCH_DEPTH", "1"))
+
+
 def claude_code_workers() -> Flow:
     token = os.environ.get("RLMFLOW_BENCH_CLAUDE_TOKEN")
     if token and not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
@@ -32,6 +39,7 @@ def claude_code_workers() -> Flow:
                 name="default",
                 harness="claude_code",
                 model=model(),
+                max_depth=depth(),
                 description="A Claude Code session with its own tools, in the same directory.",
                 harness_options={
                     "command": shutil.which("claude"),
@@ -43,15 +51,15 @@ def claude_code_workers() -> Flow:
     )
 
 
-def repl_workers(workdir: Path, *, max_budget: int | None = None) -> Flow:
+def repl_workers(workdir: Path) -> Flow:
     return Flow(
         configs=[
             AgentConfig(
                 name="default",
                 model=model(),
+                max_depth=depth(),
                 description="An agent with a Python REPL and file tools, in the same directory.",
                 max_iters=40,
-                max_budget=max_budget,
             )
         ],
         tools=[FILE_TOOLS],

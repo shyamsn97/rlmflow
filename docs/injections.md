@@ -34,7 +34,7 @@ To keep the original and try something else, fork instead. The copy is cut right
 
 ```python
 branch = g.fork(node)
-branch.send(branch.agent(node.owner), "Try a different approach.")
+branch.send(branch[node.root_id].root, "Try a different approach.")
 flow.run(branch)
 ```
 
@@ -45,21 +45,22 @@ flow.run(branch)
 The other injection point is the REPL namespace, which reaches agents that are already running:
 
 ```python
-flow.inject("BUDGET_REMAINING", 4)
+flow.add_tool(4, name="BUDGET_REMAINING")
 flow.add_tool(escalate)
 flow.remove_tool("escalate")
+flow.repl(worker).set(hint="check the auth path")  # one run's REPL only
 ```
 
-`inject` takes any object, not just callables; `add_tool` is the same thing with the name read off the function. Both write into every open REPL as well as the flow's namespace, so a tool added mid-run is visible on the next run of code.
+`add_tool` takes any object with `name=`, and reads the name off a function without it. Each REPL binds exactly the flow's tools whenever it runs code, so a tool added mid-run is there on the next run of code and a removed one is gone. `flow.repl(run).set(...)` binds values and tools in that run's REPL for the rest of the run.
 
 ## Reactive control
 
 **Inside the loop.** Host code in the `async for` runs on the Flow's loop between steps, so `g.send` there is safe; the agent reads the message at its next turn.
 
 ```python
-async for step in flow.run_streaming(g):
-    if step.agent is not root and step.node.runs_code:
-        g.send(step.agent, "Answer with the best evidence.")
+async for node in flow.stream(g):
+    if node.root_id != root.id and node.runs_code:
+        g.send(node.root, "Answer with the best evidence.")
 ```
 
 This reaches a worker while its parent is still inside the code that launched it.
@@ -67,28 +68,28 @@ This reaches a worker while its parent is still inside the code that launched it
 **Edits during a stream.** `await flow.edit(g, op, node, ...)` stops the agents the edit touches, then applies it, so it is safe inside the loop too:
 
 ```python
-async for step in flow.run_streaming(g):
-    if step.node.error:
-        await flow.edit(g, "delete", step.node)  # the agent redoes that turn
+async for node in flow.stream(g):
+    if node.error:
+        await flow.edit(g, "delete", node)  # the agent redoes that turn
 ```
 
 **Between streaming calls.** Or stop the stream first:
 
 ```python
-async for _ in flow.run_streaming(g, until="idle"):
+async for _ in flow.stream(g, until="idle"):
     pass
 
 g.send(root, "Human feedback: verify the auth path.")
 
-async for _ in flow.run_streaming(g):
+async for _ in flow.stream(g):
     pass
 ```
 
 A boundary that fires on a child's node stops the stream while the parent's code is still running. That node goes back to ready, keeping what it saved, so the next run runs it again in place: its launches return the same children and its finished awaits their saved results. To stop on the parent's own turns instead:
 
 ```python
-def root_idle(step):
-    return step.agent is root and (step.node.runs_code or "seen" in step.node.data)
+def root_idle(node):
+    return node.root_id == root.id and (node.runs_code or node.ends_turn)
 ```
 
 See [`examples/graph/08_streaming.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/graph/08_streaming.py) for stopping a run, sending a message and resuming, and [`examples/shepherd/`](../examples/shepherd/) for forking a run and steering each fork live, rewinding Sokoban workers.

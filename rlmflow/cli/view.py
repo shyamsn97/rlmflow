@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from rlmflow.cli import CliError
+from rlmflow.cli.app import CliError
 
 
 class ViewCLI:
@@ -33,8 +33,7 @@ class ViewCLI:
           tree: Print the tree only, no timeline.
           frames_only: Print the agent tree as it stood at every step.
         """
-        from rlmflow import render_tree
-        from rlmflow.view import render_steps, steps
+        from rlmflow.view import render_steps, render_tree, steps
 
         graph = load_graph(source)
         walked = steps(graph)

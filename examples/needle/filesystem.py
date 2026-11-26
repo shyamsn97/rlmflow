@@ -27,11 +27,10 @@ import string
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 
-from rlmflow import AgentConfig, DockerRuntime, Flow, Graph, SubprocessRuntime
-from rlmflow.consumers import ConsumerGroup, GraphCheckpointer, LiveGraphTree
+from rlmflow import Agent, Checkpoint, ClaudeCode, DockerRuntime, Flow, Graph, LocalRuntime, Pi
 from rlmflow.tools.files import (
     append_file,
     edit_file,
@@ -41,6 +40,7 @@ from rlmflow.tools.files import (
     read_lines,
     write_file,
 )
+from rlmflow.view import LiveTree
 
 NEEDLE_FILE_TOOLS = [read_file, write_file, append_file, edit_file, ls, read_lines, line_count]
 HARNESSES = ("repl", "claude_code", "pi")
@@ -98,17 +98,14 @@ def missing(harness: str, args: argparse.Namespace) -> str | None:
     return None
 
 
-def config(harness: str, args: argparse.Namespace, **fields) -> AgentConfig:
-    """An ``AgentConfig`` for ``harness``, with the model and options that harness takes."""
+def make_agent(harness: str, args: argparse.Namespace, model: str, **fields) -> Agent:
+    """An agent on ``harness``, with the model and options that harness takes."""
     if harness == "claude_code":
-        return AgentConfig(harness=harness, model=args.claude_model, **fields)
+        return ClaudeCode(args.claude_model, **fields)
     if harness == "pi":
-        options = {
-            "command": args.pi_command,
-            **({"provider": args.pi_provider} if args.pi_provider else {}),
-        }
-        return AgentConfig(harness=harness, model=args.pi_model, harness_options=options, **fields)
-    return AgentConfig(harness=harness, model=args.model, **fields)
+        provider = ["--provider", args.pi_provider] if args.pi_provider else []
+        return Pi(args.pi_model, command=args.pi_command, args=provider, **fields)
+    return Agent(model, **fields)
 
 
 def run_one(root_harness: str, worker_harness: str, args: argparse.Namespace) -> Outcome:
@@ -119,39 +116,42 @@ def run_one(root_harness: str, worker_harness: str, args: argparse.Namespace) ->
         random.seed(args.seed)
         answer = generate_haystack(workdir / "haystack", num_files=args.num_files)
 
-        searcher = config(
+        searcher = make_agent(
             worker_harness,
             args,
-            name="searcher",
+            args.worker_model,
             description="searches one batch of files and returns the magic number, or None",
             max_depth=0,
             max_iters=args.max_iters,
+            reasoning_effort=args.worker_effort,
         )
-        if worker_harness == "repl":
-            searcher = replace(searcher, model=args.worker_model)
+        lead = make_agent(
+            root_harness,
+            args,
+            args.model,
+            max_depth=1,
+            max_iters=args.max_iters,
+            reasoning_effort=args.effort,
+        )
         flow = Flow(
-            configs=[searcher],
+            agents={root_harness: lead, "searcher": searcher},
             runtime=DockerRuntime(args.docker_image, working_directory=workdir)
             if args.docker_image
-            else SubprocessRuntime(working_directory=workdir),
+            else LocalRuntime(working_directory=workdir),
             tools=NEEDLE_FILE_TOOLS,
         )
-        root_config = config(root_harness, args, max_depth=1, max_iters=args.max_iters)
-
         g = Graph()
-        root = g.start(TASK.format(n=args.num_files))
-        consumers = ConsumerGroup([GraphCheckpointer(saved)])
+        root = g.start(TASK.format(n=args.num_files), agent=root_harness)
+        consumers = [Checkpoint(saved)]
         if not args.no_viz:
             consumers.append(
-                LiveGraphTree(title=f"needle: {root_harness} root, {worker_harness} workers")
+                LiveTree(title=f"needle: {root_harness} root, {worker_harness} workers")
             )
 
         async def drive() -> None:
             try:
-                async for step in flow.run_streaming(g, root_config=root_config):
-                    consumers.handle(step, g)
+                await flow.arun(g, hooks=consumers)
             finally:
-                consumers.close()
                 await flow.aclose()
 
         started = time.monotonic()
@@ -163,7 +163,7 @@ def run_one(root_harness: str, worker_harness: str, args: argparse.Namespace) ->
             answer in str(result),
             result,
             time.monotonic() - started,
-            len(g.agents()),
+            len(g.agent_roots()),
             saved,
         )
 
@@ -183,9 +183,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--max-iters", type=int, default=15)
     parser.add_argument(
-        "--model", default="gpt-5-mini", help="a repl root's model (the Flow's default)"
+        "--model", default="gpt-6.1-terra", help="a repl root's model (the Flow's default)"
     )
-    parser.add_argument("--worker-model", default="gpt-5-nano", help="repl searchers' model")
+    parser.add_argument("--worker-model", default="gpt-6-luna", help="repl searchers' model")
+    parser.add_argument("--effort", default="low", help="repl root's reasoning effort")
+    parser.add_argument("--worker-effort", default="low", help="repl searchers' reasoning effort")
     parser.add_argument(
         "--claude-model",
         default=None,

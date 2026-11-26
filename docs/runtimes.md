@@ -6,8 +6,7 @@ The core installation needs `cloudpickle` for value transfer. `ModalRuntime` add
 
 ## Shipped runtimes
 
-- `LocalRuntime(working_directory=...)` — a worker subprocess in the current Python environment. This is the default.
-- `SubprocessRuntime(python=..., env=...)` — a worker using a selected Python executable and environment.
+- `LocalRuntime(working_directory=..., python=..., env=...)` — a worker subprocess, in the current Python environment unless `python` and `env` choose another. This is the default.
 - `DockerRuntime(image, ...)` — a worker attached through `docker run -i`.
 - `ModalRuntime(...)` — a worker attached through Modal Sandbox stdin/stdout.
 
@@ -39,8 +38,8 @@ Tools execute on the host through the worker's private protocol stream unless ma
 Agent code runs in a worker process, so the host and the agent share no heap. Three rules follow, and a tool that ignores them either fails at injection with a pickling error or quietly updates a copy:
 
 - Tools run on the host by default, so they can mutate host state, drive the graph, or close over something unpicklable such as `Flow` or a client. A pure function that should run inside the worker (next to the agent's files, or in its sandbox) is marked `@tool(where="repl")` and copied in by value.
-- State the host reads back travels through `ENV`, which is per-agent and round-trips with every execution: whatever agent code writes there is readable afterwards with `flow.runtime.get_env_var(agent, name)`. `ENV` values must be JSON-compatible.
-- `flow.runtime.get_var(agent, name)` reads JSON-compatible worker state. Custom class instances and other executable Python objects never deserialize on the host; publish the plain fields the host needs through `ENV` or another variable.
+- State the host reads back travels through `ENV`, which is per-agent and round-trips with every execution: whatever agent code writes there is readable afterwards in `flow.repl(run).env`, and what the host writes there reaches the agent's next code. `ENV` values must be JSON-compatible.
+- `flow.repl(run).get(name)` reads JSON-compatible worker state. Custom class instances and other executable Python objects never deserialize on the host; publish the plain fields the host needs through `ENV` or another variable.
 
 `examples/shepherd` follows all three: its recovery tools are proxies, the game publishes each reading and its frame trace to `ENV`, and the game object itself never leaves the worker.
 
@@ -60,7 +59,7 @@ A timeout terminates the entire worker because Python cannot safely kill an arbi
 
 ## Restore behavior
 
-Saved graphs remain the durable state; a worker's namespace is not saved. When a Flow is about to run code for an agent whose REPL it doesn't hold (a loaded run, a fork, an edit that cut its nodes), it opens a fresh worker and runs the agent's nodes again, with saved tool calls returning their results. `await flow.replay(g)` does this up front for every unfinished agent, and `await flow.replay(g, agent)` for one.
+Saved graphs remain the durable state; a worker's namespace is not saved. When a Flow is about to run code for an agent whose REPL it doesn't hold (a loaded run, a fork, an edit that cut its nodes), it opens a fresh worker and runs the agent's nodes again, with saved tool calls returning their results. This happens automatically before the agent next runs; `await flow.repl(agent).catch_up()` does it explicitly for one agent.
 
 ## Docker
 

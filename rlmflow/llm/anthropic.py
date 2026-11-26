@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 
 from rlmflow.graph.nodes import LLMUsage
-from rlmflow.llm import LLMChunk, LLMClient, join_chunks, stream_with_retry
+from rlmflow.llm.base import (
+    DEFAULT_REQUEST_TIMEOUT,
+    LLMChunk,
+    LLMClient,
+    ToolCall,
+    join_chunks,
+    stream_with_retry,
+)
 
 
 def anthropic_content(content: str | list[dict[str, Any]]) -> str | list[dict[str, Any]]:
@@ -29,6 +37,43 @@ def anthropic_content(content: str | list[dict[str, Any]]) -> str | list[dict[st
     return blocks
 
 
+def anthropic_blocks(message: dict[str, Any]) -> list[dict[str, Any]]:
+    """One OpenAI-style message as Anthropic content blocks, without empty text."""
+    if message["role"] == "tool":
+        return [
+            {
+                "type": "tool_result",
+                "tool_use_id": message["tool_call_id"],
+                "content": message["content"],
+            }
+        ]
+    content = anthropic_content(message.get("content") or "")
+    blocks = [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
+    blocks = [b for b in blocks if b.get("type") != "text" or b["text"].strip()]
+    for call in message.get("tool_calls") or ():
+        blocks.append(
+            {
+                "type": "tool_use",
+                "id": call["id"],
+                "name": call["function"]["name"],
+                "input": json.loads(call["function"]["arguments"] or "{}"),
+            }
+        )
+    return blocks
+
+
+def anthropic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """OpenAI function tools as Anthropic tools."""
+    return [
+        {
+            "name": tool["function"]["name"],
+            "description": tool["function"].get("description", ""),
+            "input_schema": tool["function"]["parameters"],
+        }
+        for tool in tools
+    ]
+
+
 class AnthropicClient(LLMClient):
     """Anthropic client. Requires `pip install anthropic`."""
 
@@ -39,6 +84,7 @@ class AnthropicClient(LLMClient):
         model: str = "claude-sonnet-4-20250514",
         max_tokens: int = 8192,
         *,
+        request_timeout: float | None = DEFAULT_REQUEST_TIMEOUT,
         client: Any = None,
         **client_kwargs,
     ) -> None:
@@ -51,15 +97,25 @@ class AnthropicClient(LLMClient):
         self.client = client
         self.model = model
         self.max_tokens = max_tokens
+        self.request_timeout = request_timeout
 
-    def split_messages(self, messages: list[dict[str, str]]) -> tuple[str, list[dict]]:
+    def split_messages(self, messages: list[dict[str, Any]]) -> tuple[str, list[dict]]:
+        """The system prompt, and the rest as Anthropic messages: tool results are
+        user content, and consecutive messages of one role merge."""
         system = ""
-        chat_msgs = []
+        chat_msgs: list[dict[str, Any]] = []
         for m in messages:
             if m["role"] == "system":
                 system = m["content"]
+                continue
+            role = "user" if m["role"] == "tool" else m["role"]
+            blocks = anthropic_blocks(m)
+            if not blocks:
+                continue
+            if chat_msgs and chat_msgs[-1]["role"] == role:
+                chat_msgs[-1]["content"].extend(blocks)
             else:
-                chat_msgs.append({**m, "content": anthropic_content(m["content"])})
+                chat_msgs.append({"role": role, "content": blocks})
         return system, chat_msgs
 
     async def chat(self, messages: list[dict[str, str]], *args, **kwargs) -> str:
@@ -81,14 +137,17 @@ class AnthropicClient(LLMClient):
                 request_kwargs[key] = kwargs[key]
         if kwargs.get("stop") is not None:
             request_kwargs["stop_sequences"] = kwargs["stop"]
+        if kwargs.get("tools"):
+            request_kwargs["tools"] = anthropic_tools(kwargs["tools"])
+            request_kwargs["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
         return request_kwargs
 
     async def completion(
         self, messages: list[dict[str, str]], *args, **kwargs
     ) -> tuple[str, LLMUsage]:
-        text, usage = await join_chunks(self.stream(messages, *args, **kwargs))
-        self.last_usage = usage
-        return text, usage
+        reply = await join_chunks(self.stream(messages, *args, **kwargs))
+        self.last_usage = reply.usage
+        return reply.text, reply.usage
 
     async def stream(
         self, messages: list[dict[str, str]], *args, **kwargs
@@ -115,7 +174,12 @@ class AnthropicClient(LLMClient):
                 output_tokens=msg.usage.output_tokens,
             )
             self.last_usage = usage
-            yield LLMChunk(usage=usage)
+            calls = tuple(
+                ToolCall(block.name, json.dumps(block.input), block.id)
+                for block in msg.content
+                if block.type == "tool_use"
+            )
+            yield LLMChunk(usage=usage, calls=calls)
 
 
 __all__ = ["AnthropicClient"]

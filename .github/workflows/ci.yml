@@ -40,7 +40,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -e ".[docs]"
-      - run: python -m mdformat --wrap no --check README.md CHANGELOG.md UPGRADING.md docs/*.md
+      - run: python -m mdformat --wrap no --check README.md CHANGELOG.md docs/*.md
       - run: mkdocs build --strict
 
   providers:

@@ -15,11 +15,11 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from rlmflow.graph import calls
-from rlmflow.graph.nodes import Step, current_step, running_step
+from rlmflow.repl import Repl, current_repl, running
 from rlmflow.runtime.repl import (
     AGENTS_BINDING,
     DoneSignal,
-    Repl,
+    ReplProcess,
     ReplRun,
     ReplStatus,
     encode_agent_references,
@@ -41,19 +41,28 @@ from rlmflow.runtime.repl_server import (
 from rlmflow.utils import encode_host_value
 
 _NO_ANSWER = object()
+_UNSET = object()
 
 logger = logging.getLogger("rlmflow")
 
 
+def _proxy_kind(name: str, value: Any) -> tuple[bool, bool] | None:
+    """``(proxied, async)`` for a value the worker reaches through the host; ``None`` otherwise."""
+    metadata = get_tool_metadata(value) if callable(value) else None
+    if name == "submit" or (metadata is not None and metadata.proxy):
+        return True, bool(metadata and metadata.is_async)
+    return None
+
+
 def invoke_tool_call(
     fn: Callable[..., object],
-    step: Step | None,
+    step: Repl | None,
     args: tuple[object, ...],
     kwargs: dict[str, object],
     *,
     name: str | None = None,
 ) -> object:
-    """Run one host tool call from the node ``step`` is running, or return what it saved.
+    """Run one host tool call from the node ``step`` (a run's ``Repl``) is running, or return what it saved.
 
     Built-in tools and ``@tool(cache=True)`` tools are saved on the node, keyed by
     the call; a call that matches a saved one returns its result instead of
@@ -80,7 +89,7 @@ def invoke_tool_call(
     if step.replaying:
         logger.warning(
             "replay diverged: agent %s node %s made a %s call it didn't make before",
-            step.agent.id,
+            step.root.id,
             step.node.id,
             name,
         )
@@ -97,7 +106,7 @@ def invoke_tool_call(
     if bool(metadata and metadata.is_async) and inspect.isawaitable(value):
 
         async def wait_and_save() -> object:
-            with running_step(step):
+            with running(step):
                 return save(await value)
 
         return wait_and_save()
@@ -124,7 +133,7 @@ class ProtocolDesyncError(RuntimeError):
 class _RunState:
     tenant: WorkerRepl
     loop: asyncio.AbstractEventLoop
-    step: Step | None
+    step: Repl | None
     proxied: dict[str, Callable[..., object]]
     answer: Any = _NO_ANSWER
 
@@ -274,7 +283,7 @@ class WorkerSession:
                 return value
 
             def in_step() -> Any:
-                with running_step(state.step):
+                with running(state.step):
                     return invoke()
 
             value = Context().run(in_step)
@@ -356,7 +365,7 @@ class WorkerSession:
         self.connection.close(force=force)
 
 
-class WorkerRepl(Repl):
+class WorkerRepl(ReplProcess):
     """One logical agent tenant in a lightweight Python worker."""
 
     def __init__(
@@ -371,14 +380,35 @@ class WorkerRepl(Repl):
         self.env: dict[str, Any] = {}
         self.proxied: dict[str, Callable[..., object]] = {}
         self.closed = False
+        self.last_ran: tuple[str, int] | None = None
+        #: What the last seed bound in the worker, by name.
+        self._seeded: dict[str, Any] = {}
         self._run_lock = threading.Lock()
         self.session.add_tenant(self)
 
     def seed(self, tools: dict[str, Callable[..., object]]) -> None:
+        """Bind ``tools``, sending the worker only what changed since the last seed.
+
+        A proxied tool lives host-side, so a new callable of the same kind
+        replaces it without a request.
+        """
         self.namespace = dict(tools)
+        for name in self._seeded.keys() - tools.keys():
+            self.remove_tool(name)
+        seeded: dict[str, Any] = {}
         for name, value in tools.items():
-            if name not in {"ENV", "AGENTS", AGENTS_BINDING}:
-                self.inject(name, value)
+            if name in {"ENV", "AGENTS", AGENTS_BINDING}:
+                continue
+            seeded[name] = value
+            before = self._seeded.get(name, _UNSET)
+            if before is value:
+                continue
+            kind = _proxy_kind(name, value)
+            if kind is not None and name in self.proxied and _proxy_kind(name, before) == kind:
+                self.proxied[name] = value
+                continue
+            self.inject(name, value)
+        self._seeded = seeded
 
     def inject(self, name: str, value: Any) -> None:
         self.namespace[name] = value
@@ -419,6 +449,7 @@ class WorkerRepl(Repl):
     def remove_tool(self, name: str) -> None:
         self.namespace.pop(name, None)
         self.proxied.pop(name, None)
+        self._seeded.pop(name, None)
         self.session.request(
             RemoveRequest(
                 id=self.session._next_id("remove"),
@@ -445,7 +476,7 @@ class WorkerRepl(Repl):
         state = _RunState(
             tenant=self,
             loop=asyncio.get_running_loop(),
-            step=current_step(),
+            step=current_repl(),
             proxied=dict(self.proxied),
         )
         try:

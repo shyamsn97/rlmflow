@@ -20,7 +20,9 @@ from typing import Any
 from xml.sax.saxutils import escape
 
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import RETURN, SPAWN, WRITE, Agent, LLMUsage, Node
+from rlmflow.graph.nodes import RETURN, SPAWN, WRITE, AgentRoot, LLMUsage, Node
+from rlmflow.tools.board import READS as BOARD_READS
+from rlmflow.tools.board import WRITES as BOARD_WRITES
 from rlmflow.view.text import kind
 from rlmflow.view.timeline import timeline
 
@@ -29,6 +31,8 @@ INK = "#e6edf3"
 DIM = "#8b949e"
 EDGE = "#30363d"
 AGENT_LABEL = "#3fb950"
+BOARD = "#39c5cf"
+BOARD_LANE_WIDTH = 72.0
 
 # Hue per node kind (``rlmflow.view.text.kind``), from the original viewer.
 NODE_COLORS: dict[str, str] = {
@@ -95,13 +99,13 @@ def node_shape(node: Node) -> str:
 
 def node_label(node: Node) -> str:
     """Agents get named; the rest are identified by colour and shape."""
-    return node.name if isinstance(node, Agent) else ""
+    return node.name if isinstance(node, AgentRoot) else ""
 
 
 def parent_ids(g: Graph) -> dict[str, str]:
     """Each item's drawn parent: the node that launched an agent, else the node before it."""
     parents: dict[str, str] = {}
-    for agent in g.agents():
+    for agent in g.agent_roots():
         source = [e.source for e in g.edges(kind=SPAWN, target=agent.id)]
         if source:
             parents[agent.id] = source[0]
@@ -124,7 +128,7 @@ def handoffs(g: Graph) -> list[tuple[str, str]]:
 
 def node_tokens(node: Node) -> int:
     """What this node cost, which is what sizes its marker."""
-    if isinstance(node, Agent):
+    if isinstance(node, AgentRoot):
         return 0
     usage = LLMUsage.of(node.data.get("usage"))
     return int(usage.input_tokens) + int(usage.output_tokens)
@@ -150,7 +154,7 @@ def tidy_tree(nodes: list[Node], parents: dict[str, str]) -> dict[str, tuple[flo
             children[parent].append(node)
 
     def continues(parent: Node, kid: Node) -> bool:
-        return not isinstance(kid, Agent) and kid.owner == parent.owner
+        return not isinstance(kid, AgentRoot) and kid.root_id == parent.root_id
 
     for node_id, kids in children.items():
         kids.sort(key=lambda kid: not continues(by_id[node_id], kid))
@@ -239,13 +243,20 @@ def layout_graph(
     width: float = 1024.0,
     height: float = 360.0,
     legend: bool = True,
+    time_rows: bool = False,
 ) -> Layout:
-    """Scale the abstract tree into a pixel box that stays a sane size."""
+    """Scale the abstract tree into a pixel box that stays a sane size.
+
+    Rows are steps down each agent's chain; with ``time_rows`` every node takes
+    its own row in ``nodes`` order, so rows across agents line up in time.
+    """
     layout = Layout()
     if not nodes:
         return layout
 
     pos = tidy_tree(nodes, parents)
+    if time_rows:
+        pos = {node.id: (pos[node.id][0], float(i)) for i, node in enumerate(nodes)}
     xs = [pos[node.id][0] for node in nodes]
     ys = [pos[node.id][1] for node in nodes]
     span_x = max(max(xs) - min(xs), 0.001)
@@ -352,7 +363,7 @@ def marker(x: float, y: float, shape: str, color: str, r: float, *, ring: bool =
 
 def hover_text(g: Graph, node: Node) -> str:
     """Identity only — the detail panel carries the content."""
-    rows = [f"{node.agent.path()} · {kind(node)}"]
+    rows = [f"{node.root.path()} · {kind(node)}"]
     tokens = node_tokens(node)
     if tokens:
         usage = LLMUsage.of(node.data.get("usage"))
@@ -385,7 +396,14 @@ def graph_svg(
     """
     nodes = timeline(g) if order is None else order
     parents = parent_ids(g)
-    layout = layout_graph(nodes, parents, width=width, height=height, legend=legend)
+    layout = layout_graph(
+        nodes,
+        parents,
+        width=width,
+        height=height,
+        legend=legend,
+        time_rows=any(_board_writes(node) for node in nodes),
+    )
     if not layout.placed:
         return (
             f'<svg xmlns="http://www.w3.org/2000/svg" width="420" height="80">'
@@ -397,7 +415,9 @@ def graph_svg(
     shown = nodes[:dim_after] if dim_after is not None else nodes
     ids = {node.id for node in shown}
     edges_shown = sum(1 for node in shown if parents.get(node.id) in ids)
-    w, h = layout.width, layout.height
+    index_of = {placed.node.id: i for i, placed in enumerate(layout.placed)}
+    lane = _board_lane(layout, index_of, dim_after)
+    w, h = layout.width + (BOARD_LANE_WIDTH if lane else 0.0), layout.height
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.0f}" height="{h:.0f}" '
         f'viewBox="0 0 {w:.0f} {h:.0f}">',
@@ -408,7 +428,7 @@ def graph_svg(
         f"{edges_shown} edges</tspan></text>",
     ]
 
-    index_of = {placed.node.id: i for i, placed in enumerate(layout.placed)}
+    parts.extend(lane)
     for x0, y0, x1, y1, child in _edges_with_child(layout, parents, index_of):
         faded = dim_after is not None and child >= dim_after
         tag = f' class="rlm-e" data-i="{child}"' if interactive else ""
@@ -481,6 +501,89 @@ def _edges_with_child(
     return out
 
 
+def _board_lane(layout: Layout, index_of: dict[str, int], dim_after: int | None) -> list[str]:
+    """A ``TaskBoard``'s lane, right of the agents: writes run into it, reads out of it.
+
+    The board isn't a node. Its writes are drawn level with the node that made
+    them (rows are in time order when there is a board), and each read leaves
+    from the last write it saw.
+    """
+    writes = {p.node.id: ns for p in layout.placed if (ns := _board_writes(p.node))}
+    if not writes:
+        return []
+    reads = [(p, n) for p in layout.placed for n in _board_reads(p.node)]
+    placed_by_id = {placed.node.id: placed for placed in layout.placed}
+    tick: dict[int, float] = {}
+    for node_id, ns in writes.items():
+        y = placed_by_id[node_id].y
+        spread = min(3.0, 12.0 / len(ns))
+        for i, n in enumerate(sorted(ns)):
+            tick[n] = y + (i - (len(ns) - 1) / 2) * spread
+    top, bottom = min(tick.values()), max([*tick.values(), *(p.y for p, _ in reads)])
+    x = layout.width + BOARD_LANE_WIDTH / 2 - MARGIN_X
+
+    def opacity(placed: Placed, full: float) -> float:
+        faded = dim_after is not None and index_of[placed.node.id] >= dim_after
+        return 0.2 if faded else full
+
+    def curve(x0: float, y0: float, x1: float, y1: float) -> str:
+        bend = (x1 - x0) * 0.5
+        return f"M {x0:.1f} {y0:.1f} C {x0 + bend:.1f} {y0:.1f} {x1 - bend:.1f} {y1:.1f} {x1:.1f} {y1:.1f}"
+
+    parts = [
+        f'<text x="{x:.1f}" y="{top - 12:.1f}" text-anchor="middle" font-family="{MONO}" '
+        f'font-size="{LABEL_SIZE * max(layout.scale, 0.9):.1f}" fill="{BOARD}">board</text>',
+        f'<path d="M {x:.1f} {top - 6:.1f} L {x:.1f} {bottom + 6:.1f}" stroke="{BOARD}" '
+        f'stroke-width="2" opacity="0.3"/>',
+    ]
+    for placed, n in reads:
+        y = tick.get(n, max((t for m, t in tick.items() if m <= n), default=top))
+        parts.append(
+            f'<path d="{curve(x, y, placed.x, placed.y)}" stroke="{BOARD}" stroke-width="1" '
+            f'stroke-dasharray="1 3" fill="none" opacity="{opacity(placed, 0.5)}"/>'
+        )
+    r = 2.6 * max(layout.scale, 0.8)
+    for node_id, ns in writes.items():
+        placed = placed_by_id[node_id]
+        parts.append(
+            f'<g opacity="{opacity(placed, 1)}">'
+            f'<path d="M {placed.x:.1f} {placed.y:.1f} L {x:.1f} {placed.y:.1f}" '
+            f'stroke="{BOARD}" stroke-width="1" stroke-dasharray="3 3" opacity="0.75"/>'
+            + "".join(marker(x, tick[n], "square", BOARD, r) for n in ns)
+            + "</g>"
+        )
+    return parts
+
+
+def _board_writes(node: Node) -> list[int]:
+    """The numbers of the board writes ``node`` made that took effect."""
+    return [
+        entry["value"]["n"]
+        for entry in node.calls
+        if entry["tool"] in BOARD_WRITES
+        and isinstance(entry.get("value"), dict)
+        and entry["value"].get("ok")
+        and "n" in entry["value"]
+    ]
+
+
+def _board_reads(node: Node) -> list[int]:
+    """The last write each of ``node``'s board reads saw, once each.
+
+    A polling loop reads the same board many times, and stacked copies of one
+    faded line would draw it at full strength.
+    """
+    return sorted(
+        {
+            entry["value"]["upto"]
+            for entry in node.calls
+            if entry["tool"] in BOARD_READS
+            and isinstance(entry.get("value"), dict)
+            and entry["value"].get("upto")
+        }
+    )
+
+
 def _legend(width: float, y: float) -> str:
     """Horizontal key, centred under the figure."""
     entries = [(t, c, NODE_SHAPES[t]) for t, c in NODE_COLORS.items()]
@@ -500,7 +603,7 @@ def _legend(width: float, y: float) -> str:
 
 def run_title(g: Graph) -> str:
     """The run's name: its top-level agents."""
-    tops = [a.name for a in g.roots()]
+    tops = [a.name for a in g.top_level_roots()]
     return ", ".join(tops) or "empty graph"
 
 

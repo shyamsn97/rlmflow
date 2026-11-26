@@ -96,7 +96,7 @@ class Sokoban:
         # to disk and replayed by the GIF export to animate the man walking.
         self.step_frames: list[tuple[str, str]] = []
         # Just the *current* turn's sub-step renders, published to ``env["frames"]``
-        # so the live grid can read it back (``flow.runtime.get_env_var``) and
+        # so the live grid can read it back (``flow.repl(run).env``) and
         # animate the whole walk-and-shove. A turn may take many actions, so these
         # reset when the turn marker changes rather than on every call.
         self.turn_frames: list[str] = []

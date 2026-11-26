@@ -19,7 +19,7 @@ def test_input_like_user_dictionary_remains_plain_data_after_roundtrip(tmp_path)
     g, root = agent_graph("query", args={"payload": value})
 
     g.save(tmp_path / "run")
-    loaded = Graph.load(tmp_path / "run").agent(root.id)
+    loaded = Graph.load(tmp_path / "run").agent_root(root.id)
 
     assert root.input == {"task": "query", "payload": value}
     assert loaded.input == {"task": "query", "payload": value}
@@ -30,7 +30,7 @@ def test_input_wrapped_arguments_resolve_and_keep_their_description(tmp_path):
     g, root = agent_graph("query", args={"rows": Input([1, 2], description="Parsed rows.")})
 
     g.save(tmp_path / "run")
-    loaded = Graph.load(tmp_path / "run").agent(root.id)
+    loaded = Graph.load(tmp_path / "run").agent_root(root.id)
 
     assert loaded.input == {"task": "query", "rows": [1, 2]}
     assert loaded.arg_descriptions == {"rows": "Parsed rows."}
@@ -44,7 +44,7 @@ def test_an_agent_is_its_first_node_and_owns_its_nodes_in_order():
     assert agent.nodes() == [agent, first, second]
     assert own(agent) == [first, second]
     assert agent.seq < first.seq < second.seq
-    assert first.owner == agent.id and agent.owner == agent.id
+    assert first.root_id == agent.id and agent.root_id == agent.id
     assert agent.lineage() == [agent]
     assert agent.status() == "done"
     assert agent.final_result() == "ok"
@@ -76,11 +76,11 @@ def test_fork_after_a_launch_copies_its_children_and_before_it_drops_them():
     after = g.fork(later)
     before = g.fork(root)
 
-    assert [a.id for a in after.agents()] == [root.id, child.id]
-    assert after.agent(child.id).final_result() == "done"
+    assert [a.id for a in after.agent_roots()] == [root.id, child.id]
+    assert after.agent_root(child.id).final_result() == "done"
     assert calls.launched(after.node(turn.id)) == [child.id]
-    assert [a.id for a in before.agents()] == [root.id] and turn.id not in before
-    assert len(g.agents()) == 2 and root.children() == [child]
+    assert [a.id for a in before.agent_roots()] == [root.id] and turn.id not in before
+    assert len(g.agent_roots()) == 2 and root.children() == [child]
 
 
 def test_status_follows_the_last_turn_and_what_arrived_after_it():

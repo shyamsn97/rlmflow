@@ -1,93 +1,83 @@
 # Prompt customization
 
-Every harness builds its system prompt from named sections. `prompt_sections(flow, step)` returns them as a dict, in order, and `prompt(flow, step)` puts the config's `prompt` overrides on top and joins them:
+An agent's prompt has two parts, and both belong to the agent:
+
+| part          | how to change it                                                                |
+| ------------- | ------------------------------------------------------------------------------- |
+| system prompt | `Agent(prompt={...})` to change sections, `Agent(system=...)` to replace it all |
+| messages      | subclass `Agent` and override `messages(node, repl, since)`                     |
+
+The same named sections are used on every harness: `Agent` sends them as the system prompt, while Claude Code and pi keep their own system prompt and get rlmflow's appended.
+
+## System prompt sections
+
+`sections(node, repl)` returns the default system prompt as a dict, in order, and `system_prompt(node, repl)` merges the agent's `prompt` over it and joins the parts:
 
 ```python
-sections = {**harness.prompt_sections(flow, step), **step.config.prompt}
-"\n\n".join(text.strip() for text in sections.values() if text and text.strip())
+parts = {**agent.sections(node, repl), **agent.prompt}
+"\n\n".join(text.strip() for text in parts.values() if text and text.strip())
 ```
 
-So a config override does one of three things by key:
+So a `prompt` entry does one of four things by name:
 
-- a string under an existing key replaces that section, in place;
+- a string under an existing name replaces that section, in place;
 - `None` drops it;
-- a new key is added at the end.
-
-## From config
-
-`AgentConfig.prompt` is plain JSON, so it's saved with the run, works from `rlmflow.toml`, and applies to every agent launched with that config:
+- a new name is added at the end;
+- a function of `(node, repl)` is called every step, for text that changes during the run.
 
 ```python
-from rlmflow import AgentConfig, Flow
+from rlmflow import Agent, Flow
 
-reviewer = AgentConfig(
-    name="reviewer",
-    model="gpt-5-mini",
+reviewer = Agent(
+    model="gpt-6.1-terra",
     prompt={
         "agents": None,  # drop the AGENTS section
         "style": "Report only actionable findings, most severe first.",  # added last
+        "skills": lambda node, repl: library.render(),  # recomputed every step
     },
 )
-flow = Flow(configs=[reviewer])
+flow = Flow(agents={"reviewer": reviewer})
 ```
 
-## From code
-
-Subclass the harness when the text depends on the step, such as a board, a budget, or files that change during the run:
+To own the whole system prompt, pass `system`; the sections and `prompt` are then ignored:
 
 ```python
-from rlmflow.harnesses.repl import ReplHarness, turns
-
-
-class BudgetHarness(ReplHarness):
-    def prompt_sections(self, flow, step):
-        left = step.config.max_iters - turns(step)
-        return {**super().prompt_sections(flow, step), "budget": f"{left} turns left."}
-
-
-AgentConfig(name="worker", model="gpt-5-mini", max_iters=20, harness=BudgetHarness)
+Agent(model="gpt-6.1-terra", system=SOKOBAN_RULES)
 ```
 
-The config's `prompt` still applies on top of a subclass's sections. To own the whole prompt, return only your own sections:
+Override `sections` or `system_prompt` only for logic a dict can't hold. [`examples/features/skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/features/skills.py) uses a function section.
+
+## Messages
+
+`messages(node, repl, since=None)` is what the agent sees each step: the system prompt, then the run's history up to `node` (after `since`, for a session that already has the rest). It ends the last user message with the runs the agent launched and how they are, and a notice on its last step. Override it for whatever the agent should see every step, such as a board, a budget, or files that change during the run:
 
 ```python
-class RulesOnly(ReplHarness):
-    def prompt_sections(self, flow, step):
-        return {}
+from rlmflow import Agent
+from rlmflow.agents import steps
 
 
-AgentConfig(name="worker", model="gpt-5-mini", harness=RulesOnly, prompt={"rules": RULES})
+class Budgeted(Agent):
+    def messages(self, node, repl, since=None):
+        left = self.max_iters - steps(node)
+        return [*super().messages(node, repl, since), {"role": "user", "content": f"{left} steps left."}]
 ```
 
-Or override `prompt(flow, step)` to return the final string, which skips the config's overrides as well. Settings a subclass needs can go in `harness_options`, read with `self.options(step)`; see [`examples/skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/skills.py).
+`Agent` sends all of it on each model call. Claude Code and pi append the system prompt to the session's own on each step, and send only the messages since the session's last step as its next turn. With `keep` set, `Agent` keeps only the last `keep` history messages and puts a notice in place of the rest.
 
 ## Default sections
 
-The REPL harness (`rlmflow.harnesses.repl`):
-
-| key         | what it says                                                                                   |
-| ----------- | ---------------------------------------------------------------------------------------------- |
-| `protocol`  | one fenced `repl` block per turn; `submit(value)`, or a reply with no block, finishes          |
-| `verify`    | check the answer against the inputs before submitting; surface failures, don't paper over them |
-| `tools`     | the REPL tools this agent can call, including the configs `launch_agent` takes                 |
-| `agents`    | agent handles and `AGENTS`                                                                     |
-| `arguments` | the task arguments by name and size; their values are REPL variables                           |
-| `schema`    | the output schema, when the config has one                                                     |
-
-The session harnesses (`claude_code`, `pi`, `interactive`) append their sections to the session's own system prompt:
-
-| key        | what it says                                                                 |
-| ---------- | ---------------------------------------------------------------------------- |
-| `protocol` | running code with `rlmflow repl`, the REPL tools, and how to wait for agents |
-| `configs`  | the configs `launch_agent` takes                                             |
-| `tools`    | the Flow's own REPL tools                                                    |
-| `location` | where the REPL runs, for Docker and Modal runtimes                           |
-| `state`    | keeping working state in REPL variables                                      |
-| `record`   | which changes the run records                                                |
-| `schema`   | the output schema, when the config has one                                   |
+| name          | what it says                                                                                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `protocol`    | `Agent`: one `repl(code)` tool call per reply; `submit(value)`, or a reply without a call, finishes. Claude Code and pi: running code with `rlmflow repl`, and how to wait for agents |
+| `location`    | Claude Code and pi: where the REPL runs, for Docker and Modal runtimes                                                                                                                |
+| `tools`       | the REPL tools this agent can call (for Claude Code and pi, only the Flow's own)                                                                                                      |
+| `agents`      | `Agent`: agent handles and `AGENTS`. Claude Code and pi: the agents `launch_agent` takes                                                                                              |
+| `verify`      | check the answer against the inputs; surface failures, don't paper over them                                                                                                          |
+| `state`       | keep working state in REPL variables                                                                                                                                                  |
+| `orchestrate` | the orchestrate skill, for agents that can launch others                                                                                                                              |
+| `arguments`   | the task arguments by name and size; their values are REPL variables                                                                                                                  |
+| `schema`      | the output schema, when the agent has one                                                                                                                                             |
 
 ## What the prompt doesn't change
 
-The harness's behaviour is in its `step()`, not its prompt. The REPL harness runs exactly one fenced `repl` block per reply and takes a reply with no block as the final answer, whatever the prompt says, so a prompt that replaces `protocol` has to explain that to the model.
-
-Turn-level notes aren't part of the system prompt either. The final-turn notice, the list of background agents, and the truncation notice for `keep_n_messages` are added to the messages.
+An agent's behaviour is in its `step()`, not its prompt. `Agent` offers the model one tool, `repl(code)`, runs the code of exactly one call per reply, and takes a reply without a call as the final answer, whatever the prompt says, so a prompt that replaces `protocol` has to explain that to the model.

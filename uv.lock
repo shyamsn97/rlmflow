@@ -3627,6 +3627,8 @@ claude = [
     { name = "claude-agent-sdk" },
 ]
 dev = [
+    { name = "claude-agent-sdk" },
+    { name = "openai" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-timeout" },
@@ -3669,6 +3671,7 @@ requires-dist = [
     { name = "cairosvg", marker = "extra == 'image'", specifier = ">=2.7" },
     { name = "claude-agent-sdk", marker = "extra == 'all'", specifier = ">=0.2" },
     { name = "claude-agent-sdk", marker = "extra == 'claude'", specifier = ">=0.2" },
+    { name = "claude-agent-sdk", marker = "extra == 'dev'", specifier = ">=0.2" },
     { name = "cloudpickle", specifier = ">=3.0" },
     { name = "datasets", marker = "extra == 'all'", specifier = ">=2.19" },
     { name = "datasets", marker = "extra == 'bench'", specifier = ">=2.19" },
@@ -3695,6 +3698,7 @@ requires-dist = [
     { name = "modal", marker = "extra == 'all'" },
     { name = "modal", marker = "extra == 'modal'" },
     { name = "openai", marker = "extra == 'all'", specifier = ">=3.0" },
+    { name = "openai", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=3.0" },
     { name = "pillow", marker = "extra == 'all'", specifier = ">=10.0" },
     { name = "pillow", marker = "extra == 'image'", specifier = ">=10.0" },

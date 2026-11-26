@@ -2,9 +2,9 @@
 
 For a coding agent over your own project, use `rlmflow run` (see [Command line](../../docs/cli.md)).
 
-## Boids: peers build components
+## Boids: peers on a shared task board
 
-[`boids/boids.py`](boids/boids.py) gives three peer agents (`peer1`, `peer2`, `peer3`) the same product spec and one instruction: there's no manager, so split the work, agree on interfaces by messaging each other with `AGENTS[name].send(...)`, and write only the files you took on. Their tools are the file tools, their own REPL, and `open_page`, which returns a page's headless-Chrome console output. The app is validated only after the run.
+[`boids/boids.py`](boids/boids.py) gives three peer agents (`peer1`, `peer2`, `peer3`) the same product spec and a shared `TaskBoard`, with no manager. One of them plans: each posts and claims a `plan` task first, and only the winner publishes the interface and posts the file tasks. They claim tasks (the first claim wins), publish the interfaces they define, finish what they claimed, and write only the files of tasks they claimed; they can message each other with `AGENTS[name].send(...)` about bugs. Their other tools are the file tools, their own REPL, and `open_page`, which shows them screenshots of a page in headless Chrome and returns its console output. The app is validated only after the run, and the board is written to `board.json`.
 
 ```bash
 uv run --locked --python 3.12 --extra claude \
