@@ -30,7 +30,7 @@ from pathlib import Path
 
 from filesystem import NEEDLE_FILE_TOOLS, TASK, generate_haystack
 
-from rlmflow import AgentConfig, Flow, Graph, LocalRuntime
+from rlmflow import Agent, ClaudeCode, Flow, Graph, LocalRuntime
 
 HERE = Path(__file__).resolve().parent
 PLUGIN = HERE.parents[1] / "rlmflow" / "plugin"
@@ -38,7 +38,7 @@ RUNS = HERE.parent / "_runs" / "needle-plugin"
 
 
 def build_flow() -> Flow:
-    """The Flow the plugin's ``rlmflow serve`` loads (``RLMFLOW_FLOW``): one ``searcher`` config."""
+    """The Flow the plugin's ``rlmflow serve`` loads (``RLMFLOW_FLOW``): one ``searcher`` agent."""
     harness = os.environ["NEEDLE_WORKER_HARNESS"]
     model = os.environ.get("NEEDLE_WORKER_MODEL") or None
     if harness == "claude_code":
@@ -46,27 +46,25 @@ def build_flow() -> Flow:
         token = os.environ.get("NEEDLE_CLAUDE_TOKEN")
         if token and not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"):
             os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
-        searcher = AgentConfig(
-            name="searcher",
-            harness="claude_code",
-            model=model,
+        searcher = ClaudeCode(
+            model,
             description="searches one batch of files and returns the magic number, or None",
-            harness_options={
-                "command": shutil.which("claude"),
-                "sdk": {"permission_mode": "bypassPermissions"},
-            },
+            options={"cli_path": shutil.which("claude"), "permission_mode": "bypassPermissions"},
         )
         tools = None
     else:
-        searcher = AgentConfig(
-            name="searcher",
-            model=model,
+        searcher = Agent(
+            model,
             description="searches one batch of files and returns the magic number, or None",
             max_depth=0,
             max_iters=15,
         )
         tools = NEEDLE_FILE_TOOLS
-    return Flow(configs=[searcher], tools=tools, runtime=LocalRuntime(working_directory=Path.cwd()))
+    return Flow(
+        agents={"default": Agent(), "searcher": searcher},
+        tools=tools,
+        runtime=LocalRuntime(working_directory=Path.cwd()),
+    )
 
 
 def run_claude(task: str, workdir: Path, args: argparse.Namespace) -> dict:
@@ -110,7 +108,7 @@ def main() -> None:
     parser.add_argument("--workers", choices=("repl", "claude_code"), default="repl")
     parser.add_argument("--num-files", type=int, default=100)
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--worker-model", default="gpt-5-mini", help="REPL searchers' model")
+    parser.add_argument("--worker-model", default="gpt-6.1-terra", help="REPL searchers' model")
     parser.add_argument(
         "--claude-model", default=None, help="Claude Code's model; default: your Claude setting"
     )
@@ -153,14 +151,14 @@ def main() -> None:
         shutil.copytree(runs[-1], out / "run")
 
     g = Graph.load(out / "run")
-    root = g.roots()[0]
+    root = g.top_level_roots()[0]
     result = root.final_result()
     correct = answer in str(result) or answer in str(reply.get("result", ""))
-    workers = [a for a in g.agents() if a.parent() is not None]
+    workers = [a for a in g.agent_roots() if a.parent() is not None]
     failed = [a for a in workers if str(a.final_result()).startswith("[child failed")]
     print(f"\nresult   {result!r}")
     print(f"correct  {correct} (needle {answer})")
-    print(f"agents   {len(g.agents())} ({len(workers)} searchers, {len(failed)} failed)")
+    print(f"agents   {len(g.agent_roots())} ({len(workers)} searchers, {len(failed)} failed)")
     for agent in failed:
         print(f"  {agent.name}: {str(agent.final_result())[:200]}")
     print(f"seconds  {seconds:.0f}")

@@ -18,9 +18,8 @@ import pytest
 
 from rlmflow import Graph
 from rlmflow.agent_tools.hooks import PLUGIN_DIR
-from rlmflow.cli.serve import INTERACTIVE
+from rlmflow.cli.serve import PERSON
 from rlmflow.graph import calls
-from rlmflow.graph.config import HARNESSES
 
 pytestmark = [pytest.mark.live, pytest.mark.timeout(1800)]
 
@@ -63,7 +62,7 @@ def needle_project(tmp_path: Path, num_files: int, seed: int) -> tuple[Path, str
     (project / "haystack").mkdir(parents=True)
     answer = generate_haystack(project / "haystack", num_files=num_files)
     (project / "rlmflow.toml").write_text(
-        '[run]\nfast_model = "gpt-5-mini"\ntools = "none"\nmax_depth = 1\n'
+        '[run]\nfast_model = "gpt-6.1-terra"\ntools = "none"\nmax_depth = 1\n'
     )
     return project, answer
 
@@ -72,7 +71,7 @@ CLAUDE_FLOW = """\
 from dataclasses import replace
 from pathlib import Path
 
-from rlmflow import AgentConfig
+from rlmflow import ClaudeCode
 from rlmflow.cli import resolve_options
 from rlmflow.cli.run import build_flow
 
@@ -81,7 +80,7 @@ def make_flow():
     project = Path(__file__).parent
     options, _ = resolve_options({}, cwd=project)
     flow = build_flow(replace(options, flow=None), workdir=project)
-    flow.add_config(AgentConfig(name="claude", harness="claude_code", max_depth=1))
+    flow.agents["claude"] = ClaudeCode(max_depth=1)
     return flow
 """
 
@@ -105,7 +104,7 @@ def saved_run(project: Path, name: str, timeout: float = 600) -> Path:
     """
     [graph_dir] = list((project / ".rlmflow" / "runs").iterdir())
     deadline = time.monotonic() + timeout
-    while any(agent.status() != "done" for agent in Graph.load(graph_dir).agents()):
+    while any(agent.status() != "done" for agent in Graph.load(graph_dir).agent_roots()):
         assert time.monotonic() < deadline, f"agents in {graph_dir} still running"
         time.sleep(1)
     target = RUNS / name
@@ -137,8 +136,8 @@ def test_claude_harness_roots_find_the_needles():
         str(RUNS / "mode2-filesystem"),
     )
     g = Graph.load(RUNS / "mode2-filesystem" / "claude_code-repl")
-    [root] = [a for a in g.agents() if a.parent() is None]
-    assert root.children() and root.config.harness == HARNESSES["claude_code"]
+    [root] = [a for a in g.agent_roots() if a.parent() is None]
+    assert root.children() and root.agent == "claude_code"
 
 
 def test_fork_halfway_through_a_claude_harness_run():
@@ -164,12 +163,12 @@ def test_your_claude_session_as_the_root_finds_the_needle_and_forks(tmp_path):
 
     graph_dir = saved_run(project, "mode4-filesystem")
     g = Graph.load(graph_dir)
-    [root] = g.agents()[:1]
-    assert root.config.harness == INTERACTIVE and root.name == "root"
+    [root] = g.agent_roots()[:1]
+    assert root.agent == PERSON and root.name == "root"
     assert root.children(), "the root should have launched workers"
     assert answer in str(root.final_result())
-    turn_ends = [n for n in root.nodes() if n.ends_turn and n.data.get("session_id")]
-    assert {n.data["session_id"] for n in turn_ends} == {result["session_id"]}
+    turn_ends = [n for n in root.nodes() if n.ends_turn and n.data.get("session")]
+    assert {n.data["session"] for n in turn_ends} == {result["session_id"]}
 
     nodes = root.nodes()
     launching = next(n for n in nodes if n.runs_code and calls.launched(n))
@@ -183,7 +182,7 @@ def test_your_claude_session_as_the_root_finds_the_needle_and_forks(tmp_path):
             "fork",
             str(graph_dir),
             after_launch.id,
-            "--config",
+            "--agent",
             "claude",
             "--out",
             str(fork_dir),
@@ -198,8 +197,8 @@ def test_your_claude_session_as_the_root_finds_the_needle_and_forks(tmp_path):
     )
     assert forked.returncode == 0, forked.stdout[-3000:] + forked.stderr[-3000:]
     branch = Graph.load(fork_dir)
-    copy = branch.agent(root.id)
-    assert copy.config_name == "claude" and answer in str(copy.final_result())
+    copy = branch.agent_root(root.id)
+    assert copy.agent == "claude" and answer in str(copy.final_result())
     assert [c.id for c in copy.children()] == [c.id for c in root.children()], (
         "the fork should reuse the workers, not relaunch"
     )
@@ -220,5 +219,5 @@ def test_claude_code_children_of_a_repl_root():
         str(RUNS / "delegation"),
     )
     g = Graph.load(RUNS / "delegation" / "repl-claude_code")
-    claude_children = [a for a in g.agents() if a.config.harness == HARNESSES["claude_code"]]
+    claude_children = [a for a in g.agent_roots() if a.agent == "searcher"]
     assert claude_children and all(a.status() == "done" for a in claude_children)

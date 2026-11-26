@@ -1,5 +1,5 @@
-"""The ``Flow``: what runs agents' turns, and the parts it is built from."""
+"""The ``Flow``: what steps runs, and the parts it is built from."""
 
-from rlmflow.flow.flow import Flow, StepUntil
+from rlmflow.flow.flow import Flow, Until
 
-__all__ = ["Flow", "StepUntil"]
+__all__ = ["Flow", "Until"]

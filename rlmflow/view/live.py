@@ -1,12 +1,4 @@
-"""Consumers for ``Flow.run_streaming``'s stream: things that see each ``Step``.
-
-Pass them as hooks, and the run calls them on every step and closes them when it ends:
-
-    async for step in flow.run_streaming(g, hooks=[LiveTree(), Checkpoint("runs/x")]):
-        ...
-
-Or call them yourself in the loop, and ``close()`` them after it.
-"""
+"""``LiveTree``: a live tree of a streaming graph's runs, as a hook or called on each node."""
 
 from __future__ import annotations
 
@@ -14,79 +6,14 @@ import sys
 import time
 from collections.abc import Callable
 from contextlib import suppress
-from pathlib import Path
 from typing import Any
 
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import Node, Step
+from rlmflow.graph.nodes import Node
 from rlmflow.view.text import _status, render_tree
 
 
-class StreamConsumer:
-    """Something you call on each streamed ``Step``. Subclass it, or use any ``callable(step)``."""
-
-    def __call__(self, step: Step) -> Any:
-        raise NotImplementedError
-
-    def close(self) -> None:
-        """Flush or release; call it after the loop."""
-
-    def on_step(self, flow: Any, step: Step) -> None:
-        self(step)
-
-    def end(self, flow: Any, g: Graph) -> None:
-        self.close()
-
-
-class Checkpoint(StreamConsumer):
-    """Save one streamed graph every so often, on every terminal node, and on ``close``."""
-
-    def __init__(
-        self,
-        path: str | Path,
-        *,
-        interval_s: float | None = 2.0,
-        interval_nodes: int | None = 50,
-    ) -> None:
-        if interval_s is not None and interval_s <= 0:
-            raise ValueError("interval_s must be positive or None")
-        if interval_nodes is not None and interval_nodes <= 0:
-            raise ValueError("interval_nodes must be positive or None")
-        self.path = Path(path)
-        self.interval_s = interval_s
-        self.interval_nodes = interval_nodes
-        self.last_flush_at = time.monotonic()
-        self.latest: Graph | None = None
-        self.dirty_nodes = 0
-
-    def __call__(self, step: Step) -> None:
-        if self.latest is not None and step.graph is not self.latest:
-            raise ValueError("one Checkpoint cannot write multiple graphs")
-        self.latest = step.graph
-        self.dirty_nodes += 1
-        if step.node.terminal or self._due():
-            self.flush()
-
-    def _due(self) -> bool:
-        if self.interval_nodes is not None and self.dirty_nodes >= self.interval_nodes:
-            return True
-        return (
-            self.interval_s is not None and time.monotonic() - self.last_flush_at >= self.interval_s
-        )
-
-    def flush(self) -> None:
-        graph = self.latest
-        if graph is None:
-            return
-        graph.save(self.path)
-        self.dirty_nodes = 0
-        self.last_flush_at = time.monotonic()
-
-    def close(self) -> None:
-        self.flush()
-
-
-class LiveTree(StreamConsumer):
+class LiveTree:
     """A live agent tree for every graph it sees: Rich with spinners in a terminal, plain text otherwise."""
 
     def __init__(
@@ -122,14 +49,20 @@ class LiveTree(StreamConsumer):
         """Change the heading for an already tracked graph."""
         self.labels[graph_id] = label
 
-    def __call__(self, step: Step) -> None:
+    def __call__(self, node: Node) -> None:
         if self.closed:
             return
-        self.track(step.graph)
+        self.track(node._graph())
         now = time.monotonic()
         if self.every_s and now - self.last_paint < self.every_s:
             return
         self._paint()
+
+    def on_node(self, flow: Any, node: Node) -> None:
+        self(node)
+
+    def end(self, flow: Any, g: Graph) -> None:
+        self.close()
 
     def close(self) -> None:
         if self.closed:
@@ -226,7 +159,7 @@ class LiveTree(StreamConsumer):
                 child_branch = branch.add(render_label(child), guide_style="dim")
                 populate(child_branch, child)
 
-        for top in graph.roots():
+        for top in graph.top_level_roots():
             populate(tree.add(render_label(top), guide_style="dim"), top)
         return tree
 
@@ -240,8 +173,4 @@ def _rich_importable() -> bool:
         return False
 
 
-__all__ = [
-    "Checkpoint",
-    "LiveTree",
-    "StreamConsumer",
-]
+__all__ = ["LiveTree"]

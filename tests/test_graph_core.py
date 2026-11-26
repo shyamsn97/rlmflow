@@ -8,17 +8,9 @@ import pytest
 from helpers import finish, own, ran
 
 from rlmflow.graph import calls, persistence, queries
-from rlmflow.graph.config import AgentConfig
 from rlmflow.graph.graph import Graph, GraphError
-from rlmflow.graph.nodes import (
-    READY,
-    RETURN,
-    RUNNING,
-    SPAWN,
-    WRITE,
-    Node,
-    record_metadata,
-)
+from rlmflow.graph.nodes import READY, RETURN, RUNNING, SPAWN, WRITE, Node
+from rlmflow.repl import record_metadata
 
 
 def test_writes_assign_consecutive_seq():
@@ -35,7 +27,7 @@ def test_a_failed_write_leaves_the_graph_unchanged():
     g = Graph()
     a = g.start("task")
     stranger = Node("user", "elsewhere")
-    with pytest.raises(KeyError, match="no agent"):
+    with pytest.raises(KeyError, match="no agent root"):
         g.append(stranger, ran())
     with pytest.raises(TypeError, match="text must be a string"):
         g.send(a, 123)
@@ -43,7 +35,7 @@ def test_a_failed_write_leaves_the_graph_unchanged():
         g.start(123, parent=a)
     with pytest.raises(TypeError, match="strict JSON"):
         g.link("peer", a, a, bad=object())
-    assert g.agents() == [a] and g.nodes() == [a] and g.edges() == []
+    assert g.agent_roots() == [a] and g.nodes() == [a] and g.edges() == []
 
 
 def test_ids_are_unique():
@@ -62,14 +54,14 @@ def test_containment_owner_and_node_queries():
     message = g.send(a, "later")
 
     assert a.id in g and reply in g and message.id in g and "node_missing" not in g
-    assert g.agent(a.id) is a and g.agent(a) is a and g.node(reply.id) is reply
-    assert g.node(a.id) is a and message.agent is a and len(g) == 3
+    assert g.agent_root(a.id) is a and g.agent_root(a) is a and g.node(reply.id) is reply
+    assert g.node(a.id) is a and message.root is a and len(g) == 3
     assert a.nodes() == [a, reply, message] and g.nodes() == [a, reply, message]
-    assert list(g) == [a] and g.roots() == [a]
+    assert list(g) == [a] and g.top_level_roots() == [a]
     with pytest.raises(KeyError, match="no node"):
         g.node("node_missing")
-    with pytest.raises(KeyError, match="no agent"):
-        g.agent(reply.id)
+    with pytest.raises(KeyError, match="no agent root"):
+        g.agent_root(reply.id)
 
 
 def test_application_edges_need_known_endpoints():
@@ -127,7 +119,7 @@ def test_spawn_by_a_node_or_a_root_links_the_parent():
         (parent.id, hosted.id),
         (child.id, grandchild.id),
     ]
-    assert g.roots() == [parent]
+    assert g.top_level_roots() == [parent]
 
     with pytest.raises(GraphError, match="not in this graph"):
         g.start("lost", parent=ran())
@@ -151,7 +143,7 @@ def test_fork_is_a_new_graph_with_the_same_ids_cut_after_the_node():
     code_node = g.append(base, ran("x", "out"))
 
     branch = g.fork(reply)
-    copy = branch.agent(base.id)
+    copy = branch.agent_root(base.id)
     assert branch.id != g.id and copy is not base
     assert branch.metadata == {"forked_from": {"graph": g.id, "node": reply.id}}
     assert [n.id for n in copy.nodes()] == [base.id, reply.id]
@@ -168,7 +160,7 @@ def test_fork_at_a_root_starts_over_from_its_inputs():
     g.append(base, Node("assistant", "plan"))
 
     branch = g.fork(base)
-    copy = branch.agent(base.id)
+    copy = branch.agent_root(base.id)
     assert copy.nodes() == [copy] and copy.input == {"task": "task", "limit": 3}
 
 
@@ -180,8 +172,8 @@ def test_fork_copies_other_top_level_agents_and_their_messages():
     note = g.send(root, "from the other tree", by=other)
 
     branch = g.fork(child)
-    assert [a.id for a in branch.agents()] == [root.id, child.id, other.id]
-    assert [n.id for n in own(branch.agent(root.id))] == [note.id]
+    assert [a.id for a in branch.agent_roots()] == [root.id, child.id, other.id]
+    assert [n.id for n in own(branch.agent_root(root.id))] == [note.id]
 
 
 def test_fork_takes_back_what_a_peer_sent_after_the_node():
@@ -193,8 +185,8 @@ def test_fork_takes_back_what_a_peer_sent_after_the_node():
     note = g.send(root, "from the peer", by=later)
 
     branch = g.fork(first)
-    assert [a.id for a in branch.agents()] == [root.id, peer.id]
-    assert own(branch.agent(root.id)) == [] and note.id not in branch
+    assert [a.id for a in branch.agent_roots()] == [root.id, peer.id]
+    assert own(branch.agent_root(root.id)) == [] and note.id not in branch
     assert note.id in g
 
 
@@ -205,15 +197,15 @@ def test_fork_needs_a_node_in_the_graph_and_a_known_repl_choice():
         g.fork(ran())
     with pytest.raises(ValueError, match="repl must be"):
         g.fork(base, repl="shared")
-    assert g.agents() == [base]
+    assert g.agent_roots() == [base]
 
 
-def test_names_and_paths_derive_from_configs_and_launchers():
+def test_names_and_paths_derive_from_agents_and_launchers():
     g = Graph()
     root = g.start("root")
     code_node = g.append(root, ran())
-    first = g.start("a", parent=code_node, config="worker")
-    second = g.start("b", parent=code_node, config="worker")
+    first = g.start("a", parent=code_node, agent="worker")
+    second = g.start("b", parent=code_node, agent="worker")
     named = g.start("c", parent=code_node, name="checker")
 
     assert [a.name for a in (root, first, second, named)] == [
@@ -224,28 +216,24 @@ def test_names_and_paths_derive_from_configs_and_launchers():
     ]
     assert second.path() == "root.worker-1"
     assert second.lineage() == [root, second]
-    assert [a.config_name for a in (root, second, named)] == [None, "worker", "default"]
+    assert [a.agent for a in (root, second, named)] == ["default", "worker", "default"]
     assert g.start("again").name == "root-0"
-    top = g.start("solo", config="worker")
-    assert (top.name, top.config_name, top.parent()) == (
+    top = g.start("solo", agent="worker")
+    assert (top.name, top.agent, top.parent()) == (
         "worker",
         "worker",
         None,
     )
-    assert g.start("more", config="worker").name == "worker-0"
+    assert g.start("more", agent="worker").name == "worker-0"
     with pytest.raises(ValueError, match="invalid agent name"):
         g.start("bad", name="no spaces")
 
 
-def test_add_agent_makes_a_root_whose_keywords_are_repl_inputs():
+def test_start_makes_a_root_whose_keywords_are_repl_inputs():
     g = Graph()
     lead = g.start("x", name="lead", limit=3)
-    assert (lead.name, lead.config_name, lead.input) == ("lead", None, {"task": "x", "limit": 3})
-    assert (lead.role, lead.text, lead.owner, lead.nodes()) == ("user", "x", lead.id, [lead])
-    with pytest.raises(AttributeError, match="until a Flow runs it"):
-        lead.config
-    lead.bind_config(AgentConfig(model="big"))
-    assert lead.config.model == "big" and lead.config_record["model"] == "big"
+    assert (lead.name, lead.agent, lead.input) == ("lead", "default", {"task": "x", "limit": 3})
+    assert (lead.role, lead.text, lead.root_id, lead.nodes()) == ("user", "x", lead.id, [lead])
     assert g.start("y").name == "root"
 
 
@@ -268,22 +256,22 @@ def test_send_appends_a_message_that_binds_its_inputs():
 
 def test_fork_gives_agents_new_repls_or_keeps_the_ones_still_in_step():
     g = Graph()
-    base = g.start("task", config="m")
+    base = g.start("task", agent="m")
     peer = g.start("peer", name="peer", parent=base)
     reply = g.append(base, Node("assistant", "plan"))
     tail = g.append(base, Node("assistant", "more"))
     assert (base.repl_id, peer.repl_id) == (base.id, peer.id)
 
     copied = g.fork(reply)
-    assert {a.repl_id for a in copied.agents()}.isdisjoint({base.id, peer.id})
+    assert {a.repl_id for a in copied.agent_roots()}.isdisjoint({base.id, peer.id})
 
     rewound = g.fork(reply, repl="same")
-    assert rewound.agent(peer.id).repl_id == peer.id
-    assert rewound.agent(base.id).repl_id != base.id
-    assert rewound.agent(base.id).config_name == "m"
+    assert rewound.agent_root(peer.id).repl_id == peer.id
+    assert rewound.agent_root(base.id).repl_id != base.id
+    assert rewound.agent_root(base.id).agent == "m"
 
     at_tail = g.fork(tail, repl="same")
-    assert [a.repl_id for a in at_tail.agents()] == [base.id, peer.id]
+    assert [a.repl_id for a in at_tail.agent_roots()] == [base.id, peer.id]
 
 
 def test_fork_at_a_finished_turn_is_done_until_a_message_reopens_it():
@@ -291,7 +279,7 @@ def test_fork_at_a_finished_turn_is_done_until_a_message_reopens_it():
     base = g.start()
     done = finish(g, base, 1)
     branch = g.fork(done)
-    copy = branch.agent(base.id)
+    copy = branch.agent_root(base.id)
     assert copy.status() == "done" and copy.final_result() == 1
 
     branch.send(copy, "Try again.")
@@ -359,9 +347,8 @@ def test_a_return_edge_marks_a_childs_result_as_seen():
 def test_save_and_load_round_trip_nodes_edges_histories_and_blobs(tmp_path):
     g = Graph()
     root = g.start("task", doc="x" * 70_000)
-    root.bind_config(AgentConfig(max_iters=500))
     record_metadata("experiment", "a", node=root)
-    peer = g.start("peer", name="peer", config="worker")
+    peer = g.start("peer", name="peer", agent="worker")
     gone = g.link("peer", root, peer, w=1)
     note = g.link("note", root, peer, k=2)
     reply = g.append(root, Node("assistant", "hi", data={"usage": {"input_tokens": 1}}))
@@ -377,29 +364,26 @@ def test_save_and_load_round_trip_nodes_edges_histories_and_blobs(tmp_path):
     graph_text = (run / "graph.json").read_text()
     assert "x" * 70_000 not in graph_text
     document = json.loads(graph_text)
-    assert document["format"] == persistence.FORMAT_VERSION == 7
+    assert document["format"] == persistence.FORMAT_VERSION == 8
     assert set(document) == {"format", "id", "metadata", "nodes", "edges"}
     loaded = Graph.load(run)
 
     assert loaded.id == g.id
-    for get in (Graph.agents, Graph.nodes):
-        assert [(n.id, n.role, n.owner, n.seq) for n in get(loaded)] == [
-            (n.id, n.role, n.owner, n.seq) for n in get(g)
+    for get in (Graph.agent_roots, Graph.nodes):
+        assert [(n.id, n.role, n.root_id, n.seq) for n in get(loaded)] == [
+            (n.id, n.role, n.root_id, n.seq) for n in get(g)
         ]
     assert [(e.id, e.kind, e.source, e.target, e.data) for e in loaded.edges()] == [
         (e.id, e.kind, e.source, e.target, e.data) for e in g.edges()
     ]
-    for agent in g.agents():
-        assert [n.id for n in loaded.agent(agent.id).nodes()] == [n.id for n in agent.nodes()]
+    for agent in g.agent_roots():
+        assert [n.id for n in loaded.agent_root(agent.id).nodes()] == [n.id for n in agent.nodes()]
 
-    loaded_root = loaded.agent(root.id)
+    loaded_root = loaded.agent_root(root.id)
     assert loaded_root.input == {"task": "task", "doc": "x" * 70_000}
-    assert loaded_root.config_name is None
-    assert loaded_root.config.max_iters == 500
+    assert loaded_root.agent == "default"
     assert loaded_root.metadata == {"experiment": "a"}
-    assert loaded.agent(peer.id).config_name == "worker"
-    with pytest.raises(AttributeError, match="until a Flow runs it"):
-        loaded.agent(peer.id).config
+    assert loaded.agent_root(peer.id).agent == "worker"
     assert [e.id for e in loaded.edges(kind="note")] == [note.id]
     assert loaded.edges(kind="peer") == []
 
@@ -417,6 +401,39 @@ def test_save_and_load_round_trip_nodes_edges_histories_and_blobs(tmp_path):
     assert later.seq > max(item.seq for item in [*g.nodes(), *g.edges()])
 
 
+def test_load_migrates_a_format_7_agent_record_and_session_id(tmp_path):
+    g = Graph()
+    root = g.start("legacy task", name="legacy", agent="worker", value=3)
+    reply = g.append(
+        root,
+        Node(
+            "assistant",
+            "waiting",
+            data={"session": "session-7", "seen": 1, "idle": True},
+        ),
+    )
+    document = persistence.to_records(g)
+    document["format"] = 7
+    for record in document["nodes"]:
+        if run := record.pop("run", None):
+            run["config"] = run.pop("agent")
+            record["agent"] = run
+        if record["id"] == reply.id:
+            record["data"]["session_id"] = record["data"].pop("session")
+    run_dir = tmp_path / "format-7"
+    run_dir.mkdir()
+    (run_dir / "graph.json").write_text(json.dumps(document))
+
+    loaded = Graph.load(run_dir)
+    loaded_root = loaded.agent_root(root.id)
+
+    assert loaded_root.name == "legacy"
+    assert loaded_root.task == "legacy task"
+    assert loaded_root.agent == "worker"
+    assert loaded_root.input == {"task": "legacy task", "value": 3}
+    assert loaded.node(reply.id).data["session"] == "session-7"
+
+
 def test_a_node_that_was_running_loads_ready_to_run_again(tmp_path):
     g = Graph()
     root = g.start("task")
@@ -426,7 +443,7 @@ def test_a_node_that_was_running_loads_ready_to_run_again(tmp_path):
 
     loaded = Graph.load(tmp_path / "run")
     assert loaded.node(code_node.id).state == READY
-    assert loaded.agent(root.id).status() == "running"
+    assert loaded.agent_root(root.id).status() == "running"
 
 
 def test_load_validates_that_every_node_belongs_to_an_agent(tmp_path):
@@ -459,11 +476,11 @@ def test_load_validates_that_every_node_belongs_to_an_agent(tmp_path):
     def dangle(document):
         document["edges"][0]["target"] = "node_missing"
 
-    with pytest.raises(GraphError, match="which is no agent here"):
+    with pytest.raises(GraphError, match="missing agent root"):
         load(orphan)
-    with pytest.raises(GraphError, match="comes before its agent"):
+    with pytest.raises(GraphError, match="comes before its agent root"):
         load(early)
-    with pytest.raises(GraphError, match="must own itself"):
+    with pytest.raises(GraphError, match="must name itself as root"):
         load(stray)
     with pytest.raises(GraphError, match="points at missing"):
         load(dangle)
@@ -477,8 +494,8 @@ def test_a_saved_fork_keeps_where_it_came_from_and_its_repls(tmp_path):
 
     loaded = Graph.load(branch.save(tmp_path / "branch"))
     assert (loaded.id, loaded.metadata) == (branch.id, branch.metadata)
-    repl = loaded.agent(root.id).repl_id
-    assert repl == branch.agent(root.id).repl_id != root.id
+    repl = loaded.agent_root(root.id).repl_id
+    assert repl == branch.agent_root(root.id).repl_id != root.id
 
 
 def test_load_refuses_older_formats(tmp_path):
@@ -488,7 +505,7 @@ def test_load_refuses_older_formats(tmp_path):
     document = json.loads((run / "graph.json").read_text())
     document["format"] = 6
     (run / "graph.json").write_text(json.dumps(document))
-    with pytest.raises(ValueError, match="run format 6, and this rlmflow reads only format 7"):
+    with pytest.raises(ValueError, match="run format 6, and this rlmflow reads only formats 7, 8"):
         Graph.load(run)
 
 
@@ -499,8 +516,8 @@ def test_copy_is_independent_and_keeps_ids():
     child = g.start("child", parent=reply)
 
     clone = g.copy()
-    assert clone.id == g.id and clone.agent(child.id) is not child
-    assert clone.agent(child.id).parent().id == root.id
-    finish(clone, clone.agent(root.id), 1)
+    assert clone.id == g.id and clone.agent_root(child.id) is not child
+    assert clone.agent_root(child.id).parent().id == root.id
+    finish(clone, clone.agent_root(root.id), 1)
     clone.node(reply.id).text = "changed"
     assert own(root) == [reply] and reply.text == "hi"

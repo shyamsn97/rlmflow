@@ -15,11 +15,11 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from rlmflow.graph import calls
-from rlmflow.graph.nodes import Step, current_step, running_step
+from rlmflow.repl import Repl, current_repl, running
 from rlmflow.runtime.repl import (
     AGENTS_BINDING,
     DoneSignal,
-    Repl,
+    ReplProcess,
     ReplRun,
     ReplStatus,
     encode_agent_references,
@@ -56,13 +56,13 @@ def _proxy_kind(name: str, value: Any) -> tuple[bool, bool] | None:
 
 def invoke_tool_call(
     fn: Callable[..., object],
-    step: Step | None,
+    step: Repl | None,
     args: tuple[object, ...],
     kwargs: dict[str, object],
     *,
     name: str | None = None,
 ) -> object:
-    """Run one host tool call from the node ``step`` is running, or return what it saved.
+    """Run one host tool call from the node ``step`` (a run's ``Repl``) is running, or return what it saved.
 
     Built-in tools and ``@tool(cache=True)`` tools are saved on the node, keyed by
     the call; a call that matches a saved one returns its result instead of
@@ -89,7 +89,7 @@ def invoke_tool_call(
     if step.replaying:
         logger.warning(
             "replay diverged: agent %s node %s made a %s call it didn't make before",
-            step.agent.id,
+            step.root.id,
             step.node.id,
             name,
         )
@@ -106,7 +106,7 @@ def invoke_tool_call(
     if bool(metadata and metadata.is_async) and inspect.isawaitable(value):
 
         async def wait_and_save() -> object:
-            with running_step(step):
+            with running(step):
                 return save(await value)
 
         return wait_and_save()
@@ -133,7 +133,7 @@ class ProtocolDesyncError(RuntimeError):
 class _RunState:
     tenant: WorkerRepl
     loop: asyncio.AbstractEventLoop
-    step: Step | None
+    step: Repl | None
     proxied: dict[str, Callable[..., object]]
     answer: Any = _NO_ANSWER
 
@@ -283,7 +283,7 @@ class WorkerSession:
                 return value
 
             def in_step() -> Any:
-                with running_step(state.step):
+                with running(state.step):
                     return invoke()
 
             value = Context().run(in_step)
@@ -365,7 +365,7 @@ class WorkerSession:
         self.connection.close(force=force)
 
 
-class WorkerRepl(Repl):
+class WorkerRepl(ReplProcess):
     """One logical agent tenant in a lightweight Python worker."""
 
     def __init__(
@@ -476,7 +476,7 @@ class WorkerRepl(Repl):
         state = _RunState(
             tenant=self,
             loop=asyncio.get_running_loop(),
-            step=current_step(),
+            step=current_repl(),
             proxied=dict(self.proxied),
         )
         try:

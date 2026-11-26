@@ -14,7 +14,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import AgentConfig, Flow, Graph, LocalRuntime
+from rlmflow import Agent, Flow, Graph, LocalRuntime
 from rlmflow.integrations.mcp import MCPTools
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -29,7 +29,7 @@ DEFAULT_QUERY = """I will be in Seattle today, Austin 3 days after that, and San
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Flow + MCP weather example")
-    parser.add_argument("--model", default="gpt-5-mini")
+    parser.add_argument("--model", default="gpt-6.1-terra")
     parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument("--max-iters", type=int, default=8)
     parser.add_argument("--query", default=DEFAULT_QUERY)
@@ -43,7 +43,9 @@ def main() -> None:
     server = Path(__file__).with_name("mcp_weather_server.py")
     # The Flow starts the server when the run begins and stops it when the run ends.
     flow = Flow(
-        configs=[AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)],
+        agents={
+            "default": Agent(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)
+        },
         runtime=LocalRuntime(),
         tools=[MCPTools(sys.executable, str(server))],
     )
@@ -55,7 +57,7 @@ def main() -> None:
     print(f"\n{'=' * 60}\nWEATHER PACKING RECOMMENDATION\n{'=' * 60}")
     print(root.final_result())
     print(f"\nRun saved to {out_dir}")
-    flow.runtime.close_repls()
+    flow.runtime.close()
 
 
 if __name__ == "__main__":

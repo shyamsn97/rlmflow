@@ -1,9 +1,11 @@
-"""What one ``run_streaming`` may spend: tokens and dollars across the whole graph, and seconds."""
+"""Hooks that come with rlmflow: ``Budget`` (what one stream may spend) and ``Checkpoint`` (saving it as it runs)."""
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from rlmflow.graph.nodes import FINAL_KEY, Node
 from rlmflow.hooks import Stop
@@ -11,7 +13,6 @@ from rlmflow.hooks import Stop
 if TYPE_CHECKING:
     from rlmflow.flow import Flow
     from rlmflow.graph.graph import Graph
-    from rlmflow.graph.nodes import Agent, Step
 
 #: The share of a time budget after which agents are asked for their last turn.
 FINAL_TURN_AT = 0.8
@@ -27,12 +28,12 @@ LAUNCH_REFUSED = "cannot start an agent: the run's budget is spent"
 class Budget:
     """A limit on one stream, enforced as a hook.
 
-    Near the limit, launches fail and every unfinished agent gets one last turn
+    Near the limit, launches fail and every unfinished run gets one last step
     to give its best answer. At the limit, a token or dollar budget stops each
-    agent after that turn; a time budget stops whatever is still running.
+    run after that step; a time budget stops whatever is still running.
 
     ``usd`` counts the dollars harnesses report (Claude Code does; REPL model
-    calls report only tokens). Spend lands when a turn ends, so turns already
+    calls report only tokens). Spend lands when a step ends, so steps already
     running can go over.
     """
 
@@ -53,15 +54,15 @@ class Budget:
             flow.call_later(g, FINAL_TURN_AT * self.seconds, lambda: None)
             flow.call_later(g, self.seconds, lambda: self._time_up(flow, g))
 
-    def before_turn(self, flow: Flow, agent: Agent) -> Node | Stop | None:
-        if _final_turn_taken(agent):
+    def before_step(self, flow: Flow, run: Node) -> Node | Stop | None:
+        if _final_turn_taken(run):
             return Stop("budget spent")
-        if self.nearly_spent(flow, agent.graph) and not _final_pending(agent):
+        if self.nearly_spent(flow, run._graph()) and not _final_pending(run):
             return Node("user", BUDGET_FINAL_TEXT, producer="rlmflow", data={FINAL_KEY: True})
         return None
 
-    def before_launch(self, flow: Flow, step: Step, task: str, config: str) -> str | None:
-        return LAUNCH_REFUSED if self.spent(flow, step.graph) else None
+    def before_launch(self, flow: Flow, node: Node, task: str, agent: str) -> str | None:
+        return LAUNCH_REFUSED if self.spent(flow, node._graph()) else None
 
     # -- accounting ----------------------------------------------------------------
 
@@ -93,14 +94,14 @@ class Budget:
         return False
 
     async def _time_up(self, flow: Flow, g: Graph) -> None:
-        for root in g.roots():
+        for root in g.top_level_roots():
             if root.status() != "done":
-                await flow.stop(g, root, reason="time budget spent")
+                await flow.stop(root, reason="time budget spent")
 
 
-def _final_pending(agent: Agent) -> bool:
-    """A final-turn note was sent since the agent last finished or went idle."""
-    for node in reversed(agent.nodes()):
+def _final_pending(run: Node) -> bool:
+    """A final-step note was sent since the run last finished or went idle."""
+    for node in reversed(run.nodes()):
         if node.final:
             return True
         if node.terminal or node.idle:
@@ -108,10 +109,10 @@ def _final_pending(agent: Agent) -> bool:
     return False
 
 
-def _final_turn_taken(agent: Agent) -> bool:
-    """The agent took a turn after its final-turn note and still didn't finish."""
+def _final_turn_taken(run: Node) -> bool:
+    """The run took a step after its final-step note and still didn't finish."""
     took_turn = False
-    for node in reversed(agent.nodes()):
+    for node in reversed(run.nodes()):
         if node.final:
             return took_turn
         if node.terminal or node.idle:
@@ -121,4 +122,63 @@ def _final_turn_taken(agent: Agent) -> bool:
     return False
 
 
-__all__ = ["BUDGET_FINAL_TEXT", "FINAL_TURN_AT", "LAUNCH_REFUSED", "Budget"]
+class Checkpoint:
+    """Save one streamed graph every so often, on every terminal node, and when the stream ends.
+
+    Pass it as a hook, or call it on each node yourself and ``close()`` it after.
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        interval_s: float | None = 2.0,
+        interval_nodes: int | None = 50,
+    ) -> None:
+        if interval_s is not None and interval_s <= 0:
+            raise ValueError("interval_s must be positive or None")
+        if interval_nodes is not None and interval_nodes <= 0:
+            raise ValueError("interval_nodes must be positive or None")
+        self.path = Path(path)
+        self.interval_s = interval_s
+        self.interval_nodes = interval_nodes
+        self.last_flush_at = time.monotonic()
+        self.latest: Graph | None = None
+        self.dirty_nodes = 0
+
+    def __call__(self, node: Node) -> None:
+        graph = node._graph()
+        if self.latest is not None and graph is not self.latest:
+            raise ValueError("one Checkpoint cannot write multiple graphs")
+        self.latest = graph
+        self.dirty_nodes += 1
+        if node.terminal or self._due():
+            self.flush()
+
+    def on_node(self, flow: Any, node: Node) -> None:
+        self(node)
+
+    def end(self, flow: Any, g: Graph) -> None:
+        self.latest = self.latest or g
+        self.close()
+
+    def _due(self) -> bool:
+        if self.interval_nodes is not None and self.dirty_nodes >= self.interval_nodes:
+            return True
+        return (
+            self.interval_s is not None and time.monotonic() - self.last_flush_at >= self.interval_s
+        )
+
+    def flush(self) -> None:
+        graph = self.latest
+        if graph is None:
+            return
+        graph.save(self.path)
+        self.dirty_nodes = 0
+        self.last_flush_at = time.monotonic()
+
+    def close(self) -> None:
+        self.flush()
+
+
+__all__ = ["BUDGET_FINAL_TEXT", "FINAL_TURN_AT", "LAUNCH_REFUSED", "Budget", "Checkpoint"]

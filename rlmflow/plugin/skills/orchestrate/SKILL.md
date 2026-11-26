@@ -13,7 +13,7 @@ that graph. Pick the smallest one that fits; most tasks need no agents at all.
 
 | Call | Does |
 | --- | --- |
-| `a = launch_agent(task, config=None, name=None, **args)` | Start an agent and get it back as an `Agent`. `args` become its REPL variables; pass values, not agents. |
+| `a = launch_agent(task, agent=None, name=None, **args)` | Start an agent (by default the same kind as you; `agent` names another) and get back a handle to it. `args` become its REPL variables; pass values, not handles. |
 | `await a` | The result of an agent you launched (or one they launched). |
 | `await asyncio.gather(*agents)` | Several results, in order. |
 | `a.send(message)` | Message any agent. Reopens it if it finished. For an agent you launched, `await a.send(...)` waits for its reply. |
@@ -21,26 +21,32 @@ that graph. Pick the smallest one that fits; most tasks need no agents at all.
 | `a.parent`, `a.children` | Where it sits in the run. |
 | `await llm_query(prompt, model=None, schema=None)` | One model call with no REPL or tools. Much cheaper than an agent. |
 | `AGENTS.print_graph(show_results=True)` | The run's agents, their status and results. |
-| `AGENTS["name"]`, `AGENTS.self`, `AGENTS.children` | Any agent by name, path or id; you; the ones you started. Each is an `Agent`. |
+| `AGENTS["name"]`, `AGENTS.self`, `AGENTS.children` | Any agent by name, path or id; you; the ones you started. Each is a handle like the one `launch_agent` returns. |
 | `Input(value, description="...")` | Wrap an arg to tell the agent what it is. |
 | `submit(value)` | Your final result. Once. |
 
 **Waiting.** In a Python REPL turn, `await` blocks until the result is in. In a
 Claude Code or pi session, launch in one `rlmflow repl` call, then end your turn without
 submitting; you're resumed with the results of the agents you launched. Don't
-poll in either.
+poll in either. Agents you launched but didn't await reach you anyway: their results
+arrive in one message before your next turn, each also bound as a variable.
+
+**Fire and forget.** You don't have to wait. `submit(value)`, or in a Python REPL
+turn a plain-text reply, finishes you at once; the agents you launched keep running
+to the end, and their results stay on them.
 
 **Who you can await.** Only agents you launched, and the agents they launched.
-Anyone else (a peer, your parent) answers with a message at your next turn: send,
-then finish the block or end the turn.
+Read anyone else's result once it's done with `AGENTS["name"].result()`, or ask
+them: send a message, then finish the block or end the turn, and their reply
+arrives as a message at your next turn.
 
 **Snapshots.** `AGENTS` and an `Agent`'s status, result and relatives are as of
 when your code started, so an agent you launch shows up in `AGENTS` the next
 time you run code. `await` is live.
 
-**Depth.** An agent can launch others only if its config's `max_depth` allows
-it. The configs and their models are listed in your prompt; use a cheaper one
-for mechanical work.
+**Depth.** An agent can launch others only if its `max_depth` allows it. The
+agents you can launch and their models are listed in your prompt; use a cheaper
+one for mechanical work.
 
 ## Decide first
 
@@ -90,12 +96,12 @@ If one call per chunk is enough, use `llm_query` per chunk instead.
 ### Recursive tree: agents that split further
 
 Workers that can launch their own workers, for work whose size you can't see up
-front (a big directory tree, a survey). Needs a config with `max_depth` of 2 or
+front (a big directory tree, a survey). Needs an agent with `max_depth` of 2 or
 more.
 
 ```python
 parts = [
-    launch_agent(f"Audit `{d}`. If it's too big for you, split it across agents.", config="deep")
+    launch_agent(f"Audit `{d}`. If it's too big for you, split it across agents.", agent="deep")
     for d in top_level_dirs
 ]
 reports = await asyncio.gather(*parts)
@@ -168,7 +174,7 @@ Repeat until board_open() is empty:
 3. Post follow-up work no task covers: board_post(new_id, task).
 Then submit the ids you finished."""
 
-await asyncio.gather(*[launch_agent(WORKER, config="worker", name=f"w{i}") for i in range(3)])
+await asyncio.gather(*[launch_agent(WORKER, agent="worker", name=f"w{i}") for i in range(3)])
 ```
 
 ## The same shapes from host code
@@ -185,13 +191,13 @@ g.link("peer", fe, be)  # your own edge kinds; the engine ignores them
 flow.run(g)
 
 g.send(fe, "Use the v2 endpoint instead.")  # steer an agent
-step = next(n for n in be.nodes() if n.runs_code)
-branch = g.fork(step)  # a copy of the run cut after step; g is untouched
-branch.send(branch.agent(be.id), "Try another approach.")
+node = next(n for n in be.nodes() if n.runs_code)
+branch = g.fork(node)  # a copy of the run cut after node; g is untouched
+branch.send(branch.agent_root(be.id), "Try another approach.")
 flow.run(branch)
 
 g.edit(be.last_turn(), result="...")  # change a result; whatever used it re-runs
-g.replace(step, 0, "cached answer")  # bind the node's first saved call; the node re-runs
+g.replace(node, 0, "cached answer")  # bind the node's first saved call; the node re-runs
 g.remove(fe, dry_run=True)  # what removing an agent would take with it
 flow.run(g)
 ```

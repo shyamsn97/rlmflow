@@ -5,21 +5,12 @@ import pytest
 from helpers import ScriptedFlow, StubLLM, agent_graph, first_user, run_result
 from helpers import repl as block
 
-from rlmflow import (
-    DockerRuntime,
-    LocalRuntime,
-    ModalRuntime,
-    ReplStatus,
-    SubprocessRuntime,
-    WorkerRepl,
-)
+from rlmflow import DockerRuntime, LocalRuntime, ModalRuntime
 from rlmflow.graph import calls
-from rlmflow.graph.nodes import Node, Step
-from rlmflow.runtime import (
-    DEFAULT_PREIMPORTS,
-    base_namespace,
-    build_docker_argv,
-)
+from rlmflow.graph.nodes import Node
+from rlmflow.repl import Repl
+from rlmflow.runtime import DEFAULT_PREIMPORTS, WorkerRepl, base_namespace, build_docker_argv
+from rlmflow.runtime.repl import ReplStatus
 from rlmflow.runtime.repl_client import invoke_tool_call
 from rlmflow.tools import as_tool, tool
 
@@ -50,12 +41,12 @@ def test_cached_host_tool_calls_are_saved_by_their_arguments():
         ran.append(("opaque", value))
         return object()
 
-    step = Step(g, root, action, calls=calls.CallLog(action))
+    step = Repl(None, root, action, calls=calls.CallLog(action))
     assert invoke_tool_call(first, step, ("a",), {}) == {"value": "a"}
     assert invoke_tool_call(first, step, ("b",), {}) == {"value": "b"}
     invoke_tool_call(opaque, step, ("x",), {})
 
-    rerun = Step(g, root, action, calls=calls.CallLog(action))
+    rerun = Repl(None, root, action, calls=calls.CallLog(action))
     assert invoke_tool_call(first, rerun, ("b",), {}) == {"value": "b"}
     assert invoke_tool_call(first, rerun, ("c",), {}) == {"value": "c"}
     invoke_tool_call(opaque, rerun, ("x",), {})
@@ -78,7 +69,7 @@ def test_host_tools_without_cache_always_run():
         ran.append(value)
         return value
 
-    step = Step(g, root, action, calls=calls.CallLog(action))
+    step = Repl(None, root, action, calls=calls.CallLog(action))
     invoke_tool_call(live, step, ("a",), {})
     invoke_tool_call(live, step, ("a",), {})
 
@@ -106,7 +97,7 @@ class RecordingWorkerSession:
     "runtime",
     [
         LocalRuntime(repl_timeout=19, execution_timeout=17),
-        SubprocessRuntime(repl_timeout=19, execution_timeout=17),
+        LocalRuntime(repl_timeout=19, execution_timeout=17),
     ],
 )
 def test_process_runtimes_propagate_execution_timeout(runtime):
@@ -175,13 +166,13 @@ def test_local_runtime_uses_worker_and_working_directory(tmp_path):
 def test_subprocess_runtime_uses_selected_python_and_working_directory(tmp_path):
     flow = ScriptedFlow(
         StubLLM(lambda _messages: WRITE_A_NOTE),
-        runtime=SubprocessRuntime(
+        runtime=LocalRuntime(
             working_directory=tmp_path,
             python=sys.executable,
         ),
     )
     try:
-        assert flow.run("q") == "hello"
+        assert flow.run("default", "q") == "hello"
         assert (tmp_path / "note.txt").read_text() == "hello"
     finally:
         asyncio.run(flow.aclose())
@@ -195,10 +186,10 @@ def test_subprocess_runtime_exposes_the_agents_tree():
     )
     flow = ScriptedFlow(
         StubLLM(lambda _messages: code),
-        runtime=SubprocessRuntime(),
+        runtime=LocalRuntime(),
     )
     try:
-        assert flow.run("q") == "root|0|running|1|True|root (default) [running] (you)"
+        assert flow.run("default", "q") == "root|0|running|1|True|root (default) [running] (you)"
     finally:
         asyncio.run(flow.aclose())
 
@@ -209,7 +200,7 @@ def test_subprocess_runtime_supports_subagent_handles():
             return block('child = launch_agent("child")\nsubmit(await child)')
         return block('submit("child-done")')
 
-    flow = ScriptedFlow(StubLLM(reply), runtime=SubprocessRuntime())
+    flow = ScriptedFlow(StubLLM(reply), runtime=LocalRuntime())
     try:
         assert run_result(flow, *agent_graph("parent")) == "child-done"
     finally:
@@ -357,7 +348,7 @@ def test_preimports_are_configurable_per_runtime(tmp_path):
 
 def test_preimports_default_to_absent_flag_and_empty_binds_nothing():
     assert "--preimport" not in LocalRuntime().worker_command()
-    assert SubprocessRuntime(preimports=()).worker_command()[-2:] == ["--preimport", ""]
+    assert LocalRuntime(preimports=()).worker_command()[-2:] == ["--preimport", ""]
     assert base_namespace(()) == {"__builtins__": __builtins__}
     assert set(base_namespace()) == {"__builtins__", *DEFAULT_PREIMPORTS}
     with pytest.raises(ModuleNotFoundError):

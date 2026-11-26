@@ -8,7 +8,9 @@ import time
 import pytest
 from helpers import agent_graph
 
-from rlmflow import ReplStatus, SubprocessRuntime, WorkerRepl, WorkerSession
+from rlmflow import LocalRuntime
+from rlmflow.runtime import WorkerRepl, WorkerSession
+from rlmflow.runtime.repl import ReplStatus
 from rlmflow.runtime.repl_client import ProtocolDesyncError
 from rlmflow.runtime.repl_server import PingRequest, ReplResponse
 from rlmflow.runtime.runtime import PopenConnection
@@ -325,7 +327,7 @@ def test_concurrent_sends_are_serialized():
 
 
 def test_configured_execution_timeout_becomes_dead_outcome(tmp_path):
-    runtime = SubprocessRuntime(
+    runtime = LocalRuntime(
         working_directory=tmp_path,
         repl_timeout=5,
         execution_timeout=0.05,

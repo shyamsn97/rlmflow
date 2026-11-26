@@ -7,7 +7,7 @@ replies arrive as messages and reopen her. Once she has both, she sends them the
 total. Every message is a node of the receiver's with a ``write`` edge
 from the node whose code sent it, so the saved graph records who told whom what.
 
-    python examples/patterns/peers.py --model gpt-5-mini
+    python examples/patterns/peers.py --model gpt-6.1-terra
 """
 
 from __future__ import annotations
@@ -17,7 +17,8 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import WRITE, AgentConfig, Checkpoint, Flow, Graph
+from rlmflow import Agent, Checkpoint, Flow, Graph
+from rlmflow.graph import WRITE
 from rlmflow.view.text import kind
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -54,10 +55,10 @@ Submit your number now with submit(value). Peers may message you later:
 async def run(flow: Flow, g: Graph, out_dir: str) -> None:
     """Drive every peer in ``g`` until none can step, checkpointing as items land."""
     try:
-        async for step in flow.run_streaming(g, hooks=[Checkpoint(out_dir)]):
-            print(f"{step.agent.name:<6}  {kind(step.node)}")
+        async for node in flow.stream(g, hooks=[Checkpoint(out_dir)]):
+            print(f"{node.root.name:<6}  {kind(node)}")
     finally:
-        flow.runtime.close_repls()
+        flow.runtime.close()
 
 
 def build_graph() -> Graph:
@@ -72,8 +73,8 @@ def print_messages(g: Graph) -> None:
     """Each message a peer sent: a ``write`` edge from the node that sent it."""
     for edge in g.edges(kind=WRITE):
         message = g.node(edge.target)
-        sender = g.node(edge.source).agent.name
-        print(f"  {sender} -> {message.agent.name}: {message.text}")
+        sender = g.node(edge.source).root.name
+        print(f"  {sender} -> {message.root.name}: {message.text}")
 
 
 def main() -> None:
@@ -83,12 +84,12 @@ def main() -> None:
     parser.add_argument("--out-dir", default=str(example_run_dir("decentralized-peers")))
     args = parser.parse_args()
 
-    flow = Flow(configs=[AgentConfig(model=args.model, max_depth=0, max_iters=args.max_iters)])
+    flow = Flow(agents={"default": Agent(model=args.model, max_depth=0, max_iters=args.max_iters)})
     g = build_graph()
     asyncio.run(run(flow, g, args.out_dir))
 
     print("\nresults:")
-    results = {peer.name: peer.final_result() for peer in g.agents()}
+    results = {peer.name: peer.final_result() for peer in g.agent_roots()}
     for name, result in results.items():
         print(f"  {name}: {result!r}")
 

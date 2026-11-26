@@ -13,6 +13,7 @@ LAYERS = {
     "rlmflow.results": 0,
     "rlmflow.hooks": 0,
     "rlmflow.graph": 1,
+    "rlmflow.repl": 1,
     "rlmflow.budget": 2,
     "rlmflow.llm": 2,
     "rlmflow.runtime": 2,
@@ -20,10 +21,9 @@ LAYERS = {
     "rlmflow.workspaces": 3,
     "rlmflow.agent_tools": 3,
     "rlmflow.tools": 4,
-    "rlmflow.harnesses": 4,
+    "rlmflow.agents": 4,
     "rlmflow.flow": 5,
     "rlmflow.cli": 6,
-    "rlmflow.consumers": 6,
     "rlmflow.view": 6,
     "rlmflow.__main__": 6,
     "rlmflow": 6,
@@ -32,7 +32,14 @@ LAYERS = {
 # Modules that sit at a different layer from their package. Layer-0 modules
 # import nothing from rlmflow; the MCP toolkit builds tools; a Stream is a
 # record of graph state that never calls the Flow.
-OVERRIDES: dict[str, int] = {"rlmflow.integrations.mcp": 4, "rlmflow.flow.stream": 1}
+OVERRIDES: dict[str, int] = {
+    "rlmflow.agent_tools.view": 4,
+    "rlmflow.integrations.mcp": 4,
+    "rlmflow.flow.stream": 1,
+}
+# ``Repl`` is a run's handle onto its Flow: low layers reach it with
+# ``current_repl()``, and its methods call up into the Flow's modules.
+HANDLES = {"rlmflow.repl"}
 
 
 def module_name(path: Path) -> str:
@@ -55,13 +62,15 @@ def is_type_checking(node: ast.If) -> bool:
     )
 
 
-def runtime_imports(tree: ast.AST) -> list[tuple[int, str]]:
+def runtime_imports(tree: ast.AST, *, nested: bool = True) -> list[tuple[int, str]]:
     found: list[tuple[int, str]] = []
 
     def visit(node: ast.AST) -> None:
         if isinstance(node, ast.If) and is_type_checking(node):
             for child in node.orelse:
                 visit(child)
+            return
+        if not nested and isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return
         if isinstance(node, ast.Import):
             found.extend((node.lineno, alias.name) for alias in node.names)
@@ -89,7 +98,8 @@ def test_imports_only_point_down() -> None:
     violations = []
     for path in sorted(ROOT.rglob("*.py")):
         source = module_name(path)
-        for line, name in runtime_imports(ast.parse(path.read_text(), str(path))):
+        tree = ast.parse(path.read_text(), str(path))
+        for line, name in runtime_imports(tree, nested=source not in HANDLES):
             imported = target(name)
             if layer(imported) > layer(source):
                 violations.append(

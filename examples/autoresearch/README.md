@@ -25,7 +25,7 @@ The ML task is just:
 - `dashboard.py` — a live Gradio view of a run: `python dashboard.py <run dir>`.
 - `run.py` — the rlmflow side, about 200 lines. A planner launches waves of
   implementers; both are Claude Code sessions by default (`--planner repl` /
-  `--implementer repl` for gpt-5 REPL agents). Each implementer works in its own copy of the task files
+  `--implementer repl` for gpt-6-sol REPL agents). Each implementer works in its own copy of the task files
   (rlmflow's default workspaces), edits `train.py`, and calls `submit_trial`.
   That trains the copy on Modal and returns the trial's row. The planner can start
   a new implementer from any earlier trial with `workspace=row["commit"]`.
@@ -48,7 +48,7 @@ uv run train.py
 
 ```bash
 make run GPU=A10G PARALLEL=4 MAX_SUBMISSIONS=16
-make run PLANNER=repl MODEL=gpt-5    # a gpt-5 REPL planner over Claude Code implementers
+make run PLANNER=repl MODEL=gpt-6-sol    # a gpt-6-sol REPL planner over Claude Code implementers
 ```
 
 Claude Code needs `rlmflow[claude]` and a `claude` login (or `ANTHROPIC_API_KEY`).

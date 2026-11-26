@@ -20,7 +20,7 @@ from typing import Any
 from xml.sax.saxutils import escape
 
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import RETURN, SPAWN, WRITE, Agent, LLMUsage, Node
+from rlmflow.graph.nodes import RETURN, SPAWN, WRITE, AgentRoot, LLMUsage, Node
 from rlmflow.tools.board import READS as BOARD_READS
 from rlmflow.tools.board import WRITES as BOARD_WRITES
 from rlmflow.view.text import kind
@@ -99,13 +99,13 @@ def node_shape(node: Node) -> str:
 
 def node_label(node: Node) -> str:
     """Agents get named; the rest are identified by colour and shape."""
-    return node.name if isinstance(node, Agent) else ""
+    return node.name if isinstance(node, AgentRoot) else ""
 
 
 def parent_ids(g: Graph) -> dict[str, str]:
     """Each item's drawn parent: the node that launched an agent, else the node before it."""
     parents: dict[str, str] = {}
-    for agent in g.agents():
+    for agent in g.agent_roots():
         source = [e.source for e in g.edges(kind=SPAWN, target=agent.id)]
         if source:
             parents[agent.id] = source[0]
@@ -128,7 +128,7 @@ def handoffs(g: Graph) -> list[tuple[str, str]]:
 
 def node_tokens(node: Node) -> int:
     """What this node cost, which is what sizes its marker."""
-    if isinstance(node, Agent):
+    if isinstance(node, AgentRoot):
         return 0
     usage = LLMUsage.of(node.data.get("usage"))
     return int(usage.input_tokens) + int(usage.output_tokens)
@@ -154,7 +154,7 @@ def tidy_tree(nodes: list[Node], parents: dict[str, str]) -> dict[str, tuple[flo
             children[parent].append(node)
 
     def continues(parent: Node, kid: Node) -> bool:
-        return not isinstance(kid, Agent) and kid.owner == parent.owner
+        return not isinstance(kid, AgentRoot) and kid.root_id == parent.root_id
 
     for node_id, kids in children.items():
         kids.sort(key=lambda kid: not continues(by_id[node_id], kid))
@@ -363,7 +363,7 @@ def marker(x: float, y: float, shape: str, color: str, r: float, *, ring: bool =
 
 def hover_text(g: Graph, node: Node) -> str:
     """Identity only — the detail panel carries the content."""
-    rows = [f"{node.agent.path()} · {kind(node)}"]
+    rows = [f"{node.root.path()} · {kind(node)}"]
     tokens = node_tokens(node)
     if tokens:
         usage = LLMUsage.of(node.data.get("usage"))
@@ -603,7 +603,7 @@ def _legend(width: float, y: float) -> str:
 
 def run_title(g: Graph) -> str:
     """The run's name: its top-level agents."""
-    tops = [a.name for a in g.roots()]
+    tops = [a.name for a in g.top_level_roots()]
     return ", ".join(tops) or "empty graph"
 
 

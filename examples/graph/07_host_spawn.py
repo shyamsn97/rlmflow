@@ -8,17 +8,20 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from rlmflow import AgentConfig, Flow, Graph, Node, render_tree
+from rlmflow import Agent, Flow, Graph, Node
+from rlmflow.agents import repl_reply
+from rlmflow.llm import Reply
+from rlmflow.view import render_tree
 
 
 class ScriptedLLM:
-    def chat(self, messages: list[dict[str, Any]]) -> str:
-        users = [m["content"] for m in messages if m["role"] == "user"]
+    def chat(self, messages: list[dict[str, Any]]) -> Reply:
+        users = [m["content"] for m in messages if m["role"] in ("user", "tool")]
         if users[0].startswith("re-check"):
-            return '```repl\nsubmit("rollback path verified")\n```'
-        if any("[result " in text for text in users):
-            return '```repl\nsubmit("release blocked; " + audits["candidate"])\n```'
-        return '```repl\nprint("waiting for the re-check")\n```'
+            return repl_reply('submit("rollback path verified")')
+        if any("rollback path verified" in text for text in users):
+            return repl_reply('submit("release blocked; " + audits["candidate"])')
+        return repl_reply('print(await AGENTS["recheck"])')
 
 
 def main() -> None:
@@ -41,7 +44,7 @@ def main() -> None:
 
     # Pass their results on to a new agent as arguments, and launch a child for it
     # from host code: start(parent=...) is the host-side launch_agent. The
-    # child's result reaches the parent as a message at its next turn.
+    # parent can await the child just like one launched from its own code.
     root = g.start(
         "decide the release from `audits`",
         name="root",
@@ -51,13 +54,13 @@ def main() -> None:
     print(
         "spawn edge:",
         [
-            (e.kind, g.node(e.source).agent.name, g.agent(e.target).name)
+            (e.kind, g.node(e.source).root.name, g.agent_root(e.target).name)
             for e in g.edges(kind="spawn")
         ],
     )
 
-    config = AgentConfig(model="scripted", max_iters=6)
-    flow = Flow(llm_clients={"scripted": ScriptedLLM()}, configs=[config])
+    agent = Agent(model="scripted", max_iters=6)
+    flow = Flow(llm_clients={"scripted": ScriptedLLM()}, agents={"default": agent})
     flow.run(g)
     flow.runtime.close()
 

@@ -3,7 +3,7 @@
 A shepherd run saves the jammed worker (``graph/``), the shepherd (``shepherd/``)
 and each fork (``branches/branchN/``) as separate graphs. A fork repeats the
 worker's nodes up to the cut, so this keeps only the nodes each fork added and
-makes them an agent named after the branch. Each branch hangs off the worker
+makes them a run named after the branch. Each branch hangs off the worker
 node it was forked at by a ``spawn`` edge, so its rewind depth shows, and its
 last node has a ``return`` edge to the shepherd node that read the results. Nodes and edges are
 renumbered by time.
@@ -34,7 +34,7 @@ def combine(run_dir: Path) -> dict:
     )
 
     jam_ids = {n["id"] for n in jam["nodes"]}
-    worker = next(n["agent"] for n in jam["nodes"] if "agent" in n)
+    worker = next(n["run"] for n in jam["nodes"] if "run" in n)
     turns = [n for n in shepherd["nodes"] if n["role"] == "assistant"]
 
     nodes = jam["nodes"] + shepherd["nodes"]
@@ -47,7 +47,7 @@ def combine(run_dir: Path) -> dict:
         root = added[0]
         for node in added:
             node["owner"] = root["id"]
-        root["agent"] = {
+        root["run"] = {
             **worker,
             "name": path.name,
             "task": root.get("text") or worker["task"],

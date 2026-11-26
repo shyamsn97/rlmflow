@@ -39,7 +39,7 @@ def test_stop_cancels_a_model_call_and_the_awaiting_parent_gets_the_reason():
         run = asyncio.ensure_future(flow.arun(g))
         await asyncio.wait_for(llm.ready.wait(), timeout=5)
         child = root.children()[0]
-        ended = await flow.stop(g, child, reason="no gain in 4 evals")
+        ended = await flow.stop(child, reason="no gain in 4 evals")
         await asyncio.wait_for(run, timeout=5)
         return child, ended
 
@@ -59,7 +59,7 @@ def test_stop_ends_the_subtree_unless_told_not_to():
         g, root = agent_graph("parent")
         run = asyncio.ensure_future(flow.arun(g))
         await asyncio.wait_for(llm.ready.wait(), timeout=5)
-        await flow.stop(g, root, reason="enough", subtree=subtree)
+        await flow.stop(root, reason="enough", subtree=subtree)
         statuses = {a.name: a.status() for a in root.children()}
         run.cancel()
         await asyncio.gather(run, return_exceptions=True)
@@ -82,13 +82,13 @@ def test_a_stopped_agent_survives_save_load_and_reopens_on_a_message(tmp_path):
     g, root = agent_graph("solo")
 
     async def stop_it():
-        await flow.stop(g, root, reason="manual")
+        await flow.stop(root, reason="manual")
 
     asyncio.run(stop_it())
     assert root.final_result() == {"stopped": "manual"}
 
     loaded = Graph.load(g.save(tmp_path / "run"))
-    again = loaded.agent(root.id)
+    again = loaded.agent_root(root.id)
     assert again.final_result() == {"stopped": "manual"}
     assert again.nodes()[-1].data["stopped"] == "manual"
 

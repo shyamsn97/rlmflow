@@ -7,7 +7,7 @@ import pytest
 from helpers import ScriptedFlow, StubLLM, code_nodes, first_user, trailing_user_text
 from helpers import reasoning_repl as block
 
-from rlmflow import AgentConfig, GitWorktrees, Graph
+from rlmflow import Agent, GitWorktrees, Graph
 from rlmflow.runtime import LocalRuntime
 from rlmflow.workspaces import Copies, LocalWorkspace, git
 
@@ -75,8 +75,8 @@ def test_children_start_from_the_parents_files_in_their_own_worktrees(repo):
                 return block("submit(open('notes.txt').read())")
             return block(
                 "open('notes.txt', 'a').write('lead\\n')\n"
-                "a = launch_agent('child a', config='worker')\n"
-                "b = launch_agent('child b', config='worker')\n"
+                "a = launch_agent('child a', agent='worker')\n"
+                "b = launch_agent('child b', agent='worker')\n"
                 "print(await asyncio.gather(a, b))"
             )
         return block(
@@ -87,7 +87,7 @@ def test_children_start_from_the_parents_files_in_their_own_worktrees(repo):
     root = g.start("lead")
     flow = ScriptedFlow(
         StubLLM(reply),
-        configs=[AgentConfig(name="worker")],
+        agents={"default": Agent(), "worker": Agent()},
         runtime=LocalRuntime(repl_timeout=10),
         workspaces=GitWorktrees(repo),
     )
@@ -123,7 +123,7 @@ def test_a_fork_rebuilds_its_repl_then_restores_the_files_at_the_fork_point(repo
 
     second = code_nodes(g, root)[1]
     branch = g.fork(second)
-    copy = branch.agent(root.id)
+    copy = branch.agent_root(root.id)
     branch.send(copy, "resume here")
     workspaces = GitWorktrees(repo)
     run(
@@ -144,7 +144,7 @@ def test_a_fork_rebuilds_its_repl_then_restores_the_files_at_the_fork_point(repo
 def copies_flow(reply, directory, **kwargs):
     return ScriptedFlow(
         StubLLM(reply),
-        configs=[AgentConfig(name="worker")],
+        agents={"default": Agent(), "worker": Agent()},
         runtime=LocalRuntime(directory, repl_timeout=10),
         **kwargs,
     )
@@ -160,7 +160,7 @@ def test_auto_gives_launched_agents_copies_and_leaves_the_directory_alone(tmp_pa
                 return block("submit(open('notes.txt').read())")
             return block(
                 "open('notes.txt', 'a').write('lead\\n')\n"
-                "child = launch_agent('child', config='worker')\n"
+                "child = launch_agent('child', agent='worker')\n"
                 "print('child:', await child)"
             )
         return block("open('notes.txt', 'a').write('child\\n')\nsubmit(open('notes.txt').read())")
@@ -194,11 +194,11 @@ def test_shared_and_commit_workspaces(tmp_path):
             if "done" in trailing_user_text(messages):
                 return block("submit(open('notes.txt').read())")
             return block(
-                "a = launch_agent('a', config='worker')\n"
+                "a = launch_agent('a', agent='worker')\n"
                 "await a\n"
-                "s = launch_agent('s', config='worker', workspace='shared')\n"
+                "s = launch_agent('s', agent='worker', workspace='shared')\n"
                 "await s\n"
-                "c = launch_agent('c', config='worker', workspace=a)\n"
+                "c = launch_agent('c', agent='worker', workspace=a)\n"
                 "await c\n"
                 "checkout(c)\n"
                 "print('done')"
@@ -252,10 +252,10 @@ def test_a_launch_can_start_from_an_agents_commit(tmp_path):
                 return block("submit(open('notes.txt').read())")
             if "first" in last:
                 return block(
-                    "c = launch_agent('c', config='worker', workspace=a.commit)\n"
+                    "c = launch_agent('c', agent='worker', workspace=a.commit)\n"
                     "print('second', await c)"
                 )
-            return block("a = launch_agent('a', config='worker')\nprint('first', await a)")
+            return block("a = launch_agent('a', agent='worker')\nprint('first', await a)")
         return block(
             f"open('notes.txt', 'a').write({task + chr(10)!r})\nsubmit(open('notes.txt').read())"
         )

@@ -1,99 +1,99 @@
-"""Run agents: give each agent that has something to do a turn, and stream every node as it finishes."""
+"""Run agents: step every run that has something to do, and stream every node as it finishes."""
 
 from __future__ import annotations
 
 import asyncio
 import copy
 import time
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from inspect import isawaitable
 from typing import Any, Literal, TypeAlias
 
 from rlmflow.agent_tools.server import AgentToolsServer
+from rlmflow.agents.agent import MAX_ITERS_EXCEEDED, Agent, steps
 from rlmflow.flow import execution
 from rlmflow.flow.stream import Stream
-from rlmflow.graph.config import AgentConfig, can_spawn
+from rlmflow.graph.config import MAX_OUTPUT, validate_agent_name
 from rlmflow.graph.edits import Invalidation
 from rlmflow.graph.graph import Graph
 from rlmflow.graph.nodes import (
     DONE,
+    IDLE_KEY,
     RETURN,
     SEEN_KEY,
     SELF,
     STOPPED_KEY,
-    LLMUsage,
+    TERMINAL_KEY,
+    WORKSPACE_KEY,
+    AgentRoot,
     Node,
-    Step,
     final_node,
-    running_step,
 )
-from rlmflow.graph.queries import ready_agents, unseen_results
-from rlmflow.harnesses.prompts import STATE_PROMPT, VERIFY_PROMPT, skill
+from rlmflow.graph.queries import ready_runs, unseen_results
 from rlmflow.hooks import Stop
-from rlmflow.llm import client_for, complete
+from rlmflow.llm.base import Reply, client_for, complete
+from rlmflow.llm.openai import OpenAIClient
+from rlmflow.repl import Repl, running
 from rlmflow.results import RESULT_MAX, json_safe, render_results, result_name
 from rlmflow.runtime import LocalRuntime, Runtime
-from rlmflow.runtime.repl import ReplRun
 from rlmflow.runtime.runtime import repl_key
-from rlmflow.tools import (
-    RESERVED_TOOLS,
-    Toolkit,
-    as_tool,
-    as_tool_items,
-    query,
-    tool_name,
-)
+from rlmflow.tools.builtins import query
+from rlmflow.tools.declare import RESERVED_TOOLS, Toolkit, as_tool, as_tool_items, tool_name
 from rlmflow.workspaces import LocalWorkspace, make_workspaces
 
-#: Where a streamed run stops: after any node of an agent's own (``"next"``), after a
-#: node that ran code or ended a turn (``"idle"``), at the end (``"done"``), or when
-#: a predicate on the streamed ``Step`` holds.
-StepUntil: TypeAlias = Literal["next", "idle", "done"] | Callable[[Step], bool]
+#: Where a stream stops: after any node a run wrote itself (``"next"``), after one
+#: that ran code or ended a step (``"idle"``), at the end (``"done"``), or when a
+#: predicate on the streamed node holds.
+Until: TypeAlias = Literal["next", "idle", "done"] | Callable[[Node], bool]
 
 
-def _boundary(until: StepUntil) -> Callable[[Step], bool] | None:
+def _boundary(until: Until) -> Callable[[Node], bool] | None:
     if until == "done":
         return None
     if callable(until):
         return until
     if until == "next":
-        return lambda step: step.node.producer == SELF
+        return lambda node: node.producer == SELF
     if until == "idle":
-        return lambda step: (
-            step.node.producer == SELF and (step.node.runs_code or step.node.ends_turn)
-        )
+        return lambda node: node.producer == SELF and (node.runs_code or node.ends_turn)
     raise ValueError(f"unknown until boundary: {until!r}")
 
 
 class Flow:
-    """Model clients, the REPL runtime, tools and workspaces. Runs agents' turns.
+    """Agents, model clients, the REPL runtime, tools and workspaces. Steps runs.
 
-    The Flow decides how every agent runs. ``configs`` are the named kinds of
-    agent that ``launch_agent(config=...)`` and ``flow.init(task, config=...)``
-    pick from (``"default"`` is ``AgentConfig()`` unless given). The graph
-    only names each agent's config and records the JSON of the one that ran
-    it. A config's ``model`` is any model name, or a name in ``llm_clients``
-    for clients a name can't describe. ``workers`` caps how many model calls
-    run at once.
+    ``agents`` are the named kinds of agent a run uses: ``flow.start(name, task)``
+    and ``launch_agent(task, agent=name)`` pick one (a launch defaults to the
+    launcher's own); without ``agents`` there is one, ``"default"``. The graph
+    only names each run's agent. An agent's ``model`` is any model name, or a
+    name in ``llm_clients`` for clients a name can't describe. ``workers`` caps
+    how many model calls run at once.
 
-    ``workspaces`` is where agents' files live. ``"auto"``: when the runtime
-    has a working directory on this machine, top-level agents work in it and
-    each launched agent in a copy of its launcher's files; otherwise all share
-    one directory. ``"shared"``, ``"isolated"`` (top-level agents get copies
-    too), or an object such as ``GitWorktrees``.
+    ``workspaces`` is where runs' files live: ``"copies"`` (top-level runs in
+    the runtime's working directory, launched runs in copies of their
+    launcher's files), ``"isolated"`` (every run in a copy), ``"shared"`` (one
+    directory), or an object such as ``GitWorktrees``. ``None`` is
+    ``"copies"`` when the REPL runs on this machine in a directory you gave the
+    runtime, and ``"shared"`` otherwise.
     """
 
     def __init__(
         self,
         *,
-        llm_clients: dict[str, Any] | None = None,
-        configs: Iterable[AgentConfig] = (),
+        agents: Mapping[str, Agent] | None = None,
+        tools: Any = (),
         runtime: Runtime | None = None,
-        tools: Any = None,
-        workspaces: Any = "auto",
+        workspaces: Any = None,
+        llm_clients: Mapping[str, Any] | None = None,
         workers: int | None = None,
     ) -> None:
+        self.agents: dict[str, Agent] = {"default": Agent()} if agents is None else {}
+        for name, agent in (agents or {}).items():
+            validate_agent_name(name)
+            if not isinstance(agent, Agent):
+                raise TypeError(f"agent {name!r} must be an Agent, not {type(agent).__name__}")
+            self.agents[name] = agent
         self.llms: dict[str, Any] = dict(llm_clients or {})
         if workers is not None and workers < 1:
             raise ValueError("workers must be >= 1")
@@ -102,93 +102,85 @@ class Flow:
         self.workspaces = make_workspaces(workspaces, self.runtime)
         if not isinstance(self.workspaces, LocalWorkspace):
             self.runtime.directory_for = self.workspaces.path
-        #: Tools and values every agent's REPL binds, by name.
+        #: Tools and values every run's REPL binds, by name.
         self.tools: dict[str, Any] = {}
         #: Toolkits each stream opens a copy of; their tools exist only in that stream.
         self.toolkits: list[Toolkit] = []
         for item in as_tool_items(tools):
             self.add_tool(item)
-        self.configs: dict[str, AgentConfig] = {"default": AgentConfig()}
-        for config in configs:
-            self.add_config(config)
+        #: What ``Repl.set`` bound, by REPL id; each run of that REPL binds it again.
+        self._bound: dict[str, dict[str, Any]] = {}
         #: The live stream of each graph this Flow is running, by graph id.
         self._streams: dict[str, Stream] = {}
+        #: ``(graph id, run id)`` of runs whose agent is taking a step now.
+        self._stepping: set[tuple[str, str]] = set()
         self._agent_tools: AgentToolsServer | None = None
+
+    def agent(self, node: Node) -> Agent:
+        """The agent ``node``'s run runs with."""
+        name = node.root.agent
+        try:
+            return self.agents[name]
+        except KeyError:
+            known = ", ".join(sorted(self.agents))
+            raise KeyError(f"no agent named {name!r} on this Flow (known: {known})") from None
 
     # -- models -------------------------------------------------------------
 
     def llm(self, model: str | None) -> Any:
         """The client for ``model``."""
         if model is None:
-            raise ValueError(
-                "no model: set AgentConfig(model=...) on the config this agent runs with"
-            )
+            raise ValueError("no model: set Agent(model=...) on the agent this run runs with")
         if model not in self.llms:
             self.llms[model] = client_for(model)
         return self.llms[model]
 
     async def complete(
-        self, messages: list[dict[str, Any]], model: str | None, **kwargs: Any
-    ) -> tuple[str, LLMUsage]:
+        self,
+        messages: list[dict[str, Any]],
+        model: str | None,
+        *,
+        reasoning_effort: str | None = None,
+        **kwargs: Any,
+    ) -> Reply:
         """One model call; a client's ``request_timeout`` caps it."""
         client = self.llm(model)
+        if reasoning_effort is not None and isinstance(client, OpenAIClient):
+            kwargs["reasoning_effort"] = reasoning_effort
         timeout = getattr(client, "request_timeout", None)
         if self._model_slots is None:
             return await complete(client, messages, timeout=timeout, **kwargs)
         async with self._model_slots:
             return await complete(client, messages, timeout=timeout, **kwargs)
 
+    async def _model(
+        self, model: str | None, messages: list[dict[str, Any]], **kwargs: Any
+    ) -> Reply:
+        """The ``llm`` a step gets: one model call."""
+        return await self.complete(messages, model, **kwargs)
+
     async def llm_query(self, prompt: str, *, model: str | None = None, schema: Any = None) -> Any:
-        """One context-free model call from host code; ``model`` defaults to the ``default`` config's."""
+        """One context-free model call from host code; ``model`` defaults to the ``default`` agent's."""
+        default = self.agents.get("default")
         return await query(
-            self, prompt, model=model or self.configs["default"].model, schema=schema
+            self, prompt, model=model or (default.model if default else None), schema=schema
         )
-
-    # -- configs ------------------------------------------------------------
-
-    def add_config(self, config: AgentConfig) -> AgentConfig:
-        """Name a kind of agent that ``launch_agent(config=config.name)`` starts."""
-        if not isinstance(config, AgentConfig):
-            raise TypeError(f"add_config takes an AgentConfig, not {type(config).__name__}")
-        self.configs[config.name] = config
-        return config
-
-    def config(self, name: str) -> AgentConfig:
-        if name not in self.configs:
-            raise KeyError(
-                f"no config named {name!r} on this Flow (known: {', '.join(sorted(self.configs))})"
-            )
-        return self.configs[name]
-
-    def config_for(self, agent: Node, *, record: bool = True) -> AgentConfig:
-        """Bind and return the config ``agent`` runs with: the one it names, else ``"default"``."""
-        config = self.config(agent.config_name or "default")
-        agent.bind_config(config, record=record)
-        return config
-
-    def _bind_configs(self, g: Graph) -> None:
-        """Bind every agent's config; finished agents keep their record, and may name a gone one."""
-        for agent in g.agents():
-            if agent.status() != "done":
-                self.config_for(agent)
-            elif agent.config_name is None or agent.config_name in self.configs:
-                self.config_for(agent, record=False)
 
     # -- tools --------------------------------------------------------------
 
-    def inject(self, name: str, value: Any) -> None:
-        """Bind ``value`` as ``name`` in every agent's REPL, from its next execution."""
-        if name in RESERVED_TOOLS:
-            raise ValueError(f"{name!r} is reserved")
-        self.tools[name] = value
-
     def add_tool(self, fn: Any, *, name: str | None = None) -> None:
-        """Add a tool (a plain function works: its docstring describes it) or a ``Toolkit``."""
+        """Add a tool (a plain function works: its docstring describes it), a ``Toolkit``, or, with ``name``, any value to bind."""
         if isinstance(fn, Toolkit):
             self.toolkits.append(fn)
             return
-        fn = as_tool(fn)
-        self.inject(name or tool_name(fn), fn)
+        if callable(fn):
+            fn = as_tool(fn)
+        elif name is None:
+            raise TypeError("add_tool(value) needs name= for a value that isn't a function")
+        name = name or tool_name(fn)
+        if name in RESERVED_TOOLS:
+            raise ValueError(f"{name!r} is reserved")
+        self.tools[name] = fn
 
     def remove_tool(self, name: str) -> Any:
         """Stop binding ``name``; it is gone from each REPL at its next execution."""
@@ -201,57 +193,48 @@ class Flow:
         stream = self._stream(g)
         return {**self.tools, **stream.tools} if stream is not None else dict(self.tools)
 
-    def namespace_for(self, step: Step) -> dict[str, Any]:
-        """Extra bindings for this agent's REPL; none by default."""
-        return {}
+    # -- graphs and runs -----------------------------------------------------------
 
-    # -- prompts ----------------------------------------------------------------
+    def start(self, agent: str, task: str = "", **args: Any) -> Graph:
+        """A new graph with one top-level run of ``agent`` on ``task``.
 
-    def guidance(self, step: Step) -> dict[str, str | None]:
-        """Prompt sections every harness includes; the orchestrate skill only for agents that can launch."""
-        return {
-            "verify": VERIFY_PROMPT,
-            "state": STATE_PROMPT,
-            "orchestration": skill("orchestrate") if can_spawn(step.graph, step.agent) else None,
-        }
+        Keyword arguments become the run's REPL variables, as in ``Graph.start``.
+        """
+        if agent not in self.agents:
+            raise KeyError(f"no agent named {agent!r} on this Flow")
+        g = Graph()
+        g.start(task, agent=agent, **args)
+        return g
 
-    def turn_prompt(self, step: Step) -> str:
-        """What the agent is told at the start of each turn: the agents it launched and how they are."""
-        children = step.agent.children()
-        if not children:
-            return ""
-        lines = [
-            f"- `{child.name}` ({child.path()}): "
-            + ("result ready" if child.status() == "done" else child.status())
-            for child in children
-        ]
-        return "\n".join(["Background agents:", *lines])
+    def repl(self, node: Node) -> Repl:
+        """The ``Repl`` of ``node``'s run, for host code."""
+        return Repl(self, node.root)
 
-    def spawn(
+    def launch(
         self,
-        step: Step,
+        repl: Repl,
         task: str,
         *,
-        config: str = "default",
+        agent: str,
         name: str | None = None,
         workspace: Any = None,
         **args: Any,
-    ) -> Node:
-        """Create an agent launched by the running node; every harness's launches land here.
+    ) -> AgentRoot:
+        """Start a run launched by ``repl``'s running node; every harness's launches land here.
 
         ``workspace`` is where its files start: ``None`` for a copy of the
-        launcher's, ``"shared"`` for the launcher's own directory, another
-        agent (a copy of its files) or a commit.
+        launcher's, ``"shared"`` for the launcher's own directory, another run
+        (a copy of its files) or a commit.
         """
-        self.config(config)
-        g = step.graph
+        if agent not in self.agents:
+            raise KeyError(f"no agent named {agent!r} on this Flow")
+        g = repl.graph
         if (stream := self._stream(g)) is not None:
-            if (refused := self._before_launch(stream, step, task, config)) is not None:
+            if (refused := self._before_launch(stream, repl.node, task, agent)) is not None:
                 raise RuntimeError(refused)
-        child = g.start(task, parent=step.node, config=config, name=name, **args)
+        child = g.start(task, agent=agent, name=name, parent=repl.node, **args)
         try:
-            self.config_for(child)
-            self.workspaces.branch(child, step.agent, workspace)
+            self.workspaces.branch(child, repl.root, workspace)
         except BaseException:
             g.remove(child)
             raise
@@ -260,16 +243,18 @@ class Flow:
 
     @property
     def agent_tools(self) -> AgentToolsServer:
-        """The agent-tools server external harnesses reach; started on first use."""
+        """The agent-tools server CLI agents reach; started before their first step."""
         if self._agent_tools is None:
             self._agent_tools = AgentToolsServer(self)
         return self._agent_tools
 
-    # -- nodes ----------------------------------------------------------------
+    def stepping(self, run: Node) -> bool:
+        """Whether ``run``'s agent is taking a step now."""
+        return (run._graph().id, run.id) in self._stepping
 
-    def append(self, g: Graph, agent: Node, node: Node) -> Node:
-        """Add ``node`` after ``agent``'s last node; a finished one streams now."""
-        g.append(agent, node)
+    def append(self, g: Graph, at: Node, node: Node) -> Node:
+        """Add ``node`` after the last node of ``at``'s run; a finished one streams now."""
+        g.append(at, node)
         if node.state == DONE:
             self.land(node)
         return node
@@ -280,84 +265,130 @@ class Flow:
         if stream is not None:
             stream.land(node)
 
-    async def run_node(self, g: Graph, agent: Node, node: Node) -> ReplRun | None:
-        """Run one of ``agent``'s nodes in its REPL; see ``execution.run_node``."""
-        return await execution.run_node(self, g, agent, node)
-
-    async def prepare_repl(self, g: Graph, agent: Node) -> None:
-        """Bring ``agent``'s REPL up to its last node."""
-        await execution.prepare(self, g, agent)
-
-    async def replay(self, g: Graph, agent: Node | None = None) -> None:
-        """Rebuild REPLs from the graph: one agent's, or every unfinished agent's."""
-        for target in [agent] if agent is not None else g.agents():
-            if agent is not None or target.status() != "done":
-                self.config_for(target, record=False)
+    async def _replay(self, g: Graph, run: Node | None = None) -> None:
+        """Rebuild REPLs from the graph: one run's, or every unfinished run's."""
+        for target in [run.root] if run is not None else g.agent_roots():
+            if run is not None or target.status() != "done":
                 execution.forget(self, target)
-                await self.prepare_repl(g, target)
+                await Repl(self, target).catch_up()
 
-    # -- turns ----------------------------------------------------------------
+    # -- steps ----------------------------------------------------------------
 
-    async def step(self, g: Graph, agent: Node) -> Node:
-        """Take one turn for ``agent``: run the node an edit left ready, or call its harness.
+    async def _advance(self, g: Graph, run: AgentRoot) -> Node:
+        """Take one step for ``run``: run the node an edit left ready, or call its agent.
 
         It doesn't attach children's results; the stream does that before each
-        turn, and host code calls ``deliver_results`` first. A failure ends
-        the agent with a failure node; a top-level one raises. Returns the
-        agent's last node.
+        step. A failure ends the run with a failure node; a top-level one
+        raises. Returns the run's last node.
         """
-        self.config_for(agent)
-        seen = len(agent.nodes())
+        seen = len(run.nodes())
         started = time.time()
         try:
-            ready = next((n for n in agent.nodes() if n.state != DONE), None)
+            agent = self.agent(run)
+            ready = next((n for n in run.nodes() if n.state != DONE), None)
+            last = run.nodes()[-1]
             if ready is not None:
                 ready.data.setdefault(SEEN_KEY, len(ready.transcript()) - 1)
-                await self.run_node(g, agent, ready)
+                await self.repl(run).exec(ready)
+            elif agent.max_iters is not None and steps(last) >= agent.max_iters:
+                self.append(g, run, final_node(MAX_ITERS_EXCEEDED, seen))
             else:
-                step = Step(g, agent, agent.nodes()[-1], flow=self)
-                with running_step(step):
-                    await agent.config.load_harness()(self, step)
+                await self._step(g, run, agent, last, seen, started)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             text = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
-            scope = "run" if agent.parent() is None else "child"
+            scope = "run" if run.parent() is None else "child"
             failed = final_node(f"[{scope} failed: {text}]", seen, output=text, error=True)
             failed.started_at, failed.finished_at = started, time.time()
-            if agent.id in g:
-                self.append(g, agent, failed)
+            if run.id in g:
+                self.append(g, run, failed)
             if scope == "run":
                 raise
-        return agent.nodes()[-1]
+        return run.nodes()[-1]
 
-    def deliver_results(self, g: Graph, agent: Node) -> Node | None:
-        """Attach the results of ``agent``'s finished children that nothing read yet.
+    async def _step(
+        self, g: Graph, run: AgentRoot, agent: Agent, last: Node, seen: int, started: float
+    ) -> None:
+        """Call ``agent.step`` and append what it returns; run its code, or mark how the run is."""
+        if agent.cli:
+            await self.agent_tools.start()
+        repl = Repl(self, run)
+        key = (g.id, run.id)
+        self._stepping.add(key)
+        try:
+            with running(repl):
+                node = await agent.step(last, self._model, repl)
+        finally:
+            self._stepping.discard(key)
+        if not isinstance(node, Node):
+            raise TypeError(f"{type(agent).__name__}.step must return a Node")
+        node.data[SEEN_KEY] = seen
+        node.started_at = node.started_at or started
+        if node.runs_code:
+            self.append(g, run, node)
+            await repl.exec(node)
+            return
+        # Code nodes finish in execution.run_node. Only a non-code reply can
+        # directly end or idle an agent here.
+        if node.result is not None:
+            node.data[TERMINAL_KEY] = True
+        elif not node.error:
+            node.data[IDLE_KEY] = True
+        if agent.cli and (workspace := await self.workspaces.snapshot(run)) is not None:
+            node.data[WORKSPACE_KEY] = workspace
+        node.finished_at = time.time()
+        self.append(g, run, node)
+
+    async def step(self, g: Graph, run: Node | None = None) -> list[Node]:
+        """Take one step for every ready run of ``g``, or just for ``run``'s; returns their last nodes.
+
+        Finished children's results are attached first. This is a manual,
+        hookless step; use ``stream`` when hooks, budgets or streamed nodes
+        must run.
+        """
+        targets = [run.root] if run is not None else ready_runs(g)
+        for target in targets:
+            self.deliver_results(g, target)
+        return list(await asyncio.gather(*(self._advance(g, target) for target in targets)))
+
+    async def resume(self, g: Graph, *, hooks: Iterable[Any] = ()) -> Graph:
+        """Rebuild every unfinished run's REPL from the graph, then run ``g`` to the end."""
+        await self._replay(g)
+        async for _node in self.stream(g, hooks=hooks):
+            pass
+        return g
+
+    def deliver_results(self, g: Graph, run: Node) -> Node | None:
+        """Attach the results of ``run``'s finished children that nothing read yet.
 
         One user node binds each result as a variable named after its child.
-        Call it between turns. Never to an agent that finished, and not while
-        an edit has left a node to rerun, whose ``await`` takes the results itself.
+        Never to a run that finished, and not while an edit has left a node to
+        rerun, whose ``await`` takes the results itself. The stream calls this
+        before scheduling a step and once more while draining; manual ``step``
+        calls it directly.
         """
-        if agent.status() == "done" or any(node.state != DONE for node in agent.nodes()):
+        run = run.root
+        if run.status() == "done" or any(node.state != DONE for node in run.nodes()):
             return None
-        finished = unseen_results(g, agent)
+        finished = unseen_results(g, run)
         if not finished:
             return None
-        limit = min(RESULT_MAX, agent.config.max_output_length)
+        limit = min(RESULT_MAX, MAX_OUTPUT)
         taken = self.tools_for(g).keys()
         inputs: dict[str, Any] = {}
         items = []
         for child, final in finished:
             name = result_name(child.name, inputs.keys() | taken, RESERVED_TOOLS)
             inputs[name] = json_safe(final.result)
-            items.append((child.path(), child.config_name or "root", final.result))
+            items.append((child.path(), child.agent, final.result))
         node = Node(
             "user",
             render_results(items, limit) + "\nSet: " + ", ".join(f"`{name}`" for name in inputs),
             input=inputs,
             producer="rlmflow",
         )
-        self.append(g, agent, node)
+        self.append(g, run, node)
         for _child, final in finished:
             g.link(RETURN, final, node)
         return node
@@ -398,17 +429,17 @@ class Flow:
         """Wait until ``predicate()`` holds; it is rechecked whenever ``g`` changes."""
         await self._stream(g, required=True).wait_for(predicate)
 
-    async def _cancel(self, g: Graph, agent_ids: Iterable[str]) -> None:
+    async def _cancel(self, g: Graph, run_ids: Iterable[str]) -> None:
         stream = self._stream(g)
         if stream is not None:
-            await stream.cancel(list(agent_ids))
+            await stream.cancel(list(run_ids))
 
     async def edit(
         self, g: Graph, op: str, target: Node, *args: Any, **kwargs: Any
     ) -> Invalidation:
         """Apply ``g.<op>(target, ...)`` to a graph this Flow may be running.
 
-        The agents the edit touches stop first, so no turn writes over it.
+        The runs the edit touches stop first, so no step writes over it.
         """
         if op not in ("edit", "delete", "remove", "replace"):
             raise ValueError(f"unknown edit {op!r}")
@@ -418,67 +449,68 @@ class Flow:
         self.wake(g)
         return invalidation
 
-    async def stop(self, g: Graph, agent: Node, *, reason: str, subtree: bool = True) -> list[Node]:
-        """End ``agent`` now (with every unfinished agent it launched, unless ``subtree=False``).
+    async def stop(
+        self, node: Node, *, reason: str = "stopped", subtree: bool = True
+    ) -> list[Node]:
+        """End ``node``'s run now (with every unfinished run it launched, unless ``subtree=False``).
 
-        Its running turn is cancelled; a node it was running is closed as
-        stopped. Each stopped agent gets a terminal node whose result is
+        Its running step is cancelled; a node it was running is closed as
+        stopped. Each stopped run gets a terminal node whose result is
         ``{"stopped": reason}``, which is what a parent awaiting it receives.
-        A message reopens a stopped agent like any finished one. Returns the
+        A message reopens a stopped run like any finished one. Returns the
         terminal nodes.
         """
-        targets = [a for a in (agent.subtree() if subtree else [agent]) if a.status() != "done"]
-        await self._cancel(g, [a.id for a in targets])
+        g, run = node._graph(), node.root
+        targets = [r for r in (run.subtree() if subtree else [run]) if r.status() != "done"]
+        await self._cancel(g, [r.id for r in targets])
         note = f"[stopped: {reason}]"
         ended: list[Node] = []
         now = time.time()
         for target in targets:
             if target.id not in g:
                 continue
-            for node in target.nodes():
-                if node.state != DONE:
-                    node.state, node.error, node.finished_at = DONE, True, now
-                    node.output = node.output or note
-                    node.data[STOPPED_KEY] = reason
-            node = final_node(
+            for earlier in target.nodes():
+                if earlier.state != DONE:
+                    earlier.state, earlier.error, earlier.finished_at = DONE, True, now
+                    earlier.output = earlier.output or note
+                    earlier.data[STOPPED_KEY] = reason
+            final = final_node(
                 {"stopped": reason}, len(target.nodes()), output=note, data={STOPPED_KEY: reason}
             )
-            node.started_at = node.finished_at = now
-            ended.append(self.append(g, target, node))
+            final.started_at = final.finished_at = now
+            ended.append(self.append(g, target, final))
         self.wake(g)
         return ended
 
     def _check_can_stream(self, g: Graph) -> None:
         if g.id in self._streams:
             raise RuntimeError(f"graph {g.id} is already streaming on this Flow")
-        held = {repl_key(a) for stream in self._streams.values() for a in stream.g.agents()}
-        shared = held & {repl_key(agent) for agent in g.agents()}
+        held = {repl_key(r) for stream in self._streams.values() for r in stream.g.agent_roots()}
+        shared = held & {repl_key(run) for run in g.agent_roots()}
         if shared:
             raise RuntimeError(
                 "another graph streaming on this Flow uses the same REPLs "
                 f"({', '.join(sorted(shared))}); fork with repl='copy' to run both"
             )
 
-    async def run_streaming(
+    async def stream(
         self,
         g: Graph,
         *,
-        until: StepUntil = "done",
+        until: Until = "done",
         hooks: Iterable[Any] = (),
-    ) -> AsyncIterator[Step]:
-        """Run every agent that has something to do, and yield a ``Step`` for each node as it finishes.
+    ) -> AsyncIterator[Node]:
+        """Step every run that has something to do, and yield each node as it finishes.
 
-        Every agent runs with the config it names, ``"default"`` when it names
-        none. One Flow can stream several graphs at once, but not the same
-        graph twice, nor two graphs whose agents share a REPL
-        (``g.fork(node, repl="same")``) while both are live. ``hooks`` see and
-        steer this stream, a ``Budget`` among them (see ``rlmflow.hooks``).
+        One Flow can stream several graphs at once, but not the same graph
+        twice, nor two graphs whose runs share a REPL (``g.fork(node,
+        repl="same")``) while both are live. ``hooks`` see and steer this
+        stream, a ``Budget`` among them (see ``rlmflow.hooks``).
         """
         self._check_can_stream(g)
         stop_at = _boundary(until)
         stream = self._streams[g.id] = Stream(g, list(hooks))
         try:
-            self._bind_configs(g)
             async with self._live(stream):
                 while True:
                     stream.mark_seen()
@@ -486,19 +518,19 @@ class Flow:
                     stream.reap()
                     if stream.landed:
                         stop = False
-                        for step in self._drain(stream):
-                            await self._on_step(stream, step)
-                            yield step
-                            stop = stop or (stop_at is not None and stop_at(step))
+                        for node in stream.drain():
+                            await self._on_node(stream, node)
+                            yield node
+                            stop = stop or (stop_at is not None and stop_at(node))
                         if stop:
                             return
-                        # The caller may have written to the graph between steps.
+                        # The caller may have written to the graph between nodes.
                         continue
-                    for agent in ready_agents(g, stream.tasks):
-                        self.config_for(agent)
-                        self.deliver_results(g, agent)
-                        if await self._before_turn(stream, agent):
-                            self._start_turn(stream, agent)
+                    for run in ready_runs(g, stream.tasks):
+                        self.agent(run)
+                        self.deliver_results(g, run)
+                        if await self._before_step(stream, run):
+                            self._start(stream, run)
                     if stream.landed:
                         continue
                     if not stream.tasks:
@@ -507,13 +539,11 @@ class Flow:
         finally:
             del self._streams[g.id]
 
-    # -- what the loop does with a stream -------------------------------------------
-
     @asynccontextmanager
     async def _live(self, stream: Stream) -> AsyncIterator[None]:
         """Open toolkit copies and start hooks; on the way out, however it ends, wind everything down.
 
-        Winding down cancels the turns, attaches results that finished, hands
+        Winding down cancels the steps, attaches results that finished, hands
         the hooks every node nobody saw, ends the hooks that started, and
         closes the toolkits. A hook error there surfaces only if nothing else
         is already failing.
@@ -538,11 +568,11 @@ class Flow:
                 for timer in stream.timers:
                     timer.cancel()
                 await stream.cancel(list(stream.tasks))
-                for agent in stream.g.agents():
-                    self.deliver_results(stream.g, agent)
-                for step in self._drain(stream):
+                for run in stream.g.agent_roots():
+                    self.deliver_results(stream.g, run)
+                for node in stream.drain():
                     try:
-                        await self._on_step(stream, step)
+                        await self._on_node(stream, node)
                     except Exception as error:  # noqa: BLE001 - surfaced below
                         errors.append(error)
                         break
@@ -564,94 +594,87 @@ class Flow:
             if isawaitable(result):
                 await result
 
-    def _drain(self, stream: Stream) -> Iterator[Step]:
-        for node in stream.drain():
-            yield Step(stream.g, node.agent, node, flow=self)
-
-    async def _on_step(self, stream: Stream, step: Step) -> None:
+    async def _on_node(self, stream: Stream, node: Node) -> None:
         for hook in stream.hooks:
-            if (on_step := getattr(hook, "on_step", None)) is not None:
-                result = on_step(self, step)
+            if (on_node := getattr(hook, "on_node", None)) is not None:
+                result = on_node(self, node)
                 if isawaitable(result):
                     await result
 
-    def _before_launch(self, stream: Stream, step: Step, task: str, config: str) -> str | None:
+    def _before_launch(self, stream: Stream, node: Node, task: str, agent: str) -> str | None:
         """The first hook's reason to refuse this launch, or ``None``."""
         for hook in stream.hooks:
             ask = getattr(hook, "before_launch", None)
-            if ask is not None and (refused := ask(self, step, task, config)) is not None:
+            if ask is not None and (refused := ask(self, node, task, agent)) is not None:
                 return refused
         return None
 
-    async def _before_turn(self, stream: Stream, agent: Node) -> bool:
-        """Ask the hooks about ``agent``'s turn; whether it should start."""
+    async def _before_step(self, stream: Stream, run: AgentRoot) -> bool:
+        """Ask the hooks about ``run``'s step; whether it should start."""
         notes: list[Node] = []
         for hook in stream.hooks:
-            ask = getattr(hook, "before_turn", None)
-            decision = ask(self, agent) if ask is not None else None
+            ask = getattr(hook, "before_step", None)
+            decision = ask(self, run) if ask is not None else None
             if isinstance(decision, Stop):
-                await self.stop(stream.g, agent, reason=decision.reason, subtree=False)
+                await self.stop(run, reason=decision.reason, subtree=False)
                 return False
             if decision is not None:
                 notes.append(decision)
         for note in notes:
-            self.append(stream.g, agent, note)
+            self.append(stream.g, run, note)
         return True
 
-    def _start_turn(self, stream: Stream, agent: Node) -> None:
-        task = asyncio.ensure_future(self.step(stream.g, agent))
+    def _start(self, stream: Stream, run: AgentRoot) -> None:
+        task = asyncio.ensure_future(self._advance(stream.g, run))
         task.add_done_callback(lambda _task: stream.wake())
-        stream.tasks[agent.id] = task
+        stream.tasks[run.id] = task
 
     # -- running to the end -------------------------------------------------------
-
-    def init(self, task: str = "", *, config: str | None = None, **args: Any) -> Graph:
-        """A new graph with one top-level agent on ``task``, running config ``config``.
-
-        Keyword arguments become the agent's REPL variables, as in ``Graph.start``.
-        """
-        if config is not None:
-            self.config(config)
-        g = Graph()
-        g.start(task, config=config, **args)
-        return g
 
     async def arun(
         self,
         target: Graph | str,
+        task: str | None = None,
         *,
-        config: str | None = None,
         hooks: Iterable[Any] = (),
         **args: Any,
     ) -> Any:
-        """Run to the end. A graph returns itself; a task string returns its result."""
+        """Run to the end: ``arun(agent, task, **args)`` returns the run's result; ``arun(g)`` returns ``g``."""
         if isinstance(target, str):
-            g = self.init(target, config=config, **args)
-            agent = g.root
-        elif args or config is not None:
-            raise TypeError("config and agent arguments can only be passed with a task string")
+            if task is None:
+                raise TypeError("run(agent, task): name the agent, then give the task")
+            g = self.start(target, task, **args)
+            root = g.root
+        elif task is not None or args:
+            raise TypeError("a task and arguments can only be passed with an agent name")
         else:
-            g, agent = target, None
-        async for _step in self.run_streaming(g, hooks=hooks):
+            g, root = target, None
+        async for _node in self.stream(g, hooks=hooks):
             pass
-        return g if agent is None else agent.final_result()
+        return g if root is None else root.final_result()
 
     def run(
         self,
         target: Graph | str,
+        task: str | None = None,
         *,
-        config: str | None = None,
         hooks: Iterable[Any] = (),
         **args: Any,
     ) -> Any:
-        return asyncio.run(self.arun(target, config=config, hooks=hooks, **args))
+        """``arun`` from synchronous code."""
+        return asyncio.run(self.arun(target, task, hooks=hooks, **args))
 
-    async def aclose(self) -> None:
-        for stream in list(self._streams.values()):
-            await stream.cancel(list(stream.tasks))
+    def close(self) -> None:
+        """Close the REPLs and the agent-tools server."""
         if self._agent_tools is not None:
             self._agent_tools.close()
             self._agent_tools = None
+        self.runtime.close()
+
+    async def aclose(self) -> None:
+        """Cancel live streams, and close the REPLs, the agent-tools server and model clients."""
+        for stream in list(self._streams.values()):
+            await stream.cancel(list(stream.tasks))
         owners = {id(client): client for client in self.llms.values()}
         closing = [
             close() for client in owners.values() if (close := getattr(client, "aclose", None))
@@ -659,10 +682,7 @@ class Flow:
         try:
             await asyncio.gather(*closing)
         finally:
-            self.runtime.close()
+            self.close()
 
 
-__all__ = [
-    "Flow",
-    "StepUntil",
-]
+__all__ = ["Flow", "Until"]

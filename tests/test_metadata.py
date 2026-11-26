@@ -12,16 +12,10 @@ from helpers import (
     turns,
 )
 
-from rlmflow import (
-    AgentConfig,
-    Graph,
-    LLMClient,
-    LLMUsage,
-    LocalRuntime,
-    persistence,
-    record_metadata,
-)
-from rlmflow.graph import calls
+from rlmflow import Agent, Graph, LocalRuntime
+from rlmflow.graph import LLMUsage, calls, persistence
+from rlmflow.llm import LLMClient
+from rlmflow.repl import record_metadata
 from rlmflow.tools import tool
 
 
@@ -34,7 +28,7 @@ def test_node_metadata_is_strict_durable_and_forkable(tmp_path):
 
     g.save(tmp_path / "graph")
     loaded = Graph.load(tmp_path / "graph")
-    loaded_root = loaded.agent(root.id)
+    loaded_root = loaded.agent_root(root.id)
     branch = loaded.fork(loaded_root.nodes()[-1])
 
     assert loaded_root.metadata == root.metadata == {"experiment": {"run": "abc", "seed": 7}}
@@ -85,7 +79,9 @@ class QueryLLM(LLMClient):
 
 def test_llm_query_calls_are_recorded_on_the_code():
     llm = QueryLLM()
-    flow = ScriptedFlow(llm, runtime=LocalRuntime(repl_timeout=5), configs=[AgentConfig(model="m")])
+    flow = ScriptedFlow(
+        llm, runtime=LocalRuntime(repl_timeout=5), agents={"default": Agent(model="m")}
+    )
     g = Graph()
     root = g.start("use llm_query")
 
@@ -107,7 +103,7 @@ def test_a_model_call_records_usage_model_and_timing_on_its_node():
     flow = ScriptedFlow(
         StubLLM(counting_replies(repl("submit('ok')"))),
         runtime=LocalRuntime(repl_timeout=5),
-        configs=[AgentConfig(model="m")],
+        agents={"default": Agent(model="m")},
     )
     g = Graph()
     root = g.start("answer")

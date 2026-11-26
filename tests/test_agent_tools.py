@@ -6,9 +6,9 @@ import pytest
 from helpers import ScriptedFlow, code_nodes, own, trailing_user_text, turns
 from helpers import repl as block
 
-from rlmflow import RETURN, WRITE, AgentConfig, Graph, Node, Step
-from rlmflow.agent_tools import tools as agent_tools
-from rlmflow.graph import calls
+from rlmflow import Agent, Graph, Node
+from rlmflow.graph import RETURN, WRITE, calls
+from rlmflow.tools import launch
 
 
 class Scripted:
@@ -27,10 +27,9 @@ class Scripted:
         raise AssertionError(f"no scripted reply for {last!r}")
 
 
-def agent(flow, g, task, name, **config):
-    record = g.start(task, name=name, config=flow.add_config(AgentConfig(name=name, **config)).name)
-    record.bind_config(flow.config(name))
-    return record
+def agent(flow, g, task, name, **options):
+    flow.agents[name] = Agent(**options)
+    return g.start(task, name=name, agent=name)
 
 
 def test_a_sibling_messages_a_finished_peer_and_reopens_it():
@@ -63,7 +62,7 @@ def test_a_sibling_messages_a_finished_peer_and_reopens_it():
     assert message.producer == a.id and second.data["terminal"]
     [edge] = g.edges(kind=WRITE, target=message.id)
     sending_code = g.node(edge.source)
-    assert sending_code.agent is a and "AGENTS['b'].send" in sending_code.code
+    assert sending_code.root is a and "AGENTS['b'].send" in sending_code.code
 
 
 def test_awaiting_send_to_a_descendant_returns_its_reply():
@@ -150,7 +149,7 @@ def test_an_agent_reads_another_through_agents():
                 block(
                     "kid = AGENTS['kid']\n"
                     "submit([[a.name for a in AGENTS], [a.name for a in AGENTS.children], "
-                    "kid.status, kid.result(), kid.parent.name, kid.task, kid.config, "
+                    "kid.status, kid.result(), kid.parent.name, kid.task, kid.agent, "
                     "'kid' in AGENTS, 'root.kid' in AGENTS, AGENTS[kid.id].name])"
                 ),
             ),
@@ -202,16 +201,16 @@ def test_a_fresh_flow_rebuilds_the_repl_from_recorded_code_nodes(tmp_path):
         ]
     )
     g = Graph()
-    worker = g.start("once", config="worker")
-    configs = [AgentConfig(name="worker")]
-    ScriptedFlow(llm, configs=configs).run(g)
+    worker = g.start("once", agent="worker")
+    agents = {"worker": Agent()}
+    ScriptedFlow(llm, agents=agents).run(g)
     assert worker.final_result() == "first"
 
     g.save(tmp_path / "run")
     loaded = Graph.load(tmp_path / "run")
-    loaded.send(loaded.agent(worker.id), "again")
-    ScriptedFlow(llm, configs=configs).run(loaded)
-    assert loaded.agent(worker.id).final_result() == 42
+    loaded.send(loaded.agent_root(worker.id), "again")
+    ScriptedFlow(llm, agents=agents).run(loaded)
+    assert loaded.agent_root(worker.id).final_result() == 42
 
 
 def test_rebuilt_agent_tools_write_nothing():
@@ -231,17 +230,17 @@ def test_rebuilt_agent_tools_write_nothing():
     agent(flow, g, "be b", "b")
     flow.run(g)
     assert a.final_result() == "kid"
-    agents_before, edges_before = len(g.agents()), len(g.edges())
+    agents_before, edges_before = len(g.agent_roots()), len(g.edges())
 
     g.send(a, "one more")
     nodes_before = {node.id for node in g.nodes()}
     ScriptedFlow(
-        Scripted([("one more", block("print(h.name)")), ("default-0", block("submit(1)"))]),
-        configs=list(flow.configs.values()),
+        Scripted([("one more", block("print(h.name)")), ("a-0", block("submit(1)"))]),
+        agents=flow.agents,
     ).run(g)
 
     assert a.final_result() == 1
-    assert len(g.agents()) == agents_before
+    assert len(g.agent_roots()) == agents_before
     assert len(g.edges()) == edges_before
     assert sum(node.text.endswith(": hello") for node in g.nodes()) == 1
     new = [node for node in g.nodes() if node.id not in nodes_before]
@@ -249,7 +248,7 @@ def test_rebuilt_agent_tools_write_nothing():
         ("assistant", "print(h.name)"),
         ("assistant", "submit(1)"),
     ]
-    assert all(n.agent is a for n in new) and new[-1].data["terminal"]
+    assert all(n.root is a for n in new) and new[-1].data["terminal"]
 
 
 def test_unknown_agents_are_a_key_error():
@@ -268,51 +267,51 @@ def test_unknown_agents_are_a_key_error():
     assert root.final_result() == "refused"
 
 
-def test_launch_agent_takes_a_config_name_from_the_flow():
+def test_launch_agent_takes_an_agent_name_from_the_flow():
     llm = Scripted(
         [
             ("small job", block("submit('small')")),
-            ("go", block("h = launch_agent('small job', config='cheap')\nsubmit(await h)")),
+            ("go", block("h = launch_agent('small job', agent='cheap')\nsubmit(await h)")),
         ]
     )
     g = Graph()
     root = g.start("go")
 
-    ScriptedFlow(llm, configs=[AgentConfig(name="cheap", description="for small jobs")]).run(g)
+    ScriptedFlow(
+        llm, agents={"default": Agent(), "cheap": Agent(description="for small jobs")}
+    ).run(g)
 
     assert root.final_result() == "small"
     [child] = root.children()
-    assert (child.name, child.config.name) == ("cheap-0", "cheap")
+    assert (child.name, child.agent) == ("cheap-0", "cheap")
 
 
 # -- the agent_tools functions, called directly ----------------------------------
 
 
-def stepping_at(g: Graph, record: Node) -> Step:
-    return Step.latest(g, record)
-
-
-def test_spawn_checks_depth_task_length_and_config_names():
+def test_launch_checks_depth_task_length_and_agent_names(monkeypatch):
     flow = ScriptedFlow(Scripted([]))
     g = Graph()
     leaf = agent(flow, g, "x", "leaf", max_depth=0)
     with pytest.raises(ValueError, match="max depth"):
-        agent_tools.spawn(flow, stepping_at(g, leaf), "child")
-    root = agent(flow, g, "x", "root", max_query_chars=5)
+        launch(flow.repl(leaf), "child")
+    root = agent(flow, g, "x", "root")
+    monkeypatch.setattr("rlmflow.tools.MAX_TASK", 5)
     with pytest.raises(ValueError, match="exceeds 5"):
-        agent_tools.spawn(flow, stepping_at(g, root), "too long a task")
+        launch(flow.repl(root), "too long a task")
     with pytest.raises(KeyError, match="elsewhere"):
-        agent_tools.spawn(flow, stepping_at(g, root), "ok", config="elsewhere")
-    with pytest.raises(TypeError, match="config name"):
-        agent_tools.spawn(flow, stepping_at(g, root), "ok", config=AgentConfig())
-    child = agent_tools.spawn(flow, stepping_at(g, root), "ok")
-    assert child.parent() is root
+        launch(flow.repl(root), "ok", agent="elsewhere")
+    with pytest.raises(TypeError, match="name of one of the Flow's agents"):
+        launch(flow.repl(root), "ok", agent=Agent())
+    child = launch(flow.repl(root), "ok")
+    assert child.parent() is root and child.agent == "root"
 
 
-def test_done_checks_the_output_schema():
+def test_a_reply_is_checked_against_the_output_schema():
     flow = ScriptedFlow(Scripted([]))
     g = Graph()
     typed = agent(flow, g, "x", "typed", output_schema={"type": "integer"})
-    assert agent_tools.done(flow, stepping_at(g, typed), "3") == 3
-    with pytest.raises(Exception, match="integer"):
-        agent_tools.done(flow, stepping_at(g, typed), "three")
+    repl, since = flow.repl(typed), typed.nodes()[-1]
+    assert flow.agents["typed"].done(Node("assistant"), 3, repl, since=since).result == 3
+    rejected = flow.agents["typed"].done(Node("assistant"), "three", repl, since=since)
+    assert rejected.result is None and rejected.error and "integer" in rejected.output

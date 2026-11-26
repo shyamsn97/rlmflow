@@ -5,7 +5,7 @@ import pytest
 from helpers import ScriptedFlow, agent_graph, first_user, run_result
 from helpers import repl as block
 
-from rlmflow import SubprocessRuntime
+from rlmflow import LocalRuntime
 
 
 def fanout(*names):
@@ -47,7 +47,7 @@ def test_ten_subprocess_children_can_launch_concurrently():
             query = first_user(messages)
             return fanout(*names) if query == "parent" else block(f"submit({query!r})")
 
-    flow = ScriptedFlow(LLM(), runtime=SubprocessRuntime())
+    flow = ScriptedFlow(LLM(), runtime=LocalRuntime())
     try:
         g, root = agent_graph("parent")
         assert run_result(flow, g, root) == ",".join(names)
@@ -67,7 +67,7 @@ def test_a_finished_child_keeps_its_repl():
                 return fanout("a", "b")
             return block(f"kept = {query!r}\nsubmit({query!r})")
 
-    flow = ScriptedFlow(LLM(), runtime=SubprocessRuntime())
+    flow = ScriptedFlow(LLM(), runtime=LocalRuntime())
     try:
         g, root = agent_graph("parent")
         assert run_result(flow, g, root) == "a,b"

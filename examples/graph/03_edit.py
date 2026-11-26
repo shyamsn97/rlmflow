@@ -7,23 +7,24 @@ from __future__ import annotations
 
 from typing import Any
 
-from rlmflow import AgentConfig, Flow, Graph, Invalidation
+from rlmflow import Agent, Flow, Graph
+from rlmflow.agents import repl_reply
+from rlmflow.graph import Invalidation
+from rlmflow.llm import Reply
 from rlmflow.view.text import kind
 
-ROOT_REPLY = """\
-```repl
-verdict = await launch_agent("audit the canary", name="audit")
-submit(f"plan: {verdict}")
-```"""
+ROOT_REPLY = repl_reply(
+    'verdict = await launch_agent("audit the canary", name="audit")\nsubmit(f"plan: {verdict}")'
+)
 
 
 class ScriptedLLM:
-    def chat(self, messages: list[dict[str, Any]]) -> str:
+    def chat(self, messages: list[dict[str, Any]]) -> Reply:
         users = [m["content"] for m in messages if m["role"] == "user"]
         if users[0].startswith("audit the canary"):
-            return '```repl\nsubmit("canary failed")\n```'
+            return repl_reply('submit("canary failed")')
         if "Account for the rollback window" in users[-1]:
-            return '```repl\nsubmit(f"plan: {verdict}; roll back within 10 minutes")\n```'
+            return repl_reply('submit(f"plan: {verdict}; roll back within 10 minutes")')
         return ROOT_REPLY
 
 
@@ -32,7 +33,7 @@ def chain(agent) -> str:
 
 
 def describe(g: Graph, inv: Invalidation) -> str:
-    rewound = [g.agent(agent_id).name for agent_id in inv.rewound]
+    rewound = [g.agent_root(agent_id).name for agent_id in inv.rewound]
     return (
         f"rewound={rewound} removed={len(inv.removed)} "
         f"dropped={len(inv.dropped)} rerun={len(inv.rerun)} node(s)"
@@ -40,8 +41,8 @@ def describe(g: Graph, inv: Invalidation) -> str:
 
 
 def main() -> None:
-    config = AgentConfig(model="scripted", max_depth=1)
-    flow = Flow(llm_clients={"scripted": ScriptedLLM()}, configs=[config])
+    agent = Agent(model="scripted", max_depth=1)
+    flow = Flow(llm_clients={"scripted": ScriptedLLM()}, agents={"default": agent})
     g = Graph()
     root = g.start("draft a release plan", name="root")
     flow.run(g)

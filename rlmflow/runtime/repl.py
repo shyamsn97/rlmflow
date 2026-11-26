@@ -55,7 +55,7 @@ class ReplRun:
         return self.status in (ReplStatus.ERROR, ReplStatus.DEAD)
 
 
-class Repl(ABC):
+class ReplProcess(ABC):
     """One agent tenant in a Python worker.
 
     ``last_ran`` is the ``(node id, version)`` the namespace reflects, or
@@ -390,7 +390,7 @@ __all__ = [
     "DEFAULT_PREIMPORTS",
     "DoneSignal",
     "LocalRepl",
-    "Repl",
+    "ReplProcess",
     "ReplRun",
     "ReplStatus",
     "base_namespace",

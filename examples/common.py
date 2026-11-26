@@ -26,7 +26,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rlmflow import Checkpoint, Flow, Graph, Node
+from rlmflow import Checkpoint, Flow, Graph
+from rlmflow.graph import AgentRoot
 from rlmflow.view.text import kind
 
 # The directory this module lives in, i.e. the repo's ``examples/`` folder.
@@ -51,7 +52,7 @@ def save_example_graph(
     return path
 
 
-def print_agent_tree(graph: Graph, agent: Node, depth: int = 0) -> None:
+def print_agent_tree(graph: Graph, agent: AgentRoot, depth: int = 0) -> None:
     """Each agent's nodes on one line, with the agents it launched indented below."""
     line = " -> ".join(kind(node) for node in agent.nodes())
     print(f"{'  ' * depth}[{agent.path()}] {line}")
@@ -67,14 +68,14 @@ async def print_run(
     width: int = 0,
 ) -> None:
     """Run ``graph`` to quiescence, checkpointing it and printing each node as it lands."""
-    async for step in flow.run_streaming(graph, hooks=[Checkpoint(path)]):
-        print(f"{step.agent.path():<{width}}  {kind(step.node)}")
+    async for node in flow.stream(graph, hooks=[Checkpoint(path)]):
+        print(f"{node.root.path():<{width}}  {kind(node)}")
 
 
 def add_model_args(
     parser: argparse.ArgumentParser,
     *,
-    default: str = "gpt-5-mini",
+    default: str = "gpt-6.1-terra",
     fast_default: str | None = None,
 ) -> None:
     """Add ``--model`` (and optionally ``--fast-model``) to a parser."""

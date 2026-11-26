@@ -2,65 +2,52 @@
 
 ## The bundled skill
 
-rlmflow ships one skill, [`orchestrate`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/plugin/skills/orchestrate/SKILL.md), which the Claude Code plugin loads. It covers the ways to split work across agents (subagents, fan-out, recursive trees, pipelines, review loops, peers, a DeLM-style task board on the shared store), with code and when each pays off, and the same shapes built from host code. Every agent that can launch others gets it as the `orchestration` prompt section, on every harness. Drop it with `prompt={"orchestration": None}`.
+rlmflow ships one skill, [`orchestrate`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/plugin/skills/orchestrate/SKILL.md), which the Claude Code plugin loads. It covers the ways to split work across agents (subagents, fan-out, recursive trees, pipelines, review loops, peers, a DeLM-style task board on the shared store), with code and when each pays off, and the same shapes built from host code. Every agent that can launch others gets it as the `orchestrate` prompt section, on every harness. Drop it with `prompt={"orchestrate": None}`.
 
 ## Your own skills
 
 Skills are ordinary files that become part of an agent's prompt: project style guides, domain playbooks, a contract for workers, lessons from earlier runs. Each one goes in a prompt section of its own, so it can change without touching the rest of the prompt ([Prompt customization](prompt_customization.md)).
 
-### Fixed skills: a config section
+### Fixed skills: a text section
 
-When the skill text is known before the run, put it in the config's `prompt`. It applies to every agent launched with that config and is saved with the run:
+When the skill text is known before the run, put it in the agent's `prompt`. It applies to every run of that agent:
 
 ```python
 from pathlib import Path
 
-from rlmflow import AgentConfig, Flow
+from rlmflow import Agent, Flow
 
 style = Path("skills/project-style/SKILL.md").read_text()
 contract = Path("skills/worker-contract/SKILL.md").read_text()
 
 flow = Flow(
-    configs=[
-        AgentConfig(model="gpt-5", prompt={"skills": style}),
-        AgentConfig(name="worker", model="gpt-5-mini", prompt={"skills": f"{style}\n\n{contract}"}),
-    ]
+    agents={
+        "default": Agent(model="gpt-6-sol", prompt={"skills": style}),
+        "worker": Agent(model="gpt-6.1-terra", prompt={"skills": f"{style}\n\n{contract}"}),
+    }
 )
 ```
 
-Different configs get different skills, so a worker-only contract is a section on the worker config.
+Different agents get different skills, so a worker-only contract is a section on the worker agent.
 
-### Live skills: a harness section
+### Live skills: a function section
 
-When the files can change during the run, read them each turn in a harness subclass. Put their location in `harness_options`, which the run records:
+When the files can change during the run, make the section a function of `(node, repl)`; it is called every step:
 
 ```python
-from dataclasses import dataclass
 from pathlib import Path
 
-from rlmflow import AgentConfig
-from rlmflow.harnesses.repl import ReplHarness
+from rlmflow import Agent
 
 
-@dataclass(frozen=True)
-class SkillsOptions:
-    directory: str
+def skills(node, repl):
+    directory = Path("skills/run-memory")
+    return "\n\n".join(
+        f"### {path.stem}\n\n{path.read_text()}" for path in sorted(directory.glob("*.md"))
+    )
 
 
-class SkillsHarness(ReplHarness):
-    Options = SkillsOptions
-
-    def prompt_sections(self, flow, step):
-        directory = Path(self.options(step).directory)
-        skills = "\n\n".join(
-            f"### {path.stem}\n\n{path.read_text()}" for path in sorted(directory.glob("*.md"))
-        )
-        return {**super().prompt_sections(flow, step), "skills": skills or None}
-
-
-AgentConfig(
-    model="gpt-5-mini", harness=SkillsHarness, harness_options={"directory": "skills/run-memory"}
-)
+Agent(model="gpt-6.1-terra", prompt={"skills": skills})
 ```
 
 [`examples/features/skills.py`](https://github.com/shyamsn97/rlmflow/blob/main/examples/features/skills.py) reads skill files from a directory this way, and adds an `add_skill` tool that writes into the same directory, so the agent sees the skill it installed in its own prompt on the next turn.

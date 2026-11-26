@@ -12,7 +12,7 @@ Setup:
 
 Run:
     python examples/features/sandboxes.py --runtime docker --docker-image rlmflow:local
-    python examples/features/sandboxes.py --runtime modal --model gpt-5
+    python examples/features/sandboxes.py --runtime modal --model gpt-6-sol
 """
 
 # pyright: reportMissingImports=false
@@ -29,7 +29,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from examples.common import print_run  # noqa: E402
-from rlmflow import AgentConfig, DockerRuntime, Flow, Graph, ModalRuntime  # noqa: E402
+from rlmflow import Agent, DockerRuntime, Flow, Graph, ModalRuntime  # noqa: E402
 
 REMOTE_REPO = "/opt/rlmflow"
 
@@ -52,10 +52,10 @@ gravity, platform collision, scrolling camera, and restart.
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--runtime", choices=("docker", "modal"), default="docker")
-    parser.add_argument("--model", default="gpt-5")
+    parser.add_argument("--model", default="gpt-6-sol")
     parser.add_argument(
         "--fast-model",
-        default="gpt-5-mini",
+        default="gpt-6.1-terra",
         help="Cheaper model for the `fast` config delegates can launch.",
     )
     parser.add_argument("--max-depth", type=int, default=1)
@@ -96,7 +96,7 @@ def modal_runtime(args: argparse.Namespace) -> ModalRuntime:
                 ".ruff_cache",
                 "media",
                 "docs",
-                "examples/_runs",
+                "**/_runs",
             ],
         )
         .run_commands(f"python -m pip install -e {REMOTE_REPO}")
@@ -114,16 +114,15 @@ def main() -> None:
     args = parse_args()
     runtime = DockerRuntime(args.docker_image) if args.runtime == "docker" else modal_runtime(args)
     flow = Flow(
-        configs=[
-            AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters),
-            AgentConfig(
-                name="fast",
+        agents={
+            "default": Agent(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters),
+            "fast": Agent(
                 model=args.fast_model,
                 description="cheaper model for a bounded piece of the game",
                 max_depth=args.max_depth,
                 max_iters=args.max_iters,
             ),
-        ],
+        },
         runtime=runtime,
     )
     g = Graph()
@@ -134,7 +133,7 @@ def main() -> None:
         print(root.final_result())
         print(f"Run saved to {out_dir}")
     finally:
-        flow.runtime.close_repls()
+        flow.runtime.close()
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ from rlmflow.view.figure import (
     step_svg,
 )
 from rlmflow.view.html import open_viewer, render_html, save_html, save_svg
+from rlmflow.view.live import LiveTree
 from rlmflow.view.text import render_forest, render_tree
 from rlmflow.view.timeline import (
     TimelineEntry,
@@ -45,6 +46,7 @@ from rlmflow.view.timeline import (
 )
 
 __all__ = [
+    "LiveTree",
     "TimelineEntry",
     "as_graph",
     "figure_title",

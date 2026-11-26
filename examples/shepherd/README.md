@@ -12,8 +12,8 @@ From the repository root:
 export OPENAI_API_KEY=...
 uv run --locked --python 3.12 --extra openai --extra image \
   python examples/shepherd/shepherd.py \
-  --model gpt-5 \
-  --fast-model gpt-5 \
+  --model gpt-6-sol \
+  --fast-model gpt-6-sol \
   --branches 8 \
   --time-budget 1800 \
   --out-dir examples/_runs/shepherd

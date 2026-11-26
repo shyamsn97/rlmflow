@@ -2,7 +2,7 @@
 
 `rlmflow` runs an agent and reads the graph it leaves behind. Everything here also works as `python -m rlmflow …`, and `rlmflow --help` (or `--help` on any command) prints the same information from the source.
 
-Every command is a Fire class: constructor arguments are flags, methods are verbs. `rlmflow run --model gpt-5 print "fix the tests"` instantiates `Run` with `--model`, then calls `print` with the query.
+Every command is a Fire class: constructor arguments are flags, methods are verbs. `rlmflow run --model gpt-6-sol print "fix the tests"` instantiates `Run` with `--model`, then calls `print` with the query.
 
 ```bash
 rlmflow run print "fix the failing test"      # coding agent: stream it, print the answer
@@ -19,7 +19,7 @@ Drives a coding agent with `FILE_TOOLS` over `--workdir` (the current directory 
 ```bash
 rlmflow run print "fix the failing test"           # stream it, print the answer
 rlmflow run --query "add a test for parse_args"    # the same, query as a flag
-rlmflow run --workdir ./proj --model gpt-5 print "add a test"
+rlmflow run --workdir ./proj --model gpt-6-sol print "add a test"
 rlmflow run --docker-image rlmflow:local print "add a test"
 rlmflow run --resume ./proj/graph print "now update the docs"   # continue a saved run
 rlmflow run --flow mypkg.agents:build print "add a test"        # your own Flow
@@ -28,11 +28,11 @@ rlmflow run --flow mypkg.agents:build print "add a test"        # your own Flow
 | Flag                         | What it changes                                                                                                               |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | `--query`                    | Opening turn. `print` can take it as a positional instead.                                                                    |
-| `--model`, `--fast-model`    | The root's model and the `worker` config's. `claude*` goes to Anthropic, anything else to OpenAI.                             |
-| `--reasoning-effort`         | `minimal`, `low`, `medium`, `high`. Reaches OpenAI reasoning models; ignored elsewhere.                                       |
+| `--model`, `--fast-model`    | The root's model and the `worker` agent's. `claude*` goes to Anthropic, anything else to OpenAI.                             |
+| `--reasoning-effort`         | `low` (default), `medium`, `high`, `xhigh`; Terra and Luna also take `none`, Sol does not. Ignored for Anthropic models.      |
 | `--workdir`                  | The directory the agent reads and edits, and where `graph/` lands.                                                            |
 | `--docker-image`             | Swaps `LocalRuntime` for `DockerRuntime` on that image.                                                                       |
-| `--max-depth`, `--max-iters` | The `default` config: roots and plain `launch_agent` calls.                                                                   |
+| `--max-depth`, `--max-iters` | The `default` agent's: the root's, and its plain `launch_agent` calls'.                                                        |
 | `--workers`                  | How many model calls may run at once.                                                                                         |
 | `--tools`                    | `files` (the default) or `none` for a bare REPL.                                                                              |
 | `--resume DIR`               | Continue a saved run instead of starting a new one.                                                                           |
@@ -40,23 +40,26 @@ rlmflow run --flow mypkg.agents:build print "add a test"        # your own Flow
 
 It works in a pipe, a CI job, or anywhere without a terminal: it streams the nodes through a plain-text `LiveTree` and exits with `0` on success, `1` on a handled error, `2` on bad usage.
 
-Anything the flags cannot say stays in Python: write a factory that returns the `Flow` you want — custom prompts, tools, runtimes, profiles — and point `--flow` at it. Set `flow` in `rlmflow.toml` instead and `rlmflow serve` (so `/rlmflow:run` in your own Claude Code session) uses it too.
+Anything the flags cannot say stays in Python: write a factory that returns the `Flow` you want — custom prompts, tools, runtimes, agents — and point `--flow` at it. Set `flow` in `rlmflow.toml` instead and `rlmflow serve` (so `/rlmflow:run` in your own Claude Code session) uses it too.
 
 ```python
 # mypkg/agents.py
-from rlmflow import FILE_TOOLS, AgentConfig, CODING_HANDOFF_SCHEMA, Flow, LocalRuntime
+from rlmflow import Agent, Flow, LocalRuntime
 from rlmflow.llm import client_for
+from rlmflow.tools.files import CODING_HANDOFF_SCHEMA, FILE_TOOLS
 
 
 def build() -> Flow:
     return Flow(
-        llm_clients={"gpt-5": client_for("gpt-5", reasoning_effort="low")},
+        agents={
+            "default": Agent(model="gpt-6-sol", max_depth=1, max_iters=40),
+            "worker": Agent(model="gpt-6.1-terra", output_schema=CODING_HANDOFF_SCHEMA),
+        },
+        llm_clients={
+            "gpt-6-sol": client_for("gpt-6-sol", reasoning_effort="low")
+        },
         runtime=LocalRuntime(working_directory="."),
         tools=[FILE_TOOLS, my_tool],
-        configs=[
-            AgentConfig(model="gpt-5", max_depth=1, max_iters=40),
-            AgentConfig(name="worker", model="gpt-5-mini", output_schema=CODING_HANDOFF_SCHEMA),
-        ],
     )
 ```
 
@@ -93,8 +96,8 @@ Settings resolve in this order, first one wins:
 ```toml
 # rlmflow.toml
 [run]
-model = "gpt-5"
-fast_model = "gpt-5-mini"
+model = "gpt-6-sol"
+fast_model = "gpt-6.1-terra"
 reasoning_effort = "low"
 max_iters = 30
 ```

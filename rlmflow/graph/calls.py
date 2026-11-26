@@ -118,7 +118,7 @@ def undo_calls(g: Graph, entries: list[dict[str, Any]]) -> None:
             continue
         try:
             if entry["tool"] == LAUNCH:
-                g.remove(g.agent(target))
+                g.remove(g.agent_root(target))
             else:
                 g.delete(g.node(target))
         except (GraphError, KeyError):

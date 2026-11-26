@@ -12,9 +12,9 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
-from rlmflow import Flow, Graph, Node, Step
-from rlmflow.consumers import StreamConsumer
+from rlmflow import Flow, Graph, Node
 from rlmflow.view.text import kind
 
 
@@ -50,7 +50,7 @@ def grid_of_blocks(labeled: list[tuple[str, str]], *, cols: int = 4) -> str:
 
 def panel_status(flow: Flow, g: Graph, agent: Node) -> str:
     """Live one-line status for a board panel, read from the agent's REPL env."""
-    env = flow.runtime.repl_for(agent).env
+    env = flow.repl(agent).env
     pushes = env.get("pushes")
     step = f"push {pushes}" if pushes is not None else "push ?"
     if env.get("solved"):
@@ -76,7 +76,7 @@ def lane_key(graph: Graph, agent: Node) -> str:
 
 def trace_line(g: Graph, node: Node, labels: dict[str, str]) -> str:
     """One compact line for the streamed node."""
-    agent = node.agent
+    agent = node.root
     lane = labels.get(lane_key(g, agent), agent.name)
     label = kind(node)
     if label == "done":
@@ -120,7 +120,7 @@ def export_run_traces(
                 sprites.save_gif(renders, out / f"{name}.gif")
 
 
-class PanelViewer(StreamConsumer):
+class PanelViewer:
     """Live side-by-side boards, one panel per **labelled lane**, updated push-by-push.
 
     One panel per agent in a graph the host named with :meth:`label`, in
@@ -184,13 +184,16 @@ class PanelViewer(StreamConsumer):
         if key in self._labels:
             self._labels[key] = label
 
-    def __call__(self, step: Step) -> None:
-        graph, item = step.graph, step.node
+    def on_node(self, flow: Any, node: Node) -> None:
+        self(node)
+
+    def __call__(self, item: Node) -> None:
+        graph = item._graph()
         if self._closed:
             return
-        agents = [a for a in graph.agents() if lane_key(graph, a) in self._root_labels]
+        agents = [a for a in graph.agent_roots() if lane_key(graph, a) in self._root_labels]
         for agent in agents:
-            self._observe(graph, agent, item if item.owner == agent.id else None)
+            self._observe(graph, agent, item if item.root_id == agent.id else None)
         # Play out this turn's per-sub-step frames so a box-level push visibly walks
         # the player around square by square instead of snapping (looking teleporty).
         if self.frames_of is not None:

@@ -1,13 +1,10 @@
-"""A localhost HTTP endpoint that external harnesses reach through ``rlmflow``.
+"""A localhost HTTP endpoint that CLI agents reach through ``rlmflow repl``.
 
-A harness opens a turn for the agent it is stepping and starts its session with
-``turn.env``. Each request carries the turn's token, so it acts as that agent at
-its latest node; the token stops working when the turn ends. ``/repl`` runs a
-call as a new node after the agent's last node.
-
-``rlmflow serve`` also hands out an agent token (``attach``), which lasts across
-turns and acts for whichever turn of that agent is open, and a host token for
-``/prompt``, ``/stop`` and ``/shutdown``, which it serves itself.
+Each run gets a token the first time its ``Repl.environ`` is read. A request
+with it acts as that run at its latest node, and only while its agent is
+taking a step: ``/repl`` runs the code as a new node. ``rlmflow serve`` also
+gets a host token for ``/prompt``, ``/stop`` and ``/shutdown``, which it serves
+itself, and ends a ``Person``'s step with ``end_step``.
 """
 
 from __future__ import annotations
@@ -19,19 +16,14 @@ import secrets
 import shlex
 import sys
 import tempfile
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from rlmflow.agent_tools import tools
-from rlmflow.graph.nodes import Node, Step
+from rlmflow.graph.nodes import Node
 
 if TYPE_CHECKING:
     from rlmflow.flow import Flow
     from rlmflow.graph.graph import Graph
-    from rlmflow.harnesses.sessions import TurnResult
 
 REASONS = {
     200: "OK",
@@ -49,31 +41,6 @@ class RequestError(Exception):
         self.status = status
 
 
-@dataclass
-class Turn:
-    """One session turn of one agent: its token and what it submitted.
-
-    ``ended`` is for harnesses whose turn is closed from outside, by ``/stop``.
-    """
-
-    step: Step
-    token: str
-    env: dict[str, str] = field(default_factory=dict)
-    submitted: bool = False
-    result: Any = None
-    ended: asyncio.Future[TurnResult] = field(
-        default_factory=lambda: asyncio.get_running_loop().create_future()
-    )
-
-    @property
-    def graph(self) -> Graph:
-        return self.step.graph
-
-    @property
-    def agent(self) -> Node:
-        return self.step.agent
-
-
 class Host(Protocol):
     """What serves ``/prompt``, ``/stop`` and ``/shutdown``."""
 
@@ -82,17 +49,23 @@ class Host(Protocol):
     async def shutdown(self, body: dict[str, Any]) -> dict[str, Any]: ...
 
 
+def _root_key(node: Node) -> tuple[Node, tuple[str, str]]:
+    root = node.root
+    return root, (root._graph().id, root.id)
+
+
 class AgentToolsServer:
-    """Serves the agent tools for every open turn of one ``Flow``."""
+    """Serves the agent tools for every run of one ``Flow``."""
 
     def __init__(self, flow: Flow) -> None:
         self.flow = flow
         self.url: str | None = None
         self._server: asyncio.Server | None = None
-        self._turns: dict[str, Turn] = {}
-        #: Attach tokens, and open turns, by (graph id, agent id): forks keep agent ids.
-        self._agent_tokens: dict[str, tuple[str, str]] = {}
-        self._open: dict[tuple[str, str], Turn] = {}
+        #: token -> (graph, run id), and each run's token by (graph id, run id).
+        self._runs: dict[str, tuple[Graph, str]] = {}
+        self._tokens: dict[tuple[str, str], str] = {}
+        #: A ``Person`` step waiting for ``/stop``, by (graph id, run id).
+        self._waiting: dict[tuple[str, str], asyncio.Future[Node]] = {}
         self.host: Host | None = None
         self.host_token: str | None = None
 
@@ -111,40 +84,51 @@ class AgentToolsServer:
             shim.chmod(0o755)
         return self.url
 
-    @asynccontextmanager
-    async def turn(self, step: Step) -> AsyncIterator[Turn]:
-        """Open a turn for ``step.agent``; ``turn.env`` is the session's ``RLMFLOW_*`` environment."""
-        url = await self.start()
-        token = secrets.token_urlsafe(24)
-        turn = Turn(step, token)
-        turn.env = {
-            "RLMFLOW_URL": url,
-            "RLMFLOW_AGENT": step.agent.id,
-            "RLMFLOW_TOKEN": token,
+    def token(self, run: Node) -> str:
+        """``run``'s token, made on first use."""
+        root, key = _root_key(run)
+        if key not in self._tokens:
+            token = secrets.token_urlsafe(24)
+            self._tokens[key] = token
+            self._runs[token] = (root._graph(), root.id)
+        return self._tokens[key]
+
+    def environ(self, run: Node) -> dict[str, str]:
+        """The ``RLMFLOW_*`` environment a CLI agent's process gets for ``run``."""
+        if self.url is None:
+            raise RuntimeError("the agent-tools server isn't started; await start() first")
+        return {
+            "RLMFLOW_URL": self.url,
+            "RLMFLOW_AGENT": run.root.id,
+            "RLMFLOW_TOKEN": self.token(run),
             # `rlmflow` on the session's PATH runs this Python, installed or not.
             "PATH": f"{self._bin.name}{os.pathsep}{os.environ.get('PATH', '')}",
         }
-        key = (step.graph.id, step.agent.id)
-        self._turns[token] = turn
-        self._open[key] = turn
+
+    async def turn_ended(self, run: Node) -> Node:
+        """Wait for ``end_step(run, ...)``: what a ``Person``'s session reported when its turn ended."""
+        _, key = _root_key(run)
+        future = self._waiting[key] = asyncio.get_running_loop().create_future()
         try:
-            yield turn
+            return await future
         finally:
-            self._turns.pop(token, None)
-            if self._open.get(key) is turn:
-                del self._open[key]
-            if not turn.ended.done():
-                turn.ended.cancel()
+            if self._waiting.get(key) is future:
+                del self._waiting[key]
 
-    def open_turn(self, agent: Node) -> Turn | None:
-        """The turn ``agent`` has open in its graph, if any."""
-        return self._open.get((agent.graph.id, agent.id))
+    def waiting(self, run: Node) -> bool:
+        """Whether ``run``'s step is open, waiting for its session's turn to end."""
+        _, key = _root_key(run)
+        future = self._waiting.get(key)
+        return future is not None and not future.done()
 
-    def attach(self, agent: Node) -> str:
-        """A token that acts for whichever turn of ``agent`` is open."""
-        token = secrets.token_urlsafe(24)
-        self._agent_tokens[token] = (agent.graph.id, agent.id)
-        return token
+    def end_step(self, run: Node, node: Node) -> bool:
+        """End ``run``'s open step with ``node``; whether one was open."""
+        _, key = _root_key(run)
+        future = self._waiting.get(key)
+        if future is None or future.done():
+            return False
+        future.set_result(node)
+        return True
 
     def serve(self, host: Host) -> str:
         """Route ``/prompt``, ``/stop`` and ``/shutdown`` to ``host``; returns their token."""
@@ -152,9 +136,12 @@ class AgentToolsServer:
         return self.host_token
 
     def close(self) -> None:
-        self._turns.clear()
-        self._open.clear()
-        self._agent_tokens.clear()
+        self._runs.clear()
+        self._tokens.clear()
+        for future in self._waiting.values():
+            if not future.done():
+                future.cancel()
+        self._waiting.clear()
         if self._server is not None:
             self._server.close()
             self._server = None
@@ -163,17 +150,21 @@ class AgentToolsServer:
 
     # -- the tools ----------------------------------------------------------
 
-    def _step(self, turn: Turn) -> Step:
-        return Step.latest(turn.graph, turn.agent)
-
-    async def repl(self, turn: Turn, body: dict[str, Any]) -> dict[str, Any]:
+    async def repl(self, run: Node, body: dict[str, Any]) -> dict[str, Any]:
+        """Run ``code`` as a new node after the run's last node."""
         code = body.get("code")
         if not isinstance(code, str) or not code.strip():
             raise RequestError(400, "repl needs non-empty code")
-        ran = await tools.repl(self.flow, self._step(turn), code)
-        if ran["submitted"]:
-            turn.submitted, turn.result = True, ran["result"]
-        return ran
+        g = run._graph()
+        node = self.flow.append(g, run, Node("assistant", code=code))
+        await self.flow.repl(run).exec(node)
+        submitted = node.result is not None
+        return {
+            "output": node.output,
+            "error": node.error,
+            "submitted": submitted,
+            "result": node.result if submitted else None,
+        }
 
     # -- HTTP -----------------------------------------------------------------
 
@@ -190,6 +181,8 @@ class AgentToolsServer:
         try:
             writer.write(head.encode() + data)
             await writer.drain()
+        except ConnectionError:
+            pass  # the caller hung up; there is no one to tell
         finally:
             writer.close()
 
@@ -213,27 +206,27 @@ class AgentToolsServer:
                 if self.host is None or not token or token != self.host_token:
                     raise RequestError(401, "this route takes the serve token")
                 return 200, await getattr(self.host, name)(body)
-            return 200, await getattr(self, name)(self._turn_for(token), body)
+            return 200, await getattr(self, name)(self._run_for(token), body)
         except RequestError as exc:
             return exc.status, {"error": str(exc)}
         except (ValueError, TypeError, KeyError, RuntimeError, LookupError) as exc:
             return 400, {"error": str(exc)}
 
-    def _turn_for(self, token: str) -> Turn:
-        turn = self._turns.get(token)
-        if turn is not None:
-            return turn
-        agent = self._agent_tokens.get(token)
-        if agent is None:
-            raise RequestError(401, "this token's turn has ended, or it was never valid")
-        turn = self._open.get(agent)
-        if turn is None:
-            raise RequestError(409, "no open turn; send a prompt first")
-        return turn
+    def _run_for(self, token: str) -> Node:
+        found = self._runs.get(token)
+        if found is None:
+            raise RequestError(401, "this token was never valid, or the server restarted")
+        g, run_id = found
+        if run_id not in g:
+            raise RequestError(401, "this token's run was removed")
+        run = g.agent_root(run_id)
+        if not self.flow.stepping(run):
+            raise RequestError(409, "this run's turn has ended; it isn't taking a step now")
+        return run
 
 
 ROUTES = ("repl",)
 HOST_ROUTES = ("prompt", "stop", "shutdown")
 
 
-__all__ = ["HOST_ROUTES", "ROUTES", "AgentToolsServer", "Host", "Turn"]
+__all__ = ["HOST_ROUTES", "ROUTES", "AgentToolsServer", "Host"]

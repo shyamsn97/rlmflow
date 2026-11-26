@@ -13,7 +13,7 @@ Each shape in the top-level README's grid is a real run. Five are small scripts 
 | Peers, coding | [`coding/boids/`](../coding/boids/) | `python examples/coding/boids/boids.py --harness claude_code` |
 | Rewind and fork | [`shepherd/`](../shepherd/) | `python examples/shepherd/shepherd.py --trace` |
 
-The scripts here default to `--model gpt-5-mini` and save to `examples/_runs/`. Render a saved run with:
+The scripts here default to `--model gpt-6.1-terra` and save to `examples/_runs/`. Render a saved run with:
 
 ```bash
 rlmflow render gif examples/_runs/patterns/tree tree.gif
@@ -43,7 +43,7 @@ The tools run in the host process, so every worker sees the same board. They are
 
 ```bash
 python examples/patterns/board.py \
-  --model gpt-5-mini \
+  --model gpt-6.1-terra \
   --workers 3 \
   --task "API::Propose the public API and its invariants." \
   --task "Concurrency::Identify races and required locking." \

@@ -1,18 +1,18 @@
-"""Edits: change a node, delete it, remove an agent, or replace a saved call.
+"""Edits: change a node, delete it, remove a run, or replace a saved call.
 
-An edit rewinds the agent that owns the node to it, then follows the node's
+An edit rewinds the run that owns the node to it, then follows the node's
 outgoing edges. ``RULES`` says, for each engine edge kind, what happens to the
 edge's target when its source is dropped and when its source changes:
 
-- ``remove_root``: the target agent is removed.
+- ``remove_root``: the target run is removed.
 - ``rerun_target``: the target runs again (a node with no code is taken back,
-  so its agent gets the new value).
-- ``retract_target``: the target is taken back: its agent is rewound to before it.
+  so its run gets the new value).
+- ``retract_target``: the target is taken back: its run is rewound to before it.
 - ``match_calls``: nothing yet; the source runs again, and saved calls it
   doesn't make again are undone when it finishes.
 
-Nothing here knows about running agents: a ``Flow`` cancels the affected
-agents' tasks before it applies an edit, and node versions discard the result
+Nothing here knows about running runs: a ``Flow`` cancels the affected
+runs' steps before it applies an edit, and node versions discard the result
 of any run that started before it.
 """
 
@@ -28,7 +28,7 @@ from rlmflow.graph.nodes import (
     RETURN,
     SPAWN,
     WRITE,
-    Agent,
+    AgentRoot,
     Node,
     strict_json,
 )
@@ -63,7 +63,7 @@ class GraphError(Exception):
 
 @dataclass
 class Invalidation:
-    """What an edit changed: agents rewound or removed, nodes dropped, nodes set to run again."""
+    """What an edit changed: runs rewound or removed, nodes dropped, nodes set to run again."""
 
     rewound: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
@@ -116,9 +116,9 @@ class _Edit:
             elif action == RETRACT_TARGET:
                 self.retract(target)
 
-    def cut(self, root: Agent, keep: int) -> None:
+    def cut(self, root: AgentRoot, keep: int) -> None:
         """Keep ``root``'s first ``keep`` own nodes; drop the rest and what they caused."""
-        own = self.g._own[root.id]
+        own = self.g._chains[root.id]
         dropped = own[keep:]
         if not dropped:
             return
@@ -137,18 +137,18 @@ class _Edit:
             self.g._unlink(edge)
 
     def retract(self, node: Node) -> None:
-        """Take a node back: rewind its agent to before it."""
-        own = self.g._own.get(node.owner, [])
+        """Take a node back: rewind its run to before it."""
+        own = self.g._chains.get(node.root_id, [])
         if node in own:
-            self.cut(self.g._roots[node.owner], own.index(node))
+            self.cut(self.g._roots[node.root_id], own.index(node))
 
     def rerun(self, node: Node) -> None:
-        """Rewind the node's agent to it and set it to run again."""
-        root = self.g._roots[node.owner]
+        """Rewind the node's run to it and set it to run again."""
+        root = self.g._roots[node.root_id]
         for edge in self.g.edges(kind=RETURN, target=node.id):
             self.g._unlink(edge)
         self.follow(node, changed=True)
-        self.cut(root, self.g._own[root.id].index(node) + 1)
+        self.cut(root, self.g._chains[root.id].index(node) + 1)
         node.output, node.result, node.error, node.state = "", None, False, READY
         for key in RUN_DATA:
             node.data.pop(key, None)
@@ -156,14 +156,14 @@ class _Edit:
         self.inv._add("rewound", root.id)
         self.inv._add("rerun", node.id)
 
-    def remove_root(self, root: Agent) -> None:
+    def remove_root(self, root: AgentRoot) -> None:
         g = self.g
         if root.id not in g._roots:
             return
         self.cut(root, 1)
         self.drop(root)
         del g._roots[root.id]
-        del g._own[root.id]
+        del g._chains[root.id]
         g._children.pop(root.id, None)
         self.inv._add("removed", root.id)
         if root.id in self.inv.rewound:
@@ -171,7 +171,7 @@ class _Edit:
 
 
 def edit(g: Graph, node: Node, **fields: Any) -> Invalidation:
-    """Change ``node``. Its agent is rewound to it; changed code or inputs run again."""
+    """Change ``node``. Its run is rewound to it; changed code or inputs run again."""
     unknown = set(fields) - set(EDITABLE)
     if unknown:
         raise TypeError(f"edit takes {', '.join(EDITABLE)}; not {', '.join(sorted(unknown))}")
@@ -184,7 +184,7 @@ def edit(g: Graph, node: Node, **fields: Any) -> Invalidation:
             raise TypeError(f"node {name} must be a string")
     for name, value in fields.items():
         setattr(node, name, value)
-    if isinstance(node, Agent) and "text" in fields:
+    if isinstance(node, AgentRoot) and "text" in fields:
         node.task = node.text
     node.version += 1
     change = _Edit(g)
@@ -192,25 +192,25 @@ def edit(g: Graph, node: Node, **fields: Any) -> Invalidation:
         change.rerun(node)
     else:
         change.follow(node, changed=True)
-        change.cut(g._roots[node.owner], g._own[node.owner].index(node) + 1)
-        change.inv._add("rewound", node.owner)
+        change.cut(g._roots[node.root_id], g._chains[node.root_id].index(node) + 1)
+        change.inv._add("rewound", node.root_id)
     return change.inv
 
 
 def delete(g: Graph, node: Node) -> Invalidation:
-    """Remove a node and everything after it; deleting a root removes its agent."""
+    """Remove a node and everything after it; deleting a task node removes its run."""
     change = _Edit(g)
-    if isinstance(node, Agent):
+    if isinstance(node, AgentRoot):
         change.remove_root(node)
     else:
         change.retract(node)
     return change.inv
 
 
-def remove(g: Graph, agent: Node) -> Invalidation:
-    """Remove an agent, the agents it launched, and what they caused."""
+def remove(g: Graph, task: Node) -> Invalidation:
+    """Remove a run, the runs it launched, and what they caused."""
     change = _Edit(g)
-    change.remove_root(g.agent(agent))
+    change.remove_root(g.agent_root(task))
     return change.inv
 
 
@@ -218,13 +218,13 @@ def fork(g: Graph, node: Node) -> Invalidation:
     """Cut ``g`` (a copy, for ``Graph.fork``) right after ``node``.
 
     Everything else stays unless it depended on what was cut. A node whose code
-    launched agents or sent messages is set to run again without them: the
-    agents are removed, the messages taken back, and its saved calls cleared.
+    launched runs or sent messages is set to run again without them: the
+    runs are removed, the messages taken back, and its saved calls cleared.
     """
     change = _Edit(g)
-    root = g._roots[node.owner]
+    root = g._roots[node.root_id]
     effects = [edge for edge in g.edges(source=node.id) if edge.kind in (SPAWN, WRITE)]
-    if not isinstance(node, Agent) and node.runs_code and effects:
+    if not isinstance(node, AgentRoot) and node.runs_code and effects:
         for edge in effects:
             target = g._nodes.get(edge.target)
             if target is None:
@@ -236,20 +236,21 @@ def fork(g: Graph, node: Node) -> Invalidation:
         node.calls = []
         change.rerun(node)
     else:
-        change.cut(root, g._own[root.id].index(node) + 1)
+        change.cut(root, g._chains[root.id].index(node) + 1)
     return change.inv
 
 
 def replace(
-    g: Graph, node: Node, index: int, value: Any = MISSING, *, agent: Node | None = None
+    g: Graph, node: Node, index: int, value: Any = MISSING, *, run: Node | None = None
 ) -> Invalidation:
-    """Bind the node's ``index``-th saved call to ``value`` or another ``agent``; the node reruns.
+    """Bind the node's ``index``-th saved call to ``value`` or another ``run``; the node reruns.
 
-    A launch takes another agent (the old child is removed). An ``await`` takes
-    a value or the agent to await instead. A tool call takes a value.
+    A launch takes another run (the old child is removed). An ``await`` takes
+    a value or the run to await instead. A tool call takes a value.
     """
+    agent = run
     if (value is MISSING) == (agent is None):
-        raise TypeError("replace takes exactly one of a value or agent=")
+        raise TypeError("replace takes exactly one of a value or run=")
     if not 0 <= index < len(node.calls):
         raise GraphError(f"node {node.id!r} saved no call {index}")
     entry = node.calls[index]
@@ -257,7 +258,7 @@ def replace(
     change = _Edit(g)
     if tool == calls.LAUNCH:
         if agent is None:
-            raise GraphError("a launch can only be replaced by another agent")
+            raise GraphError("a launch can only be replaced by another run")
         for edge in g.edges(kind=SPAWN, target=agent.id):
             g._unlink(edge)
         g.link(SPAWN, node, agent)
@@ -272,7 +273,7 @@ def replace(
     replaced = [
         edge.source
         for edge in g.edges(kind=RETURN, target=node.id)
-        if old is not None and g._nodes[edge.source].owner == old.id
+        if old is not None and g._nodes[edge.source].root_id == old.id
     ]
     call_key = entry.get("key")
     bound = (
@@ -283,7 +284,7 @@ def replace(
     entry.clear()
     entry.update(tool=tool, key=call_key, **bound)
     change.rerun(node)
-    # The old agent's result reached this node and was swapped out, so it isn't
+    # The old run's result reached this node and was swapped out, so it isn't
     # delivered again as a result node.
     for source in replaced:
         g.link(RETURN, source, node, replaced=True)

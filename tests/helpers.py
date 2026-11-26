@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import inspect
 import time
-from dataclasses import replace
 
-from rlmflow import AgentConfig, Flow, Node
+from rlmflow import Agent, Flow, Node
+from rlmflow.agents import repl_reply
 from rlmflow.graph import Graph
-from rlmflow.graph.nodes import Step, current_step, running_step
+from rlmflow.llm import Reply
+from rlmflow.repl import Repl, current_repl, running
 from rlmflow.runtime.repl import (
     AGENT_SEND_TOOL,
     AGENT_WAIT_TOOL,
@@ -22,36 +23,35 @@ from rlmflow.runtime.runtime import Runtime
 
 
 def agent_graph(task: str = "", *, args: dict | None = None) -> tuple[Graph, Node]:
-    """A fresh graph holding one root, bound to the default config as a Flow would before running it.
+    """A fresh graph holding one root run of the ``default`` agent.
 
-    Pass ``config=`` to ``run_result`` (or call ``name_root``) to run the root with another config.
+    Pass ``agent=`` to ``run_result`` (or call ``name_root``) to run the root with another agent.
     """
     g = Graph()
     root = g.start(task, **(args or {}))
-    root.bind_config(AgentConfig())
     return g, root
 
 
-def name_root(flow, g: Graph, config: AgentConfig | None) -> None:
-    """Register ``config`` on ``flow`` as ``"root"``; top-level agents naming no config run it."""
-    if config is None:
+def name_root(flow, g: Graph, agent: Agent | None) -> None:
+    """Register ``agent`` on ``flow`` as ``"root"``, and run the top-level ``default`` runs with it."""
+    if agent is None:
         return
-    flow.add_config(replace(config, name="root"))
-    for root in g.roots():
-        if root.config_name is None:
-            root.config_name = "root"
+    flow.agents["root"] = agent
+    for root in g.top_level_roots():
+        if root.agent == "default":
+            root.agent = "root"
 
 
-def run_result(flow, g: Graph, agent: Node, *, config: AgentConfig | None = None, hooks=()):
-    """Run the graph to quiescence and return ``agent``'s result; ``config`` is the root's."""
-    name_root(flow, g, config)
+def run_result(flow, g: Graph, run: Node, *, agent: Agent | None = None, hooks=()):
+    """Run the graph to quiescence and return ``run``'s result; ``agent`` is the root's."""
+    name_root(flow, g, agent)
     flow.run(g, hooks=hooks)
-    return agent.final_result()
+    return run.final_result()
 
 
-def stepping(g: Graph, agent: Node, node=None):
-    """Run engine code as if inside ``agent``'s turn at ``node`` (its last node by default)."""
-    return running_step(Step(g, agent, node) if node is not None else Step.latest(g, agent))
+def stepping(g: Graph, run: Node, node=None, flow=None):
+    """Run engine code as if inside ``run``'s step at ``node`` (its last node by default)."""
+    return running(Repl(flow, run.root, node))
 
 
 def ran(code: str = "pass", output: str = "", *, result=None, error=False, **data) -> Node:
@@ -82,10 +82,9 @@ def turns(g: Graph, agent: Node) -> list[Node]:
     return [node for node in agent.nodes() if "seen" in node.data]
 
 
-def repl(code: str, *, preamble: str | None = None) -> str:
-    """Wrap executable test code in the model's strict REPL protocol."""
-    prefix = f"{preamble}\n" if preamble else ""
-    return f"{prefix}```repl\n{code}\n```"
+def repl(code: str, *, preamble: str | None = None) -> Reply:
+    """A reply that runs ``code`` through the ``repl`` tool, after ``preamble`` text."""
+    return repl_reply(code, preamble or "")
 
 
 def reasoning_repl(code: str) -> str:
@@ -94,10 +93,10 @@ def reasoning_repl(code: str) -> str:
 
 
 def trailing_user_text(messages) -> str:
-    """Join the consecutive user messages at the end of a request."""
+    """Join the consecutive user and tool messages at the end of a request."""
     trailing = []
     for message in reversed(messages):
-        if message["role"] != "user":
+        if message["role"] not in ("user", "tool"):
             break
         content = message["content"]
         if isinstance(content, list):
@@ -116,7 +115,7 @@ class TestRuntime(Runtime):
 
     async def execute(self, agent: Node, code: str, graph: Graph | None = None):
         repl = self.repl_for(agent, graph)
-        step = current_step()
+        step = current_repl()
 
         for name, original in tuple(repl.namespace.items()):
             metadata = get_tool_metadata(original) if callable(original) else None

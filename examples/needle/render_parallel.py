@@ -14,7 +14,8 @@ import io
 from collections.abc import Sequence
 from pathlib import Path
 
-from rlmflow import SPAWN, Graph, Node
+from rlmflow import Graph, Node
+from rlmflow.graph import SPAWN
 from rlmflow.view.figure import graph_svg, parent_ids
 
 

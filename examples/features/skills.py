@@ -2,8 +2,8 @@
 
 Two pieces work together here:
 
-1. A **``ReplHarness`` subclass** whose ``prompt_sections`` add a ``skills``
-   section read from a ``SkillLibrary`` directory on every turn, so it is always live.
+1. A **``skills`` prompt section** that is a function, so it is read from a
+   ``SkillLibrary`` directory on every turn and is always live.
    A skill is just a ``<name>.md`` file there: write your own before the run, or
    edit one mid-run, and the agent sees it on its next turn.
 2. An **``add_skill`` tool**. A plain ``@tool``-decorated function passed via
@@ -27,11 +27,12 @@ from __future__ import annotations
 import argparse
 import sys
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 
-from rlmflow import AgentConfig, Flow, LLMUsage
-from rlmflow.harnesses.repl import ReplHarness
+from rlmflow import Agent, Flow
+from rlmflow.agents import repl_reply
+from rlmflow.graph import LLMUsage
+from rlmflow.llm import Reply
 from rlmflow.tools import tool
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
@@ -69,22 +70,6 @@ class SkillLibrary:
 
     def __len__(self) -> int:
         return len(self.names())
-
-
-@dataclass(frozen=True)
-class SkillsOptions:
-    directory: str
-
-
-class SkillsHarness(ReplHarness):
-    """The REPL harness, plus a ``skills`` section read from ``harness_options["directory"]``."""
-
-    name = "skills"
-    Options = SkillsOptions
-
-    def prompt_sections(self, flow, step):
-        library = SkillLibrary(self.options(step).directory)
-        return {**super().prompt_sections(flow, step), "skills": f"## Skills\n\n{library.render()}"}
 
 
 def make_add_skill(library: SkillLibrary):
@@ -127,18 +112,15 @@ class ScriptedLLM:
     the prompt (proof the section grew), so it solves and calls ``submit``.
     """
 
-    def chat(self, messages, *args, **kwargs) -> str:
+    def chat(self, messages, *args, **kwargs) -> Reply:
         self.last_usage = LLMUsage(input_tokens=64, output_tokens=16)
         system = messages[0]["content"] if messages else ""
         if "### kadane" not in system:
-            return (
-                "```repl\n"
+            return repl_reply(
                 f'add_skill("kadane", """{KADANE_SKILL}""")\n'
-                'print("installed kadane; it will be in my prompt next turn")\n'
-                "```"
+                'print("installed kadane; it will be in my prompt next turn")'
             )
-        return (
-            "```repl\n"
+        return repl_reply(
             "nums = [-2, 1, -3, 4, -1, 2, 1, -5, 4]\n"
             "best = cur = nums[0]\n"
             "for x in nums[1:]:\n"
@@ -151,8 +133,7 @@ class ScriptedLLM:
             ")\n"
             "assert best == brute, (best, brute)\n"
             'print("kadane =", best, "brute =", brute)\n'
-            "submit(str(best))\n"
-            "```"
+            "submit(str(best))"
         )
 
 
@@ -180,23 +161,18 @@ def main() -> None:
 
     library = SkillLibrary(tempfile.mkdtemp(prefix="skills-"))
     if args.scripted:
-        flow = Flow(llm_clients={"scripted": ScriptedLLM()}, tools=[make_add_skill(library)])
-        model = "scripted"
+        clients, model = {"scripted": ScriptedLLM()}, "scripted"
         print("Using the deterministic ScriptedLLM (offline).")
     else:
-        flow = Flow(tools=[make_add_skill(library)])
-        model = args.model
+        clients, model = {}, args.model
         print(f"Using live client ({args.model}).")
-    config = AgentConfig(
-        name="skilled",
-        harness=SkillsHarness,
-        model=model,
+    skilled = Agent(
+        model,
         max_iters=args.max_iters,
-        harness_options={"directory": str(library.directory)},
+        prompt={"skills": lambda node, repl: f"## Skills\n\n{library.render()}"},
     )
-
-    flow.add_config(config)
-    g = flow.init(QUERY, config="skilled")
+    flow = Flow(agents={"skilled": skilled}, llm_clients=clients, tools=[make_add_skill(library)])
+    g = flow.start("skilled", QUERY)
     root = g.root
     if args.print_prompt:
         print("\n--- Skills section BEFORE run (empty) ---\n")
@@ -212,7 +188,7 @@ def main() -> None:
 
     print("\nresult:", root.final_result())
     print(f"Graph saved to {g.save(args.out_dir)}")
-    flow.runtime.close_repls()
+    flow.close()
 
 
 if __name__ == "__main__":

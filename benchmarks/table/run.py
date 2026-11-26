@@ -2,8 +2,10 @@
 
     python -m benchmarks.table.run oolong rlmflow --ids 2
     python -m benchmarks.table.run ale claude_code --minutes 30 --budget 5
+    python -m benchmarks.table.run oolong_pairs rlmflow --depth 2
 
-Each problem gets a fresh work directory under ``--out``; its result lands in
+Each problem gets a fresh work directory under ``--out``, in
+``TASK/SYSTEM`` (``TASK/SYSTEM-dDEPTH`` for the rlmflow systems); its result lands in
 ``results.jsonl`` there, one line per problem, and a finished problem is skipped
 on the next run.
 """
@@ -18,7 +20,12 @@ from pathlib import Path
 
 from benchmarks.table.systems import MODEL, SYSTEMS, Limits, run
 
-TASKS = {"oolong": "benchmarks.table.oolong", "ale": "benchmarks.table.ale"}
+TASKS = {
+    "needle": "benchmarks.table.needle",
+    "oolong": "benchmarks.table.oolong",
+    "oolong_pairs": "benchmarks.table.oolong_pairs",
+    "ale": "benchmarks.table.ale",
+}
 
 
 def main() -> None:
@@ -29,6 +36,7 @@ def main() -> None:
     parser.add_argument("--minutes", type=float, default=20.0)
     parser.add_argument("--budget", type=float, default=3.0, help="Dollar cap per problem.")
     parser.add_argument("--model", default=MODEL)
+    parser.add_argument("--depth", type=int, default=1, help="max_depth for the rlmflow systems.")
     parser.add_argument("--out", default="benchmarks/table/runs")
     args = parser.parse_args()
 
@@ -36,7 +44,12 @@ def main() -> None:
     ids = task.ids()
     if args.ids:
         ids = ids[: int(args.ids)] if args.ids.isdigit() else args.ids.split(",")
-    out = Path(args.out) / args.task / args.system
+    cell = (
+        args.system if args.system in ("claude_code", "direct") else f"{args.system}-d{args.depth}"
+    )
+    if args.model != MODEL:
+        cell = f"{args.model}/{cell}"
+    out = Path(args.out) / args.task / cell
     out.mkdir(parents=True, exist_ok=True)
     results = out / "results.jsonl"
     done = {json.loads(line)["id"] for line in results.open()} if results.exists() else set()
@@ -47,10 +60,11 @@ def main() -> None:
             continue
         workdir = Path(tempfile.mkdtemp(prefix=f"{task_id}-", dir=out)).resolve()
         prompt = task.prepare(task_id, workdir, limits)
-        outcome = run(args.system, prompt, workdir, limits, args.model)
+        outcome = run(args.system, prompt, workdir, limits, args.model, args.depth)
         record = {
             "id": task_id,
             "model": args.model,
+            "depth": None if args.system in ("claude_code", "direct") else args.depth,
             "limits": vars(limits),
             "workdir": str(workdir),
             "prompt": prompt,

@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from rlmflow.cli import CliError, RunOptions, resolve_options
+from rlmflow.cli.app import CliError, RunOptions, resolve_options
 
 # Anthropic for ``claude*``, OpenAI otherwise — the same rule ``client_for`` uses
 # to pick a client, applied one step earlier so a missing key is one line of
@@ -28,7 +28,7 @@ class RunCLI:
 
         rlmflow run print "add a test for parse_args"
         rlmflow run print "fix the failing test"
-        rlmflow run --model gpt-5 --workdir ./proj --query "fix the failing test"
+        rlmflow run --model gpt-6-sol --workdir ./proj --query "fix the failing test"
     """
 
     def __init__(
@@ -101,27 +101,26 @@ def run_agent(
     print(f"run saved to {graph_dir}")
 
 
-def coding_configs(options: RunOptions) -> list[Any]:
-    """The coding agent's ``default`` config, and a ``worker`` config whose agents report what they changed."""
-    from rlmflow import CODING_HANDOFF_SCHEMA, AgentConfig
+def coding_agents(options: RunOptions) -> dict[str, Any]:
+    """The coding agent's ``default`` agent, and a ``worker`` whose runs report what they changed."""
+    from rlmflow import Agent
+    from rlmflow.tools.files import CODING_HANDOFF_SCHEMA
 
-    default = AgentConfig(
-        model=options.model, max_depth=options.max_depth, max_iters=options.max_iters
-    )
-    worker = AgentConfig(
-        name="worker",
-        model=options.fast_model,
+    default = Agent(options.model, max_depth=options.max_depth, max_iters=options.max_iters)
+    worker = Agent(
+        options.fast_model,
         description="Does one bounded coding task in the working directory and reports what changed.",
         max_iters=options.max_iters,
         output_schema=CODING_HANDOFF_SCHEMA if options.tools == "files" else None,
     )
-    return [default, worker]
+    return {"default": default, "worker": worker}
 
 
 def build_flow(options: RunOptions, *, workdir: Path) -> Any:
     """The coding agent's Flow, or ``options.flow``'s (a ``module:factory``) when the caller has their own."""
-    from rlmflow import FILE_TOOLS, DockerRuntime, Flow, LocalRuntime
-    from rlmflow.llm import client_for
+    from rlmflow import DockerRuntime, Flow, LocalRuntime
+    from rlmflow.llm.base import client_for
+    from rlmflow.tools.files import FILE_TOOLS
 
     if options.flow is not None:
         return load_factory(options.flow, project=workdir)
@@ -138,9 +137,9 @@ def build_flow(options: RunOptions, *, workdir: Path) -> Any:
             name: client_for(name, reasoning_effort=effort)
             for name in (options.model, options.fast_model)
         },
-        configs=coding_configs(options),
+        agents=coding_agents(options),
         runtime=runtime,
-        tools=[FILE_TOOLS] if options.tools == "files" else None,
+        tools=[FILE_TOOLS] if options.tools == "files" else (),
         workers=options.workers,
     )
 
@@ -192,8 +191,8 @@ def require_api_key(model: str, environ: dict[str, str] | None = None) -> None:
 
 def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> None:
     """Stream one query, printing the tree as it grows."""
-    from rlmflow import Graph
-    from rlmflow.consumers import Checkpoint, LiveTree
+    from rlmflow import Checkpoint, Graph
+    from rlmflow.view import LiveTree
 
     if graph is None and not query:
         raise CliError("nothing to run: pass a query, or --resume a saved run")
@@ -214,7 +213,7 @@ def _run_headless(flow: Any, query: str | None, graph: Any, graph_dir: Path) -> 
 
 
 def _first_agent(graph: Any) -> Any:
-    tops = graph.roots()
+    tops = graph.top_level_roots()
     if not tops:
         raise CliError("the saved run has no agents")
     return tops[0]
@@ -229,6 +228,7 @@ def _ask(graph: Any, query: str) -> None:
 __all__ = [
     "RunCLI",
     "build_flow",
+    "coding_agents",
     "load_factory",
     "load_root",
     "require_api_key",

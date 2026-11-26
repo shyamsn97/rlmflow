@@ -10,7 +10,7 @@ For untrusted agents, or agents you haven't audited yet, use an isolated runtime
 - `ModalRuntime` — a remote Modal container.
 - Custom `Runtime` — SSH, `kubectl exec`, Firecracker, gVisor, anything.
 
-`SubprocessRuntime` selects another Python executable or environment but retains the host user's permissions. It is not a security boundary for untrusted code.
+`LocalRuntime(python=..., env=...)` selects another Python executable or environment but retains the host user's permissions. It is not a security boundary for untrusted code.
 
 ## Docker isolation knobs
 

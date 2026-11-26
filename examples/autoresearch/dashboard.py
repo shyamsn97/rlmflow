@@ -83,16 +83,16 @@ def agents(g: Graph) -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "agent": a.path(),
-                "config": a.config_name,
+                "run": a.path(),
+                "agent": a.agent,
                 "status": a.status(),
                 "nodes": len(a.nodes()),
                 "$": round(g.usage([a]).cost_usd, 2),
                 "task": a.task[:80],
             }
-            for a in g.agents()
+            for a in g.agent_roots()
         ],
-        columns=["agent", "config", "status", "nodes", "$", "task"],
+        columns=["run", "agent", "status", "nodes", "$", "task"],
     )
 
 

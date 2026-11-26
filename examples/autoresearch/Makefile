@@ -1,7 +1,7 @@
 PYTHON ?= python
 UV ?= uv
 
-MODEL ?= gpt-5
+MODEL ?= gpt-6-sol
 GPU ?= A10G
 PARALLEL ?= 12
 MAX_SUBMISSIONS ?= 48

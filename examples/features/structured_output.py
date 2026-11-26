@@ -7,7 +7,7 @@ Pydantic model.
 
 Run:
     export OPENAI_API_KEY=...
-    python examples/features/structured_output.py --model gpt-5-mini
+    python examples/features/structured_output.py --model gpt-6.1-terra
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from rlmflow import AgentConfig, Flow, json_schema_for
+from rlmflow import Agent, Flow
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -70,7 +70,7 @@ Denver leg:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Live structured output example")
-    parser.add_argument("--model", default="gpt-5-mini")
+    parser.add_argument("--model", default="gpt-6.1-terra")
     parser.add_argument("--max-iters", type=int, default=40)
     parser.add_argument("--max-depth", type=int, default=1)
     parser.add_argument(
@@ -80,8 +80,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    shared = dict(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)
     flow = Flow(
-        configs=[AgentConfig(model=args.model, max_depth=args.max_depth, max_iters=args.max_iters)]
+        agents={
+            "default": Agent(**shared),
+            "planner": Agent(**shared, output_schema=PackingPlan),
+        }
     )
 
     query = (
@@ -90,16 +94,7 @@ def main() -> None:
         "agents."
     )
 
-    planner = flow.add_config(
-        AgentConfig(
-            name="planner",
-            model=args.model,
-            max_depth=args.max_depth,
-            max_iters=args.max_iters,
-            output_schema=json_schema_for(PackingPlan),
-        )
-    )
-    g = flow.init(query, config=planner.name, trip_brief=TRIP_BRIEF)
+    g = flow.start("planner", query, trip_brief=TRIP_BRIEF)
     root = g.root
     out_dir = Path(args.out_dir)
     asyncio.run(print_run(flow, g, out_dir))
@@ -117,7 +112,7 @@ def main() -> None:
 
     print(f"\nRun saved to {out_dir}")
 
-    flow.runtime.close_repls()
+    flow.runtime.close()
 
 
 if __name__ == "__main__":

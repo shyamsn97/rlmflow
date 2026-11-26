@@ -20,14 +20,14 @@ from pathlib import Path
 from typing import Any
 
 from rlmflow import (
-    AgentConfig,
+    Agent,
     Budget,
     Checkpoint,
+    ClaudeCode,
     Flow,
     Graph,
     LocalRuntime,
-    SubprocessRuntime,
-    current_step,
+    current_repl,
     tool,
 )
 from rlmflow.view.text import kind as node_kind
@@ -58,7 +58,7 @@ Each round: read `trials()` (best first, with log tails), form hypotheses that c
 from a log (loss still falling? lr? steps? VRAM headroom?), then launch several implementers
 at once and wait for them all:
 
-    launch_agent("Implement: ...", config="implementer", hypothesis="...",
+    launch_agent("Implement: ...", agent="implementer", hypothesis="...",
                  workspace=row["commit"])  # build on a trial; omit to start from baseline
 
 A plateau means change direction, not stop. Keep going until `trials()` says no
@@ -78,7 +78,7 @@ once more. Finish with `submit(row)`.
 def trial_rows(g: Graph) -> list[dict[str, Any]]:
     """Every submitted trial, oldest first: the saved return values of ``submit_trial``."""
     return [
-        {"n": i, "agent": node.agent.name, **call["value"]}
+        {"n": i, "agent": node.root.name, **call["value"]}
         for i, (node, call) in enumerate(
             (node, call)
             for node in g.nodes()
@@ -96,14 +96,12 @@ def research_tools(modal: ModalConfig, max_submissions: int, run_id: str) -> lis
     @tool(cache=True)
     def submit_trial(hypothesis: str, change: str = "") -> dict[str, Any]:
         """Train your directory's train.py on Modal; returns the row (val_bpb, status, commit)."""
-        step = current_step()
-        flow = step.flow
-        if len(trial_rows(step.graph)) >= max_submissions:
+        repl = current_repl()
+        if len(trial_rows(repl.graph)) >= max_submissions:
             raise RuntimeError(f"all {max_submissions} submissions are used")
-        directory = flow.workspaces.path(step.agent)
-        commit = flow.workspaces.commit(step.agent)
+        commit = repl.commit()
         started = time.time()
-        result = submit(modal, path=directory, slug=step.agent.name, n=0, run_id=run_id)
+        result = submit(modal, path=repl.path, slug=repl.root.name, n=0, run_id=run_id)
         keep = ("val_bpb", "status", "num_steps", "total_tokens_M", "peak_vram_mb", "num_params_M")
         return {
             **{key: result.get(key) for key in keep},
@@ -118,7 +116,7 @@ def research_tools(modal: ModalConfig, max_submissions: int, run_id: str) -> lis
     @tool()
     def trials() -> dict[str, Any]:
         """Submitted trials best first, and how many submissions are left."""
-        rows = trial_rows(current_step().graph)
+        rows = trial_rows(current_repl().graph)
         return {"left": max_submissions - len(rows), "trials": ranked(rows)}
 
     return [submit_trial, trials]
@@ -140,38 +138,32 @@ def run(args: argparse.Namespace) -> None:
     os.environ.setdefault("BASH_DEFAULT_TIMEOUT_MS", timeout_ms)
     os.environ.setdefault("BASH_MAX_TIMEOUT_MS", timeout_ms)
 
-    def config(harness: str, **fields: Any) -> AgentConfig:
+    def make_agent(harness: str, **fields: Any) -> Agent:
         if harness == "claude_code":
-            return AgentConfig(
-                harness="claude_code",
-                model=args.claude_model,
-                harness_options={"sdk": {"permission_mode": "acceptEdits"}},
-                **fields,
+            return ClaudeCode(
+                args.claude_model, options={"permission_mode": "acceptEdits"}, **fields
             )
-        return AgentConfig(model=args.model, **fields)
+        return Agent(args.model, **fields)
 
-    planner = config(args.planner, name="planner", max_depth=1, prompt={"autoresearch": PLANNER})
-    implementer = config(
+    planner = make_agent(args.planner, max_depth=1, prompt={"autoresearch": PLANNER})
+    implementer = make_agent(
         args.implementer,
-        name="implementer",
         max_depth=0,
         description="edits train.py in its own copy and trains it once",
         prompt={"autoresearch": IMPLEMENTER},
     )
 
-    runtime = (LocalRuntime if args.agent_runtime == "local" else SubprocessRuntime)(
-        working_directory=files, repl_timeout=args.modal_timeout_s + 300
-    )
+    runtime = LocalRuntime(working_directory=files, repl_timeout=args.modal_timeout_s + 300)
     flow = Flow(
-        configs=[planner, implementer],
+        agents={"planner": planner, "implementer": implementer},
         runtime=runtime,
         tools=research_tools(modal, args.max_submissions, args.out.name),
         workers=args.parallel,
     )
 
-    g = flow.init(
+    g = flow.start(
+        "planner",
         f"Run autoresearch: {args.max_submissions} trials, {args.parallel} at a time.",
-        config="planner",
         task_instructions=(HERE / "program.md").read_text(),
         baseline=seed,
     )
@@ -179,20 +171,18 @@ def run(args: argparse.Namespace) -> None:
 
     async def drive() -> None:
         try:
-            async for step in flow.run_streaming(g, hooks=[budget, Checkpoint(args.out / "graph")]):
+            async for node in flow.stream(g, hooks=[budget, Checkpoint(args.out / "graph")]):
                 spent = g.usage().cost_usd
-                print(
-                    f"{step.agent.path():<24} {node_kind(step.node):<12} ${spent:.2f}", flush=True
-                )
+                print(f"{node.root.path():<24} {node_kind(node):<12} ${spent:.2f}", flush=True)
                 rows = trial_rows(g)
                 # The planner took a whole turn with nothing left to submit and didn't finish.
                 if (
-                    step.agent is g.root
+                    node.root_id == g.root.id
                     and g.root.status() != "done"
                     and len(rows) >= args.max_submissions
-                    and (step.node.started_at or 0) > max(row["ts"] for row in rows)
+                    and (node.started_at or 0) > max(row["ts"] for row in rows)
                 ):
-                    await flow.stop(g, g.root, reason="all submissions used")
+                    await flow.stop(g.root, reason="all submissions used")
                 write_ledger(rows, args.out)
         finally:
             await flow.aclose()
@@ -216,7 +206,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--planner", choices=HARNESSES, default="claude_code")
     p.add_argument("--implementer", choices=HARNESSES, default="claude_code")
-    p.add_argument("--model", default="gpt-5", help="for repl agents")
+    p.add_argument("--model", default="gpt-6-sol", help="for repl agents")
     p.add_argument("--claude-model", default=None, help="for Claude Code agents; default: its own")
     p.add_argument("--gpu", default="A10G", help="one with a baseline in baselines/")
     p.add_argument("--parallel", type=int, default=4)
@@ -224,7 +214,6 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--minutes", type=float, default=None, help="stop everything after this long")
     p.add_argument("--max-usd", type=float, default=None, help="Claude Code dollars for the run")
     p.add_argument("--modal-timeout-s", type=int, default=1200)
-    p.add_argument("--agent-runtime", choices=("subprocess", "local"), default="subprocess")
     p.add_argument("--out", type=Path, default=None)
     args = p.parse_args()
     if args.out is None:

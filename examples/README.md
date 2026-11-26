@@ -15,11 +15,11 @@ All three are live examples:
 ```bash
 uv run --locked --python 3.12 --extra openai --extra image \
   python examples/shepherd/shepherd.py \
-  --model gpt-5 --fast-model gpt-5 --branches 8 --time-budget 1800
+  --model gpt-6-sol --fast-model gpt-6-sol --branches 8 --time-budget 1800
 
 uv run --locked --python 3.12 --extra openai \
   python examples/needle/haystack.py \
-  --num-lines 1000000 --model gpt-5-mini --fast-model gpt-5-nano
+  --num-lines 1000000 --model gpt-6.1-terra --fast-model gpt-6-luna
 
 uv run --locked --python 3.12 --extra openai --extra image \
   python examples/coding/boids/boids.py
@@ -49,35 +49,38 @@ from rlmflow.view.text import kind
 
 g = Graph.load("examples/_runs/tour")
 for node in g.nodes():
-    print(node.agent.path(), kind(node))
+    print(node.path(), kind(node))
 ```
 
-Each agent reads its `RLMFLOW_*` metadata from its own per-REPL `ENV` mapping (e.g. `ENV["RLMFLOW_AGENT_ID"]`), so that metadata is isolated per agent in every runtime. `LocalRuntime` runs each agent in a worker subprocess; use `SubprocessRuntime` when you also need a selected Python executable, and `DockerRuntime` or `ModalRuntime` when you need container-level isolation.
+Each agent reads its `RLMFLOW_*` metadata from its own per-REPL `ENV` mapping (e.g. `ENV["RLMFLOW_AGENT_ID"]`), so that metadata is isolated per agent in every runtime. `LocalRuntime` runs each agent in a worker subprocess (`python=` selects another Python executable); use `DockerRuntime` or `ModalRuntime` when you need container-level isolation.
 
 ## Last verified run
 
-Every example, run live on 2026-11-19 with each script's default models (`make examples` flags for the manifest rows). Claude Code used its own default model.
+Every example, run live on 2026-11-25 with each script's default models (`make examples` flags for the manifest rows), except `autoresearch`, last run on 2026-11-19. Claude Code used its own default model.
 
 | Example | Models | Result | Time |
 | --- | --- | --- | --- |
-| `graph/` (11 scripts), `skills` | scripted, no model | pass | under 3s each |
-| `skills-live` | gpt-4o-mini | pass | 12s |
-| `structured-output` | gpt-5-mini | pass | 78s |
-| `mcp-weather` | gpt-5-mini | pass | 48s |
-| `sandbox-docker` | gpt-5, gpt-5-mini children | pass | 2m03s |
-| `sandbox-modal` | gpt-5, gpt-5-mini children | pass | 3m59s |
-| `patterns/peers` | gpt-5-mini | pass | 32s |
-| `patterns/board` | gpt-5-mini | pass | 20s |
-| `patterns/tree` | gpt-5-mini | pass | 59s |
-| `patterns/review` | gpt-5-mini | pass | 34s |
-| `patterns/pipeline` | gpt-5-mini | pass | 1m30s |
-| `needle/haystack` (2,000 lines) | gpt-5-mini root, gpt-5-nano workers | pass | 65s |
-| `needle/filesystem` (50 files) | gpt-5-mini root, gpt-5-nano workers | pass | 50s |
-| `needle/claude_plugin` (20 files) | Claude Code root and searchers | pass | 30s |
-| `shepherd` | gpt-5 meta-agent and workers | pass, 6 of 8 branches solved | 16m41s |
-| `coding/boids` | gpt-5 peers | pass, all 5 checks | 5m40s |
-| `autoresearch` (A10G, 8 parallel, 48 submissions, $20) | Claude Code planner and implementers | 32 trials, best val_bpb 0.764 (baseline 0.903) | 31m |
-| Live tests (`RLMFLOW_LIVE=1 uv run pytest tests/live`) | gpt-5-mini, gpt-5-nano, Claude Code | 26 passed | 2m53s |
+| `graph/` (11 scripts), `skills` | scripted, no model | pass | under 2s each |
+| `skills-live` | gpt-4o-mini | pass | 15s |
+| `structured-output` | gpt-5-mini | pass | 80s |
+| `mcp-weather` | gpt-5-mini | pass | 64s |
+| `sandbox-docker` | gpt-5, gpt-5-mini children | pass | 2m27s |
+| `sandbox-modal` | gpt-5, gpt-5-mini children | pass | 5m58s |
+| `patterns/peers` | gpt-5-mini | pass | 46s |
+| `patterns/board` | gpt-5-mini | pass | 23s |
+| `patterns/tree` | gpt-5-mini | pass | 63s |
+| `patterns/review` | gpt-5-mini | pass | 62s |
+| `patterns/pipeline` | gpt-5-mini | pass | 2m59s |
+| `needle/haystack` (2,000 lines) | gpt-5-mini root, gpt-5-nano workers | pass | 43s |
+| `needle/filesystem` (50 files) | gpt-5-mini root, gpt-5-nano workers | pass | 38s |
+| `needle/filesystem --all` (20 files) | every root x workers pair of the REPL loop and Claude Code (pi not installed) | 4 of 4 correct | 2m12s |
+| `needle/claude_plugin` (20 files) | Claude Code root and searchers | pass | 29s |
+| `needle/claude_plugin.sh` | Claude Code root and searchers | pass | 32s |
+| `shepherd` | gpt-5 meta-agent and workers | pass | 30m49s |
+| `coding/boids --harness repl` | gpt-5 peers | pass, all 5 checks | 4m09s |
+| `coding/boids --harness claude_code` | Claude Code peers | pass, all 5 checks | 4m07s |
+| `autoresearch` (A10G, 8 parallel, 48 submissions, $20; 2026-11-19) | Claude Code planner and implementers | 32 trials, best val_bpb 0.764 (baseline 0.903) | 31m |
+| Live tests (`RLMFLOW_LIVE=1 uv run pytest tests/live`) | gpt-5-mini, gpt-5-nano, Claude Code | 4 of 4 passed | 11m19s |
 
 ## Smoke runner
 

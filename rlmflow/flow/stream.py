@@ -1,4 +1,4 @@
-"""The state of one live ``Flow.run_streaming`` call."""
+"""Internal state for one live ``Flow.stream`` call."""
 
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ from rlmflow.graph.nodes import Node
 
 
 class Stream:
-    """One graph being streamed: a record ``Flow`` reads and writes.
+    """One graph being streamed: an internal record ``Flow`` reads and writes.
 
     A Flow keeps one per live graph, by graph id. It holds no Flow and calls
-    nothing outside itself; starting turns, asking hooks and opening toolkits
+    nothing outside itself; starting steps, asking hooks and opening toolkits
     are Flow's. Anything that changes the graph calls ``wake()``, and
     ``wait_for(predicate)`` rechecks its predicate after every wake.
     """
@@ -25,7 +25,7 @@ class Stream:
         self.hooks = hooks
         self.loop = asyncio.get_running_loop()
         self.started_at = time.monotonic()
-        #: The task running each agent's turn, by agent id.
+        #: The task running each run's step, by task node id.
         self.tasks: dict[str, asyncio.Task[Any]] = {}
         #: Tools from the toolkits this stream opened, by name.
         self.tools: dict[str, Any] = {}
@@ -63,16 +63,16 @@ class Stream:
         self._seen = self._version
 
     def reap(self) -> None:
-        """Forget finished turns; a top-level failure raises."""
-        for agent_id, task in list(self.tasks.items()):
+        """Forget finished steps; a top-level failure raises."""
+        for run_id, task in list(self.tasks.items()):
             if task.done():
-                del self.tasks[agent_id]
+                del self.tasks[run_id]
                 if not task.cancelled() and (error := task.exception()) is not None:
                     raise error
 
-    async def cancel(self, agent_ids: list[str]) -> None:
-        """Cancel the turns of ``agent_ids`` that are running and wait for them to stop."""
-        tasks = [self.tasks.pop(i) for i in dict.fromkeys(agent_ids) if i in self.tasks]
+    async def cancel(self, run_ids: list[str]) -> None:
+        """Cancel the steps of ``run_ids`` that are running and wait for them to stop."""
+        tasks = [self.tasks.pop(i) for i in dict.fromkeys(run_ids) if i in self.tasks]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

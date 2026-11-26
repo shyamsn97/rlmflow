@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rlmflow.graph.nodes import Node
-from rlmflow.runtime.repl import Repl, ReplRun, ReplStatus
+from rlmflow.runtime.repl import ReplProcess, ReplRun, ReplStatus
 from rlmflow.runtime.repl_server import (
     ProxyCall,
     ReplResponse,
@@ -195,7 +195,7 @@ class Runtime:
     ) -> None:
         self.working_directory = Path(working_directory) if working_directory is not None else None
         self.preimports = preimports
-        self.repls: dict[str, Repl] = {}
+        self.repls: dict[str, ReplProcess] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         #: Each agent's directory, when a ``Flow`` has workspaces; else ``working_directory``.
         self.directory_for: Callable[[Node], Path] | None = None
@@ -226,7 +226,7 @@ class Runtime:
         """A fresh, unstarted connection to one worker process started in ``directory``."""
         raise NotImplementedError
 
-    def open(self, agent: Node) -> Repl:
+    def open(self, agent: Node) -> ReplProcess:
         from rlmflow.runtime.repl_client import WorkerRepl, WorkerSession
 
         session = WorkerSession(
@@ -236,20 +236,22 @@ class Runtime:
         )
         return WorkerRepl(session, tenant_id=repl_key(agent))
 
-    def get(self, agent: Node | str) -> Repl | None:
+    def get(self, agent: Node | str) -> ReplProcess | None:
         return self.repls.get(repl_key(agent))
 
     def lock(self, agent: Node) -> asyncio.Lock:
         """Held while code runs in the agent's REPL, so two runs never interleave there."""
         return self._locks.setdefault(repl_key(agent), asyncio.Lock())
 
-    def repl_for(self, agent: Node, graph: Graph | None = None) -> Repl:
-        """The agent's live REPL, opened on first use; ``graph`` places it in the run."""
+    def repl_for(
+        self, agent: Node, graph: Graph | None = None, *, max_depth: int = 1
+    ) -> ReplProcess:
+        """The run's live REPL, opened on first use; ``graph`` places it in the run."""
         repl = self.repls.get(repl_key(agent))
         if repl is None:
             repl = self.open(agent)
             self.repls[repl_key(agent)] = repl
-            repl.update_env(agent_env(agent, graph))
+            repl.update_env(agent_env(agent, graph, max_depth))
         return repl
 
     async def execute(self, agent: Node, code: str, graph: Graph | None = None) -> ReplRun:
@@ -298,8 +300,8 @@ class Runtime:
         return describe() if describe is not None else "(not available for this REPL)"
 
 
-def agent_env(agent: Node, graph: Graph | None = None) -> dict[str, str]:
-    """The ``ENV`` metadata describing where ``agent`` sits in its run."""
+def agent_env(agent: Node, graph: Graph | None = None, max_depth: int = 1) -> dict[str, str]:
+    """The ``ENV`` metadata describing where ``agent``'s run sits in its graph."""
 
     if graph is None:
         path, depth, parent = agent.name, 0, None
@@ -311,46 +313,27 @@ def agent_env(agent: Node, graph: Graph | None = None) -> dict[str, str]:
         agent_id=path,
         depth=depth,
         parent_agent_id=parent,
-        max_depth=agent.config.max_depth,
+        max_depth=max_depth,
     )
 
 
 class LocalRuntime(Runtime):
+    """Each REPL in a worker process on this machine: this Python, or ``python`` with ``env`` added."""
+
     def __init__(
         self,
         working_directory: str | Path | None = None,
         *,
+        python: str | Path | None = None,
+        env: dict[str, str] | None = None,
         repl_timeout: float = 120.0,
         execution_timeout: float | None = None,
         preimports: Sequence[str] | None = None,
     ) -> None:
         super().__init__(working_directory=working_directory, preimports=preimports)
-        self.repl_timeout = repl_timeout
-        self.execution_timeout = execution_timeout
-
-    def connect(self, directory: Path | None = None) -> PopenConnection:
-        return PopenConnection(
-            self.worker_command(),
-            cwd=directory or self.working_directory or Path.cwd(),
-            label="Local REPL worker",
-        )
-
-
-class SubprocessRuntime(Runtime):
-    def __init__(
-        self,
-        *,
-        working_directory: str | Path | None = None,
-        python: str | Path | None = None,
-        env: dict[str, str] | None = None,
-        repl_timeout: float | None = DEFAULT_REPL_TIMEOUT,
-        execution_timeout: float | None = None,
-        preimports: Sequence[str] | None = None,
-    ) -> None:
-        super().__init__(working_directory=working_directory, preimports=preimports)
-        self.python = str(python or sys.executable)
+        self.python = str(python) if python is not None else None
         self.env = env
-        self.repl_timeout = repl_timeout or DEFAULT_REPL_TIMEOUT
+        self.repl_timeout = repl_timeout
         self.execution_timeout = execution_timeout
 
     def connect(self, directory: Path | None = None) -> PopenConnection:
@@ -358,7 +341,7 @@ class SubprocessRuntime(Runtime):
             self.worker_command(self.python),
             cwd=directory or self.working_directory or Path.cwd(),
             env=None if self.env is None else {**os.environ, **self.env},
-            label="Subprocess REPL worker",
+            label="Local REPL worker",
         )
 
 
@@ -372,10 +355,9 @@ __all__ = [
     "RLMFLOW_MAX_DEPTH",
     "RLMFLOW_PARENT_AGENT_ID",
     "RLMFLOW_REPLAY",
-    "Repl",
+    "ReplProcess",
     "Runtime",
     "STDERR_LINES",
-    "SubprocessRuntime",
     "agent_env",
     "agent_process_env",
     "repl_key",

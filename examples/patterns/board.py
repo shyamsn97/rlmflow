@@ -11,7 +11,7 @@ it instead of calling the board again.
 
 Example:
     python examples/patterns/board.py \
-      --model gpt-5-mini --workers 3 \
+      --model gpt-6.1-terra --workers 3 \
       --task "API::Propose the public API and its invariants." \
       --task "Tests::Design concurrency and termination tests."
 """
@@ -25,7 +25,7 @@ import sys
 import threading
 from pathlib import Path
 
-from rlmflow import AgentConfig, Checkpoint, Flow, Graph, tool
+from rlmflow import Agent, Checkpoint, Flow, Graph, tool
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -110,7 +110,7 @@ async def run(flow: Flow, g: Graph, out_dir: str) -> None:
     try:
         await flow.arun(g, hooks=[Checkpoint(out_dir)])
     finally:
-        flow.runtime.close_repls()
+        flow.runtime.close()
 
 
 def main() -> None:
@@ -140,7 +140,7 @@ def main() -> None:
     flow = Flow(
         workers=args.workers,
         tools=board.tools(),
-        configs=[AgentConfig(model=args.model, max_iters=args.max_iters)],
+        agents={"default": Agent(model=args.model, max_iters=args.max_iters)},
     )
     asyncio.run(run(flow, g, args.out_dir))
 
@@ -148,7 +148,7 @@ def main() -> None:
     for tid, task in board.tasks.items():
         print(f"  {tid} [{board.claims.get(tid, 'unclaimed')}]: {task}")
         print(f"    -> {board.results.get(tid)!r}")
-    for worker in g.agents():
+    for worker in g.agent_roots():
         print(f"{worker.name} finished: {worker.final_result()!r}")
     print(f"\nGraph saved to {Path(args.out_dir).resolve()}")
 

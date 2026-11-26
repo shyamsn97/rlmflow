@@ -262,16 +262,16 @@ def test_rerunning_an_edited_code_reuses_an_unchanged_launch_and_removes_a_chang
         flow = Flow(runtime=TestRuntime(tmp_path))
         g, root = agent_graph("root")
         code_node = g.append(root, Node("assistant", code="h = launch_agent('work')"))
-        await flow.run_node(g, root, code_node)
+        await flow.repl(root).exec(code_node)
         [child] = root.children()
 
         g.edit(code_node, code="h = launch_agent('work')\nprint('again')")
-        await flow.run_node(g, root, code_node)
+        await flow.repl(root).exec(code_node)
         assert code_node.output.strip() == "again"
         assert root.children() == [child] and calls.launched(code_node) == [child.id]
 
         g.edit(code_node, code="h = launch_agent('other')")
-        await flow.run_node(g, root, code_node)
+        await flow.repl(root).exec(code_node)
         [other] = root.children()
         assert other is not child and child.id not in g
         assert other.task == "other" and calls.launched(code_node) == [other.id]
@@ -330,7 +330,7 @@ def test_deleting_a_code_removes_its_children_and_takes_back_its_messages():
     assert set(inv.rewound) == {root.id, queued_peer.id, read_peer.id}
     assert {code_node.id, queued.id, read.id, after.id} <= set(inv.dropped)
     assert g.edges(kind=SPAWN) == [] and g.edges(kind=WRITE) == []
-    assert g.agents() == [root, queued_peer, read_peer]
+    assert g.agent_roots() == [root, queued_peer, read_peer]
 
 
 def test_deleting_a_root_removes_its_agent():
@@ -368,7 +368,7 @@ def test_fork_at_a_code_node_drops_what_it_launched_and_sets_it_to_run_again():
 
     branch = d.g.fork(d.code_node)
 
-    root, code_node = branch.agent(d.root.id), branch.node(d.code_node.id)
+    root, code_node = branch.agent_root(d.root.id), branch.node(d.code_node.id)
     assert [n.id for n in own(root)] == [d.plan.id, d.code_node.id]
     assert code_node.state == READY and code_node.calls == [] and code_node.output == ""
     assert d.worker.id not in branch and root.children() == [] and branch.edges() == []
@@ -384,7 +384,7 @@ def test_fork_at_a_code_node_that_launched_nothing_keeps_it_as_it_ran():
 
     copy = branch.node(first.id)
     assert (copy.state, copy.output) == (DONE, "ok")
-    assert own(branch.agent(root.id)) == [copy]
+    assert own(branch.agent_root(root.id)) == [copy]
 
 
 def test_fork_after_a_launch_keeps_the_children_and_their_results():
@@ -392,10 +392,10 @@ def test_fork_after_a_launch_keeps_the_children_and_their_results():
 
     branch = d.g.fork(d.reply)
 
-    assert [a.id for a in branch.agents()] == [d.root.id, d.worker.id]
-    assert own(branch.agent(d.root.id))[-1].id == d.reply.id
+    assert [a.id for a in branch.agent_roots()] == [d.root.id, d.worker.id]
+    assert own(branch.agent_root(d.root.id))[-1].id == d.reply.id
     assert branch.node(d.code_node.id).calls == d.code_node.calls
-    assert branch.agent(d.worker.id).final_result() == 1
+    assert branch.agent_root(d.worker.id).final_result() == 1
     assert [(e.source, e.target) for e in branch.edges(kind=RETURN)] == [
         (d.done.id, d.code_node.id)
     ]
@@ -406,10 +406,10 @@ def test_fork_inside_a_worker_takes_its_result_back_from_the_parent():
 
     branch = d.g.fork(d.think)
 
-    worker, code_node = branch.agent(d.worker.id), branch.node(d.code_node.id)
+    worker, code_node = branch.agent_root(d.worker.id), branch.node(d.code_node.id)
     assert [n.id for n in own(worker)] == [d.think.id] and worker.status() == "running"
     assert code_node.state == READY and branch.edges(kind=RETURN) == []
-    assert [n.id for n in own(branch.agent(d.root.id))] == [d.plan.id, d.code_node.id]
+    assert [n.id for n in own(branch.agent_root(d.root.id))] == [d.plan.id, d.code_node.id]
     assert d.root.status() == "done"
 
 
@@ -421,7 +421,7 @@ def test_fork_at_a_code_node_takes_back_the_messages_it_sent():
 
     branch = g.fork(code_node)
 
-    assert note.id not in branch and own(branch.agent(peer.id)) == []
+    assert note.id not in branch and own(branch.agent_root(peer.id)) == []
     assert note.id in g
 
 
@@ -465,12 +465,12 @@ def test_replace_an_await_with_a_value_keeps_the_old_result_from_being_delivered
     assert unseen_results(g, d.root) == []
 
 
-def test_replace_an_await_with_another_agent():
+def test_replace_an_await_with_another_run():
     d = delegation()
     g = d.g
     other = g.start("other", name="other")
 
-    inv = g.replace(d.code_node, call(d.code_node, calls.AWAIT), agent=other)
+    inv = g.replace(d.code_node, call(d.code_node, calls.AWAIT), run=other)
 
     assert d.code_node.calls[call(d.code_node, calls.AWAIT)] == {
         "tool": "await",
@@ -480,19 +480,19 @@ def test_replace_an_await_with_another_agent():
     assert inv.rerun == [d.code_node.id]
 
 
-def test_replace_a_launch_with_another_agent_removes_the_old_child():
+def test_replace_a_launch_with_another_run_removes_the_old_child():
     d = delegation()
     g = d.g
     other = g.start("prepared", name="prepared")
     finish(g, other, 9)
 
-    inv = g.replace(d.code_node, call(d.code_node, calls.LAUNCH), agent=other)
+    inv = g.replace(d.code_node, call(d.code_node, calls.LAUNCH), run=other)
 
     assert calls.launched(d.code_node) == [other.id]
     assert inv.removed == [d.worker.id] and d.worker.id not in g
     assert inv.rerun == [d.code_node.id]
     assert other.parent() is d.root and d.root.children() == [other]
-    assert g.roots() == [d.root]
+    assert g.top_level_roots() == [d.root]
     [edge] = g.edges(kind=SPAWN)
     assert (edge.source, edge.target, edge.data) == (d.code_node.id, other.id, {})
 
@@ -503,7 +503,7 @@ def test_replace_leaves_no_saved_call_pointing_at_a_removed_agent():
     other = g.start("prepared", name="prepared")
     finish(g, other, 9)
 
-    g.replace(d.code_node, call(d.code_node, calls.LAUNCH), agent=other)
+    g.replace(d.code_node, call(d.code_node, calls.LAUNCH), run=other)
 
     assert all(entry["agent"] in g for entry in d.code_node.calls if "agent" in entry)
 
@@ -511,18 +511,18 @@ def test_replace_leaves_no_saved_call_pointing_at_a_removed_agent():
 def test_replace_refuses_mismatched_replacements():
     d = delegation()
     g = d.g
-    with pytest.raises(GraphError, match="only be replaced by another agent"):
+    with pytest.raises(GraphError, match="only be replaced by another run"):
         g.replace(d.code_node, call(d.code_node, calls.LAUNCH), "value")
     calls.record(d.code_node, "llm_query", "q", value="answer")
     before = records(g)
     with pytest.raises(GraphError, match="only be replaced by a value"):
-        g.replace(d.code_node, call(d.code_node, "llm_query"), agent=d.root)
+        g.replace(d.code_node, call(d.code_node, "llm_query"), run=d.root)
     with pytest.raises(GraphError, match="saved no call 5"):
         g.replace(d.code_node, 5, "x")
     with pytest.raises(TypeError, match="exactly one"):
         g.replace(d.code_node, call(d.code_node, "llm_query"))
     with pytest.raises(TypeError, match="exactly one"):
-        g.replace(d.code_node, call(d.code_node, "llm_query"), "x", agent=d.root)
+        g.replace(d.code_node, call(d.code_node, "llm_query"), "x", run=d.root)
     with pytest.raises(TypeError, match="strict JSON"):
         g.replace(d.code_node, call(d.code_node, "llm_query"), object())
     assert records(g) == before
@@ -541,7 +541,7 @@ EDITS = {
         d.code_node, call(d.code_node, calls.AWAIT), 5, **kw
     ),
     "replace_agent": lambda d, **kw: d.g.replace(
-        d.code_node, call(d.code_node, calls.LAUNCH), agent=d.other, **kw
+        d.code_node, call(d.code_node, calls.LAUNCH), run=d.other, **kw
     ),
 }
 
@@ -587,7 +587,7 @@ def test_an_edited_graph_saves_and_loads_with_the_code_ready(tmp_path):
         "key": "await-0",
         "value": 7,
     }
-    assert loaded.agent(d.root.id).status() == "running"
+    assert loaded.agent_root(d.root.id).status() == "running"
 
 
 def test_a_code_cut_off_mid_run_keeps_what_it_launched_through_save_and_load(tmp_path):
@@ -601,10 +601,10 @@ def test_a_code_cut_off_mid_run_keeps_what_it_launched_through_save_and_load(tmp
     loaded = Graph.load(g.save(tmp_path / "run"))
 
     again = loaded.node(code_node.id)
-    assert again.state == READY and loaded.agent(root.id).status() == "running"
-    assert loaded.agent(child.id).parent().id == root.id
+    assert again.state == READY and loaded.agent_root(root.id).status() == "running"
+    assert loaded.agent_root(child.id).parent().id == root.id
     assert calls.launched(again) == [child.id]
-    assert [m.text for m in own(loaded.agent(peer.id))] == ["for later"]
+    assert [m.text for m in own(loaded.agent_root(peer.id))] == ["for later"]
 
 
 def test_load_refuses_a_dangling_edge(tmp_path):
@@ -700,22 +700,15 @@ def test_timeline_lists_agents_as_their_own_steps():
     assert [item.id for item in timeline(g)] == [step.node.id for step in ordered]
 
 
-def test_a_saved_runs_timeline_names_the_recorded_harness_and_model(tmp_path):
+def test_a_saved_runs_timeline_names_its_agent(tmp_path):
     from rlmflow.view.timeline import summarize
 
     g = Graph()
-    root = g.start("count")
-    root.config_record = {
-        "harness": "rlmflow.harnesses.claude_code:ClaudeCodeHarness",
-        "model": "gpt-5",
-    }
+    root = g.start("count", agent="claude", name="root")
     g.save(tmp_path / "run")
     loaded = Graph.load(tmp_path / "run")
 
-    assert summarize(loaded.agent(root.id)) == "start root · root · claude_code · model gpt-5"
-
-    root.config_record["harness"] = "rlmflow.harnesses.interactive:InteractiveHarness"
-    assert summarize(root) == "start root · root · interactive"
+    assert summarize(loaded.agent_root(root.id)) == "start root · claude"
 
 
 def test_replay_snapshots_grow_monotonically_to_the_whole_graph():
@@ -726,7 +719,7 @@ def test_replay_snapshots_grow_monotonically_to_the_whole_graph():
 
     assert len(snaps) == total
     assert [len(s.nodes()) for s in snaps] == list(range(1, total + 1))
-    agents = [len(s.agents()) for s in snaps]
+    agents = [len(s.agent_roots()) for s in snaps]
     edges = [len(s.edges()) for s in snaps]
     assert agents == sorted(agents) and edges == sorted(edges)
     assert records(snaps[-1]) == records(g)
@@ -737,15 +730,15 @@ def test_replay_snapshots_grow_monotonically_to_the_whole_graph():
 
 def test_snapshot_cuts_the_graph_at_a_step():
     g = small_run()
-    root = g.agents()[0]
+    root = g.agent_roots()[0]
     worker = root.children()[0]
 
     cut = snapshot(g, 4)
 
-    assert [a.id for a in cut.agents()] == [root.id, worker.id]
-    assert own(cut.agent(worker.id)) == [] and cut.agent(worker.id).parent().id == root.id
-    assert cut.agent(root.id).config == root.config
-    assert cut is not g and len(g.agents()) == 3
+    assert [a.id for a in cut.agent_roots()] == [root.id, worker.id]
+    assert own(cut.agent_root(worker.id)) == [] and cut.agent_root(worker.id).parent().id == root.id
+    assert cut.agent_root(root.id).agent == root.agent
+    assert cut is not g and len(g.agent_roots()) == 3
 
 
 def test_replay_works_on_agents_no_flow_has_stepped():

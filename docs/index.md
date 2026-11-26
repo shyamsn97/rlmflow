@@ -2,7 +2,7 @@
 
 ## Start here
 
-- [Usage](usage.md): run a task, configs, models, tools, runtimes, streaming, forks, Claude Code and pi, the CLI.
+- [Usage](usage.md): run a task, agents, models, tools, runtimes, streaming, forks, Claude Code and pi, the CLI.
 - [Agents](agents.md): what an agent does in a run: its REPL tools, launching and waiting, messages, Claude Code sessions, forks.
 - [Command line](cli.md): every `rlmflow` command and flag, and how settings resolve.
 
@@ -10,12 +10,12 @@
 
 - [Runtimes](runtimes.md): where agent code runs: Local, subprocess, Docker, Modal, or your own.
 - [Security](security.md): the trust model, Docker isolation, caps, proxied tools.
-- [Streaming and turns](streaming.md): `run_streaming(..., until=...)`, turns, boundaries, cancellation.
+- [Streaming and turns](streaming.md): `stream(..., until=...)`, steps, boundaries, cancellation.
 - [Control](control.md): limits, multi-turn runs, save and resume, forks, custom tools.
 - [Node injection](injections.md): add messages and edits between streaming calls and continue the run.
 - [Observability](observability.md): querying the graph, consumers, reading a saved run.
 - [The graph](node_model.md): nodes, agents, edges, editing, and the saved format.
-- [Prompt customization](prompt_customization.md): each harness's prompt sections, and overriding them from a config or a harness subclass.
+- [Prompt customization](prompt_customization.md): each harness's prompt sections, and overriding them on an `Agent` or in a harness subclass.
 - [Skills](skills.md): `SKILL.md` files in prompts.
 
 ## Examples and context

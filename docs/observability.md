@@ -14,7 +14,7 @@ root.children()  # the agents it launched
 root.subtree()  # it and every agent below it
 g.usage(), g.usage().cost_usd  # tokens and cost, for the run or g.usage(a.subtree())
 
-g.agents(), g.nodes(), g.edges(kind="return")
+g.agent_roots(), g.nodes(), g.edges(kind="return")
 [n for n in g.nodes() if n.runs_code and n.error]  # every node whose code failed
 ```
 
@@ -28,7 +28,7 @@ worker.final_result()
 g.usage(worker.subtree())
 ```
 
-Each node carries `role`, `text`, `input`, `code`, `output`, `result`, `error`, `owner`, `data`, `metadata` and `seq`; `rlmflow.view.text.kind(node)` names it for display. Model usage is on model turns' `data["usage"]`. Model turns and code that ran also carry host-measured timing, as epoch seconds:
+Each node carries `role`, `text`, `input`, `code`, `output`, `result`, `error`, `root_id`, `data`, `metadata` and `seq`; `rlmflow.view.text.kind(node)` names it for display. Model usage is on model turns' `data["usage"]`. Model turns and code that ran also carry host-measured timing, as epoch seconds:
 
 ```python
 node.started_at, node.finished_at  # None for nodes no turn timed
@@ -49,28 +49,27 @@ The directory holds `graph.json` (nodes and edges; see [The graph](node_model.md
 
 ## Live consumers
 
-`run_streaming` hands you each finished node as a `Step`, which is all a consumer needs. Subclass `StreamConsumer` (`__call__(step)` and `close()`) and pass consumers as hooks: the stream calls each on every node before yielding it, including nodes you never saw because you stopped early, and closes them when it ends:
+`flow.stream` hands you each finished node, which is all a consumer needs. A consumer is a [hook](streaming.md#hooks) with `on_node(flow, node)` and `end(flow, g)`: the stream calls `on_node` on every node before yielding it, including nodes you never saw because you stopped early, and `end` when it ends:
 
 ```python
-from rlmflow import Checkpoint, LiveTree, StreamConsumer
+from rlmflow import Checkpoint
+from rlmflow.view import LiveTree
 from rlmflow.view.text import kind
 
 
-class Progress(StreamConsumer):
-    def __call__(self, step):
-        print(step.agent.path(), kind(step.node), step.node.finished_at)
+class Progress:
+    def on_node(self, flow, node):
+        print(node.path(), kind(node), node.finished_at)
 
-    def close(self):
+    def end(self, flow, g):
         print("done")
 
 
-async for step in flow.run_streaming(
-    g, hooks=[LiveTree(), Progress(), Checkpoint("runs/shepherd")]
-):
+async for node in flow.stream(g, hooks=[LiveTree(), Progress(), Checkpoint("runs/shepherd")]):
     ...
 ```
 
-Calling them yourself in the loop works too; then `close()` them after it.
+`LiveTree` can also be called yourself in the loop, `tree(node)`; then `close()` it after.
 
 The shipped consumers are:
 
@@ -92,7 +91,7 @@ Every node, roots included, is stamped with a `seq` when it is added, so the ord
 from rlmflow.view import steps, timeline
 
 for node in timeline(loaded):  # every node, in the order they appeared
-    print(node.owner, node.role)
+    print(node.root_id, node.role)
 
 for step in steps(loaded):  # the same order, with content and offsets
     print(f"{step.index:>3} +{step.elapsed:6.2f}s {step.title:<32} {step.summary}")
@@ -124,8 +123,7 @@ In the stepper, the arrow keys move a step, `Home` and `End` jump to the ends, a
 `replay` hands back the graph as it stood after each step, so anything that reads a graph works on a replay:
 
 ```python
-from rlmflow import render_tree
-from rlmflow.view import render_steps, replay
+from rlmflow.view import render_steps, render_tree, replay
 
 for snap in replay("examples/_runs/shepherd/shepherd"):
     print(render_tree(snap))
@@ -141,7 +139,7 @@ Each snapshot is rebuilt from the saved records, so they can be collected or ren
 `open_viewer` puts a step slider over the figure, an agent picker beside it, and that agent's nodes underneath, all as of the step you are on:
 
 ```python
-from rlmflow import open_viewer
+from rlmflow.view import open_viewer
 
 open_viewer("examples/_runs/shepherd/shepherd")  # needs: pip install rlmflow[viewer]
 ```

@@ -65,15 +65,15 @@ Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` for the models you use. Claude Code 
 
 ## Harnesses
 
-A harness is what drives an agent: it takes the agent's next turn and lands the result in the graph. Every agent has one, picked by its config, and one run can mix them. A Claude Code root can launch REPL workers, and a REPL root can launch Claude Code workers.
+A harness is what drives an agent: it takes the agent's next step and returns the node to land in the graph. Every agent is one, picked by its class, and one run can mix them. A Claude Code root can launch REPL workers, and a REPL root can launch Claude Code workers.
 
-| Harness                  | What drives the agent                                                                                      | How to start it                      | Needs                                    |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------- | ------------------------------------ | ---------------------------------------- |
-| `repl` (default)         | rlmflow calls the model, and the model writes ```` ```repl ```` blocks that run in the agent's Python REPL | `AgentConfig(model="gpt-5")`         | an OpenAI or Anthropic key               |
-| `claude_code`            | A headless Claude Code session per agent, with your Claude Code settings, tools and `CLAUDE.md`            | `AgentConfig(harness="claude_code")` | `rlmflow[claude]`, signed in to `claude` |
-| `pi`                     | A headless [pi](https://github.com/badlogic/pi-mono) session per agent                                     | `AgentConfig(harness="pi")`          | `pi` installed                           |
-| Your Claude Code session | You, in your own terminal: your session becomes the root agent                                             | `/rlmflow:run TASK` in Claude Code   | the `claude` CLI                         |
-| Your own                 | Anything that can take a turn: Codex, another CLI, a human, a script                                       | `AgentConfig(harness=MyHarness)`     | a `Harness` subclass                     |
+| Harness                  | What drives the agent                                                                                      | How to start it                    | Needs                                    |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------- | ---------------------------------- | ---------------------------------------- |
+| `Agent` (default)        | rlmflow calls the model, and the model calls a `repl(code)` tool that runs in the agent's Python REPL   | `Agent(model="gpt-6-sol")`       | an OpenAI or Anthropic key               |
+| `ClaudeCode`             | A headless Claude Code session per agent, with your Claude Code settings, tools and `CLAUDE.md`            | `ClaudeCode()`                     | `rlmflow[claude]`, signed in to `claude` |
+| `Pi`                     | A headless [pi](https://github.com/badlogic/pi-mono) session per agent                                     | `Pi()`                             | `pi` installed                           |
+| Your Claude Code session | You, in your own terminal: your session becomes the root agent                                             | `/rlmflow:run TASK` in Claude Code | the `claude` CLI                         |
+| Your own                 | Anything that can take a step: Codex, another CLI, a human, a script                                       | `MyAgent()`                        | an `Agent` subclass with its own `step`  |
 
 Every harness reaches the same agent tools (`launch_agent`, `AGENTS`, `agent.send`, `submit`) in the same per-agent REPL, so every launch, message and result is recorded in the graph, whatever drove it.
 
@@ -98,7 +98,7 @@ The plugin starts `rlmflow serve` for the project, and your session becomes the 
    files = sorted(os.listdir("haystack"))
    chunks = [files[i:i+25] for i in range(0, len(files), 25)]
    kids = [launch_agent("Search these files in haystack/ for a line matching ... Files: " + ", ".join(c),
-                        config="worker") for c in chunks]
+                        agent="worker") for c in chunks]
    EOF
    ```
 
@@ -131,59 +131,58 @@ The run is saved as it goes under `.rlmflow/runs/<timestamp>/`; `rlmflow view sh
     18  +  32.85s  root · done            done {'number': 2536600, 'file': 'haystack/file_0060.txt', 'line': 67}
 ```
 
-[`examples/needle/claude_plugin.py`](examples/needle/claude_plugin.py) runs this headless (`claude -p`) and checks the answer.
+[`examples/needle/claude_plugin.sh`](examples/needle/claude_plugin.sh) runs exactly these commands from a shell script (`claude -p`, then `rlmflow view show`), and [`claude_plugin.py`](examples/needle/claude_plugin.py) does the same from Python; both check the answer.
 
 Anything you type after the root finishes is a message to it, and reopens it. Workers use the coding Flow built from `rlmflow.toml`, or your own Flow if you set `flow = "mypkg.agents:build"` there. The plugin does nothing in sessions that didn't run `/rlmflow:run`.
 
 ### Claude Code or pi as workers
 
-Give a config the harness, and agents launch it by name like any other:
+Name them in the Flow's agents, and agents launch them by name like any other:
 
 ```python
-from rlmflow import AgentConfig, Flow
+from rlmflow import Agent, ClaudeCode, Flow, Pi
 
 flow = Flow(
-    configs=[
-        AgentConfig(model="gpt-5"),  # root: rlmflow's REPL harness
-        AgentConfig(
-            name="claude",
-            harness="claude_code",
-            harness_options={"sdk": {"permission_mode": "acceptEdits"}},
-        ),
-        AgentConfig(name="pi", harness="pi"),
-    ]
+    agents={
+        "default": Agent(model="gpt-6-sol"),  # rlmflow's REPL harness
+        "claude": ClaudeCode(options={"permission_mode": "acceptEdits"}),
+        "pi": Pi(),
+    }
 )
 
 flow.run(
-    "Split the TODOs in src/ by directory, and give each directory to a `claude` agent to fix."
+    "default",
+    "Split the TODOs in src/ by directory, and give each directory to a `claude` agent to fix.",
 )
 ```
 
-The root's code runs `launch_agent("Fix the TODOs in `path`.", config="claude", path=d)`. Each `claude` agent is a real Claude Code session in the working directory, with its own tools, permissions and `CLAUDE.md`. It reaches its REPL and the agent tools with `rlmflow repl`, as your own session does. To wait on workers of its own, it ends its turn, and the session is resumed with their results. To run the whole thing on Claude Code, start the root on that config: `flow.run(task, config="claude")`.
+The root's code runs `launch_agent("Fix the TODOs in `path`.", agent="claude", path=d)`. Each `claude` agent is a real Claude Code session in the working directory, with its own tools, permissions and `CLAUDE.md`. It reaches its REPL and the agent tools with `rlmflow repl`, as your own session does. To wait on workers of its own, it ends its turn, and the session is resumed with their results. To run the whole thing on Claude Code, start the root on that agent: `flow.run("claude", task)`.
 
 Code a session runs through `rlmflow repl` is recorded in the graph. Edits it makes with its own tools are not recorded as nodes, but each turn's workspace snapshot has the files.
 
 ### Your own harness
 
-A harness takes an agent's next step and returns the node to land. rlmflow doesn't ship one for Codex yet. One would be a `SessionHarness` like [`pi.py`](rlmflow/harnesses/pi.py) (about 100 lines), which runs one CLI turn per step and parses its JSON output:
+An agent's `step(node, llm, repl)` takes its next step and returns the node to land. rlmflow doesn't ship one for Codex yet. One would be an `Agent` subclass like [`Pi`](rlmflow/agents/pi.py) (about 100 lines), which runs one CLI call per step and parses its JSON output:
 
 ```python
-from rlmflow.harnesses.sessions import Session, SessionHarness, TurnResult, next_prompt
+from rlmflow import Agent, Flow, Node
+from rlmflow.agents import as_prompt, last_session
+from rlmflow.agents.prompts import USE_RLMFLOW_REPL
 
 
-class CodexHarness(SessionHarness):
-    name = "codex"
+class Codex(Agent):
+    protocol = USE_RLMFLOW_REPL  # it reaches its REPL through the `rlmflow repl` command
 
-    async def run_turn(self, flow, step, turn):
-        session = Session.for_step(step)
-        prompt = await next_prompt(flow, step, session)
-        argv = ["codex", "exec", "--json", f"{self.prompt(flow, step)}\n\n{prompt}"]
-        stdout = await self.run_command(flow, step, argv, turn.env)
-        ...  # read the reply text and token usage out of codex's JSON events
-        return TurnResult(session_id=session.id, text=text, usage=usage)
+    async def step(self, node, llm, repl):
+        system, *new = self.messages(node, repl, since=last_session(node))
+        argv = ["codex", "exec", "--json", f"{system['content']}\n\n{as_prompt(new)}"]
+        stdout = await repl.run_command(argv)
+        ...  # read the reply text, session id and token usage out of codex's JSON events
+        out = Node("assistant", text, data={"session": session, "repl": repl.id, "usage": usage})
+        return self.done(out, text, repl, since=node)
 
 
-flow = Flow(configs=[AgentConfig(model="gpt-5"), AgentConfig(name="codex", harness=CodexHarness)])
+flow = Flow(agents={"default": Agent(model="gpt-6-sol"), "codex": Codex()})
 ```
 
 See [Claude Code and pi as agents](docs/usage.md#claude-code-and-pi-as-agents), [Agents](docs/agents.md#claude-code-and-pi-sessions) and [Internals](docs/internals.md).
@@ -194,44 +193,43 @@ Besides the harnesses above, there are three ways in: the Python library, the ag
 
 ### From Python
 
-`Flow` runs agents; `AgentConfig` describes one kind of agent. The first config is the root's; the others are kinds the root can launch.
+`Flow` runs agents; each `Agent` is one kind of agent, named in `agents`. A run starts on the agent you name, and launches others by name.
 
 ```python
-from rlmflow import FILE_TOOLS, AgentConfig, Flow, LocalRuntime
+from rlmflow import Agent, Flow, LocalRuntime
+from rlmflow.tools.files import FILE_TOOLS
 
 flow = Flow(
-    configs=[
-        AgentConfig(model="gpt-5"),
-        AgentConfig(name="worker", model="gpt-5-mini"),
-    ],
+    agents={
+        "default": Agent(model="gpt-6-sol"),
+        "worker": Agent(model="gpt-6.1-terra"),
+    },
     tools=[FILE_TOOLS],
     runtime=LocalRuntime(working_directory="workdir"),
 )
 
-answer = flow.run("Count the TODOs in every file under src/, one worker per directory.")
+answer = flow.run("default", "Count the TODOs in every file under src/, one worker per directory.")
 ```
 
-Keyword arguments to `run` become variables in the root's REPL: `flow.run("Find the needle.", haystack=lines)`. To watch the run, steer it, or keep the graph, stream it:
+Keyword arguments to `run` become variables in the root's REPL: `flow.run("default", "Find the needle.", haystack=lines)`. To watch the run, steer it, or keep the graph, stream it:
 
 ```python
 import asyncio
-from rlmflow import Graph
 from rlmflow.view.text import kind
 
 
 async def main():
-    g = Graph()
-    root = g.start("Build a text adventure game in Python, with combat and inventory.")
-    async for step in flow.run_streaming(g):
-        print(step.agent.path(), kind(step.node))  # every node as it finishes
-    print(root.final_result())
+    g = flow.start("default", "Build a text adventure game in Python, with combat and inventory.")
+    async for node in flow.stream(g):
+        print(node.path(), kind(node))  # every node as it finishes
+    print(g.root.final_result())
     g.save("workdir/graph")  # reload with Graph.load
 
 
 asyncio.run(main())
 ```
 
-See [Usage](docs/usage.md) for configs, models, prompts, runtimes, stopping, and saving and resuming.
+See [Usage](docs/usage.md) for agents, models, prompts, runtimes, stopping, and saving and resuming.
 
 ### Inside an agent's REPL
 
@@ -239,7 +237,7 @@ The agent writes ordinary Python. These are the calls that build the graph:
 
 | Call                                           | What it does                                                                                                                         |
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `launch_agent(task, config="worker", **args)`  | Start an agent with a fresh context; `**args` become its variables. Returns a handle at once.                                        |
+| `launch_agent(task, agent="worker", **args)`   | Start an agent with a fresh context; `**args` become its variables. Returns a handle at once.                                        |
 | `await agent`, `await asyncio.gather(*agents)` | Wait for the results of agents you launched.                                                                                         |
 | `agent.send(message, **inputs)`                | Message an agent, reopening it if it finished; `**inputs` become its variables. For an agent you launched, `await` it for the reply. |
 | `AGENTS["name"]`                               | Any agent in the run, by name, path or id, with its status, result, parent and children.                                             |
@@ -249,7 +247,7 @@ The agent writes ordinary Python. These are the calls that build the graph:
 ```python
 chunks = [haystack[i : i + 100_000] for i in range(0, len(haystack), 100_000)]
 workers = [
-    launch_agent("Find the magic number in `chunk`.", config="worker", chunk=c) for c in chunks
+    launch_agent("Find the magic number in `chunk`.", agent="worker", chunk=c) for c in chunks
 ]
 results = await asyncio.gather(*workers)
 submit(next(r for r in results if r))
@@ -263,11 +261,11 @@ See [Agents](docs/agents.md).
 
 ```bash
 rlmflow run print "fix the failing test"     # a coding agent over .: stream it, print the answer
-rlmflow run --model gpt-5 --workdir ./proj print "add a test for parse_args"
+rlmflow run --model gpt-6-sol --workdir ./proj print "add a test for parse_args"
 rlmflow run --resume ./graph print "now update the docs"
 
 rlmflow view show runs/x                     # the agent tree, then the timeline
-rlmflow fork runs/x NODE --config worker     # copy a saved run cut after a node, and run the copy
+rlmflow fork runs/x NODE --agent worker      # copy a saved run cut after a node, and run the copy
 rlmflow render gif runs/x run.gif            # or html, svg, browser
 ```
 
@@ -299,7 +297,7 @@ pip install "rlmflow[openai,claude]"
 python examples/needle/filesystem.py --all
 ```
 
-[`haystack.py`](examples/needle/haystack.py) is the same idea at scale: one million lines passed in as a Python value, split across gpt-5-nano workers.
+[`haystack.py`](examples/needle/haystack.py) is the same idea at scale: one million lines passed in as a Python value, split across gpt-6-luna workers.
 
 [Example](examples/needle/)
 
@@ -308,16 +306,22 @@ python examples/needle/filesystem.py --all
 Three top-level agents get the same product spec for a browser boids simulation and a shared task board, and are told there is no manager. One of them plans: each tries to post and claim a `plan` task, the first claim wins, and the winner publishes the interface and posts a task per file. The rest wait for `plan` to finish, then claim tasks, publish the interfaces they define, and finish what they claimed. Their other tools are generic: file tools, their REPL, and a headless browser that shows them screenshots of the page and returns its console output. Nothing grades the app for them.
 
 ```python
-from rlmflow import FILE_TOOLS, AgentConfig, Flow, Graph, TaskBoard
+from rlmflow import ClaudeCode, Flow, Graph
+from rlmflow.tools.board import TaskBoard
+from rlmflow.tools.files import FILE_TOOLS
 
 flow = Flow(
     tools=[FILE_TOOLS, TaskBoard()],
-    configs=[AgentConfig(name="peer", harness="claude_code", max_depth=0)],
+    agents={"peer": ClaudeCode(max_depth=0)},
     workers=3,
 )
 g = Graph()
 for name in ("peer1", "peer2", "peer3"):
-    g.start(f"You are {name}, one of three peers. Coordinate on the task board.", name=name, config="peer")
+    g.start(
+        f"You are {name}, one of three peers. Coordinate on the task board.",
+        name=name,
+        agent="peer",
+    )
 flow.run(g)
 print(TaskBoard.state(g)["tasks"])
 ```
@@ -325,9 +329,9 @@ print(TaskBoard.state(g)["tasks"])
 Inside a run, the peers call the board from their REPL:
 
 ```python
-board_read()                     # tasks, findings, and upto: the last write seen
+board_read()  # tasks, findings, and upto: the last write seen
 board_post("plan", "split the app into tasks and publish the interface")
-board_claim("plan")["ok"]        # False if another peer claimed it first
+board_claim("plan")["ok"]  # False if another peer claimed it first
 board_publish("interface", "window.BOIDS; load order config, grid, sim, render, main")
 board_post("js/boids.js", "BOIDS.Flock: the simulation, using the grid")
 board_finish("plan", "interface published; 7 file tasks posted")
@@ -400,10 +404,10 @@ A graph holds nodes and edges. A node is one chat message: the text the model re
 
 ```mermaid
 flowchart LR
-  r[/"root<br/>task and arguments"/] --> b{{"model turn<br/>reply, its repl block, output"}} --> c{{"model turn"}} --> d(("model turn<br/>submit(result)"))
+  r[/"root<br/>task and arguments"/] --> b{{"model turn<br/>reply, its repl call, output"}} --> c{{"model turn"}} --> d(("model turn<br/>submit(result)"))
 ```
 
-Each model call is one assistant node: the reply, the code from its `repl` block, and what that code printed. `submit(...)` in the code, or a reply with no `repl` block, marks that node terminal with the agent's result. Everything that arrives from outside is a user node: a batch of results, a peer's message, a controller's nudge, with any values it carries bound as variables. A Claude Code or pi session that ends its turn waiting for messages marks its last node idle. Edges are what crosses between agents: `spawn` from the node that launched an agent, `return` from a child's terminal node to wherever its result went, and `write` from the node that sent a message. Below, solid arrows join an agent's nodes and dotted arrows are edges.
+Each model call is one assistant node: the reply, the code from its `repl(code)` tool call, and what that code printed. `submit(...)` in the code, or a reply with no tool call, marks that node terminal with the agent's result. Everything that arrives from outside is a user node: a batch of results, a peer's message, a controller's nudge, with any values it carries bound as variables. A Claude Code or pi session that ends its turn waiting for messages marks its last node idle. Edges are what crosses between agents: `spawn` from the node that launched an agent, `return` from a child's terminal node to wherever its result went, and `write` from the node that sent a message. Below, solid arrows join an agent's nodes and dotted arrows are edges.
 
 **`launch_agent` + `await`.** Launching adds an agent and a `spawn` edge from the node whose code launched it. Awaiting it in the same code returns the child's result in place, and a `return` edge records that the node used it:
 
@@ -451,7 +455,7 @@ flowchart LR
 
 ```python
 branch = g.fork(node)
-branch.send(branch.agent(node.owner), "Try a different approach.")
+branch.send(branch[node.root_id].root, "Try a different approach.")
 flow.run(branch)
 ```
 
@@ -514,7 +518,7 @@ See [Observability](docs/observability.md) and the [command line](docs/cli.md).
 
 ## Docs
 
-- [Usage](docs/usage.md): running, configs, models, tools, runtimes, streaming, forking, Claude Code and pi, the CLI.
+- [Usage](docs/usage.md): running, agents, models, tools, runtimes, streaming, forking, Claude Code and pi, the CLI.
 - [Agents](docs/agents.md): what an agent does in a run: its REPL tools, launching, waiting and messaging.
 - [Runtimes](docs/runtimes.md) · [Security](docs/security.md) · [Observability](docs/observability.md) · [Internals](docs/internals.md)
 - [Changelog](CHANGELOG.md) · [All docs](docs/index.md)

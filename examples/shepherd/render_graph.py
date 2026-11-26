@@ -116,8 +116,8 @@ def load_run(run_dir: Path) -> tuple[Graph, Node, Graph, Node]:
     if not (run_dir / "shepherd").exists():
         raise SystemExit(f"{run_dir} holds no shepherd graph")
     g, meta = Graph.load(run_dir / "graph"), Graph.load(run_dir / "shepherd")
-    workers = [a for a in g.roots() if a.name == "worker"]
-    shepherds = [a for a in meta.roots() if a.name == "shepherd"]
+    workers = [a for a in g.top_level_roots() if a.name == "worker"]
+    shepherds = [a for a in meta.top_level_roots() if a.name == "shepherd"]
     if not workers or not shepherds:
         raise SystemExit(f"{run_dir} holds no shepherd run")
     return g, workers[0], meta, shepherds[0]
@@ -129,7 +129,11 @@ def load_branches(run_dir: Path, worker: Node) -> list[tuple[str, Graph, Node]]:
     for path in sorted((run_dir / "branches").glob("branch*"), key=lambda p: int(p.name[6:])):
         branch = Graph.load(path)
         found.append(
-            (branch.metadata.get("shepherd_branch", path.name), branch, branch.agent(worker.id))
+            (
+                branch.metadata.get("shepherd_branch", path.name),
+                branch,
+                branch.agent_root(worker.id),
+            )
         )
     return found
 
@@ -186,7 +190,7 @@ def read_branches(
             outcome=str(agent.final_result() or "unfinished"),
             turns=model_turns(g, agent),
             nodes=len(agent.nodes()),
-            plan=str(agent.metadata.get("shepherd_order", "")),
+            plan=str(agent.data.get("shepherd_order", "")),
             won=name == winner,
             board=boards.get(name, ""),
         )

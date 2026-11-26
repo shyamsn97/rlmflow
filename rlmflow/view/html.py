@@ -20,7 +20,7 @@ from typing import Any
 from xml.sax.saxutils import escape
 
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import IMAGES_KEY, Agent, Node
+from rlmflow.graph.nodes import IMAGES_KEY, AgentRoot, Node
 from rlmflow.view.figure import BG, DIM, INK, graph_svg, node_color, run_title, step_svg
 from rlmflow.view.text import kind
 from rlmflow.view.timeline import TimelineEntry, as_graph, node_detail, steps, timeline
@@ -176,7 +176,7 @@ def render_html(g: Graph, *, title: str = "") -> str:
     figure = graph_svg(g, title=name, interactive=True)
     heading = title or f"{name} · {len(ordered)} nodes"
     tokens = g.usage()
-    agents = sum(1 for node in ordered if isinstance(node, Agent) and node.parent())
+    agents = sum(1 for node in ordered if isinstance(node, AgentRoot) and node.parent())
     turns = sum(1 for node in ordered if "model" in node.data)
     sub = (
         f"{agents} sub-agents · {turns} model turns · "
@@ -294,7 +294,7 @@ def _panel(step: TimelineEntry) -> str:
 
 def _transcript(g: Graph, nodes: list[Node], agent_path: str) -> str:
     """One agent's own nodes, in order, as of the step being shown."""
-    own = [node for node in nodes if node.agent.path() == agent_path]
+    own = [node for node in nodes if node.root.path() == agent_path]
     if not own:
         return f"_{escape(agent_path)} has not started yet._"
     blocks = [f"**{agent_path}** · {len(own)} nodes so far"]
@@ -321,7 +321,7 @@ def open_viewer(
     if not walked:
         raise ValueError("nothing to view: that graph has no nodes")
     ordered = [step.node for step in walked]
-    agents = [node.path() for node in ordered if isinstance(node, Agent)]
+    agents = [node.path() for node in ordered if isinstance(node, AgentRoot)]
     tokens = g.usage()
     name = run_title(g)
 

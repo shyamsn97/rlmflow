@@ -2,10 +2,10 @@
 
 import threading
 
-from helpers import stepping
+from helpers import repl, stepping
 
-from rlmflow import AgentConfig, Flow, Graph, TaskBoard
-from rlmflow.tools.board import events
+from rlmflow import Agent, Flow, Graph
+from rlmflow.tools.board import TaskBoard, events
 from rlmflow.view.figure import graph_svg
 
 POSTER = """\
@@ -23,12 +23,12 @@ submit({"ok": claimed["ok"], "upto": seen["upto"]})"""
 class Scripted:
     def chat(self, messages, **_):
         task = next(str(m["content"]) for m in messages if m["role"] == "user")
-        return f"```repl\n{POSTER if 'poster' in task else LATE}\n```"
+        return repl(POSTER if "poster" in task else LATE)
 
 
 def run_board() -> tuple[Flow, Graph]:
     flow = Flow(
-        configs=[AgentConfig(model="scripted", max_depth=0)],
+        agents={"default": Agent(model="scripted", max_depth=0)},
         tools=[TaskBoard()],
         llm_clients={"scripted": Scripted()},
         workers=1,
@@ -42,7 +42,7 @@ def run_board() -> tuple[Flow, Graph]:
 
 def test_the_board_is_the_events_saved_on_the_nodes_that_made_them():
     _, g = run_board()
-    poster, late = g.agents()
+    poster, late = g.agent_roots()
 
     assert poster.final_result() is True
     assert late.final_result() == {"ok": False, "upto": 3}
@@ -67,7 +67,7 @@ def test_a_saved_run_loads_with_its_board(tmp_path):
 
 def test_a_fork_has_the_board_as_it_was_at_the_cut():
     _, g = run_board()
-    poster = g.agents()[0]
+    poster = g.agent_roots()[0]
 
     branch = g.fork(poster)
 

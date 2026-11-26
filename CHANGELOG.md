@@ -4,6 +4,14 @@ All notable changes to **rlmflow** are recorded here. The format follows [Keep a
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-11-25
+
+- **Package initializers are public façades only.** The REPL harness implementation moved from `rlmflow.agents` to `rlmflow.agents.agent`, the provider-neutral LLM protocol from `rlmflow.llm` to `rlmflow.llm.base`, and the CLI application from `rlmflow.cli` to `rlmflow.cli.app`. Existing public imports from `rlmflow`, `rlmflow.agents`, `rlmflow.llm` and `rlmflow.cli` are unchanged.
+
+- **Breaking: agents act through a `repl(code)` tool, not ```` ```repl ```` blocks.** `Agent` gives the model one OpenAI function tool, `repl(code)`, and runs the code of the one call a reply makes; a reply that calls no tool is the final answer, as a reply with no block was. GPT-6 models act in tool calls, and wrote fenced blocks in interim messages that Chat Completions never returns, so they replied empty or said they couldn't reach their tools. Messages are OpenAI chat messages with tool calls: a code node is an assistant message with one `repl` call (its id is the node's) and a `tool` message with its output. `OpenAIClient` uses the Responses API on OpenAI's own endpoint (GPT-6 takes tools on Chat Completions only with `reasoning_effort="none"`) and Chat Completions on any other `base_url`; `api="responses"` or `"chat"` picks one. It translates the chat messages into Responses input items, sends `store=False`, and sends the tool with `parallel_tool_calls=False`; `AnthropicClient` translates tools, calls and results, and merges consecutive messages of one role. `rlmflow.llm.complete` returns a `Reply(text, calls, usage)` instead of `(text, usage)`, `LLMChunk` has `calls`, and a client's `chat` may return a `Reply`; `ToolCall`, `Reply` and `as_reply` are new, and `complete` prefers a client's `stream`. `rlmflow.agents.repl_reply(code, text="")` is what a scripted model returns to act, and `parse_code` takes a `Reply`. `rlmflow.utils.find_repl_blocks` and `has_repl_fence` are gone. Saved graphs load as before: their nodes already keep `code` apart from `text`.
+
+- **A person launches `default` agents.** In the Claude Code plugin, `launch_agent(task)` with no `agent=` started `person` children, which wait forever for a session nobody opens. `Agent.child_agent` names the agent a launch without `agent=` starts (`None`, the launcher's own, by default); `Person` sets it to `"default"`.
+
 - **Shepherd: the shepherd picks the branch.** After the forks play, the host sends the shepherd each branch's plan, outcome, push count and final board, and the shepherd submits `"Picked branchN: <why>"` as the run's result, in place of the host taking the top score.
 
 - **`TaskBoard`: a shared task board kept on the nodes that change it.** `Flow(tools=[TaskBoard()])` gives agents `board_post`, `board_claim` (the first claim of an open task wins), `board_finish`, `board_publish` and `board_read`. Each is a `cache=True` host tool, so every write is saved, numbered, on the node that made it, and `TaskBoard.state(g)` replays them: the board loads with a saved run, a rerun takes back the writes it no longer makes, and a fork has the board as it was at the cut. The figure draws a board lane right of the agents, with rows in time order: writes run into it, and each read leaves from the last write it saw. The Boids example now coordinates its three peers on a board, and one peer plans: whoever claims the `plan` task first publishes the interface and posts the file tasks.
@@ -470,4 +478,5 @@ Initial release.
 [0.5.0]: https://github.com/shyamsn97/rlmflow/compare/v0.4.2...db98cb7
 [0.6.0]: https://github.com/shyamsn97/rlmflow/compare/db98cb7...d7a1a7c
 [0.7.0]: https://github.com/shyamsn97/rlmflow/compare/d7a1a7c...v0.7.0
-[unreleased]: https://github.com/shyamsn97/rlmflow/compare/v0.7.0...HEAD
+[0.8.0]: https://github.com/shyamsn97/rlmflow/compare/v0.7.0...v0.8.0
+[unreleased]: https://github.com/shyamsn97/rlmflow/compare/v0.8.0...HEAD

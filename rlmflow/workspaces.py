@@ -29,7 +29,8 @@ class LocalWorkspace:
         if source is not None and source != "shared":
             raise ValueError(
                 "this Flow's agents share one directory; give its runtime a working "
-                "directory, or pass Flow(workspaces='auto'), to start agents from other files"
+                "directory, or use Flow(workspaces='copies') or 'isolated' to start "
+                "agents from other files"
             )
 
     async def snapshot(self, agent: Node) -> Any:
@@ -370,23 +371,24 @@ class Copies:
 
 
 def make_workspaces(workspaces: Any, runtime: Any) -> Any:
-    """``Flow(workspaces=...)``: ``"auto"``, ``"shared"``, ``"isolated"`` or an object.
+    """``Flow(workspaces=...)``: ``"copies"``, ``"isolated"``, ``"shared"``, an object, or ``None``.
 
-    ``"auto"`` gives launched agents copies when the runtime runs on this
-    machine in a directory you gave it, and shares one directory otherwise.
+    ``None`` is ``"copies"`` when the runtime runs on this machine in a
+    directory you gave it (and git is installed), and ``"shared"`` otherwise.
     """
     directory = runtime.working_directory
-    if workspaces is None or workspaces == "shared":
+    if workspaces is None:
+        local = runtime.location is None and directory is not None
+        workspaces = "copies" if local and shutil.which("git") is not None else "shared"
+    if workspaces == "shared":
         return LocalWorkspace(directory)
-    if workspaces == "auto":
-        if runtime.location is not None or directory is None or shutil.which("git") is None:
-            return LocalWorkspace(directory)
+    if workspaces == "copies":
         return Copies(directory)
     if workspaces == "isolated":
         return Copies(directory, isolate_roots=True)
     if isinstance(workspaces, str):
         raise ValueError(
-            f"workspaces must be 'auto', 'shared', 'isolated' or an object, not {workspaces!r}"
+            f"workspaces must be 'copies', 'isolated', 'shared' or an object, not {workspaces!r}"
         )
     return workspaces
 

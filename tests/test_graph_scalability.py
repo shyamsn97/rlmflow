@@ -4,8 +4,8 @@ import pytest
 from helpers import agent_graph, ran
 
 import rlmflow
-from rlmflow import AgentConfig, Graph, LLMUsage, Node, persistence
-from rlmflow.graph import calls
+from rlmflow import Graph, Node
+from rlmflow.graph import LLMUsage, calls, persistence
 
 
 def chain(length: int) -> tuple[Graph, Node, list[Node]]:
@@ -22,11 +22,13 @@ def test_deep_graph_operations_are_iterative(tmp_path):
 
     g.save(tmp_path / "deep")
     loaded = Graph.load(tmp_path / "deep")
-    assert len(loaded.agent(root.id).nodes()) == 10_001
+    assert len(loaded.agent_root(root.id).nodes()) == 10_001
     assert len(loaded) == len(g)
 
     branch = g.fork(nodes[4_999])
-    assert [n.id for n in branch.agent(root.id).nodes()] == [n.id for n in [root, *nodes[:5_000]]]
+    assert [n.id for n in branch.agent_root(root.id).nodes()] == [
+        n.id for n in [root, *nodes[:5_000]]
+    ]
     assert len(root.nodes()) == 10_001
 
 
@@ -41,28 +43,18 @@ def test_deep_agent_chains_are_iterative():
     assert agent.lineage()[0] is root
 
 
-def test_persistence_preserves_full_config_without_sharing_values(tmp_path):
-    g, root = agent_graph("configured", args={"doc": "value"})
-    root.bind_config(
-        AgentConfig(
-            output_schema={"type": "string"},
-            model="fast",
-            max_depth=4,
-            max_iters=7,
-            keep_n_messages=5,
-            max_output_length=999,
-            max_query_chars=888,
-        )
-    )
+def test_persistence_preserves_the_task_node_without_sharing_values(tmp_path):
+    g = Graph()
+    root = g.start("configured", agent="fast", name="lead", doc={"value": [1]})
 
     branch = g.fork(root)
     g.save(tmp_path / "configured")
-    loaded = Graph.load(tmp_path / "configured").agent(root.id)
+    loaded = Graph.load(tmp_path / "configured").agent_root(root.id)
 
-    assert branch.agent(root.id).config == root.config
-    assert loaded.config == root.config
+    for copy in (branch.agent_root(root.id), loaded):
+        assert (copy.agent, copy.name, copy.task) == ("fast", "lead", "configured")
     assert loaded.input == root.input and loaded.input is not root.input
-    assert loaded.config.output_schema is not root.config.output_schema
+    assert loaded.input["doc"] is not root.input["doc"]
 
 
 def test_reads_count_usage_agents_and_errors():
@@ -77,9 +69,9 @@ def test_reads_count_usage_agents_and_errors():
     assert g.usage() == LLMUsage(input_tokens=7, output_tokens=3)
     assert g.usage([child]) == LLMUsage()
     assert root.subtree() == [root, child]
-    assert g.agent(child.id) is child
+    assert g.agent_root(child.id) is child
     assert [n for n in g.nodes() if n.error] == [error]
-    assert len(g.nodes()) == 5 and len(g.agents()) == 2
+    assert len(g.nodes()) == 5 and len(g.agent_roots()) == 2
 
 
 def test_saved_graph_is_flat_ordered_and_strict(tmp_path):
@@ -156,8 +148,8 @@ def test_large_inputs_are_content_addressed_once(tmp_path):
     assert large not in graph_text
 
     loaded = Graph.load(run)
-    assert loaded.agent(root.id).input["data"] == large
-    assert loaded.agent(child.id).input["data"] == large
+    assert loaded.agent_root(root.id).input["data"] == large
+    assert loaded.agent_root(child.id).input["data"] == large
 
 
 def test_removed_apis_have_no_compatibility_aliases():

@@ -6,12 +6,12 @@ from collections.abc import Iterable
 from typing import Any
 
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import DONE, Agent, Node
+from rlmflow.graph.nodes import DONE, AgentRoot, Node
 
 
 def kind(node: Node) -> str:
     """What a node is, for display: ``agent``, ``message``, ``done``, ``idle``, ``model``, ``code`` or ``reply``."""
-    if isinstance(node, Agent):
+    if isinstance(node, AgentRoot):
         return "agent"
     if node.role == "user":
         return "message"
@@ -34,7 +34,7 @@ def render_forest(graphs: Iterable[Graph]) -> str:
 def render_tree(graph: Graph) -> str:
     """Render each top-level agent's task and recursive status tree."""
     blocks = []
-    for top in graph.roots():
+    for top in graph.top_level_roots():
         lines = [_clip(top.task) or "task"]
         _append_agent(graph, lines, top, prefix="", last=True)
         blocks.append("\n".join(lines))

@@ -9,12 +9,10 @@ import pytest
 from helpers import ScriptedFlow, StubLLM, finish, ran
 from helpers import reasoning_repl as block
 
-from rlmflow import AgentConfig, Graph
+from rlmflow import Agent, Graph, Node, Person
 from rlmflow.agent_tools import cli, hooks
-from rlmflow.cli.serve import INTERACTIVE, Serve, until
-from rlmflow.graph.nodes import Agent, Step
-from rlmflow.harnesses.interactive import InteractiveHarness, read_transcript
-from rlmflow.harnesses.sessions import TurnResult
+from rlmflow.cli.serve import PERSON, Serve, read_transcript, until
+from rlmflow.graph import AgentRoot
 
 SESSION = "11111111-2222-3333-4444-555555555555"
 WORKER = block("submit(chunk.count('x'))")
@@ -69,7 +67,7 @@ async def serving(
     if graph is None:
         graph = Graph()
     flow = ScriptedFlow(
-        llm or StubLLM(lambda messages: WORKER), configs=[AgentConfig(name="worker")]
+        llm or StubLLM(lambda messages: WORKER), agents={"default": Agent(), "worker": Agent()}
     )
     serve = Serve(flow, graph, graph_dir=project / "run", project=project, **kwargs)
     task = asyncio.create_task(serve.run())
@@ -84,7 +82,7 @@ async def shut(session: Session, task: asyncio.Task) -> None:
 
 def shape(node):
     """What a node is: the root, a code_node, a turn end, or a node from someone else."""
-    if isinstance(node, Agent):
+    if isinstance(node, AgentRoot):
         return "root"
     if node.runs_code:
         return "code_node"
@@ -106,7 +104,7 @@ def test_the_first_prompt_creates_a_bound_interactive_root_and_later_prompts_are
         context = await you.prompt("/rlmflow:run count the x's in xxaxx")
         root = serve.root
         assert root.task == "count the x's in xxaxx" and root.name == "root"
-        assert root.config.harness == INTERACTIVE and serve.session_id == SESSION
+        assert root.agent == PERSON and serve.session_id == SESSION
         assert "rlmflow repl <<'EOF'" in context and "keep a `notes` string" in context
         assert "only through `rlmflow repl`" not in context
 
@@ -126,7 +124,7 @@ def test_the_first_prompt_creates_a_bound_interactive_root_and_later_prompts_are
         await shut(you, task)
         assert not serve.serve_file.exists()
         loaded = Graph.load(project / "run")
-        assert loaded.agent(root.id).final_result() == 1
+        assert loaded.agent_root(root.id).final_result() == 1
 
     asyncio.run(main())
 
@@ -137,7 +135,7 @@ def test_a_code_with_no_open_turn_is_refused(project):
         you = Session(project, serve)
         await you.prompt("/rlmflow:run anything")
         await you.stop()
-        with pytest.raises(cli.ToolError, match="no open turn"):
+        with pytest.raises(cli.ToolError, match="isn't taking a step"):
             await you.code_node("print(1)")
         await shut(you, task)
 
@@ -151,7 +149,7 @@ def test_stop_lands_done_with_a_submission_or_the_reply_when_nothing_is_pending(
         await you.prompt("/rlmflow:run say hi")
         assert await you.stop("hi there") == ""
         [done] = [n for n in serve.root.nodes() if shape(n) == "done"]
-        assert done.result == "hi there" and done.data["session_id"] == SESSION
+        assert done.result == "hi there" and done.data["session"] == SESSION
 
         await you.prompt("submit 7")
         await you.code_node("submit(7)")
@@ -168,7 +166,7 @@ def test_stop_with_children_lands_idle_then_blocks_with_their_results(project):
         you = Session(project, serve)
         await you.prompt("/rlmflow:run count x's in two chunks")
         await you.code_node(
-            "handles = [launch_agent('count', config='worker', chunk=c) for c in ('xxa', 'xax')]"
+            "handles = [launch_agent('count', agent='worker', chunk=c) for c in ('xxa', 'xax')]"
         )
         decision = json.loads(await you.stop("Launched two counters."))
         g, root = serve.graph, serve.root
@@ -192,13 +190,13 @@ def test_ending_the_session_after_the_root_submits_lets_background_agents_finish
         serve, task = await serving(project, llm=SlowLLM())
         you = Session(project, serve)
         await you.prompt("/rlmflow:run count x's, and answer early")
-        await you.code_node("launch_agent('count', config='worker', chunk='xxa')\nsubmit('early')")
+        await you.code_node("launch_agent('count', agent='worker', chunk='xxa')\nsubmit('early')")
         assert await you.stop("Answered; the counter keeps going.") == ""
         await you.hook("end", reason="other")
         assert not serve.serve_file.exists() and not task.done()
         await asyncio.wait_for(task, 10)
         loaded = Graph.load(project / "run")
-        [worker] = loaded.agent(serve.root.id).children()
+        [worker] = loaded.agent_root(serve.root.id).children()
         assert worker.final_result() == 2
 
     asyncio.run(main())
@@ -209,10 +207,10 @@ def test_ending_the_session_before_the_root_submits_stops_its_agents(project):
         serve, task = await serving(project, llm=SlowLLM())
         you = Session(project, serve)
         await you.prompt("/rlmflow:run count x's")
-        await you.code_node("launch_agent('count', config='worker', chunk='xxa')")
+        await you.code_node("launch_agent('count', agent='worker', chunk='xxa')")
         await shut(you, task)
         loaded = Graph.load(project / "run")
-        [worker] = loaded.agent(serve.root.id).children()
+        [worker] = loaded.agent_root(serve.root.id).children()
         assert worker.status() != "done"
 
     asyncio.run(main())
@@ -227,10 +225,10 @@ def test_a_stop_that_times_out_ends_the_turn_and_the_next_prompt_carries_the_res
         serve, task = await serving(project, llm=SlowLLM())
         you = Session(project, serve)
         await you.prompt("/rlmflow:run count slowly")
-        await you.code_node("h = launch_agent('count', config='worker', chunk='xx')")
+        await you.code_node("h = launch_agent('count', agent='worker', chunk='xx')")
         assert await you.stop("launched") == ""
         assert shapes(serve.graph, serve.root)[-1] == "idle"
-        assert await until(lambda: serve.flow.agent_tools.open_turn(serve.root), 10)
+        assert await until(lambda: serve.flow.agent_tools.waiting(serve.root) or None, 10)
         context = await you.prompt("what did it find?")
         assert "Agents you started have finished." in context and "result: 2" in context
         await you.code_node("submit(h.result())")
@@ -291,7 +289,7 @@ def test_the_turn_end_records_the_session_and_usage_from_the_transcript(project)
             handle.writelines(json.dumps(entry) + "\n" for entry in entries)
         await you.hook("stop", stop_hook_active=False)
         done = serve.root.nodes()[-1]
-        assert done.data["session_id"] == SESSION and done.result == "bye"
+        assert done.data["session"] == SESSION and done.result == "bye"
         assert done.data["usage"] == {"input_tokens": 154, "output_tokens": 11}
         assert serve.graph.usage().input_tokens == 154
         await shut(you, task)
@@ -321,32 +319,35 @@ def test_serve_json_is_found_above_the_cwd_and_the_environment_wins(project, mon
         cli.endpoint()
 
 
-def test_an_agent_token_acts_only_for_its_own_agent(project):
+def test_an_agent_token_acts_only_for_its_own_run(project):
     async def main():
         g = Graph()
-        a, b = g.start("a"), g.start("b")
-        for agent in (a, b):
-            agent.bind_config(AgentConfig(harness=INTERACTIVE))
+        a, b = g.start("a"), g.start("b", agent="person")
+        finish(g, a, "done")
         flow = ScriptedFlow(StubLLM(lambda messages: WORKER))
+        flow.agents["person"] = Person()
         server = flow.agent_tools
         url = await server.start()
-        token_a = server.attach(a)
+        token_a, token_b = server.token(a), server.token(b)
+        running = asyncio.create_task(flow.arun(g))
         try:
-            async with server.turn(Step(g, b, b)) as turn_b:
-                with pytest.raises(cli.ToolError, match="no open turn"):
-                    await asyncio.to_thread(
-                        cli.request, "repl", {"code": "print(1)"}, url=url, token=token_a
-                    )
-                ran = await asyncio.to_thread(
-                    cli.request, "repl", {"code": "print('b')"}, url=url, token=turn_b.token
+            assert await until(lambda: server.waiting(b) or None, 5)
+            with pytest.raises(cli.ToolError, match="isn't taking a step"):
+                await asyncio.to_thread(
+                    cli.request, "repl", {"code": "print(1)"}, url=url, token=token_a
                 )
-                assert ran["output"].strip() == "b"
+            ran = await asyncio.to_thread(
+                cli.request, "repl", {"code": "print('b')"}, url=url, token=token_b
+            )
+            assert ran["output"].strip() == "b"
             with pytest.raises(cli.ToolError, match="serve token"):
                 await asyncio.to_thread(cli.request, "stop", {}, url=url, token=token_a)
+            server.end_step(b, Node("assistant", "bye"))
+            await asyncio.wait_for(running, 5)
         finally:
             await flow.aclose()
-        assert shapes(g, b) == ["root", "code_node"]
-        assert a.nodes() == [a]
+        assert shapes(g, b) == ["root", "code_node", "done"]
+        assert len(a.nodes()) == 2
 
     asyncio.run(main())
 
@@ -367,7 +368,7 @@ def test_hooks_without_a_serve_or_from_another_session_do_nothing(project):
         )
         assert await intruder.stop() == ""
         await intruder.hook("end")
-        assert not task.done() and serve.flow.agent_tools.open_turn(serve.root) is not None
+        assert not task.done() and serve.flow.agent_tools.waiting(serve.root)
         await you.stop()
         await shut(you, task)
 
@@ -396,33 +397,22 @@ def test_a_restarted_serve_continues_the_same_root_and_session(project):
     asyncio.run(main())
 
 
-class EndedTurn:
-    """What ``outcome`` reads from a turn that ended without a submission."""
-
-    submitted, result = False, None
-
-
-def test_a_session_turn_ends_idle_while_children_run_or_results_are_unseen():
+def test_a_person_step_waits_while_children_run_or_results_are_unseen():
     g = Graph()
-    root = g.start("lead")
-    root.bind_config(AgentConfig(harness=INTERACTIVE))
+    root = g.start("lead", agent="person")
     flow = ScriptedFlow(StubLLM(lambda messages: WORKER))
+    person = flow.agents["person"] = Person()
 
     def outcome():
-        step, seen = Step.latest(g, root), len(root.nodes())
-        ended = TurnResult(session_id=SESSION, text="my reply")
-        return asyncio.run(InteractiveHarness().outcome(flow, step, EndedTurn(), ended, seen))
+        since = root.nodes()[-1]
+        return person.done(Node("assistant", "my reply"), "my reply", flow.repl(root), since=since)
 
-    done = outcome()
-    assert done.data["terminal"] and done.result == "my reply" and root.nodes()[-1] is done
+    assert outcome().result == "my reply"
     code_node = g.append(root, ran("h = launch_agent('count')"))
     child = g.start("count", parent=code_node)
-    assert outcome().data["idle"]
+    assert outcome().result is None
     finish(g, child, 2)
-    unseen = outcome()
-    assert unseen.data["idle"] and unseen.data["session_id"] == SESSION
-    assert root.status() == "idle"
+    assert outcome().result is None
     delivered = flow.deliver_results(g, root)
     assert root.nodes()[-1] is delivered and "result: 2" in delivered.text
-    done = outcome()
-    assert done.data["terminal"] and done.result == "my reply"
+    assert outcome().result == "my reply"

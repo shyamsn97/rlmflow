@@ -13,7 +13,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from rlmflow.tools import tool_from_schema
+from rlmflow.tools.declare import tool_from_schema
 
 
 class MCPTools:

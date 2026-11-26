@@ -15,7 +15,7 @@ One script per feature. Run them from the repository root.
 
 ```bash
 pip install -e ".[openai,mcp]"
-python examples/features/mcp_tools.py --model gpt-5-mini --out-dir /tmp/mcp-run
+python examples/features/mcp_tools.py --model gpt-6.1-terra --out-dir /tmp/mcp-run
 ```
 
 Run `python examples/features/mcp_weather_server.py` to start the server on its own, for debugging with your own MCP client.
@@ -29,7 +29,7 @@ docker build -t rlmflow:local .
 python examples/features/sandboxes.py --runtime docker --docker-image rlmflow:local
 
 pip install -e ".[openai,modal]" && modal setup
-python examples/features/sandboxes.py --runtime modal --model gpt-5
+python examples/features/sandboxes.py --runtime modal --model gpt-6-sol
 ```
 
 The Modal run builds its image from this checkout, installs `rlmflow` inside it, and runs each agent's REPL under `/workspace` (`--remote-workdir`). `--app-name`, `--sandbox-timeout` and `--repl-timeout` tune the sandbox. Runs are saved under `examples/_runs/sandbox-<runtime>/`.

@@ -1,12 +1,13 @@
-"""``rlmflow serve``: a long-lived Flow whose root agent is your own Claude Code session.
+"""``rlmflow serve``: a long-lived Flow whose root run is your own Claude Code session.
 
-The plugin's hooks call ``/prompt`` when you send a message and ``/stop`` when
-Claude finishes replying. A prompt creates the root (``harness="interactive"``)
-or is attached to it as a user node; Flow steps it, which opens the root's turn,
-and your session's ``rlmflow repl`` runs land in that turn through the agent
-token in ``.rlmflow/serve.json``. ``/stop`` ends the turn. If the root is left
-idle on agents it started, ``/stop`` holds until their results open its next
-turn and returns them, so the Stop hook can hand them to Claude.
+The root runs ``Person()``, registered as the ``person`` agent. The plugin's
+hooks call ``/prompt`` when you send a message and ``/stop`` when Claude
+finishes replying. A prompt starts the root or is attached to it as a user
+node; Flow steps it, which waits for ``/stop``, and your session's ``rlmflow
+repl`` runs land in that step through the root's token in
+``.rlmflow/serve.json``. If the root is left waiting on runs it launched,
+``/stop`` holds until their results start its next step and returns them, so
+the Stop hook can hand them to Claude.
 
 Between prompts the run loop idles; the graph is checkpointed under
 ``.rlmflow/runs/<ts>/`` and a restarted serve continues from it.
@@ -22,43 +23,32 @@ import sys
 import time
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from rlmflow.agent_tools.cli import SERVE_FILE
 from rlmflow.agent_tools.hooks import RUN_COMMAND, STOP_WAIT
-from rlmflow.agent_tools.server import Turn
-from rlmflow.graph.config import harness_path
+from rlmflow.agents.agent import as_prompt, last_session
+from rlmflow.agents.person import Person
 from rlmflow.graph.graph import Graph
-from rlmflow.graph.nodes import SELF, Agent, Node, Step
-from rlmflow.harnesses.interactive import read_transcript
-from rlmflow.harnesses.sessions import (
-    Session,
-    TurnResult,
-    pending_messages,
-    resume_prompt,
-)
-from rlmflow.runtime.runtime import repl_key
+from rlmflow.graph.nodes import SELF, AgentRoot, Node
 
 if TYPE_CHECKING:
     from rlmflow.flow import Flow
-    from rlmflow.graph.config import AgentConfig
 
 T = TypeVar("T")
 
-INTERACTIVE = harness_path("interactive")
-#: The config ``serve`` registers on its Flow: its root's, and what ``fork --interactive`` picks.
-INTERACTIVE_CONFIG = "interactive"
+#: The agent ``serve`` registers on its Flow for its root, and what ``fork --interactive`` picks.
+PERSON = "person"
 
-#: How long ``/prompt`` waits for Flow to open the root's turn.
+#: How long ``/prompt`` waits for Flow to start the root's step.
 OPEN_TIMEOUT = 30.0
-#: How long ``/stop`` waits for the turn's end to land.
+#: How long ``/stop`` waits for the step's end to land.
 LAND_TIMEOUT = 60.0
 
 
 class Serve:
-    """One project's serve: a Flow, its graph, and the interactive root bound to one session."""
+    """One project's serve: a Flow, its graph, and the root run bound to one session."""
 
     def __init__(
         self,
@@ -67,22 +57,19 @@ class Serve:
         *,
         graph_dir: str | Path,
         project: str | Path,
-        root: Node | None = None,
-        root_config: AgentConfig | None = None,
+        root: AgentRoot | None = None,
         session_id: str | None = None,
     ) -> None:
-        from rlmflow.consumers import Checkpoint
+        from rlmflow.budget import Checkpoint
 
         self.flow, self.graph = flow, graph
         self.graph_dir = Path(graph_dir)
         self.project = Path(project).resolve()
-        self.root = root if root is not None else interactive_root(graph)
-        self.root_config = flow.add_config(
-            interactive_config(root_config or flow.configs["default"])
-        )
-        if self.root is not None and self.root.config_name is None:
-            self.root.config_name = self.root_config.name
-        self.session_id = session_id or (last_session(graph, self.root) if self.root else None)
+        flow.agents[PERSON] = person_agent(flow)
+        self.root = root if root is not None else person_root(graph)
+        if self.root is not None:
+            self.root.agent = PERSON
+        self.session_id = session_id or (current_session(self.root) if self.root else None)
         self.checkpointer = Checkpoint(self.graph_dir)
         self.wakeup = asyncio.Event()
         self.stopping = asyncio.Event()
@@ -106,7 +93,7 @@ class Serve:
         self.url = await server.start()
         self.host_token = server.serve(self)
         if self.root is not None:
-            self.agent_token = server.attach(self.root)
+            self.agent_token = server.token(self.root)
         self.write_serve_file()
 
     def write_serve_file(self) -> None:
@@ -130,7 +117,7 @@ class Serve:
     async def run(self) -> None:
         """Serve until ``/shutdown``: step whatever is ready, then idle until a prompt arrives.
 
-        A shutdown after the root finished lets the agents still running finish first.
+        A shutdown after the root finished lets the runs still going finish first.
         """
         await self.start()
         stopping = asyncio.ensure_future(self.stopping.wait())
@@ -182,6 +169,10 @@ class Serve:
     def bound(self, session_id: Any) -> bool:
         return self.session_id is None or session_id == self.session_id
 
+    def open(self) -> bool:
+        """Whether the root's step is open, waiting for the session's turn to end."""
+        return self.root is not None and self.flow.agent_tools.waiting(self.root)
+
     async def prompt(self, body: dict[str, Any]) -> dict[str, Any]:
         session_id, text = body.get("session_id"), body.get("prompt") or ""
         if not isinstance(text, str):
@@ -190,67 +181,76 @@ class Serve:
             return {"bound": False}
         if self.root is None:
             task = text.removeprefix(RUN_COMMAND).strip() if text.startswith(RUN_COMMAND) else text
-            self.root = self.graph.start(task, name="root", config=self.root_config.name)
-            self.agent_token = self.flow.agent_tools.attach(self.root)
-        elif self.flow.agent_tools.open_turn(self.root) is None:
+            self.root = self.graph.start(task, name="root", agent=PERSON)
+            self.agent_token = self.flow.agent_tools.token(self.root)
+        elif not self.open():
             self.graph.send(self.root, text, sender="user")
         self.session_id = session_id
         self.write_serve_file()
         if body.get("transcript_path"):
             self._transcript_line = read_transcript(body["transcript_path"])[2]
         self.kick()
-        turn = await until(lambda: self.flow.agent_tools.open_turn(self.root), OPEN_TIMEOUT)
-        if turn is None:
+        if await until(lambda: True if self.open() else None, OPEN_TIMEOUT) is None:
             raise RuntimeError(
-                f"the root's turn did not open: {self.error or 'nothing stepped it'}"
+                f"the root's step did not start: {self.error or 'nothing stepped it'}"
             )
-        return {
-            "bound": True,
-            "root": self.root.id,
-            "context": await self._context(session_id, turn),
-        }
+        return {"bound": True, "root": self.root.id, "context": self._context(session_id)}
 
-    async def _context(self, session_id: Any, turn: Turn) -> str:
-        """What the session hasn't seen: the tools prompt, earlier code if it can't resume, and agents' results."""
+    def _context(self, session_id: Any) -> str:
+        """What the session hasn't seen: the system prompt, the whole run if no session has it, and news.
+
+        A session resumed from the run's last session step (or forked from it)
+        already has the run up to there.
+        """
+        root = self.root
+        node = root.nodes()[-1]
+        agent, repl = self.flow.agent(root), self.flow.repl(root)
         parts = []
         if session_id not in self._briefed:
             self._briefed.add(session_id)
-            parts.append(turn.step.config.load_harness().prompt(self.flow, turn.step))
-            has_code = any(node.runs_code for node in turn.step.agent.nodes())
-            if has_code and not Session.for_step(turn.step).resume:
-                parts.append(await resume_prompt(self.flow, turn.step))
-        if turn.token not in self._shown:
-            self._shown.add(turn.token)
-            parts += [node.text for node in pending(turn.step) if node.producer != "user"]
-        return "\n\n".join(parts)
+            parts.append(agent.system_prompt(node, repl))
+            if last_session(node) is None and len(root.nodes()) > 1:
+                parts.append(as_prompt(agent.messages(node, repl)[1:]))
+                self._shown.update(n.id for n in root.nodes())
+        parts += self._news()
+        return "\n\n".join(part for part in parts if part)
+
+    def _news(self) -> list[str]:
+        """What others wrote since the root's last step began, not yet shown to the session."""
+        turn = self.root.last_turn()
+        start = turn.data["seen"] if turn is not None else 1
+        news = [
+            node
+            for node in self.root.nodes()[start:]
+            if node.producer not in (SELF, "user") and node.text and node.id not in self._shown
+        ]
+        self._shown.update(node.id for node in news)
+        return [node.text for node in news]
 
     async def stop(self, body: dict[str, Any]) -> dict[str, Any]:
         session_id = body.get("session_id")
         if self.root is None or not self.bound(session_id):
             return {"bound": False}
-        turn = self.flow.agent_tools.open_turn(self.root)
-        if turn is None:
+        if not self.open():
             return {"bound": True, "landed": None}
         usage, text, self._transcript_line = read_transcript(
             body.get("transcript_path") or "", self._transcript_line
         )
-        mark = self.graph._seq
-        turn.ended.set_result(
-            TurnResult(
-                session_id=session_id, text=body.get("last_assistant_message") or text, usage=usage
-            )
+        out = Node(
+            "assistant",
+            body.get("last_assistant_message") or text,
+            data={"session": session_id, "repl": self.root.repl_id, "usage": usage},
         )
-        landed = await until(lambda: self._turn_end_since(mark), LAND_TIMEOUT)
+        self.flow.agent_tools.end_step(self.root, out)
+        landed = await until(lambda: out if out.graph is not None else None, LAND_TIMEOUT)
         if landed is None:
-            raise RuntimeError(f"the root's turn did not land: {self.error or 'timed out'}")
-        ended = "idle" if landed.idle else "done"
+            raise RuntimeError(f"the root's step did not land: {self.error or 'timed out'}")
+        ended = "done" if out.terminal else "idle" if out.idle else "running"
         reply: dict[str, Any] = {"bound": True, "landed": ended}
         if ended == "idle":
             timeout = float(body.get("timeout", STOP_WAIT))
-            following = await until(lambda: self._next_turn(turn), timeout)
-            if following is not None:
-                self._shown.add(following.token)
-                reply["block"] = "\n\n".join(pending_messages(following.step)) or "Continue."
+            if await until(lambda: True if self.open() else None, timeout) is not None:
+                reply["block"] = "\n\n".join(self._news()) or "Continue."
         return reply
 
     async def shutdown(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -264,18 +264,6 @@ class Serve:
         asyncio.get_running_loop().call_later(0.05, self.stopping.set)
         return {"bound": True, "stopping": True}
 
-    def _turn_end_since(self, mark: int) -> Node | None:
-        for node in reversed(self.root.nodes()):
-            if node.seq < mark:
-                return None
-            if node.ends_turn and node.data.get("session_id"):
-                return node
-        return None
-
-    def _next_turn(self, ended: Turn) -> Turn | None:
-        turn = self.flow.agent_tools.open_turn(self.root)
-        return turn if turn is not None and turn is not ended else None
-
 
 async def until(probe: Callable[[], T | None], timeout: float, interval: float = 0.02) -> T | None:
     """Poll ``probe`` until it returns something, or ``None`` after ``timeout`` seconds."""
@@ -287,50 +275,65 @@ async def until(probe: Callable[[], T | None], timeout: float, interval: float =
         await asyncio.sleep(interval)
 
 
-def pending(step: Step) -> list[Node]:
-    """What others wrote since the agent's last turn began, which this turn opened on."""
-    turn = step.agent.last_turn()
-    start = turn.data["seen"] if turn is not None else 1
-    return [
-        node
-        for node in step.agent.nodes()[start:]
-        if node.producer != SELF and node.text and not isinstance(node, Agent)
-    ]
-
-
-def interactive_config(base: AgentConfig | None = None) -> AgentConfig:
-    from rlmflow.graph.config import AgentConfig
-
-    return replace(
-        base or AgentConfig(), name=INTERACTIVE_CONFIG, harness=INTERACTIVE, max_iters=None
+def person_agent(flow: Flow) -> Person:
+    """``Person()`` with the ``default`` agent's model (for ``llm_query``), prompt and limits."""
+    base = flow.agents.get("default")
+    if base is None:
+        return Person()
+    return Person(
+        base.model,
+        prompt=base.prompt,
+        description=base.description,
+        max_depth=base.max_depth,
+        output_schema=base.output_schema,
     )
 
 
-def ran_interactively(agent: Agent) -> bool:
-    """An agent forked to run ``interactive``, or a root a serve ran with the interactive harness."""
-    if agent.config_name == INTERACTIVE_CONFIG:
-        return True
-    recorded = agent.config_record or {}
-    return agent.config_name is None and recorded.get("harness") == INTERACTIVE
-
-
-def interactive_root(graph: Graph) -> Agent | None:
-    """The latest agent in ``graph`` your session drives."""
-    found = [agent for agent in graph.agents() if ran_interactively(agent)]
+def person_root(graph: Graph) -> AgentRoot | None:
+    """The latest run in ``graph`` a person drives."""
+    found = [run for run in graph.agent_roots() if run.agent == PERSON]
     return found[-1] if found else None
 
 
-def last_session(graph: Graph, agent: Node) -> str | None:
-    """The session that ended ``agent``'s latest turn in its own ``repl_id``.
+def current_session(run: AgentRoot) -> str | None:
+    """The session that ended ``run``'s latest step in its own REPL; a fork has none."""
+    last = last_session(run.nodes()[-1])
+    if last is None or last.data.get("repl", last.root_id) != (run.repl_id or run.id):
+        return None
+    return last.data["session"]
 
-    A fork with a new ``repl_id`` has none: the session it resumes is forked
-    into a new one, which serve binds to when it first reports.
-    """
-    repl = repl_key(agent)
-    for node in reversed(agent.nodes()):
-        if node.ends_turn and node.data.get("session_id"):
-            return node.data["session_id"] if node.data.get("repl", node.owner) == repl else None
-    return None
+
+def read_transcript(path: str | Path, start: int = 0) -> tuple[dict[str, int], str, int]:
+    """Usage and the last assistant text in a Claude Code transcript from line ``start``, and its length."""
+    lines = Path(path).read_text(encoding="utf-8").splitlines() if Path(path).is_file() else []
+    usage_by_request: dict[str, dict[str, Any]] = {}
+    text = ""
+    for line in lines[start:]:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "assistant":
+            continue
+        message = entry.get("message") or {}
+        usage_by_request[
+            entry.get("requestId") or entry.get("uuid") or str(len(usage_by_request))
+        ] = message.get("usage") or {}
+        texts = [
+            block.get("text", "")
+            for block in message.get("content") or []
+            if block.get("type") == "text"
+        ]
+        if any(texts):
+            text = "\n".join(t for t in texts if t)
+    usage = {"input_tokens": 0, "output_tokens": 0}
+    for counts in usage_by_request.values():
+        usage["input_tokens"] += sum(
+            int(counts.get(key) or 0)
+            for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+        )
+        usage["output_tokens"] += int(counts.get("output_tokens") or 0)
+    return usage, text, len(lines)
 
 
 def serve_main(
@@ -341,7 +344,7 @@ def serve_main(
     overrides: dict[str, Any] | None = None,
 ) -> None:
     """Build the project's Flow (the coding one, or ``flow = "module:factory"``'s) and serve it."""
-    from rlmflow.cli import resolve_options
+    from rlmflow.cli.app import resolve_options
     from rlmflow.cli.run import build_flow
 
     project = Path(project).expanduser().resolve()
@@ -351,21 +354,15 @@ def serve_main(
     else:
         graph_dir = graph_dir or project / ".rlmflow" / "runs" / time.strftime("%Y%m%d-%H%M%S")
         graph = Graph()
-    root_agent = None
+    root_run = None
     if root is not None:
-        from rlmflow.agent_tools.view import resolve_agent
+        from rlmflow.tools.agents import resolve_agent
 
-        root_agent = resolve_agent(graph, root)
+        root_run = resolve_agent(graph, root)
     flow = build_flow(options, workdir=project)
 
     async def main() -> None:
-        serve = Serve(
-            flow,
-            graph,
-            graph_dir=graph_dir,
-            project=project,
-            root=root_agent,
-        )
+        serve = Serve(flow, graph, graph_dir=graph_dir, project=project, root=root_run)
         loop = asyncio.get_running_loop()
         for signum in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(signum, serve.stopping.set)
@@ -376,11 +373,12 @@ def serve_main(
 
 
 __all__ = [
-    "INTERACTIVE_CONFIG",
+    "PERSON",
     "Serve",
-    "interactive_config",
-    "interactive_root",
-    "last_session",
+    "current_session",
+    "person_agent",
+    "person_root",
+    "read_transcript",
     "serve_main",
     "until",
 ]

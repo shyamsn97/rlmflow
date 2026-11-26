@@ -2,8 +2,8 @@
 
 from helpers import finish, ran
 
-from rlmflow import RETURN, AgentConfig, Flow, Graph, Node
-from rlmflow.graph import calls
+from rlmflow import Flow, Graph, Node
+from rlmflow.graph import RETURN, calls
 from rlmflow.view.figure import graph_svg, handoffs, parent_ids, tidy_tree
 from rlmflow.view.html import render_html
 from rlmflow.view.timeline import timeline
@@ -44,11 +44,8 @@ def test_a_launch_from_the_agent_itself_keeps_the_chain_under_the_agent():
 def test_results_and_messages_coming_back_are_drawn_from_their_source():
     g = Graph()
     root = g.start("lead")
-    root.bind_config(AgentConfig())
     launch = g.append(root, ran("launch"))
     kids = [g.start(f"part {i}", parent=launch) for i in range(2)]
-    for kid in kids:
-        kid.bind_config(AgentConfig())
     note_turn = g.append(kids[1], ran("send"))
     note = g.send(root, "heads up", by=note_turn)
     dones = [finish(g, kid, i) for i, kid in enumerate(kids)]

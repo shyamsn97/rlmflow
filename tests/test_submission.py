@@ -9,7 +9,7 @@ from helpers import (
     turns,
 )
 
-from rlmflow import AgentConfig, LocalRuntime
+from rlmflow import Agent, LocalRuntime
 
 
 def test_immediate_submission_is_one_turn():
@@ -49,7 +49,7 @@ def test_output_schema_failure_is_a_code_error_and_the_agent_retries():
     )
     g, root = agent_graph("Return an object.")
 
-    assert run_result(flow, g, root, config=AgentConfig(output_schema=schema)) == {"ok": True}
+    assert run_result(flow, g, root, agent=Agent(output_schema=schema)) == {"ok": True}
     rejected = code_nodes(g, root)[0]
     assert rejected.error is True and "ok" in rejected.output
     assert root.nodes()[-1].data["terminal"]
@@ -58,9 +58,9 @@ def test_output_schema_failure_is_a_code_error_and_the_agent_retries():
 def test_output_schema_accepts_a_json_text_reply():
     flow = ScriptedFlow(StubLLM(counting_replies('{"n": 3}')))
     g, root = agent_graph("Count.")
-    config = AgentConfig(output_schema={"type": "object", "properties": {"n": {"type": "integer"}}})
+    agent = Agent(output_schema={"type": "object", "properties": {"n": {"type": "integer"}}})
 
-    assert run_result(flow, g, root, config=config) == {"n": 3}
+    assert run_result(flow, g, root, agent=agent) == {"n": 3}
 
 
 def test_plain_text_reply_is_the_final_answer():

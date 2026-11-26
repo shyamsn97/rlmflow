@@ -33,7 +33,7 @@ def push(direction):  # shove what you stand against, once per turn
 
 So a turn can walk to a square, push a direction, or both:
 
-```repl
+```python
 goto(4, 3)
 push("up")
 ```
@@ -45,21 +45,17 @@ pushed B1 up: (3, 3)->(2, 3)
 
 #### Live board context in each request
 
-The worker's system prompt is only its Sokoban rules: its config uses a `ReplHarness` subclass whose `prompt_sections` are empty, with the rules as the config's `prompt`. The current board changes every turn and lives in the worker's REPL rather than in the graph, so `ShepherdFlow` makes it part of each [turn prompt](prompt_customization.md#turn-prompt):
+The worker's system prompt is only its Sokoban rules: `Worker(system=WORKER_SYSTEM)`. The current board changes every turn and lives in the worker's REPL rather than in the graph, so `Worker` adds it to the [messages](prompt_customization.md#messages) of every step:
 
 ```python
-class WorkerHarness(ReplHarness):
-    def prompt_sections(self, flow, step):
-        return {}
-
-
-class ShepherdFlow(Flow):
-    def turn_prompt(self, step):
-        board = board_prompt(self, step, simple=self.simple_moves)
-        return "\n\n".join(part for part in (super().turn_prompt(step), board) if part)
+class Worker(Agent):
+    def messages(self, node, repl, since=None):
+        messages = super().messages(node, repl, since)
+        board = board_prompt(repl, node, simple=self.simple_moves)
+        return [*messages, {"role": "user", "content": board}] if board else messages
 ```
 
-`board_prompt` reads the live REPL `ENV` for the agent being stepped. `board_prompt` also stamps the upcoming turn in `ENV` so the game's one-push guard applies to the next live action; replay does not need that live-turn guard.
+`board_prompt` reads the live REPL `ENV` for the run being stepped (`repl.env`). `board_prompt` also stamps the upcoming turn in `ENV` so the game's one-push guard applies to the next live action; replay does not need that live-turn guard.
 
 This run starts jammed on purpose: the worker shoves `B1` right eight times until it sits flat against the wall, where nothing can stand behind it.
 
@@ -91,7 +87,7 @@ def branch(specs: list[Plan]) -> str:
 
 The shepherd's first turn previewed the shallowest, middle and deepest rewinds — its own code, trimmed:
 
-```repl
+```python
 async def show(k):
     p = await preview(k)
     print(f"\n=== Preview {k} pushes ago ===")
@@ -127,7 +123,7 @@ Legal pushes (count): 8
 
 From those boards the shepherd worked out each goal's entrances and submitted eight distinct box-to-goal pairings. This is the plan list from the current run:
 
-```repl
+```python
 notes = """Prepared 8 distinct two-step plans with valid approach squares counted from the printed board.
 Entrances verified:
 - G1: from (2,3), (1,2), (1,4)
@@ -160,11 +156,11 @@ The host takes each plan's revert depth and forks the run there:
 ```python
 cut, depth = rewind_point(g, worker, plan["rewind"])  # the turn before that push
 branch = g.fork(cut)  # a new graph: the run cut right after cut
-copy = branch.agent(worker.id)
-await flow.replay(branch, copy)
+copy = branch.agent_root(worker.id)
+await flow.repl(copy).catch_up()
 ```
 
-`cut` is the worker's turn just before the push `depth` pushes back. `g.fork(cut)` returns a new graph, a copy of the run with the same ids, holding the worker with its nodes ending at `cut`. The shepherd runs on a graph of its own and only reads and forks the worker's run, so no branch carries a copy of it. The original run is untouched. `replay` runs the copy's nodes again in a REPL of its own, so its board is the one the worker had at that point.
+`cut` is the worker's turn just before the push `depth` pushes back. `g.fork(cut)` returns a new graph, a copy of the run with the same ids, holding the worker with its nodes ending at `cut`. The shepherd runs on a graph of its own and only reads and forks the worker's run, so no branch carries a copy of it. The original run is untouched. `catch_up` runs the copy's nodes again in a REPL of its own, so its board is the one the worker had at that point.
 
 #### Step 4 — resume: inject the order and run each fork
 
@@ -224,13 +220,13 @@ branch0: rewound 1, order B3->G3 entering from (5,10), then B1->G2 entering from
 
 The shepherd reads them and submits its choice, which is the run's result:
 
-```repl
+```python
 submit("Picked branch6: solved with the fewest total pushes (12) among all solved branches.")
 ```
 
 #### Forking a Claude Code worker
 
-The workers here run on the REPL harness, where every turn is a node and a fork's REPL is rebuilt by running the agent's nodes again. A Claude Code worker forks the same way, with one difference: the conversation lives in Claude's session, not in the graph.
+The workers here run on `Agent`, rlmflow's REPL loop, where every turn is a node and a fork's REPL is rebuilt by running the agent's nodes again. A Claude Code worker forks the same way, with one difference: the conversation lives in Claude's session, not in the graph.
 
 - Forked at the end of a session turn, the copy resumes that session as a new branch (`--fork-session`), so Claude remembers everything up to that point and the original session is left alone.
 - Forked in the middle of a turn, it can't resume. It starts a fresh session, briefed on the code run so far and on the variables in its rebuilt REPL, and starts by reading the `notes` string the worker kept there.
@@ -255,8 +251,8 @@ All eight branches solved the board, in 12 to 36 pushes. The shepherd picked `br
 export OPENAI_API_KEY=...
 uv run --locked --python 3.12 --extra openai --extra image \
   python examples/shepherd/shepherd.py \
-  --model gpt-5 \
-  --fast-model gpt-5 \
+  --model gpt-6-sol \
+  --fast-model gpt-6-sol \
   --branches 8 \
   --time-budget 1800 \
   --out-dir examples/_runs/shepherd

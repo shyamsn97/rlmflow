@@ -1,6 +1,6 @@
 """Recursive tree: a root launches section agents, and each section launches two of its own.
 
-    python examples/patterns/tree.py --model gpt-5-mini
+    python examples/patterns/tree.py --model gpt-6.1-terra
 
 The run is saved under ``examples/_runs/patterns/tree``; render it with
 ``rlmflow render gif examples/_runs/patterns/tree tree.gif``.
@@ -13,7 +13,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from rlmflow import AgentConfig, Flow, Graph
+from rlmflow import Agent, Flow, Graph
 
 examples_dir = next(p for p in Path(__file__).resolve().parents if p.name == "examples")
 if str(examples_dir) not in sys.path:
@@ -32,14 +32,14 @@ def main() -> None:
     add_model_args(parser)
     args = parser.parse_args()
 
-    flow = Flow(configs=[AgentConfig(model=args.model, max_depth=2)])
+    flow = Flow(agents={"default": Agent(model=args.model, max_depth=2)})
     g = Graph()
     root = g.start(TASK)
     out_dir = example_run_dir("patterns") / "tree"
     try:
         asyncio.run(print_run(flow, g, out_dir, width=28))
     finally:
-        flow.runtime.close_repls()
+        flow.runtime.close()
     print(f"\n{root.final_result()}\n\nsaved {out_dir}")
 
 

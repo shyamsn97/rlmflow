@@ -23,8 +23,8 @@ import threading
 from collections.abc import Callable, Iterator
 from typing import Any
 
-from rlmflow.graph.nodes import current_step
-from rlmflow.tools import tool
+from rlmflow.repl import current_repl
+from rlmflow.tools.declare import tool
 
 #: The board tools that change it; their saved values are events.
 WRITES = ("board_post", "board_claim", "board_finish", "board_publish")
@@ -110,7 +110,7 @@ class TaskBoard:
     def _write(self, op: str, allowed: Callable[[dict, str], bool], **fields: Any) -> dict:
         """Append one event; ``allowed(board, who)`` says whether it takes effect."""
         step = _step()
-        g, who = step.graph, step.agent.name
+        g, who = step.graph, step.root.name
         with self._lock:
             log = self._events(g)
             event = {
@@ -162,10 +162,10 @@ class TaskBoard:
 
 
 def _step() -> Any:
-    step = current_step()
-    if step is None:
+    repl = current_repl()
+    if repl is None:
         raise RuntimeError("board tools run from an agent's code")
-    return step
+    return repl
 
 
 __all__ = ["READS", "WRITES", "TaskBoard", "events", "fold"]

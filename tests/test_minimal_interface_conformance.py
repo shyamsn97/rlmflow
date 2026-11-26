@@ -1,6 +1,16 @@
-from helpers import ScriptedFlow, StubLLM, TestRuntime, code_nodes, first_user, run_result
+from helpers import (
+    ScriptedFlow,
+    StubLLM,
+    TestRuntime,
+    code_nodes,
+    first_user,
+    repl,
+    run_result,
+    trailing_user_text,
+)
 
-from rlmflow import RETURN, AgentConfig, Graph
+from rlmflow import Agent, Graph
+from rlmflow.graph import RETURN
 from rlmflow.graph.calls import launched
 
 SCHEMA = {
@@ -28,40 +38,38 @@ def test_minimal_interface_end_to_end_reruns_without_work(tmp_path):
 
     def reply(messages):
         task = first_user(messages)
-        last = messages[-1]["content"]
+        last = trailing_user_text(messages)
         calls.append(task)
         if task == "join typed children":
-            return "```repl\nsubmit({'sum': primary['value'] + int(audit['ok'])})\n```"
+            return repl("submit({'sum': primary['value'] + int(audit['ok'])})")
         if task == "right typed child":
             if "ok" in last and messages[-1] is not messages[1]:
-                return "```repl\nsubmit({'ok': True})\n```"
-            return "```repl\nsubmit({'ok': 'yes'})\n```"
+                return repl("submit({'ok': True})")
+            return repl("submit({'ok': 'yes'})")
         if task == "left typed child":
-            return "```repl\nsubmit({'value': 1})\n```"
+            return repl("submit({'value': 1})")
         if "'sum': 2" in last:
-            return "```repl\nsubmit('done')\n```"
-        return (
-            "```repl\n"
-            "left = launch_agent('left typed child', config='value')\n"
-            "right = launch_agent('right typed child', config='ok')\n"
+            return repl("submit('done')")
+        return repl(
+            "left = launch_agent('left typed child', agent='value')\n"
+            "right = launch_agent('right typed child', agent='ok')\n"
             "primary, audit = await asyncio.gather(left, right)\n"
-            "joined = launch_agent('join typed children', config='sum', "
+            "joined = launch_agent('join typed children', agent='sum', "
             "primary=primary, audit=audit)\n"
-            "print(await joined)\n"
-            "```"
+            "print(await joined)"
         )
 
     g = Graph()
     root = g.start("conformance root")
-    configs = [
-        AgentConfig(name=name, output_schema=schema, max_iters=4)
+    agents = {
+        name: Agent(output_schema=schema, max_iters=4)
         for name, schema in (("value", SCHEMA), ("ok", OK_SCHEMA), ("sum", SUM_SCHEMA))
-    ]
-    flow = ScriptedFlow(StubLLM(reply), configs=configs, runtime=TestRuntime())
+    }
+    flow = ScriptedFlow(StubLLM(reply), agents=agents, runtime=TestRuntime())
 
-    assert run_result(flow, g, root, config=AgentConfig(max_iters=8)) == "done"
+    assert run_result(flow, g, root, agent=Agent(max_iters=8)) == "done"
     children = root.subtree()[1:]
-    assert [child.config.name for child in children] == ["value", "ok", "sum"]
+    assert [child.agent for child in children] == ["value", "ok", "sum"]
     left, right, joined = children
     assert left.final_result() == {"value": 1}
     assert right.final_result() == {"ok": True}
@@ -91,14 +99,17 @@ def test_minimal_interface_end_to_end_reruns_without_work(tmp_path):
         raise AssertionError("model repeated during terminal rerun")
 
     assert (
-        ScriptedFlow(StubLLM(no_model_call), configs=configs, runtime=TestRuntime()).run(loaded)
+        ScriptedFlow(StubLLM(no_model_call), agents=agents, runtime=TestRuntime()).run(loaded)
         is loaded
     )
-    assert loaded.agent(root.id).final_result() == "done"
+    assert loaded.agent_root(root.id).final_result() == "done"
     assert len(calls) == call_count
 
     branch = g.fork(code_node)
     again = branch.node(code_node.id)
-    assert branch.agent(root.id).nodes()[-1] is again and again.state == "ready"
-    assert branch.agent(root.id).children() == [] and branch.agent(root.id).status() != "done"
+    assert branch.agent_root(root.id).nodes()[-1] is again and again.state == "ready"
+    assert (
+        branch.agent_root(root.id).children() == []
+        and branch.agent_root(root.id).status() != "done"
+    )
     assert root.status() == "done" and root.subtree()[1:] == children
