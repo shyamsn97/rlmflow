@@ -2,10 +2,10 @@
 
 An agent's prompt has two parts, and both belong to the agent:
 
-| part          | how to change it                                                               |
-| ------------- | ------------------------------------------------------------------------------ |
+| part          | how to change it                                                                |
+| ------------- | ------------------------------------------------------------------------------- |
 | system prompt | `Agent(prompt={...})` to change sections, `Agent(system=...)` to replace it all |
-| messages      | subclass `Agent` and override `messages(node, repl, since)`                    |
+| messages      | subclass `Agent` and override `messages(node, repl, since)`                     |
 
 The same named sections are used on every harness: `Agent` sends them as the system prompt, while Claude Code and pi keep their own system prompt and get rlmflow's appended.
 
@@ -66,17 +66,17 @@ class Budgeted(Agent):
 
 ## Default sections
 
-| name          | what it says                                                                                                |
-| ------------- | ----------------------------------------------------------------------------------------------------------- |
+| name          | what it says                                                                                                                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `protocol`    | `Agent`: one `repl(code)` tool call per reply; `submit(value)`, or a reply without a call, finishes. Claude Code and pi: running code with `rlmflow repl`, and how to wait for agents |
-| `location`    | Claude Code and pi: where the REPL runs, for Docker and Modal runtimes                                     |
-| `tools`       | the REPL tools this agent can call (for Claude Code and pi, only the Flow's own)                           |
-| `agents`      | `Agent`: agent handles and `AGENTS`. Claude Code and pi: the agents `launch_agent` takes                   |
-| `verify`      | check the answer against the inputs; surface failures, don't paper over them                               |
-| `state`       | keep working state in REPL variables                                                                        |
-| `orchestrate` | the orchestrate skill, for agents that can launch others                                                   |
-| `arguments`   | the task arguments by name and size; their values are REPL variables                                       |
-| `schema`      | the output schema, when the agent has one                                                                   |
+| `location`    | Claude Code and pi: where the REPL runs, for Docker and Modal runtimes                                                                                                                |
+| `tools`       | the REPL tools this agent can call (for Claude Code and pi, only the Flow's own)                                                                                                      |
+| `agents`      | `Agent`: agent handles and `AGENTS`. Claude Code and pi: the agents `launch_agent` takes                                                                                              |
+| `verify`      | check the answer against the inputs; surface failures, don't paper over them                                                                                                          |
+| `state`       | keep working state in REPL variables                                                                                                                                                  |
+| `orchestrate` | the orchestrate skill, for agents that can launch others                                                                                                                              |
+| `arguments`   | the task arguments by name and size; their values are REPL variables                                                                                                                  |
+| `schema`      | the output schema, when the agent has one                                                                                                                                             |
 
 ## What the prompt doesn't change
 

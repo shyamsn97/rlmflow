@@ -36,16 +36,16 @@ Inside async code, use `await flow.arun(g)` and `await flow.aclose()` when done.
 
 An `Agent` is a kind of agent: its harness (the class), model, limits and prompt. The Flow holds them by name in `agents`, and runs launch each other by that name. The graph only records each run's agent name; running a saved graph uses the agents of the Flow you run it with. Without `agents`, a Flow has one, `"default": Agent()`.
 
-| Argument        | Default   | Meaning                                                                                 |
-| --------------- | --------- | --------------------------------------------------------------------------------------- |
+| Argument        | Default       | Meaning                                                                                                    |
+| --------------- | ------------- | ---------------------------------------------------------------------------------------------------------- |
 | `model`         | `"gpt-6-sol"` | A model name, like `"gpt-6.1-terra"` or `"claude-sonnet-4-5"`. `ClaudeCode` and `Pi` default to their own. |
-| `description`   | `""`      | Shown to agents choosing one to launch.                                                 |
-| `max_depth`     | `1`       | Levels of agents below this one; `0` can't launch.                                      |
-| `max_iters`     | `30`      | Steps before it must finish; `None` for no limit.                                       |
-| `output_schema` | `None`    | JSON schema or Pydantic model the result must match.                                    |
-| `prompt`        | `{}`      | Sections merged over the system prompt by name; see [Prompts](#prompts).                |
-| `system`        | `None`    | The whole system prompt, replacing the sections.                                        |
-| `keep`          | `None`    | Keep only the last `keep` messages of history.                                          |
+| `description`   | `""`          | Shown to agents choosing one to launch.                                                                    |
+| `max_depth`     | `1`           | Levels of agents below this one; `0` can't launch.                                                         |
+| `max_iters`     | `30`          | Steps before it must finish; `None` for no limit.                                                          |
+| `output_schema` | `None`        | JSON schema or Pydantic model the result must match.                                                       |
+| `prompt`        | `{}`          | Sections merged over the system prompt by name; see [Prompts](#prompts).                                   |
+| `system`        | `None`        | The whole system prompt, replacing the sections.                                                           |
+| `keep`          | `None`        | Keep only the last `keep` messages of history.                                                             |
 
 A whole run's tokens, dollars and time are limited per call with `flow.run(g, hooks=[Budget(...)])`; see [Control](control.md#run-budgets).
 
@@ -129,11 +129,11 @@ flow = Flow(
 )
 ```
 
-| Runtime                  | For                                                                                         |
-| ------------------------ | ------------------------------------------------------------------------------------------- |
+| Runtime                  | For                                                                                        |
+| ------------------------ | ------------------------------------------------------------------------------------------ |
 | `LocalRuntime` (default) | A worker process per agent, with your privileges; `python=` and `env=` choose another one. |
-| `DockerRuntime`          | Untrusted code.                                                                             |
-| `ModalRuntime`           | Remote sandboxes (`rlmflow[modal]`).                                                        |
+| `DockerRuntime`          | Untrusted code.                                                                            |
+| `ModalRuntime`           | Remote sandboxes (`rlmflow[modal]`).                                                       |
 
 `GitWorktrees` gives each agent its own worktree and checks a fork out at its fork point. More in [Runtimes](runtimes.md) and [Security](security.md).
 
@@ -207,9 +207,9 @@ flow.run("claude", task)
 
 Claude runs with your own Claude Code settings (permissions, `CLAUDE.md`, MCP servers, plugins); rlmflow only adds permission to run `rlmflow` commands. It reaches the agent tools through `rlmflow repl`, and the code it runs there is recorded in the graph. Changes it makes with its own tools are not recorded, but the workspace snapshot at the end of each turn still has the files.
 
-| `ClaudeCode` argument | Meaning                                                                                                                                  |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `mcp=True`            | Also offer the REPL as a `python` MCP tool.                                                                                              |
+| `ClaudeCode` argument | Meaning                                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `mcp=True`            | Also offer the REPL as a `python` MCP tool.                                                                                                      |
 | `options`             | Fields for `ClaudeAgentOptions` (`permission_mode`, `cli_path` for your own `claude`, `max_turns`, `plugins`, ...); `allowed_tools` is extended. |
 
 `Pi` takes `command` (the executable) and `args` (extra command-line arguments, such as `["--provider", "anthropic"]`); its sessions are under `~/.rlmflow/pi-sessions`. To write your own harness, subclass `Agent` and override `step`; see [Internals](internals.md) and [`claude_code.py`](https://github.com/shyamsn97/rlmflow/blob/main/rlmflow/agents/claude_code.py).

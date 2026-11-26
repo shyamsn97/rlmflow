@@ -69,7 +69,6 @@ This run starts jammed on purpose: the worker shoves `B1` right eight times unti
 
 The meta agent can now come up with distinct new pathways to explore and pick any of those eight spots to revert to, leading to some pretty diverse trajectories. This is done by giving the shepherd agent access to the following tools:
 
-
 ```python
 @tool("Inspect the worker after rewinding pushes, without playing.")
 async def preview(rewind: int) -> dict:

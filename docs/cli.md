@@ -28,11 +28,11 @@ rlmflow run --flow mypkg.agents:build print "add a test"        # your own Flow
 | Flag                         | What it changes                                                                                                               |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | `--query`                    | Opening turn. `print` can take it as a positional instead.                                                                    |
-| `--model`, `--fast-model`    | The root's model and the `worker` agent's. `claude*` goes to Anthropic, anything else to OpenAI.                             |
+| `--model`, `--fast-model`    | The root's model and the `worker` agent's. `claude*` goes to Anthropic, anything else to OpenAI.                              |
 | `--reasoning-effort`         | `low` (default), `medium`, `high`, `xhigh`; Terra and Luna also take `none`, Sol does not. Ignored for Anthropic models.      |
 | `--workdir`                  | The directory the agent reads and edits, and where `graph/` lands.                                                            |
 | `--docker-image`             | Swaps `LocalRuntime` for `DockerRuntime` on that image.                                                                       |
-| `--max-depth`, `--max-iters` | The `default` agent's: the root's, and its plain `launch_agent` calls'.                                                        |
+| `--max-depth`, `--max-iters` | The `default` agent's: the root's, and its plain `launch_agent` calls'.                                                       |
 | `--workers`                  | How many model calls may run at once.                                                                                         |
 | `--tools`                    | `files` (the default) or `none` for a bare REPL.                                                                              |
 | `--resume DIR`               | Continue a saved run instead of starting a new one.                                                                           |

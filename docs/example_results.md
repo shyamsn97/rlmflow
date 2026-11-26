@@ -23,14 +23,14 @@ A worker plays Sokoban and jams a box against a wall after 8 pushes. The shepher
 
 ![Shepherd graph](static/results/shepherd-graph.png)
 
-| Branch           |   Pushes undone | Outcome                     | Turns |
-| ---------------- | --------------: | --------------------------- | ----: |
-| branch6 (picked) | 8 (fresh board) | solved, 12 pushes           |    15 |
-| branch4          |               4 | solved, 15 pushes           |    17 |
-| branch1          |               1 | solved, 17 pushes           |    19 |
-| branch5          |               6 | solved, 19 pushes           |    21 |
-| branch0, 2, 3    |         1, 2, 4 | solved, 20 pushes each      |    22 |
-| branch7          |               3 | solved, 36 pushes           |    38 |
+| Branch           |   Pushes undone | Outcome                | Turns |
+| ---------------- | --------------: | ---------------------- | ----: |
+| branch6 (picked) | 8 (fresh board) | solved, 12 pushes      |    15 |
+| branch4          |               4 | solved, 15 pushes      |    17 |
+| branch1          |               1 | solved, 17 pushes      |    19 |
+| branch5          |               6 | solved, 19 pushes      |    21 |
+| branch0, 2, 3    |         1, 2, 4 | solved, 20 pushes each |    22 |
+| branch7          |               3 | solved, 36 pushes      |    38 |
 
 Every branch solved the puzzle, so the pick came down to push count, and the shepherd submitted "Picked branch6: solved with the fewest total pushes (12) among all solved branches." Push counts include the pushes a branch kept from the worker. A single retry from the jam point would have failed. The run took about 9 minutes and held 157 nodes across the worker, the shepherd and the eight forks.
 

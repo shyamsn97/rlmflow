@@ -67,13 +67,13 @@ Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` for the models you use. Claude Code 
 
 A harness is what drives an agent: it takes the agent's next step and returns the node to land in the graph. Every agent is one, picked by its class, and one run can mix them. A Claude Code root can launch REPL workers, and a REPL root can launch Claude Code workers.
 
-| Harness                  | What drives the agent                                                                                      | How to start it                    | Needs                                    |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------- | ---------------------------------- | ---------------------------------------- |
-| `Agent` (default)        | rlmflow calls the model, and the model calls a `repl(code)` tool that runs in the agent's Python REPL   | `Agent(model="gpt-6-sol")`       | an OpenAI or Anthropic key               |
-| `ClaudeCode`             | A headless Claude Code session per agent, with your Claude Code settings, tools and `CLAUDE.md`            | `ClaudeCode()`                     | `rlmflow[claude]`, signed in to `claude` |
-| `Pi`                     | A headless [pi](https://github.com/badlogic/pi-mono) session per agent                                     | `Pi()`                             | `pi` installed                           |
-| Your Claude Code session | You, in your own terminal: your session becomes the root agent                                             | `/rlmflow:run TASK` in Claude Code | the `claude` CLI                         |
-| Your own                 | Anything that can take a step: Codex, another CLI, a human, a script                                       | `MyAgent()`                        | an `Agent` subclass with its own `step`  |
+| Harness                  | What drives the agent                                                                                 | How to start it                    | Needs                                    |
+| ------------------------ | ----------------------------------------------------------------------------------------------------- | ---------------------------------- | ---------------------------------------- |
+| `Agent` (default)        | rlmflow calls the model, and the model calls a `repl(code)` tool that runs in the agent's Python REPL | `Agent(model="gpt-6-sol")`         | an OpenAI or Anthropic key               |
+| `ClaudeCode`             | A headless Claude Code session per agent, with your Claude Code settings, tools and `CLAUDE.md`       | `ClaudeCode()`                     | `rlmflow[claude]`, signed in to `claude` |
+| `Pi`                     | A headless [pi](https://github.com/badlogic/pi-mono) session per agent                                | `Pi()`                             | `pi` installed                           |
+| Your Claude Code session | You, in your own terminal: your session becomes the root agent                                        | `/rlmflow:run TASK` in Claude Code | the `claude` CLI                         |
+| Your own                 | Anything that can take a step: Codex, another CLI, a human, a script                                  | `MyAgent()`                        | an `Agent` subclass with its own `step`  |
 
 Every harness reaches the same agent tools (`launch_agent`, `AGENTS`, `agent.send`, `submit`) in the same per-agent REPL, so every launch, message and result is recorded in the graph, whatever drove it.
 
@@ -275,12 +275,12 @@ Settings come from flags, then `RLMFLOW_*` variables, then `./rlmflow.toml`, the
 
 Real runs of the examples below: Needle on Nov 18 2026, Autoresearch on Nov 19, Boids and Shepherd on Nov 20. [Example results](docs/example_results.md) has the per-run tables, figures and caveats.
 
-| Example                                                    | What it shows                                   | Result                                                                                                                                                                                                 |
-| ---------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [Needle](#needle-fan-out-on-any-harness)                   | Fan-out, with harnesses mixed per agent         | REPL root and workers, a Claude Code root, and Claude Code workers each find the needle, with the same graph shape.                                                                                      |
-| [Boids](#boids-peers-build-an-app-on-a-shared-task-board)  | Peers with no manager share a task board        | Claude Code peers: one claims the plan, the others claim its tasks; a working app, 30 board writes, 3.3 minutes.                                        |
-| [Autoresearch](#autoresearch-a-planner-running-gpu-trials) | A planner running long GPU trials               | Validation bits per byte 0.903 → 0.764 in 32 trials on A10G.                                                                                                                                           |
-| [Shepherd](#shepherd-rewind-and-fork-a-failed-run)         | Rewind and fork a failed run                    | A worker jams a Sokoban puzzle after 8 pushes; all 8 forked branches solve it, and the shepherd picks the 12-push solve. |
+| Example                                                    | What it shows                            | Result                                                                                                                   |
+| ---------------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| [Needle](#needle-fan-out-on-any-harness)                   | Fan-out, with harnesses mixed per agent  | REPL root and workers, a Claude Code root, and Claude Code workers each find the needle, with the same graph shape.      |
+| [Boids](#boids-peers-build-an-app-on-a-shared-task-board)  | Peers with no manager share a task board | Claude Code peers: one claims the plan, the others claim its tasks; a working app, 30 board writes, 3.3 minutes.         |
+| [Autoresearch](#autoresearch-a-planner-running-gpu-trials) | A planner running long GPU trials        | Validation bits per byte 0.903 → 0.764 in 32 trials on A10G.                                                             |
+| [Shepherd](#shepherd-rewind-and-fork-a-failed-run)         | Rewind and fork a failed run             | A worker jams a Sokoban puzzle after 8 pushes; all 8 forked branches solve it, and the shepherd picks the 12-push solve. |
 
 ## Examples
 

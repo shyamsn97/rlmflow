@@ -12,17 +12,17 @@ Limits come from its `Agent`: `max_iters` steps, `max_depth` levels of agents be
 
 ## What's in the REPL
 
-| Name                                                 | What it does                                                                                                                     |
-| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `launch_agent(task, agent=NAME, name=None, **args)`  | Start an agent; returns a handle at once. `**args` become its variables. Without `agent=`, one of your own kind (a Claude Code session through the plugin starts `default` agents). |
-| `await agent`, `await asyncio.gather(*agents)`       | Wait for the results of agents you launched (or they launched).                                                                  |
-| `agent.send(message, **inputs)`                      | Message any agent, reopening it if it finished; `**inputs` become its variables. For one you launched, `await` it for the reply. |
-| `agent.status`, `agent.done()`, `agent.result()`     | Check an agent without waiting.                                                                                                  |
-| `agent.parent`, `agent.children`, `agent.path`       | Where it sits in the run.                                                                                                       |
-| `llm_query(prompt, model=..., schema=...)`           | One model call with no conversation; with `schema`, a validated JSON value. Awaitable.                                           |
-| `submit(value)`                                      | Finish with a string or JSON value.                                                                                              |
-| `AGENTS`                                             | Every agent in the run: `AGENTS["name"]` (name, path or id), `AGENTS.self`, `AGENTS.children`, `AGENTS.print_graph()`.           |
-| `Input(value, description=...)`                      | Describe an argument's structure in the child's prompt.                                                                          |
+| Name                                                | What it does                                                                                                                                                                        |
+| --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `launch_agent(task, agent=NAME, name=None, **args)` | Start an agent; returns a handle at once. `**args` become its variables. Without `agent=`, one of your own kind (a Claude Code session through the plugin starts `default` agents). |
+| `await agent`, `await asyncio.gather(*agents)`      | Wait for the results of agents you launched (or they launched).                                                                                                                     |
+| `agent.send(message, **inputs)`                     | Message any agent, reopening it if it finished; `**inputs` become its variables. For one you launched, `await` it for the reply.                                                    |
+| `agent.status`, `agent.done()`, `agent.result()`    | Check an agent without waiting.                                                                                                                                                     |
+| `agent.parent`, `agent.children`, `agent.path`      | Where it sits in the run.                                                                                                                                                           |
+| `llm_query(prompt, model=..., schema=...)`          | One model call with no conversation; with `schema`, a validated JSON value. Awaitable.                                                                                              |
+| `submit(value)`                                     | Finish with a string or JSON value.                                                                                                                                                 |
+| `AGENTS`                                            | Every agent in the run: `AGENTS["name"]` (name, path or id), `AGENTS.self`, `AGENTS.children`, `AGENTS.print_graph()`.                                                              |
+| `Input(value, description=...)`                     | Describe an argument's structure in the child's prompt.                                                                                                                             |
 
 Tools passed to the Flow (`FILE_TOOLS`, your `@tool` functions) and values from `flow.inject` are also there, and listed in the prompt.
 
@@ -53,17 +53,17 @@ It works like `asyncio` tasks: `launch_agent` is `create_task`, and a handle is 
 ### How a result reaches you
 
 1. **`await agent`.** It waits for that agent in the same block and returns its result; `await asyncio.gather(*agents)` waits for several. Awaiting in a later turn an agent that already finished returns its result at once.
-2. **Not awaited, while you keep working.** Before your next turn, the agents that finished since your last one reach you in one message, "Agents you started have finished", with each result. Each result is also bound as a variable named after its agent (`default-0` becomes `default_0`). The agents still running are listed at the end of your messages.
-3. **You finish first (fire and forget).** A plain-text reply from the REPL agent, or `submit(value)` from any harness, ends your run at once, even with agents you launched still running. They run to the end: `flow.run` and `flow.stream` return only when every run is done. Their results stay on their runs. If a message later reopens you, they reach you at your next turn, as in 2.
-4. **A Claude Code, pi or person session ends its turn without `submit`.** With agents it launched still running, it waits and is resumed with their results. That is how a session waits, since a long `await` in `rlmflow repl` can hit its tool timeout.
+1. **Not awaited, while you keep working.** Before your next turn, the agents that finished since your last one reach you in one message, "Agents you started have finished", with each result. Each result is also bound as a variable named after its agent (`default-0` becomes `default_0`). The agents still running are listed at the end of your messages.
+1. **You finish first (fire and forget).** A plain-text reply from the REPL agent, or `submit(value)` from any harness, ends your run at once, even with agents you launched still running. They run to the end: `flow.run` and `flow.stream` return only when every run is done. Their results stay on their runs. If a message later reopens you, they reach you at your next turn, as in 2.
+1. **A Claude Code, pi or person session ends its turn without `submit`.** With agents it launched still running, it waits and is resumed with their results. That is how a session waits, since a long `await` in `rlmflow repl` can hit its tool timeout.
 
 How a step that ran no code ends, by harness:
 
-| Harness and step | Agents it launched still running | None running |
-| --- | --- | --- |
-| REPL agent, plain-text reply | finishes; they keep going | finishes |
+| Harness and step                     | Agents it launched still running  | None running                 |
+| ------------------------------------ | --------------------------------- | ---------------------------- |
+| REPL agent, plain-text reply         | finishes; they keep going         | finishes                     |
 | Claude Code, pi or person, turn ends | waits; resumed with their results | finishes with its last reply |
-| Any harness, `submit(value)` | finishes; they keep going | finishes |
+| Any harness, `submit(value)`         | finishes; they keep going         | finishes                     |
 
 ### Agents you didn't launch
 
